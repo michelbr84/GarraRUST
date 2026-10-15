@@ -106,7 +106,7 @@ fn read_skill_file(path: &Path) -> Result<Skill> {
         .to_string();
 
     let frontmatter: LearningSkillFrontmatter =
-        serde_yaml::from_str(yaml_src).map_err(|e| Error::Other(e.to_string()))?;
+        serde_norway::from_str(yaml_src).map_err(|e| Error::Other(e.to_string()))?;
 
     Ok(Skill {
         frontmatter,
@@ -120,7 +120,7 @@ fn write_skill_file(skill: &Skill, path: &Path) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let yaml =
-        serde_yaml::to_string(&skill.frontmatter).map_err(|e| Error::Other(e.to_string()))?;
+        serde_norway::to_string(&skill.frontmatter).map_err(|e| Error::Other(e.to_string()))?;
     let mut file = fs::File::create(path)?;
     writeln!(file, "---")?;
     file.write_all(yaml.as_bytes())?;

@@ -451,14 +451,14 @@ mod tests {
     #[test]
     fn opt_out_so_existe_no_arquivo() {
         let g: GatewayConfig =
-            serde_yaml::from_str("allow_unauthenticated_network_bind: true\n").expect("yaml");
+            serde_norway::from_str("allow_unauthenticated_network_bind: true\n").expect("yaml");
         assert!(g.allow_unauthenticated_network_bind);
         let g: GatewayConfig =
             toml::from_str("allow_unauthenticated_network_bind = true\n").expect("toml");
         assert!(g.allow_unauthenticated_network_bind);
         assert!(!GatewayConfig::default().allow_unauthenticated_network_bind);
         // `api_key_env` e serde(skip): um arquivo nao consegue injeta-la.
-        let g: GatewayConfig = serde_yaml::from_str("api_key_env: \"x\"\n").expect("yaml");
+        let g: GatewayConfig = serde_norway::from_str("api_key_env: \"x\"\n").expect("yaml");
         assert!(g.api_key_env.is_none());
     }
 }

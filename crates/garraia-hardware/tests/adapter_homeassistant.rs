@@ -603,12 +603,21 @@ async fn ws_token_errado_nao_assina() {
 /// panica — fail-soft, o loop segue tentando.
 #[tokio::test]
 async fn hub_inacessivel_registry_fica_vazio() {
-    // Uma porta com nada escutando.
+    // Um "hub" que recusa toda conexão: o listener fica VIVO durante o teste
+    // e cada conexão aceita é derrubada na hora. Antes, a porta era obtida
+    // com bind + drop, e os outros testes deste binário (que sobem hubs
+    // falsos em `127.0.0.1:0` em paralelo) podiam herdar exatamente a mesma
+    // porta efêmera no intervalo — aí o adapter encontrava um hub de verdade
+    // e o registry deixava de estar vazio (flake observado no CI do #1633).
     let fantasma = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
     let porta = fantasma.local_addr().expect("addr").port();
-    drop(fantasma);
+    let recusa = tokio::spawn(async move {
+        while let Ok((socket, _)) = fantasma.accept().await {
+            drop(socket);
+        }
+    });
 
     let registry = Arc::new(DeviceRegistry::new());
     let config = HaAdapterConfig::new(&format!("http://127.0.0.1:{porta}"), "t".to_string())
@@ -622,4 +631,5 @@ async fn hub_inacessivel_registry_fica_vazio() {
     );
 
     manager.encerrar().await;
+    recusa.abort();
 }

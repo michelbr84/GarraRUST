@@ -629,7 +629,24 @@ pub struct McpHttpConfig {
     /// destrava o que o operador nao liberou nos interruptores globais.
     #[serde(default)]
     pub orchestrators: Vec<OrchestratorMcpHttp>,
+
+    /// Expressoes regulares do operador (opt-in, #1626) que a ponte redige alem
+    /// dos padroes conhecidos (`sk-`, `ghp_`, AKIA, PEM, Bearer...). Vazio
+    /// (default) = so os padroes embutidos. Cada trecho que casa vira
+    /// `[REDACTED]` em tudo que a ponte devolve ou publica. Maximo
+    /// [`MCP_HTTP_REDACT_PATTERNS_MAX`] entradas de ate
+    /// [`MCP_HTTP_REDACT_PATTERN_LEN_MAX`] caracteres; a sintaxe e a do crate
+    /// `regex` (tempo linear, sem backtracking).
+    #[serde(default)]
+    pub redact_patterns: Vec<String>,
 }
+
+/// Quantas entradas `gateway.mcp_http.redact_patterns` aceita (#1626).
+pub const MCP_HTTP_REDACT_PATTERNS_MAX: usize = 32;
+/// Tamanho maximo, em caracteres, de cada padrao de redacao (#1626).
+pub const MCP_HTTP_REDACT_PATTERN_LEN_MAX: usize = 512;
+/// Teto de memoria da automata compilada de cada padrao (#1626).
+const MCP_HTTP_REDACT_REGEX_SIZE_LIMIT: usize = 256 * 1024;
 
 /// Um orquestrador externo da ponte MCP (#1613).
 ///
@@ -810,7 +827,66 @@ impl Default for McpHttpConfig {
             agent_budget_per_minute: default_mcp_http_agent_budget_per_minute(),
             agent_max_seconds: default_mcp_http_agent_max_seconds(),
             orchestrators: Vec::new(),
+            redact_patterns: Vec::new(),
         }
+    }
+}
+
+impl McpHttpConfig {
+    /// Compila `redact_patterns` (#1626). Devolve os que valem e, para cada
+    /// entrada recusada (vazia, longa demais, excesso de entradas ou regex
+    /// invalida), uma mensagem com o passo que a destrava. Uma entrada ruim
+    /// nunca derruba as demais: a redacao e defesa em profundidade, e perder
+    /// todas por causa de uma seria pior.
+    pub fn compilar_redact_patterns(&self) -> (Vec<regex::Regex>, Vec<String>) {
+        let mut validos = Vec::new();
+        let mut problemas = Vec::new();
+        if self.redact_patterns.len() > MCP_HTTP_REDACT_PATTERNS_MAX {
+            problemas.push(format!(
+                "gateway.mcp_http.redact_patterns tem {} entradas; so as primeiras \
+                 {MCP_HTTP_REDACT_PATTERNS_MAX} valem. Remova ou una padroes.",
+                self.redact_patterns.len()
+            ));
+        }
+        for (indice, padrao) in self
+            .redact_patterns
+            .iter()
+            .take(MCP_HTTP_REDACT_PATTERNS_MAX)
+            .enumerate()
+        {
+            let n = indice + 1;
+            if padrao.trim().is_empty() {
+                problemas.push(format!(
+                    "redact_patterns #{n}: padrao vazio casaria em todo lugar. Remova a \
+                     entrada ou escreva o padrao; ela e ignorada."
+                ));
+                continue;
+            }
+            if padrao.chars().count() > MCP_HTTP_REDACT_PATTERN_LEN_MAX {
+                problemas.push(format!(
+                    "redact_patterns #{n}: passa de {MCP_HTTP_REDACT_PATTERN_LEN_MAX} \
+                     caracteres. Encurte o padrao; a entrada e ignorada."
+                ));
+                continue;
+            }
+            match regex::RegexBuilder::new(padrao)
+                .size_limit(MCP_HTTP_REDACT_REGEX_SIZE_LIMIT)
+                .build()
+            {
+                // Um padrao que casa o texto vazio redigiria entre cada
+                // caractere e destruiria a mensagem inteira.
+                Ok(re) if re.is_match("") => problemas.push(format!(
+                    "redact_patterns #{n}: o padrao casa o texto vazio (ex.: `a*`). Exija \
+                     ao menos um caractere (ex.: `a+`); a entrada e ignorada."
+                )),
+                Ok(re) => validos.push(re),
+                Err(_) => problemas.push(format!(
+                    "redact_patterns #{n}: regex invalida ou complexa demais (sintaxe do \
+                     crate `regex`). Corrija a expressao; a entrada e ignorada."
+                )),
+            }
+        }
+        (validos, problemas)
     }
 }
 
@@ -1671,13 +1747,13 @@ mod tests {
         assert_eq!(padrao.max_facts, None);
 
         let config: AppConfig =
-            serde_yaml::from_str("memory:\n  auto_extract: false\n  max_facts: 3\n")
+            serde_norway::from_str("memory:\n  auto_extract: false\n  max_facts: 3\n")
                 .expect("yaml should parse");
         assert!(!config.memory.auto_extract);
         assert_eq!(config.memory.max_facts, Some(3));
 
         // Seção ausente => defaults (não panic nem inverta o default).
-        let config: AppConfig = serde_yaml::from_str("agent: {}\n").expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str("agent: {}\n").expect("yaml should parse");
         assert!(config.memory.auto_extract);
         assert_eq!(config.memory.max_facts, None);
     }
@@ -1692,7 +1768,7 @@ mod tests {
         assert_eq!(padrao.llm.default_secs, 120);
 
         // E o default vale tambem quando a secao `timeouts:` existe sem ele.
-        let config: AppConfig = serde_yaml::from_str("timeouts:\n  llm:\n    default_secs: 90\n")
+        let config: AppConfig = serde_norway::from_str("timeouts:\n  llm:\n    default_secs: 90\n")
             .expect("yaml should parse");
         assert_eq!(config.timeouts.llm.default_secs, 90);
         assert_eq!(config.timeouts.embeddings.default_secs, 30);
@@ -1704,7 +1780,7 @@ mod tests {
     /// inutil nao pode virar janela por acidente).
     #[test]
     fn llm_timeout_secs_por_provider_via_accessor() {
-        let config: AppConfig = serde_yaml::from_str(
+        let config: AppConfig = serde_norway::from_str(
             "llm:\n  lento:\n    provider: ollama\n    timeout_secs: 600\n  rapido:\n    provider: openai\n",
         )
         .expect("yaml should parse");
@@ -1719,7 +1795,7 @@ mod tests {
 
         // Chave presente mas não-numera: accessor devolve None em vez de
         // estourar — flatten guarda o valor cru, o tipo é conferido aqui.
-        let config: AppConfig = serde_yaml::from_str(
+        let config: AppConfig = serde_norway::from_str(
             "llm:\n  esquisito:\n    provider: ollama\n    timeout_secs: 'dez'\n",
         )
         .expect("yaml should parse");
@@ -1798,7 +1874,7 @@ agent:
   persona: neutral
   persona_lang: "en"
 "#;
-        let config: AppConfig = serde_yaml::from_str(raw).expect("parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("parse");
         assert_eq!(config.agent.persona, super::PersonaMode::Neutral);
         assert_eq!(config.agent.persona_lang.as_deref(), Some("en"));
     }
@@ -1822,7 +1898,7 @@ embeddings:
     dimensions: 1024
 "#;
 
-        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("yaml should parse");
         assert!(config.memory.enabled);
         assert_eq!(
             config.memory.embedding_provider.as_deref(),
@@ -1850,7 +1926,7 @@ hardware:
     username: garra
     password_env: GARRA_MQTT_PASS
 "#;
-        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("yaml should parse");
         let mqtt = config.hardware.mqtt.expect("hardware.mqtt should be Some");
         assert_eq!(mqtt.broker, "127.0.0.1:1883");
         assert_eq!(mqtt.username.as_deref(), Some("garra"));
@@ -1868,7 +1944,7 @@ hardware:
     dir: "rules/automations"
     risk_ceiling: "r2"
 "#;
-        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("yaml should parse");
         let automacoes = config
             .hardware
             .automations
@@ -1891,7 +1967,7 @@ hardware:
   automations:
     dir: "rules"
 "#;
-        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("yaml should parse");
         let automacoes = config.hardware.automations.expect("automations");
         assert_eq!(automacoes.risk_ceiling, "r1", "teto default é r1");
     }
@@ -1911,7 +1987,7 @@ hardware:
   automations:
     dir: "/etc/garraia/regras"
 "#;
-        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("yaml should parse");
         assert_eq!(
             config.automations_dir(),
             Some(std::path::PathBuf::from("/etc/garraia/regras"))
@@ -1929,7 +2005,7 @@ hardware:
         // Disciplina write-only do settings registry: config carrega o NOME
         // da env var; o valor só existe no ambiente.
         let raw = "hardware:\n  mqtt:\n    broker: '127.0.0.1:1883'\n";
-        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("yaml should parse");
         let mqtt = config.hardware.mqtt.expect("mqtt");
         assert!(mqtt.password_env.is_none());
         assert!(mqtt.username.is_none());
@@ -1950,6 +2026,38 @@ mod mcp_http_config_tests {
     }
 
     #[test]
+    fn redact_patterns_vazio_por_padrao_e_entradas_ruins_sao_ignoradas() {
+        assert!(McpHttpConfig::default().redact_patterns.is_empty());
+        let cfg = McpHttpConfig {
+            redact_patterns: vec![
+                r"corp-[0-9]{6}".into(),
+                "".into(),
+                "(".into(),
+                "a*".into(),
+                "x".repeat(super::MCP_HTTP_REDACT_PATTERN_LEN_MAX + 1),
+            ],
+            ..Default::default()
+        };
+        let (validos, problemas) = cfg.compilar_redact_patterns();
+        assert_eq!(validos.len(), 1);
+        assert!(validos[0].is_match("corp-123456"));
+        assert_eq!(problemas.len(), 4, "{problemas:?}");
+    }
+
+    #[test]
+    fn redact_patterns_acima_do_maximo_avisa_e_trunca() {
+        let cfg = McpHttpConfig {
+            redact_patterns: (0..super::MCP_HTTP_REDACT_PATTERNS_MAX + 1)
+                .map(|i| format!("seg{i}x"))
+                .collect(),
+            ..Default::default()
+        };
+        let (validos, problemas) = cfg.compilar_redact_patterns();
+        assert_eq!(validos.len(), super::MCP_HTTP_REDACT_PATTERNS_MAX);
+        assert_eq!(problemas.len(), 1);
+    }
+
+    #[test]
     fn default_do_struct_e_fail_closed() {
         let padrao = McpHttpConfig::default();
         assert!(!padrao.allow_ask);
@@ -1963,7 +2071,7 @@ mod mcp_http_config_tests {
 
     #[test]
     fn parseia_as_chaves_de_ask() {
-        let config: AppConfig = serde_yaml::from_str(
+        let config: AppConfig = serde_norway::from_str(
             "gateway:\n  mcp_http:\n    enabled: true\n    allow_ask: true\n    \
              ask_allowed_models:\n      - openrouter/auto\n      - z-ai/glm-5.3-flash\n    \
              ask_budget_per_minute: 3\n",
@@ -1997,7 +2105,7 @@ mod mcp_http_config_tests {
 
     #[test]
     fn parseia_as_chaves_de_agent() {
-        let config: AppConfig = serde_yaml::from_str(
+        let config: AppConfig = serde_norway::from_str(
             "gateway:\n  mcp_http:\n    enabled: true\n    allow_agent: true\n    \
              agent_budget_per_minute: 1\n    agent_max_seconds: 120\n",
         )
@@ -2014,7 +2122,7 @@ mod mcp_http_config_tests {
     #[test]
     fn secao_mcp_http_ausente_usa_defaults() {
         let config: AppConfig =
-            serde_yaml::from_str("gateway:\n  host: 127.0.0.1\n").expect("yaml should parse");
+            serde_norway::from_str("gateway:\n  host: 127.0.0.1\n").expect("yaml should parse");
         let mcp = &config.gateway.mcp_http;
         assert!(!mcp.enabled);
         assert!(!mcp.allow_ask);
@@ -2026,7 +2134,7 @@ mod mcp_http_config_tests {
     /// default de `allow_ask` nao muda por causa da existencia dos campos.
     #[test]
     fn chaves_antigas_sem_as_novas_mantem_ask_desligado() {
-        let config: AppConfig = serde_yaml::from_str(
+        let config: AppConfig = serde_norway::from_str(
             "gateway:\n  mcp_http:\n    enabled: true\n    allow_send: true\n",
         )
         .expect("yaml should parse");
@@ -2039,7 +2147,7 @@ mod mcp_http_config_tests {
     fn orquestradores_default_e_lista_vazia() {
         assert!(McpHttpConfig::default().orchestrators.is_empty());
         let config: AppConfig =
-            serde_yaml::from_str("gateway:\n  mcp_http:\n    enabled: true\n").expect("yaml");
+            serde_norway::from_str("gateway:\n  mcp_http:\n    enabled: true\n").expect("yaml");
         assert!(config.gateway.mcp_http.orchestrators.is_empty());
         assert!(config.gateway.mcp_http.orquestradores_validos().is_empty());
         assert!(
@@ -2053,7 +2161,7 @@ mod mcp_http_config_tests {
 
     #[test]
     fn parseia_orquestradores_da_forma_documentada() {
-        let config: AppConfig = serde_yaml::from_str(
+        let config: AppConfig = serde_norway::from_str(
             "gateway:\n  mcp_http:\n    orchestrators:\n      - nome: badgood\n        \
              key_env: BADGOOD_MCP_KEY\n        tools: [status, send_message]\n        \
              chats: [-100123456789]\n",

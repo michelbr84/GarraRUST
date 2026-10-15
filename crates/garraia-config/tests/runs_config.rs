@@ -21,14 +21,14 @@ fn findings_de_runs(config: &AppConfig) -> Vec<(Severity, String)> {
 /// Secao ausente = retencao desligada: uma atualizacao nao apaga nada.
 #[test]
 fn secao_ausente_e_retencao_desligada() {
-    let config: AppConfig = serde_yaml::from_str("agent: {}\n").expect("yaml");
+    let config: AppConfig = serde_norway::from_str("agent: {}\n").expect("yaml");
     assert_eq!(config.runs, RunsConfig { retention_days: 0 });
     assert_eq!(AppConfig::default().runs.retention_days, 0);
 }
 
 #[test]
 fn secao_runs_e_lida_do_yaml() {
-    let config: AppConfig = serde_yaml::from_str("runs:\n  retention_days: 30\n").expect("yaml");
+    let config: AppConfig = serde_norway::from_str("runs:\n  retention_days: 30\n").expect("yaml");
     assert_eq!(config.runs.retention_days, 30);
 }
 
@@ -37,7 +37,7 @@ fn secao_runs_e_lida_do_yaml() {
 #[test]
 fn agentes_nomeados_continuam_intactos() {
     let yaml = "runs:\n  retention_days: 7\nagents:\n  revisor:\n    system_prompt: oi\n";
-    let config: AppConfig = serde_yaml::from_str(yaml).expect("yaml");
+    let config: AppConfig = serde_norway::from_str(yaml).expect("yaml");
     assert_eq!(config.runs.retention_days, 7);
     assert_eq!(config.agents.len(), 1);
     assert!(config.agents.contains_key("revisor"));

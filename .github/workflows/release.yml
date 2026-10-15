@@ -1000,6 +1000,8 @@ jobs:
                       artifacts/garraia-desktop-windows/*.nsis.zip.sig \
                       artifacts/garraia-desktop-windows/*.msi.zip \
                       artifacts/garraia-desktop-windows/*.msi.zip.sig \
+                      artifacts/garraia-desktop-windows/*.msi.sig \
+                      artifacts/garraia-desktop-windows/*-setup.exe.sig \
                       artifacts/garraia-desktop-linux/*.AppImage.sig \
                       artifacts/garraia-desktop-linux/*.AppImage.tar.gz \
                       artifacts/garraia-desktop-linux/*.AppImage.tar.gz.sig; do
@@ -1262,8 +1264,13 @@ jobs:
             release/*.dmg
             release/*.AppImage.tar.gz
             release/*.AppImage.tar.gz.sig
+            release/*.AppImage.sig
             release/*.nsis.zip
             release/*.nsis.zip.sig
+            release/*.msi.zip
+            release/*.msi.zip.sig
+            release/*.msi.sig
+            release/*-setup.exe.sig
             release/*.app.tar.gz
             release/*.app.tar.gz.sig
             # latest.json do Tauri updater (#1568) — o endpoint que o

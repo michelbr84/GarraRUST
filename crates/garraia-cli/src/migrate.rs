@@ -347,7 +347,7 @@ fn import_channels(source_dir: &Path, garraia_dir: &Path, report: &mut Migration
         }
     };
 
-    let value: serde_yaml::Value = match serde_yaml::from_str(&content) {
+    let value: serde_norway::Value = match serde_norway::from_str(&content) {
         Ok(v) => v,
         Err(e) => {
             report
@@ -368,19 +368,19 @@ fn import_channels(source_dir: &Path, garraia_dir: &Path, report: &mut Migration
     };
 
     let garraia_config_path = garraia_dir.join("config.yml");
-    let mut garraia_config: serde_yaml::Value = if garraia_config_path.exists() {
+    let mut garraia_config: serde_norway::Value = if garraia_config_path.exists() {
         let existing = std::fs::read_to_string(&garraia_config_path).unwrap_or_default();
-        serde_yaml::from_str(&existing)
-            .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+        serde_norway::from_str(&existing)
+            .unwrap_or(serde_norway::Value::Mapping(serde_norway::Mapping::new()))
     } else {
-        serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+        serde_norway::Value::Mapping(serde_norway::Mapping::new())
     };
 
     let dest_channels = garraia_config
         .as_mapping_mut()
         .unwrap()
-        .entry(serde_yaml::Value::String("channels".into()))
-        .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+        .entry(serde_norway::Value::String("channels".into()))
+        .or_insert(serde_norway::Value::Mapping(serde_norway::Mapping::new()));
 
     let dest_map = match dest_channels.as_mapping_mut() {
         Some(m) => m,
@@ -389,7 +389,7 @@ fn import_channels(source_dir: &Path, garraia_dir: &Path, report: &mut Migration
 
     for (name, channel_value) in channels {
         let name_str = name.as_str().unwrap_or("unknown");
-        let name_key = serde_yaml::Value::String(name_str.to_string());
+        let name_key = serde_norway::Value::String(name_str.to_string());
 
         if dest_map.contains_key(&name_key) {
             println!("  channel '{name_str}' already exists in GarraIA config, skipping");
@@ -407,7 +407,7 @@ fn import_channels(source_dir: &Path, garraia_dir: &Path, report: &mut Migration
 
     if !report.dry_run
         && report.channels_imported > 0
-        && let Ok(yaml_str) = serde_yaml::to_string(&garraia_config)
+        && let Ok(yaml_str) = serde_norway::to_string(&garraia_config)
         && let Err(e) = std::fs::write(&garraia_config_path, yaml_str)
     {
         report

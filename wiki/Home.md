@@ -23,6 +23,19 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
 
 ## Novidades
 
+- **[v0.4.9 — Novidades](Novidades-v0.4.9)** · **[What's New in v0.4.9 (English)](Whats-New-v0.4.9)**
+  — release grande: os **direitos dos titulares de dados** (exportação completa,
+  correção de e-mail com fluxo seguro, apagamento com carência e worker
+  dedicado) passam a funcionar no gateway; o **MCP HTTP** ganha delegação de
+  tarefas (`garra_ask`, `garra_agent` e orquestradores com identidade própria,
+  desligados por padrão); uma varredura de advisories de dependências (#1630) e
+  o updater do desktop com DMG e `latest.json`.
+- **[v0.4.8 — Novidades](Novidades-v0.4.8)** · **[What's New in v0.4.8 (English)](Whats-New-v0.4.8)**
+  — segurança no topo: o `bash` no host ganha a **fronteira de allowlist**
+  (`HostComAllowlist`, #1272) e o `wasmtime` sobe para 49.0.2 fechando **onze
+  advisories**; o Web Console fecha o que a v0.4.7 adiou — a página global
+  **Agents & Permissions** (#1433) e o import/export da política (#1435) — e os
+  seis canais que o README já anunciava voltam a contar (#1567, badge 11).
 - **[v0.4.7 — Novidades](Novidades-v0.4.7)** · **[What's New in v0.4.7 (English)](Whats-New-v0.4.7)**
   — release de correção: o **lote paralelo de ferramentas** deixa de furar o
   orçamento e de derrubar o turno depois de tudo já ter rodado (#1523) — o bug

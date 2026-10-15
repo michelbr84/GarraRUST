@@ -407,7 +407,8 @@ impl ManipuladorMcpHttp {
             with_channel_address(&json!({}), &args.channel, Some(&args.chat_id.to_string()));
         // #1613: o que sai pelo canal e o texto redigido. Um token que o
         // orquestrador colou no pedido nao chega ao chat de ninguem.
-        let texto = redacao::redigir(&args.text);
+        let extras = redacao_do_operador(&state.current_config());
+        let texto = redacao::redigir_com(&args.text, &extras);
         let mensagem = garraia_common::Message {
             id: uuid::Uuid::new_v4().to_string(),
             session_id: garraia_common::SessionId::from_string(SESSAO_DO_TETO),
@@ -537,7 +538,10 @@ impl ManipuladorMcpHttp {
             }
             AskOutcome::Failure(erro) => {
                 tracing::warn!(kind = erro.kind_str(), "mcp_http: garra_ask falhou");
-                Err(redigir_erro(outcome.to_envelope()))
+                Err(redigir_erro(
+                    outcome.to_envelope(),
+                    &redacao_do_operador(&config),
+                ))
             }
         }
     }
@@ -597,14 +601,18 @@ impl ManipuladorMcpHttp {
         }
 
         let config = state.current_config();
+        let extras = redacao_do_operador(&config);
         let opts = AgentOptions {
-            message: redacao::redigir(&args.message),
+            message: redacao::redigir_com(&args.message, &extras),
             provider: provider.clone(),
             model: modelo.clone(),
             timeout_secs: args
                 .timeout_secs
                 .unwrap_or_else(|| politica.teto_do_agente_secs()),
-            system_prompt: args.system_prompt.as_deref().map(redacao::redigir),
+            system_prompt: args
+                .system_prompt
+                .as_deref()
+                .map(|s| redacao::redigir_com(s, &extras)),
             working_dir: None,
         };
         // So as raizes da config: o CWD do processo atende a CLI, nao um pedido
@@ -612,7 +620,7 @@ impl ManipuladorMcpHttp {
         let jail = garraia_agents::FileJail::from_config_roots(&config.agent.file_roots);
         let prefixo = format!("mcp-http-{}", quem.rotulo());
         let outcome = agente_mcp::agent_oneshot(&config, &opts, &jail, &prefixo).await;
-        let envelope = redigir_envelope_do_agente(outcome.to_envelope());
+        let envelope = redigir_envelope_do_agente(outcome.to_envelope(), &extras);
         match &outcome {
             AgentOutcome::Success {
                 latency_ms,
@@ -702,6 +710,19 @@ impl ManipuladorMcpHttp {
     }
 }
 
+/// Os padroes de redacao do operador (#1626). Entrada invalida ja foi recusada
+/// pelo `config check`; aqui so se loga a contagem, sem o conteudo do padrao.
+fn redacao_do_operador(config: &garraia_config::AppConfig) -> Vec<regex::Regex> {
+    let (validos, problemas) = config.gateway.mcp_http.compilar_redact_patterns();
+    if !problemas.is_empty() {
+        tracing::warn!(
+            ignorados = problemas.len(),
+            "mcp_http: redact_patterns com entradas invalidas ignoradas"
+        );
+    }
+    validos
+}
+
 /// Um envelope `garra.mcp.v1` de recusa, com o `kind` e a explicacao dados.
 fn envelope_de_erro(kind: &str, message: &str) -> JsonValue {
     json!({
@@ -719,12 +740,15 @@ fn recusa_do_agente(provider: &str, modelo: &str, recusa: RecusaAgent) -> JsonVa
 /// Redige o texto livre de um envelope `garra.agent.v1` (#1615): a resposta, a
 /// mensagem de erro e o resumo de cada tool. O resumo sai do runtime, mas um
 /// `bash` que ecoe um token deixaria esse token no resumo, e ele nao sai daqui.
-fn redigir_envelope_do_agente(mut envelope: JsonValue) -> JsonValue {
+fn redigir_envelope_do_agente(mut envelope: JsonValue, extras: &[regex::Regex]) -> JsonValue {
     if let Some(resposta) = envelope.get("answer").and_then(JsonValue::as_str) {
-        let redigida = redacao::redigir(resposta);
+        let redigida = redacao::redigir_com(resposta, extras);
         envelope["answer"] = json!(redigida);
     }
-    if let Some(mensagem) = envelope["error"]["message"].as_str().map(redacao::redigir) {
+    if let Some(mensagem) = envelope["error"]["message"]
+        .as_str()
+        .map(|m| redacao::redigir_com(m, extras))
+    {
         envelope["error"]["message"] = json!(mensagem);
     }
     if let Some(chamadas) = envelope
@@ -732,7 +756,10 @@ fn redigir_envelope_do_agente(mut envelope: JsonValue) -> JsonValue {
         .and_then(JsonValue::as_array_mut)
     {
         for chamada in chamadas {
-            if let Some(resumo) = chamada["summary"].as_str().map(redacao::redigir) {
+            if let Some(resumo) = chamada["summary"]
+                .as_str()
+                .map(|r| redacao::redigir_com(r, extras))
+            {
                 chamada["summary"] = json!(resumo);
             }
         }
@@ -742,8 +769,10 @@ fn redigir_envelope_do_agente(mut envelope: JsonValue) -> JsonValue {
 
 /// Redige a mensagem de erro de um envelope `garra.ask.v1` (#1613). O provedor
 /// pode ecoar um segredo na resposta de erro, e isso nao sai para o cliente.
-fn redigir_erro(mut envelope: JsonValue) -> JsonValue {
-    let redigida = envelope["error"]["message"].as_str().map(redacao::redigir);
+fn redigir_erro(mut envelope: JsonValue, extras: &[regex::Regex]) -> JsonValue {
+    let redigida = envelope["error"]["message"]
+        .as_str()
+        .map(|m| redacao::redigir_com(m, extras));
     if let Some(mensagem) = redigida {
         envelope["error"]["message"] = json!(mensagem);
     }
@@ -984,7 +1013,7 @@ mod tests {
                 "message": "401 from sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789",
             },
         });
-        let saida = redigir_erro(envelope);
+        let saida = redigir_erro(envelope, &[]);
         let mensagem = saida["error"]["message"].as_str().unwrap_or_default();
         assert!(!mensagem.contains("sk-or-v1-"), "{mensagem}");
         assert_eq!(saida["error"]["kind"], "provider_error");

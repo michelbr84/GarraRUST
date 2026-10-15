@@ -28,6 +28,19 @@ pub fn redigir(texto: &str) -> String {
     mascarar_apos(&texto, "sk-", 8, eh_token_sk, true)
 }
 
+/// Como [`redigir`], mais os padroes do operador (`gateway.mcp_http.
+/// redact_patterns`, #1626). Os embutidos rodam primeiro; os do operador se
+/// somam, nunca substituem. Sem padroes extras e identica a [`redigir`].
+pub fn redigir_com(texto: &str, extras: &[regex::Regex]) -> String {
+    let mut saida = redigir(texto);
+    for padrao in extras {
+        if padrao.is_match(&saida) {
+            saida = padrao.replace_all(&saida, MARCADOR).into_owned();
+        }
+    }
+    saida
+}
+
 /// Caracteres de um token `Bearer`: alfabeto de base64 e URL, o que um header
 /// Authorization carrega na pratica.
 fn eh_token_bearer(c: char) -> bool {
@@ -162,6 +175,17 @@ mod tests {
             );
             assert!(!saida.contains(segredo), "vazou `{segredo}` em `{saida}`");
         }
+    }
+
+    /// Padrao do operador (#1626): redige o que o embutido deixa passar, soma-se
+    /// aos embutidos e nao mexe em texto que nao casa.
+    #[test]
+    fn padrao_do_operador_soma_se_aos_embutidos() {
+        let extras = vec![regex::Regex::new(r"corp-[0-9]{6}").expect("regex")];
+        let saida = redigir_com("id corp-123456 e sk-abc12345 fim", &extras);
+        assert_eq!(saida, "id [REDACTED] e sk-[REDACTED] fim");
+        assert_eq!(redigir_com("nada aqui", &extras), "nada aqui");
+        assert_eq!(redigir_com("corp-123456", &[]), "corp-123456");
     }
 
     /// `Bearer` vira `Bearer [REDACTED]`: o esquema fica, o token some.

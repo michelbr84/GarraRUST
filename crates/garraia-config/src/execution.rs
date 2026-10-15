@@ -311,14 +311,14 @@ mod tests {
     #[test]
     fn isolated_pod_faz_round_trip_em_yaml_e_toml() {
         let yaml = "execution:\n  profile: isolated-pod\n  pod_root: /workspace\n";
-        let cfg: AppConfig = serde_yaml::from_str(yaml).expect("yaml parseia");
+        let cfg: AppConfig = serde_norway::from_str(yaml).expect("yaml parseia");
         assert_eq!(cfg.execution.profile, Some(ExecutionProfile::IsolatedPod));
         assert_eq!(cfg.execution.pod_root(), Some(Path::new("/workspace")));
         assert_eq!(cfg.execution.perfil(), ExecutionProfile::IsolatedPod);
 
-        let de_volta = serde_yaml::to_string(&cfg).expect("serializa");
+        let de_volta = serde_norway::to_string(&cfg).expect("serializa");
         assert!(de_volta.contains("profile: isolated-pod"), "{de_volta}");
-        let relido: AppConfig = serde_yaml::from_str(&de_volta).expect("relê");
+        let relido: AppConfig = serde_norway::from_str(&de_volta).expect("relê");
         assert_eq!(relido.execution, cfg.execution);
 
         let toml = "[execution]\nprofile = \"isolated-pod\"\n";
@@ -329,7 +329,7 @@ mod tests {
     /// Secao ausente = comportamento de hoje: `standard`, origem `default`.
     #[test]
     fn secao_ausente_e_standard_de_origem_default() {
-        let cfg: AppConfig = serde_yaml::from_str("gateway:\n  port: 3888\n").expect("parseia");
+        let cfg: AppConfig = serde_norway::from_str("gateway:\n  port: 3888\n").expect("parseia");
         assert_eq!(cfg.execution.profile, None);
         assert_eq!(cfg.execution.perfil(), ExecutionProfile::Standard);
         assert_eq!(cfg.execution.origem(), ProfileSource::Default);
@@ -345,7 +345,7 @@ mod tests {
     fn valor_desconhecido_no_arquivo_e_recusado() {
         for ruim in ["isolated_pod", "pod", "IsolatedPod", "trusted", ""] {
             let yaml = format!("execution:\n  profile: {ruim:?}\n");
-            let r = serde_yaml::from_str::<AppConfig>(&yaml);
+            let r = serde_norway::from_str::<AppConfig>(&yaml);
             assert!(r.is_err(), "{ruim:?} deveria ser recusado");
         }
     }
@@ -406,7 +406,7 @@ mod tests {
         assert_eq!(cfg.origem(), ProfileSource::Env);
         // O arquivo continua dizendo o que dizia: o `save` nao promove a env.
         assert_eq!(cfg.profile, Some(ExecutionProfile::IsolatedPod));
-        let yaml = serde_yaml::to_string(&cfg).expect("serializa");
+        let yaml = serde_norway::to_string(&cfg).expect("serializa");
         assert!(yaml.contains("profile: isolated-pod"), "{yaml}");
         assert!(!yaml.contains("do_env"), "{yaml}");
     }
@@ -497,7 +497,7 @@ mod tests {
         );
         assert_eq!(cfg.perfil(), ExecutionProfile::Standard);
         assert_eq!(cfg.origem(), ProfileSource::Default);
-        let yaml = serde_yaml::to_string(&cfg).expect("serializa");
+        let yaml = serde_norway::to_string(&cfg).expect("serializa");
         assert!(!yaml.contains("nao-e-perfil"), "{yaml}");
         assert!(!yaml.contains("invalido"), "{yaml}");
     }
