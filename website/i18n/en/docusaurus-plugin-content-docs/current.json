@@ -1,0 +1,62 @@
+{
+  "version.label": {
+    "message": "Next",
+    "description": "The label for version current"
+  },
+  "sidebar.docsSidebar.category.Instalação": {
+    "message": "Installation",
+    "description": "The label for category 'Instalação' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.CLI e comandos": {
+    "message": "CLI & commands",
+    "description": "The label for category 'CLI e comandos' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Gateway": {
+    "message": "Gateway",
+    "description": "The label for category 'Gateway' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.MCP": {
+    "message": "MCP",
+    "description": "The label for category 'MCP' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Mobile": {
+    "message": "Mobile",
+    "description": "The label for category 'Mobile' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Arquitetura": {
+    "message": "Architecture",
+    "description": "The label for category 'Arquitetura' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.ADRs": {
+    "message": "ADRs",
+    "description": "The label for category 'ADRs' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Segurança": {
+    "message": "Security",
+    "description": "The label for category 'Segurança' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Configuração": {
+    "message": "Configuration",
+    "description": "The label for category 'Configuração' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.API e integrações": {
+    "message": "API & integrations",
+    "description": "The label for category 'API e integrações' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Guias para desenvolvedores": {
+    "message": "Developer guides",
+    "description": "The label for category 'Guias para desenvolvedores' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Releases": {
+    "message": "Releases",
+    "description": "The label for category 'Releases' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Roadmap": {
+    "message": "Roadmap",
+    "description": "The label for category 'Roadmap' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Contribuição": {
+    "message": "Contributing",
+    "description": "The label for category 'Contribuição' in sidebar 'docsSidebar'"
+  }
+}

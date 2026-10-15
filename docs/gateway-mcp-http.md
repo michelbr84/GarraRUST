@@ -43,7 +43,11 @@ gateway:
 
 `redact_patterns` is opt-in: each regex (max 32, 512 chars each, Rust `regex`
 syntax, linear time) is applied after the built-in patterns and replaces every
-match with `[REDACTED]` in text the bridge publishes or returns. Example:
+match with `[REDACTED]` on the same surfaces the built-in redaction covers:
+`garra_send_message` output, the `garra_ask` error path and everything
+`garra_agent` sends or returns (prompt, answer, error, tool summaries). The
+`garra_ask` success payload and `garra_read_history` keep only the built-in
+redaction. Example:
 `redact_patterns: ['corp-[0-9]{6}']`. Empty, invalid, over-long or empty-matching
 entries are ignored and reported as errors by `garra config check`.
 

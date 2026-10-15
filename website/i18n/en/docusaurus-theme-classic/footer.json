@@ -1,0 +1,30 @@
+{
+  "link.title.GarraIA": {
+    "message": "GarraIA",
+    "description": "The title of the footer links column with title=GarraIA in the footer"
+  },
+  "link.item.label.Repositório": {
+    "message": "Repository",
+    "description": "The label of footer link with label=Repositório linking to https://github.com/michelbr84/GarraRUST"
+  },
+  "link.item.label.Issues": {
+    "message": "Issues",
+    "description": "The label of footer link with label=Issues linking to https://github.com/michelbr84/GarraRUST/issues"
+  },
+  "link.item.label.Releases": {
+    "message": "Releases",
+    "description": "The label of footer link with label=Releases linking to https://github.com/michelbr84/GarraRUST/releases"
+  },
+  "link.item.label.Wiki": {
+    "message": "Wiki",
+    "description": "The label of footer link with label=Wiki linking to https://github.com/michelbr84/GarraRUST/wiki"
+  },
+  "link.item.label.Site": {
+    "message": "Site",
+    "description": "The label of footer link with label=Site linking to https://garraia.org"
+  },
+  "copyright": {
+    "message": "GarraIA — open-source project (MIT). Documentation generated from the repository.",
+    "description": "The footer copyright"
+  }
+}
