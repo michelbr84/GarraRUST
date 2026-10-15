@@ -38,7 +38,30 @@ const EDIT = 'https://github.com/michelbr84/GarraRUST/edit/main/';
 const EN_NOTE =
   '> **Note:** This page is in English. Pages not yet translated are shown in Portuguese.';
 
-const VERSIONS = ['0.4.7', '0.4.6', '0.4.5', '0.4.4', '0.4.3', '0.4.2', '0.3.9'];
+// Versoes com pagina de novidades na wiki (pt-BR `Novidades-vX.Y.Z.md` E
+// inglesa `Whats-New-vX.Y.Z.md`), descobertas no repo e ordenadas da mais
+// nova para a mais antiga — uma release nova entra aqui sem editar nada.
+function compararSemverDesc(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pb[i] - pa[i];
+  return 0;
+}
+const VERSIONS = fs
+  .readdirSync(path.join(REPO, 'wiki'))
+  .map((f) => /^Novidades-v(\d+\.\d+\.\d+)\.md$/.exec(f)?.[1])
+  .filter((v) => v && fs.existsSync(path.join(REPO, 'wiki', `Whats-New-v${v}.md`)))
+  .sort(compararSemverDesc);
+
+// Listas de versoes injetadas nas paginas de releases (content/*.md) no lugar
+// dos marcadores <!-- VERSOES:PT --> e <!-- VERSOES:EN -->.
+function listaDeVersoes(locale) {
+  return VERSIONS.map((v) => {
+    const stem = `novidades-v${v.replace(/\./g, '-')}`;
+    const rotulo = locale === 'en' ? `What's New v${v}` : `Novidades v${v}`;
+    return `- [${rotulo}](/releases/${stem})`;
+  }).join('\n');
+}
 
 // --- Secoes (viram _category_.json). dir relativo a docs/. ---
 const SECTIONS = [
@@ -391,6 +414,9 @@ function frontMatter({id, title, label, pos, slug, editUrl, description}) {
 
 function writeDoc(outRoot, entry, {body, srcRepoPath, rewrite, editUrl, note, localeAbsolute}) {
   body = stripFrontMatter(body);
+  body = body
+    .replace('<!-- VERSOES:PT -->', listaDeVersoes('pt-BR'))
+    .replace('<!-- VERSOES:EN -->', listaDeVersoes('en'));
   if (entry.truncate) body = truncateChangelog(body, entry.truncate);
   if (rewrite) body = rewriteBody(body, srcRepoPath, entry.out, localeAbsolute);
   const title = entry.title || extractTitle(body) || entry.out.split('/').pop();
