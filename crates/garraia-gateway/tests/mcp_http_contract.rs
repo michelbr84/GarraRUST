@@ -1939,3 +1939,525 @@ async fn garra_agent_bash_com_comando_perigoso_e_recusado_pela_denylist() {
     assert_eq!(env["tool_calls"][0]["name"], "bash", "{env}");
     assert_eq!(env["tool_calls"][0]["success"], false, "{env}");
 }
+
+// ── garra_agent jail por orquestrador (#1626 item 1): cada orquestrador tem a ──
+// ── sua propria subarvore gravavel sob <data_dir>/workspace, isolada das demais.
+
+/// O caminho relativo que os dois orquestradores pedem — o MESMO nome, para
+/// provar que o isolamento vem da RAIZ (o dir do orquestrador), nao do nome.
+const ARQUIVO_JAIL: &str = "compartilhado.txt";
+/// O conteudo que o orquestrador que escreve grava. Nao e um segredo (nao casa
+/// com a redacao), entao chega ao disco verbatim.
+const MARCADOR_JAIL: &str = "marcador-do-orquestrador-1626";
+
+/// Um provider que, no primeiro turno, pede uma file tool escolhida pelo texto
+/// da mensagem do usuario, e no turno seguinte (ja existe uma mensagem `tool`)
+/// responde "fim". Atende SSE e JSON, como o `PedeBash`.
+///
+/// - contem `::WRITE::`              -> `file_write` no caminho relativo [`ARQUIVO_JAIL`];
+/// - contem `::READ_ABS::<p>::END::` -> `file_read` no caminho absoluto `<p>`;
+/// - caso contrario                  -> `file_read` no caminho relativo [`ARQUIVO_JAIL`].
+struct PedeFileTool;
+
+impl PedeFileTool {
+    /// O texto das mensagens `user` do corpo, concatenado. E dele que o
+    /// responder decide qual tool pedir.
+    fn texto_do_usuario(corpo: &Value) -> String {
+        corpo["messages"]
+            .as_array()
+            .map(|ms| {
+                ms.iter()
+                    .filter(|m| m["role"] == "user")
+                    .filter_map(|m| m["content"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    }
+
+    fn chamada_de_tool(nome: &str, args: &Value) -> Value {
+        json!({
+            "index": 0, "id": "call_file_1", "type": "function",
+            "function": { "name": nome, "arguments": args.to_string() }
+        })
+    }
+
+    fn resposta_de_texto(stream: bool) -> ResponseTemplate {
+        let texto = "fim";
+        if stream {
+            let chunk = json!({
+                "id": "c", "object": "chat.completion.chunk", "model": "m",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": texto}, "finish_reason": null}]
+            });
+            let fim = json!({
+                "id": "c", "object": "chat.completion.chunk", "model": "m",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+            });
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!("data: {chunk}\n\ndata: {fim}\n\ndata: [DONE]\n\n"))
+        } else {
+            ResponseTemplate::new(200).set_body_json(json!({
+                "id": "c", "object": "chat.completion", "model": "m",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": texto}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            }))
+        }
+    }
+
+    fn resposta_de_tool(chamada: Value, stream: bool) -> ResponseTemplate {
+        if stream {
+            let chunk = json!({
+                "id": "c", "object": "chat.completion.chunk", "model": "m",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [chamada]}, "finish_reason": null}]
+            });
+            let fim = json!({
+                "id": "c", "object": "chat.completion.chunk", "model": "m",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
+            });
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!("data: {chunk}\n\ndata: {fim}\n\ndata: [DONE]\n\n"))
+        } else {
+            ResponseTemplate::new(200).set_body_json(json!({
+                "id": "c", "object": "chat.completion", "model": "m",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": null, "tool_calls": [chamada]}, "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            }))
+        }
+    }
+}
+
+impl Respond for PedeFileTool {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let corpo: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        let stream = corpo.get("stream").and_then(Value::as_bool) == Some(true);
+        let ja_rodou_tool = corpo["messages"]
+            .as_array()
+            .is_some_and(|m| m.iter().any(|x| x["role"] == "tool"));
+        if ja_rodou_tool {
+            return Self::resposta_de_texto(stream);
+        }
+
+        let texto = Self::texto_do_usuario(&corpo);
+        let (nome, args) = if texto.contains("::WRITE::") {
+            (
+                "file_write",
+                json!({ "path": ARQUIVO_JAIL, "content": MARCADOR_JAIL }),
+            )
+        } else if texto.contains("::GITDIFF::") {
+            // `git_diff` nomeia o working_dir na linha "Repositorio:" por
+            // desenho (#1258); roda no dir do orquestrador (nao e repo git).
+            ("git_diff", json!({ "operation": "status" }))
+        } else if texto.contains("::READ_MISSING::") {
+            // Caminho relativo DENTRO da raiz que nunca foi escrito: exercita a
+            // mensagem "nao encontrei" da #923, que carrega o `describe()`.
+            ("file_read", json!({ "path": "ausente-1626.txt" }))
+        } else if let Some(resto) = texto.split("::READ_ABS::").nth(1) {
+            let caminho = resto.split("::END::").next().unwrap_or_default().trim();
+            ("file_read", json!({ "path": caminho }))
+        } else {
+            ("file_read", json!({ "path": ARQUIVO_JAIL }))
+        };
+        Self::resposta_de_tool(Self::chamada_de_tool(nome, &args), stream)
+    }
+}
+
+/// A config da ponte com `garra_agent` ligado, os `orquestradores` dados, o
+/// provider apontando para `endereco` e o `data_dir` em `data_dir` (para o
+/// workspace por-orquestrador viver num tempdir do teste).
+fn config_jail(
+    endereco: &str,
+    orquestradores: Vec<garraia_config::OrchestratorMcpHttp>,
+    data_dir: std::path::PathBuf,
+) -> AppConfig {
+    let mut config = config_com_orquestradores(Ligacao::leitura(), orquestradores, &[]);
+    config.gateway.mcp_http.allow_agent = true;
+    config.gateway.mcp_http.agent_budget_per_minute = 20;
+    config.data_dir = Some(data_dir);
+    com_llm_falso(config, endereco)
+}
+
+/// Cria `<data_dir>/workspace` e devolve o caminho CANONICO — o que o
+/// `server.rs` faz no boot via `garantir_workspace_padrao` e que o
+/// `AppState::new` dos testes NAO faz. Canonico porque o estado canonicaliza
+/// no boot, e os dirs por-orquestrador nascem sob o canonico.
+fn criar_workspace(data_dir: &std::path::Path) -> std::path::PathBuf {
+    let ws = data_dir.join("workspace");
+    std::fs::create_dir_all(&ws).expect("criar <data_dir>/workspace");
+    std::fs::canonicalize(&ws).expect("canonicalize workspace")
+}
+
+/// Os subdiretorios imediatos de `dir` (os dirs por-orquestrador criados lazy),
+/// em ordem estavel.
+fn subdiretorios(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut v: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// `garra_agent` como um `tools/call` com o token do orquestrador dado.
+async fn agent_como(router: &axum::Router, token: &str, mensagem: &str) -> Value {
+    chamar_como(router, token, "garra_agent", json!({ "message": mensagem })).await
+}
+
+/// O coracao da #1626 item 1: o orquestrador B escreve um arquivo, e o
+/// orquestrador A — pedindo o MESMO caminho relativo — nao o ve (cai no dir de
+/// A, onde o arquivo nao existe), e tentar o caminho ABSOLUTO do arquivo de B
+/// recebe a recusa opaca do jail. Antes da correcao o `file_write` de B cai em
+/// `NoRoots` (sem raiz nenhuma), entao o passo "B escreve" falha.
+#[tokio::test]
+async fn jail_orquestrador_a_nao_le_o_arquivo_de_b() {
+    let falso = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(PedeFileTool)
+        .mount(&falso)
+        .await;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = criar_workspace(tmp.path());
+    let config = config_jail(
+        &falso.uri(),
+        vec![
+            orquestrador("alfa", "GARRA_TESTE_1626_ALFA", "tok-alfa", &["agent"], &[]),
+            orquestrador("beta", "GARRA_TESTE_1626_BETA", "tok-beta", &["agent"], &[]),
+        ],
+        tmp.path().to_path_buf(),
+    );
+    let (router, _estado) = router_e_estado(config);
+
+    // B escreve o arquivo no seu proprio dir.
+    let env_b = envelope(&agent_como(&router, "tok-beta", "::WRITE:: grave o arquivo").await);
+    assert_eq!(env_b["ok"], true, "{env_b}");
+    assert_eq!(env_b["tool_calls"][0]["name"], "file_write", "{env_b}");
+    assert_eq!(
+        env_b["tool_calls"][0]["success"], true,
+        "o file_write de B deveria ter dado certo (regressao #1626): {env_b}"
+    );
+
+    // O arquivo existe em EXATAMENTE um subdir do workspace (o de B), com o
+    // marcador. Esse e o dir de B.
+    let subdirs = subdiretorios(&ws);
+    assert_eq!(
+        subdirs.len(),
+        1,
+        "so o dir de B deveria existir: {subdirs:?}"
+    );
+    let dir_de_b = subdirs[0].clone();
+    assert_eq!(
+        std::fs::read_to_string(dir_de_b.join(ARQUIVO_JAIL)).expect("arquivo de B"),
+        MARCADOR_JAIL
+    );
+
+    // A pede o MESMO caminho relativo: cai no dir de A, onde o arquivo nao
+    // existe. A tool falha (arquivo ausente dentro da raiz de A).
+    let env_a_rel = envelope(&agent_como(&router, "tok-alfa", "::READ_REL:: leia o arquivo").await);
+    assert_eq!(env_a_rel["ok"], true, "{env_a_rel}");
+    assert_eq!(
+        env_a_rel["tool_calls"][0]["name"], "file_read",
+        "{env_a_rel}"
+    );
+    assert_eq!(
+        env_a_rel["tool_calls"][0]["success"], false,
+        "A nao pode ver o arquivo relativo de B: {env_a_rel}"
+    );
+
+    // Agora existem dois subdirs (o de A nasceu ao resolver o working_dir de A),
+    // distintos, e o arquivo de B continua SO no dir de B.
+    let subdirs = subdiretorios(&ws);
+    assert_eq!(subdirs.len(), 2, "A e B tem dirs distintos: {subdirs:?}");
+    for d in &subdirs {
+        let presente = d.join(ARQUIVO_JAIL).exists();
+        if *d == dir_de_b {
+            assert!(presente, "o arquivo deveria seguir no dir de B");
+        } else {
+            assert!(!presente, "o arquivo de B vazou para o dir de A: {d:?}");
+        }
+    }
+
+    // A tenta o caminho ABSOLUTO do arquivo de B: recusa opaca do jail (fora
+    // da raiz de A). A tool falha, e a resposta HTTP continua bem formada.
+    let msg_abs = format!(
+        "::READ_ABS::{}::END:: leia",
+        dir_de_b.join(ARQUIVO_JAIL).display()
+    );
+    let env_a_abs = envelope(&agent_como(&router, "tok-alfa", &msg_abs).await);
+    assert_eq!(env_a_abs["ok"], true, "{env_a_abs}");
+    assert_eq!(
+        env_a_abs["tool_calls"][0]["name"], "file_read",
+        "{env_a_abs}"
+    );
+    assert_eq!(
+        env_a_abs["tool_calls"][0]["success"], false,
+        "A nao pode ler o arquivo de B por caminho absoluto: {env_a_abs}"
+    );
+}
+
+/// A raiz de cada orquestrador fica SOB `<data_dir>/workspace`, com nome de 32
+/// hex, distinta entre orquestradores e estavel entre duas chamadas do mesmo.
+/// Em unix nasce `0700`.
+#[tokio::test]
+async fn jail_raiz_por_orquestrador_fica_sob_o_workspace_e_e_estavel() {
+    let falso = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(PedeFileTool)
+        .mount(&falso)
+        .await;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = criar_workspace(tmp.path());
+    let config = config_jail(
+        &falso.uri(),
+        vec![
+            orquestrador("um", "GARRA_TESTE_1626_UM", "tok-um", &["agent"], &[]),
+            orquestrador("dois", "GARRA_TESTE_1626_DOIS", "tok-dois", &["agent"], &[]),
+        ],
+        tmp.path().to_path_buf(),
+    );
+    let (router, _estado) = router_e_estado(config);
+
+    // "um" escreve duas vezes: o dir tem de ser o mesmo nas duas.
+    let _ = agent_como(&router, "tok-um", "::WRITE:: um").await;
+    let apos_uma = subdiretorios(&ws);
+    assert_eq!(apos_uma.len(), 1, "uma chamada, um dir: {apos_uma:?}");
+    let _ = agent_como(&router, "tok-um", "::WRITE:: de novo").await;
+    let apos_duas = subdiretorios(&ws);
+    assert_eq!(
+        apos_uma, apos_duas,
+        "duas chamadas do mesmo orquestrador reusam o mesmo dir"
+    );
+
+    // "dois" escreve: agora ha dois dirs distintos.
+    let _ = agent_como(&router, "tok-dois", "::WRITE:: dois").await;
+    let dirs = subdiretorios(&ws);
+    assert_eq!(
+        dirs.len(),
+        2,
+        "orquestradores distintos, dirs distintos: {dirs:?}"
+    );
+
+    for d in &dirs {
+        // Filho direto do workspace, e nao o proprio workspace.
+        assert_eq!(d.parent(), Some(ws.as_path()), "{d:?} fora do workspace");
+        assert_ne!(d.as_path(), ws.as_path());
+        // Nome = 32 hex minusculo.
+        let nome = d.file_name().unwrap().to_str().unwrap();
+        assert_eq!(nome.len(), 32, "nome nao e 32 hex: {nome}");
+        assert!(
+            nome.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "nome nao e hex minusculo: {nome}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let modo = std::fs::metadata(d).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                modo, 0o700,
+                "o dir do orquestrador deveria nascer 0700: {modo:o}"
+            );
+        }
+    }
+}
+
+/// Rotulo adversarial (`../../etc`): o nome do subdiretorio continua 32 hex sob
+/// o workspace — a traversal nunca escapa, porque o digest obrigatorio a
+/// neutraliza (o charset de `nome` do orquestrador nao e validado, regressao
+/// #1619). O arquivo escrito cai dentro do workspace, nunca fora dele.
+#[tokio::test]
+async fn jail_rotulo_adversarial_nunca_escapa() {
+    let falso = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(PedeFileTool)
+        .mount(&falso)
+        .await;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let data_dir = tmp.path().to_path_buf();
+    let ws = criar_workspace(&data_dir);
+    let config = config_jail(
+        &falso.uri(),
+        vec![orquestrador(
+            "../../etc",
+            "GARRA_TESTE_1626_ADV",
+            "tok-adv",
+            &["agent"],
+            &[],
+        )],
+        data_dir.clone(),
+    );
+    let (router, _estado) = router_e_estado(config);
+
+    let env = envelope(&agent_como(&router, "tok-adv", "::WRITE:: grave").await);
+    assert_eq!(env["tool_calls"][0]["name"], "file_write", "{env}");
+    assert_eq!(
+        env["tool_calls"][0]["success"], true,
+        "o rotulo adversarial ainda deve escrever no SEU dir (sob o workspace): {env}"
+    );
+
+    // O unico subdir nasceu sob o workspace, com nome de 32 hex, e contem o
+    // arquivo. A traversal foi neutralizada pelo digest.
+    let dirs = subdiretorios(&ws);
+    assert_eq!(dirs.len(), 1, "{dirs:?}");
+    assert_eq!(dirs[0].parent(), Some(ws.as_path()));
+    let nome = dirs[0].file_name().unwrap().to_str().unwrap();
+    assert_eq!(nome.len(), 32, "nome nao e 32 hex: {nome}");
+    assert!(
+        nome.chars().all(|c| c.is_ascii_hexdigit()),
+        "nome nao e hex: {nome}"
+    );
+    assert!(
+        dirs[0].join(ARQUIVO_JAIL).exists(),
+        "o arquivo deveria estar no dir hex"
+    );
+
+    // Nenhum `etc` materializou por traversal, nem dentro do data_dir nem ao
+    // lado dele.
+    assert!(
+        !data_dir.join("etc").exists(),
+        "a traversal escapou para <data_dir>/etc"
+    );
+    if let Some(pai) = data_dir.parent() {
+        // So falha se um `etc` novo aparecer irmao do data_dir — um `/etc` de
+        // sistema (quando o tempdir e raso) nao e deste teste, por isso a
+        // comparacao e contra o pai do tempdir, nunca a raiz.
+        if pai != std::path::Path::new("/") {
+            assert!(
+                !pai.join("etc").exists(),
+                "a traversal escapou para o irmao do data_dir"
+            );
+        }
+    }
+}
+
+/// Fail-closed: sem `<data_dir>/workspace` (o `workspace_mcp_http` do estado
+/// fica `None`), o `working_dir` do agente e `None` e o jail `sessions_only`
+/// nega as file tools (`NoRoots`). Nenhum dir "de todo mundo" e criado, e a
+/// resposta HTTP continua bem formada.
+#[tokio::test]
+async fn jail_sem_workspace_as_file_tools_negam_tudo() {
+    let falso = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(PedeFileTool)
+        .mount(&falso)
+        .await;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let data_dir = tmp.path().to_path_buf();
+    // Deliberadamente NAO cria <data_dir>/workspace.
+    let config = config_jail(
+        &falso.uri(),
+        vec![orquestrador(
+            "solo",
+            "GARRA_TESTE_1626_SOLO",
+            "tok-solo",
+            &["agent"],
+            &[],
+        )],
+        data_dir.clone(),
+    );
+    let (router, estado) = router_e_estado(config);
+    assert!(
+        estado.workspace_mcp_http.is_none(),
+        "sem <data_dir>/workspace o estado nao deve ter workspace por orquestrador"
+    );
+
+    let env = envelope(&agent_como(&router, "tok-solo", "::WRITE:: grave").await);
+    // A resposta HTTP continua bem formada: o turno LLM roda.
+    assert_eq!(env["schema"], "garra.agent.v1", "{env}");
+    assert_eq!(env["ok"], true, "{env}");
+    assert_eq!(env["tool_calls"][0]["name"], "file_write", "{env}");
+    assert_eq!(
+        env["tool_calls"][0]["success"], false,
+        "sem workspace as file tools negam tudo (fail-closed): {env}"
+    );
+
+    // Nenhum workspace foi criado por efeito colateral.
+    assert!(
+        !data_dir.join("workspace").exists(),
+        "o fail-closed nao pode criar <data_dir>/workspace por conta propria"
+    );
+}
+
+/// Finding da auditoria R4 (#1626): o caminho ABSOLUTO do host nao pode sair no
+/// envelope `garra.agent.v1` servido ao orquestrador. Depois do PR o default
+/// materializa o workspace, entao toda escrita/leitura bem-sucedida poderia
+/// devolver `<data_dir>/workspace/<hash>/…` no `summary`/`answer`. Aqui um
+/// `file_write`, um `file_read` bem-sucedido e um `file_read` de arquivo
+/// ausente (a mensagem "nao encontrei" da #923) sao serializados inteiros e
+/// nenhum pode conter o caminho do workspace do host.
+#[tokio::test]
+async fn jail_envelope_nao_vaza_o_caminho_do_host() {
+    let falso = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(PedeFileTool)
+        .mount(&falso)
+        .await;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = criar_workspace(tmp.path());
+    let ws_str = ws.to_string_lossy().into_owned();
+    let data_dir_canon = std::fs::canonicalize(tmp.path())
+        .expect("canonicalize data_dir")
+        .to_string_lossy()
+        .into_owned();
+    let config = config_jail(
+        &falso.uri(),
+        vec![orquestrador(
+            "redator",
+            "GARRA_TESTE_1626_REDATOR",
+            "tok-redator",
+            &["agent"],
+            &[],
+        )],
+        tmp.path().to_path_buf(),
+    );
+    let (router, _estado) = router_e_estado(config);
+
+    // O caminho do host nao pode aparecer em NENHUM dos tres envelopes.
+    let afirmar_sem_caminho = |rotulo: &str, env: &Value| {
+        let serial = serde_json::to_string(env).expect("serializa envelope");
+        assert!(
+            !serial.contains(&ws_str),
+            "{rotulo}: o caminho do workspace do host vazou no envelope:\n{serial}"
+        );
+        assert!(
+            !serial.contains(&data_dir_canon),
+            "{rotulo}: o caminho do data_dir do host vazou no envelope:\n{serial}"
+        );
+    };
+
+    // 1. Escrita bem-sucedida.
+    let env_write = envelope(&agent_como(&router, "tok-redator", "::WRITE:: grave").await);
+    assert_eq!(
+        env_write["tool_calls"][0]["name"], "file_write",
+        "{env_write}"
+    );
+    assert_eq!(env_write["tool_calls"][0]["success"], true, "{env_write}");
+    afirmar_sem_caminho("file_write", &env_write);
+
+    // 2. Leitura bem-sucedida do mesmo arquivo.
+    let env_read = envelope(&agent_como(&router, "tok-redator", "::READ_REL:: leia").await);
+    assert_eq!(env_read["tool_calls"][0]["name"], "file_read", "{env_read}");
+    assert_eq!(env_read["tool_calls"][0]["success"], true, "{env_read}");
+    afirmar_sem_caminho("file_read ok", &env_read);
+
+    // 3. Leitura de arquivo ausente DENTRO da raiz (mensagem "nao encontrei").
+    let env_miss = envelope(&agent_como(&router, "tok-redator", "::READ_MISSING:: leia").await);
+    assert_eq!(env_miss["tool_calls"][0]["name"], "file_read", "{env_miss}");
+    assert_eq!(env_miss["tool_calls"][0]["success"], false, "{env_miss}");
+    afirmar_sem_caminho("file_read ausente", &env_miss);
+
+    // 4. git_diff nomeia o working_dir por desenho (#1258): a ponte esconde o
+    //    caminho absoluto do host no envelope servido ao orquestrador.
+    let env_git = envelope(&agent_como(&router, "tok-redator", "::GITDIFF:: status").await);
+    assert_eq!(env_git["tool_calls"][0]["name"], "git_diff", "{env_git}");
+    afirmar_sem_caminho("git_diff", &env_git);
+}

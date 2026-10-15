@@ -486,6 +486,43 @@ pub fn garantir_workspace_padrao(config: &AppConfig) -> Option<PathBuf> {
     }
 }
 
+/// O workspace sob o qual cada ORQUESTRADOR da ponte MCP HTTP ganha a sua
+/// propria subarvore gravavel (#1626 item 1).
+///
+/// Diferente de [`raizes_das_file_tools`], que so entrega um [`SessionWorkspace`]
+/// quando `agent.file_roots` esta vazio, este e construido **incondicional**: o
+/// agente do `garra_agent` da ponte nunca usa `agent.file_roots` (essas raizes
+/// sao a escolha do operador para a maquina dele, e a ponte atende pedido de
+/// TERCEIRO), entao ele sempre escopa por orquestrador dentro de
+/// `<data_dir>/workspace` — o mesmo diretorio que [`garantir_workspace_padrao`]
+/// ja cria no boot, incondicional. Cada orquestrador recebe um subdiretorio
+/// proprio, isolado dos demais pela estrutura (a unica raiz efetiva da chamada
+/// e o dir daquele orquestrador — a mesma propriedade que a #1449 comprou para
+/// os canais, agora para as origens da ponte).
+///
+/// Guardado pelo mesmo [`SessionWorkspace::diretorio_de_verdade`] do ramo
+/// `WorkspacePadrao`: um symlink (ou um caminho que nao existe) no lugar do
+/// workspace vira `None`, e o handler cai em fail-closed — `working_dir: None`
+/// mais jail [`FileJail::sessions_only`], que negam as file tools (`NoRoots`) e
+/// recusam o `bash`. Canonicaliza pela mesma razao que o ramo `WorkspacePadrao`:
+/// o caminho que sai daqui vira `working_dir` e e comparado, em
+/// [`FileJail::confine`], com raizes canonicalizadas.
+///
+/// Nao cria nada: quem cria o pai e [`garantir_workspace_padrao`], na subida;
+/// quem cria o subdiretorio de cada orquestrador e o proprio
+/// [`SessionWorkspace`], no turno que precisa dele. Esta funcao so le o disco
+/// para decidir se o workspace e um diretorio de verdade.
+pub fn workspace_de_orquestradores(config: &AppConfig) -> Option<SessionWorkspace> {
+    let caminho = raizes_default_das_file_tools(config);
+    if SessionWorkspace::diretorio_de_verdade(&caminho) {
+        std::fs::canonicalize(&caminho)
+            .ok()
+            .map(SessionWorkspace::nova)
+    } else {
+        None
+    }
+}
+
 /// Raizes numa linha de log. `(nenhuma)` quando vazio, para a linha nunca
 /// terminar em dois-pontos sem nada depois.
 fn lista_de_raizes(raizes: &[PathBuf]) -> String {

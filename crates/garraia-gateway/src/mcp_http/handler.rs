@@ -32,8 +32,12 @@
 //!   por minuto (`agent_budget_per_minute`, sessao `mcp-http-agent`), que nunca
 //!   divide o de envio nem o de `garra_ask`. Estourou: `over_budget`.
 //! - **O que pode tocar:** o sandbox de `garraia-agents` (#1272). Sem sandbox
-//!   valido o `bash` nao existe. As file tools ficam presas as raizes de arquivo
-//!   da config, e o pedido **nao** escolhe diretorio (sem `working_dir`).
+//!   valido o `bash` nao existe. As file tools ficam presas a subarvore DAQUELE
+//!   orquestrador sob `<data_dir>/workspace`, derivada da identidade dele por
+//!   digest (#1626 item 1); o pedido **nao** escolhe diretorio. `agent.file_roots`
+//!   nao alcanca o agente da ponte (e raiz do operador, e a ponte atende pedido
+//!   de terceiro). Sem workspace materializado, fail-closed: file tools negadas,
+//!   `bash` recusado.
 //! - **Tempo:** `agent_max_seconds` (default 300, teto 600) cobre o laco inteiro.
 //! - **Texto:** a entrada e a saida passam por [`super::redacao`]. Prompt,
 //!   resposta e saida de tool nunca vao para o log.
@@ -556,9 +560,18 @@ impl ManipuladorMcpHttp {
     /// e a contagem de tools entram.
     ///
     /// O diretorio de trabalho NAO vem do pedido: o `working_dir` do stdio e
-    /// deliberadamente fora da ponte. As file tools usam o jail das raizes de
-    /// arquivo da config, e a sessao de trabalho tem o nome do orquestrador, para
-    /// duas origens nunca compartilharem historico nem id.
+    /// deliberadamente fora da ponte. Em vez disso, cada orquestrador recebe um
+    /// `working_dir` server-side — a sua propria subarvore sob
+    /// `<data_dir>/workspace`, derivada da identidade dele por digest (#1626
+    /// item 1). Esse dir e a UNICA raiz efetiva das file tools (jail
+    /// [`FileJail::sessions_only`](garraia_agents::FileJail::sessions_only),
+    /// sem raiz fixa de operador), entao o orquestrador A nunca le o que o B
+    /// escreveu. `agent.file_roots` NAO alcanca o agente da ponte: aquelas
+    /// raizes sao do operador, e a ponte atende pedido de terceiro. Sem
+    /// workspace materializado o agente cai em fail-closed (file tools negadas,
+    /// `bash` recusado). A sessao de trabalho (o id do envelope/log) segue com o
+    /// nome do orquestrador, para duas origens nunca compartilharem historico
+    /// nem id.
     async fn agent(
         &self,
         state: &Arc<AppState>,
@@ -602,6 +615,33 @@ impl ManipuladorMcpHttp {
 
         let config = state.current_config();
         let extras = redacao_do_operador(&config);
+
+        // #1626 item 1: jail e working_dir POR ORQUESTRADOR. A chave e
+        // namespaced (`mcp-http-orquestrador:<rotulo>`) para o digest nunca
+        // colidir com um `session_id` de canal, e o DIGESTO (SHA-256, 32 hex de
+        // `SessionWorkspace`) e obrigatorio porque `quem.rotulo()` nao tem
+        // charset validado — um `nome` de orquestrador com `/` ou `..` e
+        // possivel e so o hash o neutraliza (a regressao #1619 prova isso para
+        // `../`, NUL, caminho absoluto).
+        let chave = format!("mcp-http-orquestrador:{}", quem.rotulo());
+        let dir = state
+            .workspace_mcp_http
+            .as_ref()
+            .and_then(|ws| ws.garantir_para_sessao(&chave));
+        if dir.is_none() {
+            // Fail-closed observavel: sem dir, `working_dir` fica `None` e o
+            // jail `sessions_only` nega todas as file tools (`NoRoots`) e recusa
+            // o `bash`; so o turno LLM roda. Loga o HASH, nunca o `rotulo`,
+            // seguindo a disciplina de log do `session_workspace`.
+            tracing::warn!(
+                orquestrador_hash =
+                    garraia_agents::tools::SessionWorkspace::nome_do_subdiretorio(&chave)
+                        .as_deref()
+                        .unwrap_or("(vazio)"),
+                "mcp_http: garra_agent sem workspace por orquestrador — file tools negadas e bash recusado (#1626)"
+            );
+        }
+
         let opts = AgentOptions {
             message: redacao::redigir_com(&args.message, &extras),
             provider: provider.clone(),
@@ -613,11 +653,17 @@ impl ManipuladorMcpHttp {
                 .system_prompt
                 .as_deref()
                 .map(|s| redacao::redigir_com(s, &extras)),
-            working_dir: None,
+            // O diretorio do orquestrador chamador vira o CWD do sandbox e a
+            // UNICA raiz efetiva das file tools (via `confine`). `None` =>
+            // fail-closed, acima.
+            working_dir: dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
         };
-        // So as raizes da config: o CWD do processo atende a CLI, nao um pedido
-        // de terceiro (ver `FileJail::from_config_roots_plus_cwd`).
-        let jail = garraia_agents::FileJail::from_config_roots(&config.agent.file_roots);
+        // #1626 item 1: sem raiz fixa de operador — a raiz da chamada e so o
+        // dir do orquestrador (`working_dir`). `agent.file_roots` NAO alcanca o
+        // agente da ponte (decisao #1615/#1626): ela atende pedido de terceiro,
+        // e uma raiz compartilhada vazava arquivos entre orquestradores (a
+        // mesma classe que a #1449 fechou para os canais).
+        let jail = garraia_agents::FileJail::sessions_only();
         let prefixo = format!("mcp-http-{}", quem.rotulo());
         let outcome = agente_mcp::agent_oneshot(&config, &opts, &jail, &prefixo).await;
         let envelope = redigir_envelope_do_agente(outcome.to_envelope(), &extras);

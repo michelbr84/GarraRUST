@@ -309,11 +309,11 @@ and a direct call from them gets `tool_not_allowed`.
 | How often | `agent_budget_per_minute`, session `mcp-http-agent` | `2` | Each run is several LLM calls plus tools, so the cost is a multiple of one `garra_ask`. Over the limit: `over_budget`, and the provider is not called. |
 | How long | `agent_max_seconds` (5–600) | `300` | Caps the whole loop, LLM and tools. A caller may ask for less, never more; more is `invalid_params`, not a silent cut. |
 | Which model | `ask_allowed_models` (shared with `garra_ask`) | project default only | A caller that names another model gets `model_not_allowed` before any request leaves. |
-| Files | `agent.file_roots` (the jail) | empty: denies every path | File tools reach only those roots. The request cannot pick a directory (no `working_dir` over HTTP). |
-| Shell | `agent.sandbox` and `execution.profile` (#1272) | no sandbox: no `bash` | With a valid docker/podman sandbox, `bash` runs in a throwaway container. On an explicit `isolated-pod`, on the host, behind the denylist. In `standard` without a sandbox the tool does not exist. |
+| Files | per-orchestrator workspace under `<data_dir>/workspace` (#1626 item 1) | isolated per caller | Each orchestrator's file tools reach only its own subtree, named from its identity by digest (SHA-256, 32 hex). It is the only effective root (the jail has no fixed root), so what one orchestrator writes, another cannot read. `agent.file_roots` does **not** reach the bridge agent (those roots are the operator's; the bridge serves a third party). The request cannot pick a directory. Tool messages name paths **relative** to the workspace, never the host absolute path (which would carry `<data_dir>` and the caller's own hash) — the #1465 principle. No workspace materialized (symlink or absent): fail-closed — file tools deny everything, `bash` is refused. |
+| Shell | `agent.sandbox` and `execution.profile` (#1272) | no sandbox: no `bash` | With a valid docker/podman sandbox, `bash` runs in a throwaway container with the calling orchestrator's workspace as its only mount (#1626 item 1). On an explicit `isolated-pod`, on the host, behind the denylist — there the pod is the boundary and all orchestrators share its filesystem, so the per-orchestrator workdir is only the CWD, not a jail. In `standard` without a sandbox the tool does not exist. |
 | Text in and out | redaction (`mcp_http/redacao.rs`) | always on | The prompt the orchestrator sends and the answer and tool summaries that come back both pass through it. A pasted token is replaced before the model sees it. |
 | Logs | audit line per call | always on | Logs the orchestrator, the tool, the outcome, provider, model and latency. Never the prompt, the answer or tool output. |
-| Sessions | session id `mcp-http-<orchestrator>-<uuid>` | per call | Each run is a fresh session, named after its caller, so two orchestrators never share history. |
+| Sessions | session id `mcp-http-<orchestrator>-<uuid>` | per call | Each run is a fresh session, named after its caller, so two orchestrators never share history. The file workspace is scoped the same way, from `mcp-http-orquestrador:<orchestrator>` (#1626 item 1), so a persistent one too. |
 
 ### 5.3 Order of the checks
 
@@ -335,10 +335,19 @@ how much, and the sandbox and the jail decide what it can touch. If `bash` is
 available on the host, a permitted orchestrator can make it run commands there.
 That is why `bash` needs a sandbox, and why the default leaves it out.
 
+File access is scoped per orchestrator (#1626 item 1): each caller writes and reads
+only inside its own subtree under `<data_dir>/workspace`, derived from its identity
+by digest, and that subtree is the only root of its file tools — so one orchestrator
+cannot read what another wrote. `agent.file_roots` does not reach this agent; those
+roots are the operator's, and the bridge serves a third party.
+
 Not in this version: a per-orchestrator model list, a per-orchestrator budget
 (today the budget is one for the whole bridge, like `garra_ask`), and aliases of
 `llm:` entries (only the four provider kinds are reachable, as with `garra_ask`).
-Those are follow-ups.
+Per-orchestrator **`bash`** isolation in `isolated-pod` is also a follow-up: there
+the pod is the security boundary and every orchestrator shares its filesystem, so
+the per-orchestrator workdir is only the CWD — isolating `bash` per caller there
+would need a pod per orchestrator. Those are follow-ups.
 
 ## 6. Where the code lives
 
