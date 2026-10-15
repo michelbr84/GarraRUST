@@ -629,7 +629,24 @@ pub struct McpHttpConfig {
     /// destrava o que o operador nao liberou nos interruptores globais.
     #[serde(default)]
     pub orchestrators: Vec<OrchestratorMcpHttp>,
+
+    /// Expressoes regulares do operador (opt-in, #1626) que a ponte redige alem
+    /// dos padroes conhecidos (`sk-`, `ghp_`, AKIA, PEM, Bearer...). Vazio
+    /// (default) = so os padroes embutidos. Cada trecho que casa vira
+    /// `[REDACTED]` em tudo que a ponte devolve ou publica. Maximo
+    /// [`MCP_HTTP_REDACT_PATTERNS_MAX`] entradas de ate
+    /// [`MCP_HTTP_REDACT_PATTERN_LEN_MAX`] caracteres; a sintaxe e a do crate
+    /// `regex` (tempo linear, sem backtracking).
+    #[serde(default)]
+    pub redact_patterns: Vec<String>,
 }
+
+/// Quantas entradas `gateway.mcp_http.redact_patterns` aceita (#1626).
+pub const MCP_HTTP_REDACT_PATTERNS_MAX: usize = 32;
+/// Tamanho maximo, em caracteres, de cada padrao de redacao (#1626).
+pub const MCP_HTTP_REDACT_PATTERN_LEN_MAX: usize = 512;
+/// Teto de memoria da automata compilada de cada padrao (#1626).
+const MCP_HTTP_REDACT_REGEX_SIZE_LIMIT: usize = 256 * 1024;
 
 /// Um orquestrador externo da ponte MCP (#1613).
 ///
@@ -810,7 +827,66 @@ impl Default for McpHttpConfig {
             agent_budget_per_minute: default_mcp_http_agent_budget_per_minute(),
             agent_max_seconds: default_mcp_http_agent_max_seconds(),
             orchestrators: Vec::new(),
+            redact_patterns: Vec::new(),
         }
+    }
+}
+
+impl McpHttpConfig {
+    /// Compila `redact_patterns` (#1626). Devolve os que valem e, para cada
+    /// entrada recusada (vazia, longa demais, excesso de entradas ou regex
+    /// invalida), uma mensagem com o passo que a destrava. Uma entrada ruim
+    /// nunca derruba as demais: a redacao e defesa em profundidade, e perder
+    /// todas por causa de uma seria pior.
+    pub fn compilar_redact_patterns(&self) -> (Vec<regex::Regex>, Vec<String>) {
+        let mut validos = Vec::new();
+        let mut problemas = Vec::new();
+        if self.redact_patterns.len() > MCP_HTTP_REDACT_PATTERNS_MAX {
+            problemas.push(format!(
+                "gateway.mcp_http.redact_patterns tem {} entradas; so as primeiras \
+                 {MCP_HTTP_REDACT_PATTERNS_MAX} valem. Remova ou una padroes.",
+                self.redact_patterns.len()
+            ));
+        }
+        for (indice, padrao) in self
+            .redact_patterns
+            .iter()
+            .take(MCP_HTTP_REDACT_PATTERNS_MAX)
+            .enumerate()
+        {
+            let n = indice + 1;
+            if padrao.trim().is_empty() {
+                problemas.push(format!(
+                    "redact_patterns #{n}: padrao vazio casaria em todo lugar. Remova a \
+                     entrada ou escreva o padrao; ela e ignorada."
+                ));
+                continue;
+            }
+            if padrao.chars().count() > MCP_HTTP_REDACT_PATTERN_LEN_MAX {
+                problemas.push(format!(
+                    "redact_patterns #{n}: passa de {MCP_HTTP_REDACT_PATTERN_LEN_MAX} \
+                     caracteres. Encurte o padrao; a entrada e ignorada."
+                ));
+                continue;
+            }
+            match regex::RegexBuilder::new(padrao)
+                .size_limit(MCP_HTTP_REDACT_REGEX_SIZE_LIMIT)
+                .build()
+            {
+                // Um padrao que casa o texto vazio redigiria entre cada
+                // caractere e destruiria a mensagem inteira.
+                Ok(re) if re.is_match("") => problemas.push(format!(
+                    "redact_patterns #{n}: o padrao casa o texto vazio (ex.: `a*`). Exija \
+                     ao menos um caractere (ex.: `a+`); a entrada e ignorada."
+                )),
+                Ok(re) => validos.push(re),
+                Err(_) => problemas.push(format!(
+                    "redact_patterns #{n}: regex invalida ou complexa demais (sintaxe do \
+                     crate `regex`). Corrija a expressao; a entrada e ignorada."
+                )),
+            }
+        }
+        (validos, problemas)
     }
 }
 
@@ -1947,6 +2023,38 @@ mod mcp_http_config_tests {
             orchestrators: lista,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn redact_patterns_vazio_por_padrao_e_entradas_ruins_sao_ignoradas() {
+        assert!(McpHttpConfig::default().redact_patterns.is_empty());
+        let cfg = McpHttpConfig {
+            redact_patterns: vec![
+                r"corp-[0-9]{6}".into(),
+                "".into(),
+                "(".into(),
+                "a*".into(),
+                "x".repeat(super::MCP_HTTP_REDACT_PATTERN_LEN_MAX + 1),
+            ],
+            ..Default::default()
+        };
+        let (validos, problemas) = cfg.compilar_redact_patterns();
+        assert_eq!(validos.len(), 1);
+        assert!(validos[0].is_match("corp-123456"));
+        assert_eq!(problemas.len(), 4, "{problemas:?}");
+    }
+
+    #[test]
+    fn redact_patterns_acima_do_maximo_avisa_e_trunca() {
+        let cfg = McpHttpConfig {
+            redact_patterns: (0..super::MCP_HTTP_REDACT_PATTERNS_MAX + 1)
+                .map(|i| format!("seg{i}x"))
+                .collect(),
+            ..Default::default()
+        };
+        let (validos, problemas) = cfg.compilar_redact_patterns();
+        assert_eq!(validos.len(), super::MCP_HTTP_REDACT_PATTERNS_MAX);
+        assert_eq!(problemas.len(), 1);
     }
 
     #[test]

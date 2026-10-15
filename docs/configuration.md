@@ -31,6 +31,7 @@ gateway:
     allow_agent: false         # #1615: unlocks garra_agent, which runs tools on this machine
     agent_budget_per_minute: 2 # garra_agent runs per minute, whole bridge
     agent_max_seconds: 300     # wall clock for one garra_agent run, 5-600
+    redact_patterns: []        # #1626: extra regexes redacted on the bridge (opt-in)
 
 # LLM Providers
 llm:
