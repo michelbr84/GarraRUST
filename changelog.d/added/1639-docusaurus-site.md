@@ -1,4 +1,4 @@
-- **Site de documentacao Docusaurus em `website/`, publicado no GitHub Pages (#0000).**
+- **Site de documentacao Docusaurus em `website/`, publicado no GitHub Pages (#1639).**
   O conteudo nao e escrito la: vem do markdown que ja existe no repositorio
   (`README`, `docs/**`, `docs/adr/**`, `wiki/**`, `CHANGELOG`, `ROADMAP`,
   `CONTRIBUTING`, ...) por um script de sync em Node puro — fonte unica de verdade,
