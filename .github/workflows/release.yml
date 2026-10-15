@@ -1262,8 +1262,11 @@ jobs:
             release/*.dmg
             release/*.AppImage.tar.gz
             release/*.AppImage.tar.gz.sig
+            release/*.AppImage.sig
             release/*.nsis.zip
             release/*.nsis.zip.sig
+            release/*.msi.zip
+            release/*.msi.zip.sig
             release/*.app.tar.gz
             release/*.app.tar.gz.sig
             # latest.json do Tauri updater (#1568) — o endpoint que o
