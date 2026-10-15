@@ -213,6 +213,15 @@ pub struct AppState {
     /// pedido de qualquer um. E descreve o jail que o turno de fato usa: o
     /// jail e fixado no boot, entao o disco de agora nao e a verdade.
     pub raizes_das_file_tools: crate::bootstrap::RaizesDasFileTools,
+    /// #1626 item 1: a raiz POR ORQUESTRADOR do agente do `garra_agent` na
+    /// ponte MCP HTTP, sob `<data_dir>/workspace`. Canonicalizada no boot (como
+    /// `raizes_das_file_tools`), para o handler nao pagar `canonicalize` por
+    /// chamada. `None` quando `<data_dir>/workspace` nao e um diretorio de
+    /// verdade (symlink ou ausente): o handler entao cai em fail-closed, as
+    /// file tools do agente negam tudo (`NoRoots`) e o `bash` e recusado.
+    /// Independente de `agent.file_roots` — a ponte atende pedido de terceiro e
+    /// nunca usa as raizes do operador. Ver [`crate::bootstrap::workspace_de_orquestradores`].
+    pub workspace_mcp_http: Option<garraia_agents::tools::SessionWorkspace>,
     pub channels: tokio::sync::RwLock<ChannelRegistry>,
     pub agents: Arc<AgentRuntime>,
     pub sessions: DashMap<String, SessionState>,
@@ -440,9 +449,14 @@ impl AppState {
         // #1459: idem para as file tools nativas — uma vez, antes de `config`
         // ser movida, e nunca mais por request.
         let raizes_das_file_tools = crate::bootstrap::raizes_das_file_tools(&config);
+        // #1626 item 1: a raiz por-orquestrador do `garra_agent` da ponte MCP
+        // HTTP, canonicalizada aqui pelo mesmo motivo que `raizes_das_file_tools`
+        // — uma vez no boot, nunca por chamada.
+        let workspace_mcp_http = crate::bootstrap::workspace_de_orquestradores(&config);
         Self {
             config,
             raizes_das_file_tools,
+            workspace_mcp_http,
             channels: tokio::sync::RwLock::new(channels),
             agents,
             sessions: DashMap::new(),
