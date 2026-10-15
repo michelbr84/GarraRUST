@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use garraia_common::{Error, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::file_jail::FileJail;
-use super::tool_context::{process_home_dir, resolve_tool_path};
+use super::tool_context::{caminho_para_exibir, process_home_dir, resolve_tool_path};
 use super::{Tool, ToolContext, ToolOutput};
 
 const MAX_BYTES_ESCRITA: usize = 1024 * 1024; // 1MB
@@ -167,7 +167,10 @@ impl Tool for FileWriteTool {
                             path = path_str,
                             "file_write: arquivo é somente-leitura (readonly)"
                         );
-                        let shown = path.display();
+                        let shown = caminho_para_exibir(
+                            &path,
+                            context.working_dir.as_deref().map(Path::new),
+                        );
                         return Ok(ToolOutput::error(format!(
                             "arquivo {} é somente-leitura (readonly). \
                              Remova a proteção com: attrib -R \"{}\" (Windows) ou chmod u+w \"{}\" (Linux)",
@@ -231,7 +234,7 @@ impl Tool for FileWriteTool {
         Ok(ToolOutput::success(format!(
             "escreveu {} bytes em {}",
             content.len(),
-            path.display()
+            caminho_para_exibir(&path, context.working_dir.as_deref().map(Path::new))
         )))
     }
 }

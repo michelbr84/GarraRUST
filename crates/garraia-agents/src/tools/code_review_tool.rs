@@ -414,11 +414,18 @@ mod tests {
                 "o diff revisado veio do repositório errado:\n{}",
                 saida.content
             );
+            // #1258: a procedência é nomeada. #1626: sem o caminho absoluto, que
+            // vazaria o dir por-orquestrador no envelope servido pela ponte.
             assert!(
                 saida
                     .content
-                    .contains(&format!("**Repositório:** {wd} (working_dir da sessão)")),
+                    .contains("**Repositório:** o working_dir da sessão"),
                 "{}",
+                saida.content
+            );
+            assert!(
+                !saida.content.contains(&wd),
+                "o caminho absoluto do working_dir vazou na revisão:\n{}",
                 saida.content
             );
         }

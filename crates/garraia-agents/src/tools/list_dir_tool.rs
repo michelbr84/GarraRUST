@@ -8,7 +8,7 @@ use garraia_common::Result;
 use std::path::{Path, PathBuf};
 
 use super::file_jail::FileJail;
-use super::tool_context::{process_home_dir, resolve_tool_path};
+use super::tool_context::{caminho_para_exibir, process_home_dir, resolve_tool_path};
 use super::{Tool, ToolContext, ToolOutput};
 
 /// Maximum depth for directory traversal
@@ -288,7 +288,13 @@ impl Tool for ListDirTool {
         }
 
         let mut entries = Vec::new();
-        entries.push(format!("{}/", path.display()));
+        // #1626: a raiz da listagem sai relativa ao working_dir da sessao (ou
+        // um prefixo neutro), nunca o caminho absoluto do host — os filhos ja
+        // sao nomes relativos na arvore de `list_recursive`.
+        entries.push(format!(
+            "{}/",
+            caminho_para_exibir(&path, context.working_dir.as_deref().map(Path::new))
+        ));
 
         match self.list_recursive(&path, "", 0, depth, pattern, &mut entries) {
             Ok(()) => {

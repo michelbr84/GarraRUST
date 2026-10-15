@@ -2045,6 +2045,14 @@ impl Respond for PedeFileTool {
                 "file_write",
                 json!({ "path": ARQUIVO_JAIL, "content": MARCADOR_JAIL }),
             )
+        } else if texto.contains("::GITDIFF::") {
+            // `git_diff` nomeia o working_dir na linha "Repositorio:" por
+            // desenho (#1258); roda no dir do orquestrador (nao e repo git).
+            ("git_diff", json!({ "operation": "status" }))
+        } else if texto.contains("::READ_MISSING::") {
+            // Caminho relativo DENTRO da raiz que nunca foi escrito: exercita a
+            // mensagem "nao encontrei" da #923, que carrega o `describe()`.
+            ("file_read", json!({ "path": "ausente-1626.txt" }))
         } else if let Some(resto) = texto.split("::READ_ABS::").nth(1) {
             let caminho = resto.split("::END::").next().unwrap_or_default().trim();
             ("file_read", json!({ "path": caminho }))
@@ -2376,4 +2384,80 @@ async fn jail_sem_workspace_as_file_tools_negam_tudo() {
         !data_dir.join("workspace").exists(),
         "o fail-closed nao pode criar <data_dir>/workspace por conta propria"
     );
+}
+
+/// Finding da auditoria R4 (#1626): o caminho ABSOLUTO do host nao pode sair no
+/// envelope `garra.agent.v1` servido ao orquestrador. Depois do PR o default
+/// materializa o workspace, entao toda escrita/leitura bem-sucedida poderia
+/// devolver `<data_dir>/workspace/<hash>/…` no `summary`/`answer`. Aqui um
+/// `file_write`, um `file_read` bem-sucedido e um `file_read` de arquivo
+/// ausente (a mensagem "nao encontrei" da #923) sao serializados inteiros e
+/// nenhum pode conter o caminho do workspace do host.
+#[tokio::test]
+async fn jail_envelope_nao_vaza_o_caminho_do_host() {
+    let falso = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(PedeFileTool)
+        .mount(&falso)
+        .await;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = criar_workspace(tmp.path());
+    let ws_str = ws.to_string_lossy().into_owned();
+    let data_dir_canon = std::fs::canonicalize(tmp.path())
+        .expect("canonicalize data_dir")
+        .to_string_lossy()
+        .into_owned();
+    let config = config_jail(
+        &falso.uri(),
+        vec![orquestrador(
+            "redator",
+            "GARRA_TESTE_1626_REDATOR",
+            "tok-redator",
+            &["agent"],
+            &[],
+        )],
+        tmp.path().to_path_buf(),
+    );
+    let (router, _estado) = router_e_estado(config);
+
+    // O caminho do host nao pode aparecer em NENHUM dos tres envelopes.
+    let afirmar_sem_caminho = |rotulo: &str, env: &Value| {
+        let serial = serde_json::to_string(env).expect("serializa envelope");
+        assert!(
+            !serial.contains(&ws_str),
+            "{rotulo}: o caminho do workspace do host vazou no envelope:\n{serial}"
+        );
+        assert!(
+            !serial.contains(&data_dir_canon),
+            "{rotulo}: o caminho do data_dir do host vazou no envelope:\n{serial}"
+        );
+    };
+
+    // 1. Escrita bem-sucedida.
+    let env_write = envelope(&agent_como(&router, "tok-redator", "::WRITE:: grave").await);
+    assert_eq!(
+        env_write["tool_calls"][0]["name"], "file_write",
+        "{env_write}"
+    );
+    assert_eq!(env_write["tool_calls"][0]["success"], true, "{env_write}");
+    afirmar_sem_caminho("file_write", &env_write);
+
+    // 2. Leitura bem-sucedida do mesmo arquivo.
+    let env_read = envelope(&agent_como(&router, "tok-redator", "::READ_REL:: leia").await);
+    assert_eq!(env_read["tool_calls"][0]["name"], "file_read", "{env_read}");
+    assert_eq!(env_read["tool_calls"][0]["success"], true, "{env_read}");
+    afirmar_sem_caminho("file_read ok", &env_read);
+
+    // 3. Leitura de arquivo ausente DENTRO da raiz (mensagem "nao encontrei").
+    let env_miss = envelope(&agent_como(&router, "tok-redator", "::READ_MISSING:: leia").await);
+    assert_eq!(env_miss["tool_calls"][0]["name"], "file_read", "{env_miss}");
+    assert_eq!(env_miss["tool_calls"][0]["success"], false, "{env_miss}");
+    afirmar_sem_caminho("file_read ausente", &env_miss);
+
+    // 4. git_diff nomeia o working_dir por desenho (#1258): a ponte esconde o
+    //    caminho absoluto do host no envelope servido ao orquestrador.
+    let env_git = envelope(&agent_como(&router, "tok-redator", "::GITDIFF:: status").await);
+    assert_eq!(env_git["tool_calls"][0]["name"], "git_diff", "{env_git}");
+    afirmar_sem_caminho("git_diff", &env_git);
 }
