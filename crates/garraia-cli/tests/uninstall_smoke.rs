@@ -70,10 +70,35 @@ fn comando(dir: &Path, exe: &Path, args: &[&str]) -> Command {
     cmd
 }
 
+/// `spawn` com retry em `ETXTBSY`: cada teste copia o binario para o seu
+/// tempdir (`planta_instalacao`) e os testes rodam em paralelo no mesmo
+/// processo. Entre o `fork` e o `exec` de um teste, o descritor de escrita
+/// da copia de OUTRO teste ainda esta aberto no filho, e o kernel recusa
+/// executar um arquivo com escritor vivo ("Text file busy"). O descritor e
+/// `CLOEXEC`, entao a janela dura microssegundos — esperar e tentar de novo
+/// resolve; serializar a suite nao e necessario. Qualquer outro erro
+/// continua fatal.
+fn spawn_com_retry(cmd: &mut Command) -> std::process::Child {
+    const TENTATIVAS: u32 = 40;
+    let mut tentativa = 0;
+    loop {
+        match cmd.spawn() {
+            Ok(filho) => return filho,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tentativa < TENTATIVAS =>
+            {
+                tentativa += 1;
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(e) => panic!("spawn garra: {e}"),
+        }
+    }
+}
+
 /// Roda com teto: desinstalacao travada (prompt, lock) nao pode segurar a
 /// suite inteira.
 fn roda_com_teto(mut cmd: Command) -> Output {
-    let mut filho = cmd.spawn().expect("spawn garra");
+    let mut filho = spawn_com_retry(&mut cmd);
     let inicio = std::time::Instant::now();
     loop {
         if filho.try_wait().expect("try_wait").is_some() {
