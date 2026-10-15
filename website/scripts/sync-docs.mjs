@@ -454,7 +454,16 @@ function main() {
     fs.mkdirSync(dir, {recursive: true});
     fs.writeFileSync(
       path.join(dir, '_category_.json'),
-      JSON.stringify({label: s.label, position: s.position}, null, 2) + '\n',
+      // Indice gerado por categoria: a URL da secao (ex.: /instalacao/) passa a
+      // listar as paginas em vez de dar 404. `releases` ja tem pagina propria
+      // com slug /releases, entao fica sem indice gerado para nao colidir.
+      JSON.stringify(
+        s.dir === 'releases'
+          ? {label: s.label, position: s.position}
+          : {label: s.label, position: s.position, link: {type: 'generated-index'}},
+        null,
+        2,
+      ) + '\n',
       'utf8',
     );
   }
