@@ -1747,13 +1747,13 @@ mod tests {
         assert_eq!(padrao.max_facts, None);
 
         let config: AppConfig =
-            serde_yaml::from_str("memory:\n  auto_extract: false\n  max_facts: 3\n")
+            serde_norway::from_str("memory:\n  auto_extract: false\n  max_facts: 3\n")
                 .expect("yaml should parse");
         assert!(!config.memory.auto_extract);
         assert_eq!(config.memory.max_facts, Some(3));
 
         // Seção ausente => defaults (não panic nem inverta o default).
-        let config: AppConfig = serde_yaml::from_str("agent: {}\n").expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str("agent: {}\n").expect("yaml should parse");
         assert!(config.memory.auto_extract);
         assert_eq!(config.memory.max_facts, None);
     }
@@ -1768,7 +1768,7 @@ mod tests {
         assert_eq!(padrao.llm.default_secs, 120);
 
         // E o default vale tambem quando a secao `timeouts:` existe sem ele.
-        let config: AppConfig = serde_yaml::from_str("timeouts:\n  llm:\n    default_secs: 90\n")
+        let config: AppConfig = serde_norway::from_str("timeouts:\n  llm:\n    default_secs: 90\n")
             .expect("yaml should parse");
         assert_eq!(config.timeouts.llm.default_secs, 90);
         assert_eq!(config.timeouts.embeddings.default_secs, 30);
@@ -1780,7 +1780,7 @@ mod tests {
     /// inutil nao pode virar janela por acidente).
     #[test]
     fn llm_timeout_secs_por_provider_via_accessor() {
-        let config: AppConfig = serde_yaml::from_str(
+        let config: AppConfig = serde_norway::from_str(
             "llm:\n  lento:\n    provider: ollama\n    timeout_secs: 600\n  rapido:\n    provider: openai\n",
         )
         .expect("yaml should parse");
@@ -1795,7 +1795,7 @@ mod tests {
 
         // Chave presente mas não-numera: accessor devolve None em vez de
         // estourar — flatten guarda o valor cru, o tipo é conferido aqui.
-        let config: AppConfig = serde_yaml::from_str(
+        let config: AppConfig = serde_norway::from_str(
             "llm:\n  esquisito:\n    provider: ollama\n    timeout_secs: 'dez'\n",
         )
         .expect("yaml should parse");
@@ -1874,7 +1874,7 @@ agent:
   persona: neutral
   persona_lang: "en"
 "#;
-        let config: AppConfig = serde_yaml::from_str(raw).expect("parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("parse");
         assert_eq!(config.agent.persona, super::PersonaMode::Neutral);
         assert_eq!(config.agent.persona_lang.as_deref(), Some("en"));
     }
@@ -1898,7 +1898,7 @@ embeddings:
     dimensions: 1024
 "#;
 
-        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("yaml should parse");
         assert!(config.memory.enabled);
         assert_eq!(
             config.memory.embedding_provider.as_deref(),
@@ -1926,7 +1926,7 @@ hardware:
     username: garra
     password_env: GARRA_MQTT_PASS
 "#;
-        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("yaml should parse");
         let mqtt = config.hardware.mqtt.expect("hardware.mqtt should be Some");
         assert_eq!(mqtt.broker, "127.0.0.1:1883");
         assert_eq!(mqtt.username.as_deref(), Some("garra"));
@@ -1944,7 +1944,7 @@ hardware:
     dir: "rules/automations"
     risk_ceiling: "r2"
 "#;
-        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("yaml should parse");
         let automacoes = config
             .hardware
             .automations
@@ -1967,7 +1967,7 @@ hardware:
   automations:
     dir: "rules"
 "#;
-        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("yaml should parse");
         let automacoes = config.hardware.automations.expect("automations");
         assert_eq!(automacoes.risk_ceiling, "r1", "teto default é r1");
     }
@@ -1987,7 +1987,7 @@ hardware:
   automations:
     dir: "/etc/garraia/regras"
 "#;
-        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("yaml should parse");
         assert_eq!(
             config.automations_dir(),
             Some(std::path::PathBuf::from("/etc/garraia/regras"))
@@ -2005,7 +2005,7 @@ hardware:
         // Disciplina write-only do settings registry: config carrega o NOME
         // da env var; o valor só existe no ambiente.
         let raw = "hardware:\n  mqtt:\n    broker: '127.0.0.1:1883'\n";
-        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let config: AppConfig = serde_norway::from_str(raw).expect("yaml should parse");
         let mqtt = config.hardware.mqtt.expect("mqtt");
         assert!(mqtt.password_env.is_none());
         assert!(mqtt.username.is_none());
@@ -2071,7 +2071,7 @@ mod mcp_http_config_tests {
 
     #[test]
     fn parseia_as_chaves_de_ask() {
-        let config: AppConfig = serde_yaml::from_str(
+        let config: AppConfig = serde_norway::from_str(
             "gateway:\n  mcp_http:\n    enabled: true\n    allow_ask: true\n    \
              ask_allowed_models:\n      - openrouter/auto\n      - z-ai/glm-5.3-flash\n    \
              ask_budget_per_minute: 3\n",
@@ -2105,7 +2105,7 @@ mod mcp_http_config_tests {
 
     #[test]
     fn parseia_as_chaves_de_agent() {
-        let config: AppConfig = serde_yaml::from_str(
+        let config: AppConfig = serde_norway::from_str(
             "gateway:\n  mcp_http:\n    enabled: true\n    allow_agent: true\n    \
              agent_budget_per_minute: 1\n    agent_max_seconds: 120\n",
         )
@@ -2122,7 +2122,7 @@ mod mcp_http_config_tests {
     #[test]
     fn secao_mcp_http_ausente_usa_defaults() {
         let config: AppConfig =
-            serde_yaml::from_str("gateway:\n  host: 127.0.0.1\n").expect("yaml should parse");
+            serde_norway::from_str("gateway:\n  host: 127.0.0.1\n").expect("yaml should parse");
         let mcp = &config.gateway.mcp_http;
         assert!(!mcp.enabled);
         assert!(!mcp.allow_ask);
@@ -2134,7 +2134,7 @@ mod mcp_http_config_tests {
     /// default de `allow_ask` nao muda por causa da existencia dos campos.
     #[test]
     fn chaves_antigas_sem_as_novas_mantem_ask_desligado() {
-        let config: AppConfig = serde_yaml::from_str(
+        let config: AppConfig = serde_norway::from_str(
             "gateway:\n  mcp_http:\n    enabled: true\n    allow_send: true\n",
         )
         .expect("yaml should parse");
@@ -2147,7 +2147,7 @@ mod mcp_http_config_tests {
     fn orquestradores_default_e_lista_vazia() {
         assert!(McpHttpConfig::default().orchestrators.is_empty());
         let config: AppConfig =
-            serde_yaml::from_str("gateway:\n  mcp_http:\n    enabled: true\n").expect("yaml");
+            serde_norway::from_str("gateway:\n  mcp_http:\n    enabled: true\n").expect("yaml");
         assert!(config.gateway.mcp_http.orchestrators.is_empty());
         assert!(config.gateway.mcp_http.orquestradores_validos().is_empty());
         assert!(
@@ -2161,7 +2161,7 @@ mod mcp_http_config_tests {
 
     #[test]
     fn parseia_orquestradores_da_forma_documentada() {
-        let config: AppConfig = serde_yaml::from_str(
+        let config: AppConfig = serde_norway::from_str(
             "gateway:\n  mcp_http:\n    orchestrators:\n      - nome: badgood\n        \
              key_env: BADGOOD_MCP_KEY\n        tools: [status, send_message]\n        \
              chats: [-100123456789]\n",

@@ -107,7 +107,7 @@ fn reload_config(path: &Path) -> Result<AppConfig, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     match ext {
         "yml" | "yaml" => {
-            serde_yaml::from_str(&contents).map_err(|e| format!("YAML parse error: {e}"))
+            serde_norway::from_str(&contents).map_err(|e| format!("YAML parse error: {e}"))
         }
         "toml" => toml::from_str(&contents).map_err(|e| format!("TOML parse error: {e}")),
         other => Err(format!("unsupported config extension: {other}")),
