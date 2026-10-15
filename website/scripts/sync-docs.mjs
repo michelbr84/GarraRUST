@@ -460,7 +460,7 @@ function main() {
       JSON.stringify(
         s.dir === 'releases'
           ? {label: s.label, position: s.position}
-          : {label: s.label, position: s.position, link: {type: 'generated-index'}},
+          : {label: s.label, position: s.position, link: {type: 'generated-index', slug: `/${s.dir}`}},
         null,
         2,
       ) + '\n',
