@@ -65,7 +65,7 @@ tower = { workspace = true }
 tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
+serde_norway = { workspace = true }
 regex = { workspace = true }
 # #1098: `endpoint_publico` no diagnostics_handler reduz o endpoint
 # configurado a scheme://host[:port] antes de ir ao corpo auth-free.

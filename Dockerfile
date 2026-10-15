@@ -10,7 +10,7 @@
 # behind, `cargo chef cook` aborts the Deploy image build with
 # "rustc X is not supported by the following packages" (Deploy run on the
 # v0.3.0 tag failed exactly this way with 1.92 vs rust-version 1.94).
-FROM rust:1.98-slim AS chef
+FROM rust:1.99-slim AS chef
 
 # `perl` + `make` NÃO são cosméticos: desde a v0.3.4 o OpenSSL é vendored
 # (`native-tls/vendored`, ver Cargo.toml raiz) e o openssl-src compila o

@@ -246,15 +246,15 @@ fn gateway_api_key_is_set(api_key: Option<&str>) -> bool {
 /// Remover no emissor tambem limpa um arquivo existente num re-run do
 /// `init` (caminho `MergeUpdate`).
 fn yaml_sem_bind(cfg: &AppConfig) -> Result<String> {
-    let mut valor = serde_yaml::to_value(cfg).context("serialize AppConfig")?;
+    let mut valor = serde_norway::to_value(cfg).context("serialize AppConfig")?;
     if let Some(gateway) = valor
         .get_mut("gateway")
-        .and_then(serde_yaml::Value::as_mapping_mut)
+        .and_then(serde_norway::Value::as_mapping_mut)
     {
         gateway.remove("host");
         gateway.remove("port");
     }
-    serde_yaml::to_string(&valor).context("serialize AppConfig")
+    serde_norway::to_string(&valor).context("serialize AppConfig")
 }
 
 /// Marcador que substitui a credencial de gateway em qualquer saida `Debug`.
@@ -527,7 +527,7 @@ fn escreve_config_com_permissao_restrita(path: &Path, conteudo: &str) -> std::io
 /// * `Backup { backup_path }` first renames the existing
 ///   `config.yml` to `backup_path`. The rename is atomic on POSIX —
 ///   the user is never left without a config.
-/// * `MergeUpdate` loads the existing `config.yml` via `serde_yaml`,
+/// * `MergeUpdate` loads the existing `config.yml` via `serde_norway`,
 ///   patches it via [`merge_update`], and rewrites the file in place.
 ///
 /// On `MergeUpdate` failure to parse the existing YAML, the function
@@ -569,7 +569,7 @@ pub fn write_config(
             let raw = std::fs::read_to_string(&config_path)
                 .with_context(|| format!("read {}", config_path.display()))?;
             let mut existing: AppConfig =
-                serde_yaml::from_str(&raw).context("parse existing config.yml")?;
+                serde_norway::from_str(&raw).context("parse existing config.yml")?;
             if merge_update(&mut existing, outcome) {
                 gateway_api_key_written = true;
             }
@@ -607,9 +607,9 @@ mod tests {
     /// it.
     /// #1261: `true` quando a secao `gateway` do YAML traz `host` ou `port`.
     fn gateway_tem_bind(raw: &str) -> bool {
-        let v: serde_yaml::Value = serde_yaml::from_str(raw).expect("yaml");
+        let v: serde_norway::Value = serde_norway::from_str(raw).expect("yaml");
         v.get("gateway")
-            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(serde_norway::Value::as_mapping)
             .is_some_and(|g| g.contains_key("host") || g.contains_key("port"))
     }
 
@@ -636,7 +636,7 @@ mod tests {
             .path;
         let raw = std::fs::read_to_string(&p).unwrap();
         assert!(!gateway_tem_bind(&raw), "{raw}");
-        let merged: AppConfig = serde_yaml::from_str(&raw).unwrap();
+        let merged: AppConfig = serde_norway::from_str(&raw).unwrap();
         assert_eq!(merged.gateway.rate_limit.per_second, 7, "o resto fica");
         assert!(
             merged.gateway.api_key.is_some(),
@@ -874,7 +874,7 @@ mod tests {
         let escrito = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite).unwrap();
         assert!(escrito.gateway_api_key_written);
         let cfg: AppConfig =
-            serde_yaml::from_str(&std::fs::read_to_string(&escrito.path).unwrap()).unwrap();
+            serde_norway::from_str(&std::fs::read_to_string(&escrito.path).unwrap()).unwrap();
         assert_eq!(cfg.gateway.api_key, out.gateway_api_key);
 
         // MergeUpdate sobre config com chave de operador: nao grava, nao reporta.
@@ -882,7 +882,7 @@ mod tests {
         let existing = config_com_gateway_key(Some("chave-do-operador"));
         std::fs::write(
             dir.path().join("config.yml"),
-            serde_yaml::to_string(&existing).unwrap(),
+            serde_norway::to_string(&existing).unwrap(),
         )
         .unwrap();
         let escrito = write_config(dir.path(), &out, ExistingConfigStrategy::MergeUpdate).unwrap();
@@ -891,7 +891,7 @@ mod tests {
             "nada foi gravado, entao nada pode ser anunciado"
         );
         let cfg: AppConfig =
-            serde_yaml::from_str(&std::fs::read_to_string(&escrito.path).unwrap()).unwrap();
+            serde_norway::from_str(&std::fs::read_to_string(&escrito.path).unwrap()).unwrap();
         assert_eq!(cfg.gateway.api_key.as_deref(), Some("chave-do-operador"));
 
         // FirstWrite em loopback: nada a gravar, nada a reportar.
@@ -911,7 +911,7 @@ mod tests {
         let existing = config_com_gateway_key(Some("chave-do-operador"));
         std::fs::write(
             dir.path().join("config.yml"),
-            serde_yaml::to_string(&existing).unwrap(),
+            serde_norway::to_string(&existing).unwrap(),
         )
         .unwrap();
 
@@ -927,7 +927,7 @@ mod tests {
         .unwrap();
 
         let novo: AppConfig =
-            serde_yaml::from_str(&std::fs::read_to_string(&escrito.path).unwrap()).unwrap();
+            serde_norway::from_str(&std::fs::read_to_string(&escrito.path).unwrap()).unwrap();
         assert_eq!(
             novo.gateway.api_key, out.gateway_api_key,
             "o Backup reconstroi o config: a chave nova entra no lugar da antiga"
@@ -938,7 +938,7 @@ mod tests {
         );
 
         let antigo: AppConfig =
-            serde_yaml::from_str(&std::fs::read_to_string(&backup_path).unwrap()).unwrap();
+            serde_norway::from_str(&std::fs::read_to_string(&backup_path).unwrap()).unwrap();
         assert_eq!(
             antigo.gateway.api_key.as_deref(),
             Some("chave-do-operador"),
@@ -953,7 +953,8 @@ mod tests {
         let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite)
             .unwrap()
             .path;
-        let cfg: AppConfig = serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let cfg: AppConfig =
+            serde_norway::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(
             cfg.llm.get("openrouter").unwrap().api_key.as_deref(),
             Some("test-key-abc"),
@@ -980,7 +981,8 @@ mod tests {
         let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite)
             .unwrap()
             .path;
-        let cfg: AppConfig = serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let cfg: AppConfig =
+            serde_norway::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let entry = cfg.llm.get("openai").unwrap();
         assert_eq!(entry.provider, "openai");
         assert_eq!(entry.model.as_deref(), Some("gpt-4o"));
@@ -1167,7 +1169,7 @@ agent:
         write_config(dir.path(), &out, ExistingConfigStrategy::MergeUpdate).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
-        let merged: AppConfig = serde_yaml::from_str(&raw).unwrap();
+        let merged: AppConfig = serde_norway::from_str(&raw).unwrap();
 
         assert!(
             !gateway_tem_bind(&raw),
@@ -1212,7 +1214,7 @@ llm: {}
         write_config(dir.path(), &out, ExistingConfigStrategy::MergeUpdate).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
-        let merged: AppConfig = serde_yaml::from_str(&raw).unwrap();
+        let merged: AppConfig = serde_norway::from_str(&raw).unwrap();
         assert_eq!(merged.agent.default_provider.as_deref(), Some("openrouter"));
         assert!(merged.llm.contains_key("openrouter"));
     }
