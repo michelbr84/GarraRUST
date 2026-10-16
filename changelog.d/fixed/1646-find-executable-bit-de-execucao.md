@@ -1,0 +1,1 @@
+- `find_executable` da ponte do WhatsApp so aprova arquivo com bit de execucao no Unix; um `node` em `0644` deixa de passar na deteccao e de virar `npm ci` com codigo 126 (#1646).

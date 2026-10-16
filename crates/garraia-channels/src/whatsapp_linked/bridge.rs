@@ -398,21 +398,38 @@ impl BridgeError {
 /// Mesma forma do `which_in_path` de `garraia-cli::agents` — copiada e nao
 /// compartilhada porque `garraia-channels` nao depende (e nao deve depender) da
 /// CLI, e porque sao 15 linhas sem estado.
+///
+/// No Unix um arquivo sem nenhum bit de execucao nao conta (#1646): aprovar um
+/// `node` em `0644` so empurrava a falha para o `npm ci`, como `codigo 126` e
+/// `env: 'node': Permission denied`, sem nomear o caminho.
 pub fn find_executable(bin: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(bin);
-        if candidate.is_file() {
+        if is_executable_file(&candidate) {
             return Some(candidate);
         }
         for ext in ["exe", "cmd", "bat"] {
             let with_ext = dir.join(format!("{bin}.{ext}"));
-            if with_ext.is_file() {
+            if is_executable_file(&with_ext) {
                 return Some(with_ext);
             }
         }
     }
     None
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 /// Node e npm resolvidos.
@@ -1385,6 +1402,23 @@ async fn read_line_capped(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1646: `node` sem bit de execucao nao e executavel; com o bit, e.
+    #[cfg(unix)]
+    #[test]
+    fn is_executable_file_exige_bit_de_execucao() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("garra-1646-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let f = dir.join("node");
+        std::fs::write(&f, "#!/bin/sh\n").expect("write");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        assert!(!is_executable_file(&f));
+        assert!(!is_executable_file(&dir), "diretorio nao e executavel");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        assert!(is_executable_file(&f));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Um `sh -c` no lugar do Node: o bastante para exercitar o pipe.
     #[cfg(unix)]
