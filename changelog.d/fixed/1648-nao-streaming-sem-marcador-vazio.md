@@ -1,0 +1,1 @@
+- O caminho nao-streaming autonomo do runtime (app mobile, `/ws`, `/v1/chat/completions`, chat REST) nao publica mais o marcador `[no textual response provided by the model]`: turno inteiramente vazio vira erro explicito, como no streaming (#1648, follow-up do #1048).

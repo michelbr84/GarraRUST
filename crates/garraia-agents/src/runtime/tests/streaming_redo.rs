@@ -137,6 +137,23 @@ pub(super) fn extract_text_opt_distingue_vazio_de_marcador() {
     assert_eq!(extract_text(&com_texto), "oi");
 }
 
+/// #1648: o caminho nao-streaming autonomo nao publica o marcador — turno
+/// vazio vira erro, turno com texto passa intacto.
+#[test]
+pub(super) fn texto_final_ou_erro_recusa_turno_vazio() {
+    assert!(texto_final_ou_erro(&[]).is_err());
+    let branco = vec![ContentBlock::Text {
+        text: "  \n".to_string(),
+    }];
+    let erro = texto_final_ou_erro(&branco).unwrap_err().to_string();
+    assert!(!erro.contains("[no textual response"), "erro: {erro}");
+
+    let com_texto = vec![ContentBlock::Text {
+        text: "oi".to_string(),
+    }];
+    assert_eq!(texto_final_ou_erro(&com_texto).unwrap(), "oi");
+}
+
 /// Provider que entrega texto na primeira volta e depois emudece.
 ///
 /// Reproduz a regressao que a primeira versao do fix do #1048 introduziu:

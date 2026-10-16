@@ -2038,7 +2038,7 @@ impl AgentRuntime {
                         mensagem_de_orcamento_esgotado(budget.teto_da_tarefa(), self.persona_lang)
                     })
                 } else {
-                    extract_text(&response.content)
+                    texto_final_ou_erro(&response.content)?
                 };
                 info!(
                     "agent finished without tool calls (stop_reason={:?}, response_len={})",
@@ -2275,7 +2275,7 @@ impl AgentRuntime {
                 .any(|block| matches!(block, ContentBlock::ToolUse { .. }));
 
             if !has_tool_use {
-                let final_text = extract_text(&response.content);
+                let final_text = texto_final_ou_erro(&response.content)?;
 
                 // Store turn in memory (best-effort)
                 if let Err(e) = self
@@ -4504,6 +4504,16 @@ fn extract_text_opt(content: &[ContentBlock]) -> Option<String> {
     } else {
         Some(text)
     }
+}
+
+/// #1648: texto a entregar ao usuario no caminho nao-streaming autonomo.
+///
+/// Turno inteiramente vazio vira erro explicito (o canal mostra a falha),
+/// nunca o marcador interno de [`extract_text`] — mesma semantica do #1048.
+fn texto_final_ou_erro(content: &[ContentBlock]) -> Result<String> {
+    extract_text_opt(content).ok_or_else(|| {
+        Error::Agent("o modelo devolveu um turno vazio (sem texto e sem ferramenta)".into())
+    })
 }
 
 fn extract_text(content: &[ContentBlock]) -> String {
