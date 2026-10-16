@@ -690,6 +690,14 @@ system dirs may need `sudo`), `78` the daemon belongs to a systemd unit.
 
 ## Troubleshooting
 
+### Old binary in `PATH` masks the new install
+
+If `garraia --version` still prints the old version after installing a
+package (`.deb`, etc.), an older copy earlier in `PATH` (typically a local
+build in `~/.local/bin`) is answering. Run `which -a garraia garra`, remove
+the stale copy or fix the `PATH` order, then `hash -r`. `garraia doctor`
+detects this and prints both paths (`binary` in `doctor --json`).
+
 ### `curl | sh` fails with HTTP 429
 
 `raw.githubusercontent.com` (which serves `install.sh`) and `api.github.com`

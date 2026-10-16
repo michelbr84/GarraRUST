@@ -388,6 +388,8 @@ pub(crate) struct DoctorReport {
     pub config_check: Option<ConfigCheck>,
     pub providers: Vec<ProviderCheck>,
     pub daemon: DaemonCheck,
+    /// Outras copias do binario no `PATH` com versao divergente (#1649).
+    pub binary: crate::doctor_binario::BinaryCheck,
     /// Resumo CONFIG do plano MCP (#1595) — puro, sem spawn. O health-check
     /// de subida (que spawna de verdade) é `garraia doctor mcp`.
     pub mcp: crate::doctor_mcp::ResumoMcp,
@@ -565,6 +567,7 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
         config_check,
         providers,
         daemon: check_daemon(&gateway.0, gateway.1),
+        binary: crate::doctor_binario::collect(path_env.as_deref()),
         mcp,
         termux_check: termux_detected().then(|| {
             collect_termux_check(
@@ -712,6 +715,28 @@ fn print_human(report: &DoctorReport, strict: bool) {
     println!("  [5/5] MCP ................. [{mcp_flag}] {mcp_status}");
     if report.mcp.servidores > 0 {
         println!("        subida real: `garraia doctor mcp` (spawn + handshake)");
+    }
+
+    // #1649: copia antiga no PATH respondendo no lugar da instalada.
+    let bin = &report.binary;
+    if bin.mismatch {
+        println!();
+        println!("  Binário ................. AVISO — outra cópia no PATH com versão diferente");
+        println!(
+            "        em execução: {} (v{})",
+            bin.running_path.as_deref().unwrap_or("?"),
+            bin.running_version
+        );
+        for o in &bin.others {
+            println!(
+                "        no PATH    : {} (v{})",
+                o.path,
+                o.version.as_deref().unwrap_or("?")
+            );
+        }
+        if let Some(step) = &bin.next_step {
+            println!("          → {step}");
+        }
     }
 
     if let Some(termux) = &report.termux_check {
@@ -1186,6 +1211,7 @@ mod tests {
                 gateway_port: 3888,
                 port_listening: false,
             },
+            binary: crate::doctor_binario::classify(None, "test", vec![]),
             termux_check: None,
         };
         assert_eq!(compute_doctor_exit_code(&report, false), 65);

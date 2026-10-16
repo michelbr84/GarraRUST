@@ -1,0 +1,1 @@
+- `garraia doctor` avisa quando ha outra copia de `garraia`/`garra` no `PATH` com versao diferente da que esta rodando (ex.: build antigo em `~/.local/bin` mascarando o `.deb` novo), listando os dois caminhos e o fix; campo `binary` no `--json` (#1649).

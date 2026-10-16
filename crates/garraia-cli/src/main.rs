@@ -13,6 +13,7 @@ mod config_cmd;
 mod defaults;
 mod desktop;
 mod doctor;
+mod doctor_binario;
 mod doctor_mcp;
 mod doctor_whatsapp;
 mod glob_cmd;
