@@ -39,6 +39,7 @@ O binário `garraia` (alias `garra`) concentra toda a operação. Fonte: [`crate
 | `garra whatsapp restore` | Traz de volta a sessão arquivada (`session.enc.prev`) por um re-vínculo que não terminou; nunca passa por cima de sessão em uso |
 | `garraia whatsapp allow <número> [--owner] [--yes]` | Autoriza um número (com `+` e código do país) ou um LID `<id>@lid` a falar com o GarraIA pelo WhatsApp pessoal, sem precisar de terminal; vale sem reiniciar quando o gateway subiu com o canal ligado e com o `config.yml` no disco (#1345). Exit 64 para `--owner` fora de `isolated-pod` ou num pipe sem `--yes`, 65 para número inválido |
 | `garraia whatsapp link --allow <número> [--owner]` | O `link` com a pergunta pós-QR já respondida; continua exigindo terminal (exit 69 num pipe). Desde a v0.4.6 o wizard termina imprimindo a política de acesso em vigor (#1429) |
+| `garraia whatsapp link --machine` | O `link` em modo-máquina (#1636): não exige terminal, não lê stdin, emite **NDJSON** no stdout (uma linha por evento, com a matriz do QR). Para o app desktop consumir como sidecar; mesmos exit codes do `link`. Ver `docs/whatsapp.md` §Modo máquina |
 
 ### Access Policy v2 — quem entra e até onde vai (v0.4.6, ADR 0025)
 

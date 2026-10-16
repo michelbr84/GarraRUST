@@ -374,7 +374,7 @@ fn render_candidate(pattern: &MinedPattern) -> String {
         deprecated: false,
     };
 
-    let fm_yaml = serde_yaml::to_string(&fm).unwrap_or_else(|_| "{}".to_string());
+    let fm_yaml = serde_norway::to_string(&fm).unwrap_or_else(|_| "{}".to_string());
 
     let body_lines: Vec<String> = pattern
         .normalized_sequence

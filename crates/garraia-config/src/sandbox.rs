@@ -251,7 +251,7 @@ network_disabled = false
         assert!(!sb.network_disabled);
 
         // `ssh` traz o host num campo irmao, nao dentro da variante.
-        let ssh: AppConfig = serde_yaml::from_str(
+        let ssh: AppConfig = serde_norway::from_str(
             "agent:\n  sandbox:\n    mode: all\n    backend: ssh\n    ssh_host: box.interno\n",
         )
         .expect("yaml parses");

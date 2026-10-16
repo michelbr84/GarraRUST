@@ -454,7 +454,7 @@ pub async fn get_config(
     let mut config_safe = config.clone();
     redact_config_secrets(&mut config_safe);
 
-    let yaml = match serde_yaml::to_string(&config_safe) {
+    let yaml = match serde_norway::to_string(&config_safe) {
         Ok(y) => y,
         Err(e) => {
             return (
@@ -492,7 +492,7 @@ pub async fn save_config(
         );
     }
 
-    if serde_yaml::from_str::<garraia_config::AppConfig>(&body.config_yaml).is_err() {
+    if serde_norway::from_str::<garraia_config::AppConfig>(&body.config_yaml).is_err() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "invalid YAML config"})),
@@ -663,7 +663,7 @@ pub async fn apply_config(
         );
     }
 
-    let new_config: garraia_config::AppConfig = match serde_yaml::from_str(&body.config_yaml) {
+    let new_config: garraia_config::AppConfig = match serde_norway::from_str(&body.config_yaml) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -744,7 +744,7 @@ pub async fn rollback_config(
         }
     };
 
-    if serde_yaml::from_str::<garraia_config::AppConfig>(&yaml).is_err() {
+    if serde_norway::from_str::<garraia_config::AppConfig>(&yaml).is_err() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "stored config is invalid"})),
@@ -901,7 +901,7 @@ pub async fn export_config(
     let mut config = state.app_state.current_config();
     redact_config_secrets(&mut config);
 
-    match serde_yaml::to_string(&config) {
+    match serde_norway::to_string(&config) {
         Ok(yaml) => (
             StatusCode::OK,
             Json(serde_json::json!({"config_yaml": yaml})),
@@ -929,7 +929,7 @@ pub async fn import_config(
         );
     }
 
-    if serde_yaml::from_str::<garraia_config::AppConfig>(&body.config_yaml).is_err() {
+    if serde_norway::from_str::<garraia_config::AppConfig>(&body.config_yaml).is_err() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "invalid YAML config"})),

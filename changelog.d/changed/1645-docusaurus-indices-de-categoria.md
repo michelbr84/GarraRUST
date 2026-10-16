@@ -1,0 +1,1 @@
+- **Site de documentacao: cada secao ganha um indice gerado.** As URLs de categoria do Docusaurus (`/instalacao/`, `/gateway/`, `/seguranca/`...) listam as paginas da secao em vez de responder 404; a secao Releases mantem a pagina propria.

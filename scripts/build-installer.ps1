@@ -88,13 +88,22 @@ if ($StageDir) {
     # (v1/v1Compatible) e neste projeto nao e produzido. O `latest-json.py`
     # reconhece os dois formatos; estagiamos os dois para cobrir qualquer
     # mudanca de comportamento do bundler.
-    foreach ($bundle in @($msi, $nsis)) {
+    # A `.sig` precisa levar o NOME ESTAGIADO do bundle (o que a release
+    # publica), nao o nome original do Tauri (`garraia-desktop_<ver>_x64_en-US.msi`):
+    # o `latest-json.py` procura a assinatura em `<asset>.sig` ao lado do
+    # proprio asset, e o `release.yml` so sobe `*.msi.sig` / `*-setup.exe.sig`.
+    $bundlesEstagiados = @(
+        @{ Bundle = $msi;  Nome = "garraia-desktop-windows-x86_64.msi" },
+        @{ Bundle = $nsis; Nome = "garraia-desktop-windows-x86_64-setup.exe" }
+    )
+    foreach ($item in $bundlesEstagiados) {
+        $bundle = $item.Bundle
         if ($bundle -and (Test-Path "$($bundle.FullName).sig")) {
-            $sigAlvo = Join-Path $StageDir "$($bundle.Name).sig"
+            $sigAlvo = Join-Path $StageDir "$($item.Nome).sig"
             Copy-Item "$($bundle.FullName).sig" $sigAlvo -Force
-            Write-Host "    Staged: $($bundle.Name).sig (updater)"
+            Write-Host "    Staged: $($item.Nome).sig (updater)"
         } elseif ($bundle) {
-            Write-Host "    AVISO: $($bundle.Name).sig ausente - latest.json vai recusar esta plataforma (fail-closed)" -ForegroundColor Yellow
+            Write-Host "    AVISO: $($item.Nome).sig ausente - latest.json vai recusar esta plataforma (fail-closed)" -ForegroundColor Yellow
         }
     }
     $nsisZip = Get-ChildItem "target\release\bundle\nsis\*.nsis.zip" -ErrorAction SilentlyContinue | Select-Object -First 1

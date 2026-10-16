@@ -3760,6 +3760,277 @@ fn o_link_de_verdade_num_upgrade_preserva_o_allow() {
     );
 }
 
+// --- modo-maquina (#1636): NDJSON ----------------------------------------
+
+/// Sink que acumula os bytes emitidos para o teste ler as linhas depois.
+#[derive(Clone)]
+struct CaptureSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl CaptureSink {
+    fn new() -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())))
+    }
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().expect("lock").clone()).expect("utf8")
+    }
+}
+
+impl std::io::Write for CaptureSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("lock").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Cada linha do stdout vira um `Value`; o parse ja prova "JSON valido".
+fn eventos_ndjson(text: &str) -> Vec<serde_json::Value> {
+    text.lines()
+        .map(|l| {
+            serde_json::from_str(l).unwrap_or_else(|e| panic!("linha nao e JSON: {l:?} ({e})"))
+        })
+        .collect()
+}
+
+/// Marcador legivel de cada evento, na ordem, para assercoes de sequencia.
+fn marcadores(eventos: &[serde_json::Value]) -> Vec<String> {
+    eventos
+        .iter()
+        .map(|e| match e["event"].as_str() {
+            Some("status") => format!("status:{}", e["status"].as_str().unwrap_or("")),
+            Some(other) => other.to_string(),
+            None => "?".to_string(),
+        })
+        .collect()
+}
+
+/// A ponte falsa no cenario `session-ok`: sessao carregada vale, conecta SEM
+/// emitir QR — o que o bridge real faz quando ja ha vinculo.
+#[cfg(unix)]
+struct SessionOkLauncher;
+
+#[cfg(unix)]
+impl BridgeLauncher for SessionOkLauncher {
+    fn command(&self) -> Result<tokio::process::Command, BridgeError> {
+        let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/")
+            .join("garraia-channels/tests/fixtures/fake_whatsapp_bridge.py");
+        let mut cmd = tokio::process::Command::new("python3");
+        cmd.arg(script)
+            .arg("--scenario")
+            .arg("session-ok")
+            .arg("--handshake-timeout")
+            .arg("5");
+        Ok(cmd)
+    }
+    fn describe(&self) -> String {
+        "python3 fake_whatsapp_bridge.py --scenario session-ok".into()
+    }
+    fn dir(&self) -> std::path::PathBuf {
+        std::env::temp_dir()
+    }
+}
+
+/// O caminho inteiro do modo-maquina: NDJSON valido, na ordem
+/// `status→qr→…→session_saved→channel_enabled→done`, e canal ligado DEPOIS do
+/// blob (o contrato de ordem do `whatsapp.rs`).
+#[cfg(unix)]
+#[test]
+fn o_modo_maquina_emite_ndjson_na_ordem_ate_done() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    ctx.loader
+        .as_ref()
+        .expect("loader")
+        .ensure_dirs()
+        .expect("dirs");
+    let store = ctx.store().expect("store");
+    let key = ctx.key().expect("key");
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let sink = CaptureSink::new();
+    let mut ui = maquina::JsonUi::with_sink(ctx.lang, Box::new(sink.clone()));
+
+    let code = link_machine_paired(&ctx, &store, &key, &PairOkLauncher, &runtime, &mut ui);
+    assert_eq!(code, 0, "pareamento ok");
+
+    let text = sink.text();
+    assert!(text.ends_with('\n'), "NDJSON termina em newline: {text:?}");
+    let eventos = eventos_ndjson(&text);
+    for ev in &eventos {
+        assert_eq!(ev["schema"], serde_json::json!(1), "schema 1 em toda linha");
+    }
+
+    let marcas = marcadores(&eventos);
+    let pos = |needle: &str| marcas.iter().position(|m| m == needle);
+    let qr = marcas
+        .iter()
+        .position(|m| m == "qr")
+        .unwrap_or_else(|| panic!("um evento qr: {marcas:?}"));
+    let auth = pos("status:authenticated").expect("authenticated");
+    let saved = pos("status:session_saved").expect("session_saved");
+    let enabled = pos("status:channel_enabled").expect("channel_enabled");
+    let done = pos("status:done").expect("done");
+
+    assert!(qr < auth, "o QR vem antes de autenticar: {marcas:?}");
+    assert!(
+        auth < saved,
+        "autenticado antes de session_saved: {marcas:?}"
+    );
+    assert!(
+        saved < enabled,
+        "session_saved antes de channel_enabled — o blob liga o canal, nao o contrario: {marcas:?}"
+    );
+    assert!(enabled < done, "channel_enabled antes de done: {marcas:?}");
+
+    assert!(store.exists(), "a sessao foi salva em disco");
+    let secao = secao_de(&ctx).expect("secao");
+    assert_eq!(
+        secao.enabled,
+        Some(true),
+        "o canal foi ligado depois do blob"
+    );
+}
+
+/// Sem Node, o modo-maquina emite `error:missing_node` com a versao minima e
+/// sai `EX_UNAVAILABLE` — sem tocar a rede nem a PATH do processo.
+#[test]
+fn o_modo_maquina_sem_node_emite_error_missing_node() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    ctx.loader
+        .as_ref()
+        .expect("loader")
+        .ensure_dirs()
+        .expect("dirs");
+    let sink = CaptureSink::new();
+    let mut ui = maquina::JsonUi::with_sink(ctx.lang, Box::new(sink.clone()));
+
+    let code = link_machine_with(&ctx, &Pedido::default(), no_node, &mut ui);
+    assert_eq!(code, EX_UNAVAILABLE, "faltando Node, EX_UNAVAILABLE");
+
+    let eventos = eventos_ndjson(&sink.text());
+    let erro = eventos
+        .iter()
+        .find(|e| e["event"] == serde_json::json!("error"))
+        .expect("um evento error");
+    assert_eq!(erro["code"], serde_json::json!("missing_node"));
+    assert_eq!(erro["min_version"], serde_json::json!("20"));
+    assert!(
+        !eventos
+            .iter()
+            .any(|e| e["event"] == serde_json::json!("qr")),
+        "sem Node nao ha QR"
+    );
+    // Um pareamento que nem comecou NAO pode ter ligado o canal.
+    assert!(
+        secao_de(&ctx).is_none(),
+        "nada foi escrito em channels.whatsapp_linked"
+    );
+}
+
+/// O modo-maquina RECUSA `--allow`/`--owner` com `EX_USAGE` e um `error` de
+/// `code: usage` — ele nao aplica politica de acesso, entao aceitar as flags
+/// so para valida-las enganaria quem acha que autorizou alguem.
+#[test]
+fn o_modo_maquina_recusa_allow_e_owner() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    ctx.loader
+        .as_ref()
+        .expect("loader")
+        .ensure_dirs()
+        .expect("dirs");
+
+    let casos = [
+        Pedido {
+            numero: Some("+55 11 99999-8888".into()),
+            owner: false,
+            yes: false,
+        },
+        Pedido {
+            numero: None,
+            owner: true,
+            yes: false,
+        },
+    ];
+    for pre in casos {
+        let sink = CaptureSink::new();
+        let mut ui = maquina::JsonUi::with_sink(ctx.lang, Box::new(sink.clone()));
+        // `no_node` nunca e alcancado: a recusa vem antes de detectar Node.
+        let code = link_machine_with(&ctx, &pre, no_node, &mut ui);
+        assert_eq!(
+            code, 64,
+            "--allow/--owner em --machine = EX_USAGE ({pre:?})"
+        );
+
+        let eventos = eventos_ndjson(&sink.text());
+        let erro = eventos
+            .iter()
+            .find(|e| e["event"] == serde_json::json!("error"))
+            .expect("um evento error");
+        assert_eq!(erro["code"], serde_json::json!("usage"));
+        // Recusa ANTES de qualquer progresso: nada de status/qr.
+        assert!(
+            !eventos.iter().any(|e| {
+                e["event"] == serde_json::json!("status") || e["event"] == serde_json::json!("qr")
+            }),
+            "a recusa vem antes de detectar Node"
+        );
+        // E nada foi escrito na config.
+        assert!(secao_de(&ctx).is_none());
+    }
+}
+
+/// Sessao ja valida: o modo-maquina conecta sem pedir QR nenhum (o caminho
+/// idempotente). Primeiro pareia (salva o blob), depois reexecuta com a ponte
+/// `session-ok`.
+#[cfg(unix)]
+#[test]
+fn o_modo_maquina_com_sessao_valida_nao_pede_qr() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    ctx.loader
+        .as_ref()
+        .expect("loader")
+        .ensure_dirs()
+        .expect("dirs");
+    let store = ctx.store().expect("store");
+    let key = ctx.key().expect("key");
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+
+    // Primeiro vinculo: salva a sessao.
+    let primeiro = CaptureSink::new();
+    let mut ui1 = maquina::JsonUi::with_sink(ctx.lang, Box::new(primeiro.clone()));
+    assert_eq!(
+        link_machine_paired(&ctx, &store, &key, &PairOkLauncher, &runtime, &mut ui1),
+        0
+    );
+    assert!(store.exists(), "o primeiro vinculo salvou a sessao");
+
+    // Reexecucao com sessao valida: conecta direto, sem QR.
+    let segundo = CaptureSink::new();
+    let mut ui2 = maquina::JsonUi::with_sink(ctx.lang, Box::new(segundo.clone()));
+    let code = link_machine_paired(&ctx, &store, &key, &SessionOkLauncher, &runtime, &mut ui2);
+    assert_eq!(code, 0, "reaproveitar a sessao tambem conclui");
+
+    let eventos = eventos_ndjson(&segundo.text());
+    assert!(
+        !eventos
+            .iter()
+            .any(|e| e["event"] == serde_json::json!("qr")),
+        "nenhum QR pode ter sido pedido: {:?}",
+        marcadores(&eventos)
+    );
+    let marcas = marcadores(&eventos);
+    assert!(
+        marcas.iter().any(|m| m == "status:done"),
+        "ainda conclui: {marcas:?}"
+    );
+}
+
 // ADR 0025: `garraia whatsapp access ...`.
 mod politica;
 

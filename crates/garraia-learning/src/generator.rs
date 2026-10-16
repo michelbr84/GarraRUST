@@ -129,7 +129,7 @@ pub fn load_candidate_file(path: &Path) -> Result<Candidate> {
 
     // Try to extract the slug from the `name` field; fall back to the filename stem.
     let slug = if !fm_str.is_empty() {
-        if let Ok(fm) = serde_yaml::from_str::<LearningSkillFrontmatter>(fm_str) {
+        if let Ok(fm) = serde_norway::from_str::<LearningSkillFrontmatter>(fm_str) {
             to_kebab(&fm.name)
         } else {
             stem_slug(path)
@@ -188,7 +188,7 @@ fn parse_llm_response(raw: &str, fallback_slug: &str) -> Result<Skill> {
         return Ok(make_fallback_skill(fallback_slug, raw));
     }
 
-    match serde_yaml::from_str::<serde_yaml::Value>(fm_str) {
+    match serde_norway::from_str::<serde_norway::Value>(fm_str) {
         Ok(yaml) => {
             let name_raw = yaml["name"].as_str().unwrap_or(fallback_slug).to_string();
             let description = yaml["description"].as_str().unwrap_or("").to_string();

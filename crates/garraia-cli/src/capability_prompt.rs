@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn channels_and_mcp_appear_in_snapshot() {
-        let config: AppConfig = serde_yaml::from_str(
+        let config: AppConfig = serde_norway::from_str(
             r#"
 channels:
   telegram:

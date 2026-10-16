@@ -9,7 +9,7 @@
 //! to 256 characters before being emitted so that a pathological YAML/TOML
 //! file (e.g. one that smuggles a large payload into the error chain) cannot
 //! dominate the output. The bounded message preserves line/column context
-//! from `serde_yaml`/`toml` but never prints the full failing file.
+//! from `serde_norway`/`toml` but never prints the full failing file.
 
 use anyhow::Result;
 use garraia_config::{AppConfig, ConfigCheck, ConfigLoader, LlmProviderConfig, Severity};

@@ -686,6 +686,12 @@ fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv, bind_env: &BindDaEnv)
         }
     }
 
+    // #1626: padroes de redacao do operador. Erro, nao Warning: uma entrada
+    // invalida e descartada, e o operador acharia que o segredo esta coberto.
+    for problema in config.gateway.mcp_http.compilar_redact_patterns().1 {
+        push_err(&mut findings, "gateway.mcp_http.redact_patterns", problema);
+    }
+
     // #1615: `garra_agent` pela ponte. Os numeros tem faixa e a faixa erra alto
     // (um teto de 0 segundos ou de 10000 nao e um default esquecido, e erro de
     // quem escreveu). O orcamento de 0 e so aviso: o gateway ja o eleva a 1.

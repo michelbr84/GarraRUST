@@ -671,6 +671,8 @@ apps/
 Deep dives: [runtime flow & voice pipeline](README.pt-BR.md#arquitetura),
 [ADRs](docs/adr/), [wiki](https://github.com/michelbr84/GarraRUST/wiki).
 
+Documentation site (generated from this repo's markdown): <https://michelbr84.github.io/GarraRUST/>.
+
 ## Roadmap
 
 Development follows a 7-phase plan in [ROADMAP.md](ROADMAP.md) — currently

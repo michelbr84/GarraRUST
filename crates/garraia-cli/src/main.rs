@@ -479,6 +479,11 @@ enum WhatsAppCommands {
         /// Registra o numero como dono (so em `execution.profile = isolated-pod`).
         #[arg(long)]
         owner: bool,
+        /// Modo-maquina (#1636): NAO exige terminal, nao le stdin, emite NDJSON
+        /// no stdout (uma linha por evento, com a matriz do QR). Para o app
+        /// desktop consumir como sidecar; ver `docs/whatsapp.md`.
+        #[arg(long)]
+        machine: bool,
     },
     /// Configura um WhatsApp Business pela Cloud API oficial da Meta.
     Cloud,
@@ -2065,15 +2070,24 @@ fn main() -> Result<()> {
     if let Commands::WhatsApp { ref action } = cli.command {
         let whatsapp_action = match action {
             None => whatsapp::Action::Menu,
-            Some(WhatsAppCommands::Link { allow, owner }) => {
-                if allow.is_none() && !owner {
+            Some(WhatsAppCommands::Link {
+                allow,
+                owner,
+                machine,
+            }) => {
+                let pedido = whatsapp::Pedido {
+                    numero: allow.clone(),
+                    owner: *owner,
+                    yes: false,
+                };
+                if *machine {
+                    // #1636: modo-maquina (NDJSON, sem TTY). O `--allow`/`--owner`
+                    // so e validado; a politica e aplicada depois.
+                    whatsapp::Action::LinkMachine(pedido)
+                } else if allow.is_none() && !owner {
                     whatsapp::Action::Link
                 } else {
-                    whatsapp::Action::LinkCom(whatsapp::Pedido {
-                        numero: allow.clone(),
-                        owner: *owner,
-                        yes: false,
-                    })
+                    whatsapp::Action::LinkCom(pedido)
                 }
             }
             Some(WhatsAppCommands::Cloud) => whatsapp::Action::Cloud,

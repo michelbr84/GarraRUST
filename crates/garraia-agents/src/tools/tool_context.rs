@@ -200,19 +200,60 @@ pub struct ResolvedPath {
     pub origin: PathOrigin,
     /// The argument exactly as the model wrote it.
     pub requested: String,
+    /// O `working_dir` da sessao, guardado para [`ResolvedPath::describe`]
+    /// mostrar o caminho RELATIVO a ele quando o alvo cai dentro — e nunca o
+    /// prefixo absoluto do host (#1626 / principio da #1465).
+    pub working_dir: Option<PathBuf>,
 }
 
 impl ResolvedPath {
-    /// `"'<resolved>' (pedido: '<raw>', <hint>)"` — the tail every file-tool
+    /// `"'<mostrado>' (pedido: '<raw>', <hint>)"` — the tail every file-tool
     /// error carries, so the model can tell "wrong path" from "no such file".
+    ///
+    /// `<mostrado>` e relativo ao `working_dir` da sessao quando o alvo cai
+    /// dentro dele (`notas/a.txt`, nao `/home/<user>/.../workspace/<hash>/notas/a.txt`),
+    /// via [`caminho_para_exibir`]: a mensagem vira o `summary` da tool call no
+    /// envelope servido ao orquestrador, e o caminho absoluto do host nao pode
+    /// sair por ali (#1626).
     pub fn describe(&self) -> String {
         format!(
             "'{}' (pedido: '{}', {})",
-            self.path.display(),
+            caminho_para_exibir(&self.path, self.working_dir.as_deref()),
             self.requested,
             self.origin.hint()
         )
     }
+}
+
+/// Um caminho para MOSTRAR ao modelo/cliente, sem vazar o prefixo do host.
+///
+/// Relativo ao `working_dir` da sessao quando o caminho cai dentro dele
+/// (`notas/a.txt` em vez de `/home/<user>/.local/share/garraia/workspace/<hash>/notas/a.txt`);
+/// absoluto so quando nao ha `working_dir` ou o caminho esta fora dele (uma raiz
+/// declarada em `agent.file_roots`, que o operador escolheu e ja conhece). Fecha
+/// o vazamento do caminho do host no envelope `garra.agent.v1` servido ao
+/// orquestrador pela ponte MCP HTTP (#1626), seguindo o principio da #1465
+/// (nenhum caminho absoluto do host em superficie servida ao cliente). Os logs
+/// do operador seguem com o caminho absoluto de proposito — a disciplina da
+/// #1465 e sobre o que SAI para o cliente, nao sobre o log do dono da maquina.
+///
+/// Compara contra o `working_dir` cru E o canonicalizado: o `path` pode chegar
+/// ja canonicalizado (apos [`super::FileJail::confine`]) enquanto o
+/// `working_dir` ainda e a string crua da sessao.
+pub fn caminho_para_exibir(path: &Path, working_dir: Option<&Path>) -> String {
+    if let Some(wd) = working_dir.filter(|w| !w.as_os_str().is_empty()) {
+        let bases = std::iter::once(wd.to_path_buf()).chain(std::fs::canonicalize(wd).ok());
+        for base in bases {
+            if let Ok(rel) = path.strip_prefix(&base) {
+                return if rel.as_os_str().is_empty() {
+                    ".".to_string()
+                } else {
+                    rel.display().to_string()
+                };
+            }
+        }
+    }
+    path.display().to_string()
 }
 
 /// Expand a leading `~`, `~/…` or `$HOME/…` against `home`.
@@ -276,6 +317,9 @@ pub fn resolve_tool_path(
         path,
         origin,
         requested: raw.to_string(),
+        working_dir: working_dir
+            .filter(|w| !w.trim().is_empty())
+            .map(PathBuf::from),
     })
 }
 
@@ -429,6 +473,51 @@ mod tests {
         assert!(d.contains("notes.md"));
         assert!(d.contains("pedido:"));
         assert!(d.contains("working_dir"));
+    }
+
+    /// #1626: dentro do `working_dir`, a mensagem mostra o caminho RELATIVO —
+    /// nunca o prefixo absoluto do host (que, na ponte MCP HTTP, e a subarvore
+    /// por-orquestrador sob `<data_dir>/workspace`).
+    #[test]
+    fn describe_mostra_relativo_ao_working_dir_e_nunca_o_host() {
+        let wd = "/home/dono/.local/share/garraia/workspace/abc123def456";
+        let r = resolve_tool_path("notas/a.txt", Some(wd), None).unwrap();
+        let d = r.describe();
+        assert!(d.contains("notas/a.txt"), "{d}");
+        assert!(!d.contains("/home/dono"), "o caminho do host vazou: {d}");
+        assert!(
+            !d.contains("workspace/abc123"),
+            "o dir do orquestrador vazou: {d}"
+        );
+    }
+
+    /// `caminho_para_exibir`: relativo quando dentro do `working_dir`, absoluto
+    /// quando fora ou sem `working_dir` (o modelo ja o escolheu).
+    #[test]
+    fn caminho_para_exibir_relativiza_so_dentro_do_working_dir() {
+        // Sem working_dir: o proprio caminho.
+        assert_eq!(
+            caminho_para_exibir(Path::new("/etc/hosts"), None),
+            "/etc/hosts"
+        );
+        // Fora do working_dir: absoluto.
+        assert_eq!(
+            caminho_para_exibir(Path::new("/etc/hosts"), Some(Path::new("/home/dono/ws"))),
+            "/etc/hosts"
+        );
+        // Dentro do working_dir: relativo, sem o prefixo do host.
+        assert_eq!(
+            caminho_para_exibir(
+                Path::new("/home/dono/ws/sub/a.txt"),
+                Some(Path::new("/home/dono/ws"))
+            ),
+            "sub/a.txt"
+        );
+        // O proprio working_dir: "." em vez de vazio.
+        assert_eq!(
+            caminho_para_exibir(Path::new("/home/dono/ws"), Some(Path::new("/home/dono/ws"))),
+            "."
+        );
     }
 
     #[test]

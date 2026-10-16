@@ -99,6 +99,35 @@ pub enum QrError {
     Encode(String),
 }
 
+/// A matriz `width×width` do simbolo, `true` = modulo **escuro**.
+///
+/// E a MESMA grade que [`render`] desenha — e [`render`] a consome, entao ha
+/// um unico motor e uma unica polaridade. Expo-la deixa um consumidor fora do
+/// terminal (o canvas do app desktop, #1636) pintar as celulas escuras sem
+/// reimplementar o motor de QR em JS, o que reabriria o risco de polaridade
+/// invertida que este modulo documenta.
+///
+/// A **quiet zone nao entra** na matriz: ela e responsabilidade de quem
+/// desenha, como em [`render`], onde coordenada fora do simbolo conta como
+/// clara. Correcao `L`, como [`render`] e pelo mesmo motivo. Payload vazio
+/// codifica (sem panico); grande demais vira [`QrError::Encode`].
+pub fn modules(data: &str) -> Result<Vec<Vec<bool>>, QrError> {
+    let code = QrCode::with_error_correction_level(data.as_bytes(), EcLevel::L)
+        .map_err(|e| QrError::Encode(e.to_string()))?;
+    let width = code.width();
+    let colors = code.to_colors();
+    // `qrcode` entrega a matriz linearizada em row-major; aqui ela vira grade
+    // para o consumidor indexar por `[linha][coluna]` sem conhecer `width`.
+    let grid = (0..width)
+        .map(|y| {
+            (0..width)
+                .map(|x| colors[y * width + x] == qrcode::Color::Dark)
+                .collect()
+        })
+        .collect();
+    Ok(grid)
+}
+
 /// Desenha `data` no estilo pedido. **Pura**: mesma entrada, mesma saida.
 ///
 /// O nivel de correcao e `L`, o mesmo que o Baileys/`qrcode-terminal` usam:
@@ -111,10 +140,11 @@ pub fn render(data: &str, style: Style) -> Result<String, QrError> {
         return Ok(data.to_string());
     }
 
-    let code = QrCode::with_error_correction_level(data.as_bytes(), EcLevel::L)
-        .map_err(|e| QrError::Encode(e.to_string()))?;
-    let width = code.width();
-    let modules = code.to_colors();
+    // O MESMO motor de [`modules`]: um unico ponto que codifica e fixa a
+    // polaridade. A quiet zone sai do `dark` (coordenada fora do simbolo e
+    // clara), nao da matriz.
+    let grid = modules(data)?;
+    let width = grid.len();
 
     // `true` = modulo ESCURO. A funcao aceita coordenadas fora do simbolo e
     // devolve `false` (claro) — e assim que a quiet zone sai de graca.
@@ -122,7 +152,7 @@ pub fn render(data: &str, style: Style) -> Result<String, QrError> {
         if x < 0 || y < 0 || x as usize >= width || y as usize >= width {
             return false;
         }
-        modules[y as usize * width + x as usize] == qrcode::Color::Dark
+        grid[y as usize][x as usize]
     };
 
     let span = width as isize;
@@ -323,5 +353,53 @@ mod tests {
             render(&huge, Style::UnicodeHalfBlocks),
             Err(QrError::Encode(_))
         ));
+    }
+
+    // -- modules(): a matriz crua, para quem desenha fora do terminal (#1636)
+
+    #[test]
+    fn modules_is_a_square_matrix_the_size_of_the_symbol() {
+        let grid = modules(FIXED).expect("modules");
+        let width = grid.len();
+        assert!(width > 0, "matriz vazia");
+        let code = QrCode::with_error_correction_level(FIXED.as_bytes(), EcLevel::L).expect("qr");
+        assert_eq!(width, code.width(), "a matriz tem a largura do simbolo");
+        for row in &grid {
+            assert_eq!(row.len(), width, "cada linha tem a largura do simbolo");
+        }
+    }
+
+    /// A matriz e o desenho sao o MESMO motor, entao tem a mesma polaridade.
+    ///
+    /// `render` desenha o modulo CLARO como glifo (`##`) e deixa o ESCURO
+    /// vazio (`  `); a matriz carrega `true` no ESCURO. Logo, um `true` na
+    /// matriz tem de casar com uma celula vazia no desenho, na mesma posicao
+    /// deslocada so pela quiet zone de [`QUIET_ZONE`] modulos.
+    #[test]
+    fn a_dark_module_in_the_matrix_is_a_dark_cell_in_render() {
+        let grid = modules(FIXED).expect("modules");
+        let ascii = render(FIXED, Style::Ascii).expect("render");
+        let rows: Vec<&str> = ascii.lines().collect();
+        let q = QUIET_ZONE;
+        for (y, grid_row) in grid.iter().enumerate() {
+            let line = rows[y + q];
+            for (x, &dark) in grid_row.iter().enumerate() {
+                let cell = &line[(x + q) * 2..(x + q) * 2 + 2];
+                let render_dark = cell == "  ";
+                assert_eq!(dark, render_dark, "polaridade divergiu em ({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn modules_on_an_empty_payload_does_not_panic() {
+        // Mesmo invariante do `render`: sem `unwrap` em producao.
+        assert!(modules("").is_ok());
+    }
+
+    #[test]
+    fn an_oversized_payload_is_an_error_in_modules_too() {
+        let huge = "x".repeat(8_000);
+        assert!(matches!(modules(&huge), Err(QrError::Encode(_))));
     }
 }
