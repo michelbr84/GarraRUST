@@ -1,0 +1,1 @@
+- Canal WhatsApp linked: guarda de cadencia entre turnos por chat (#1650). Passando de 20 turnos admitidos em 60s no mesmo chat, o turno e cortado com log `possivel loop entre agentes`, com um unico aviso por rajada; turno cortado nao conta na janela, entao o chat volta sozinho quando o outro lado cala. Teto ainda fixo (configuravel e contador em `doctor` ficam como follow-up).
