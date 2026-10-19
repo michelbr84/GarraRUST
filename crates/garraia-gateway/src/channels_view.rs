@@ -580,3 +580,79 @@ mod tests {
         );
     }
 }
+
+/// Teto de superficie (auditoria de seguranca do modo `auto`): o que uma
+/// sessao que **nao e do operador** pode usar, independentemente do modo
+/// escolhido com `/mode` ou deduzido pelo `auto` a partir do texto.
+///
+/// Operador: `None`, nenhum teto, comportamento de hoje. Remoto: o mesmo
+/// `Nivel::Read` que o WhatsApp aplica a quem nao e dono: nega execucao de
+/// processo, escrita de arquivo, dispositivo, envio de mensagem, escrita de
+/// memoria e agenda. Leitura continua.
+///
+/// Sem este teto, `exec.agent_mode == None` cai em `ToolGate::sem_politica`
+/// (portao aberto, decisao documentada em `sem_modo_o_portao_nao_muda_nada`),
+/// e nenhum canal remoto tinha outra fronteira alem do registro das tools.
+pub(crate) fn teto_da_superficie(
+    operador: bool,
+) -> Option<garraia_agents::modes::TetoDeCapacidades> {
+    if operador {
+        return None;
+    }
+    Some(garraia_agents::modes::TetoDeCapacidades {
+        nome: "superficie remota (sem operador)".to_string(),
+        politica: garraia_agents::modes::politica_do_nivel(
+            garraia_agents::modes::Nivel::Read,
+            false,
+        ),
+    })
+}
+
+#[cfg(test)]
+mod teto_superficie_tests {
+    use super::*;
+    use garraia_agents::capacidades::capacidades_nativas;
+    use garraia_agents::modes::ToolGate;
+
+    fn permite(portao: &ToolGate, nome: &str) -> bool {
+        portao.permite_com_capacidades(nome, capacidades_nativas(nome))
+    }
+
+    #[test]
+    fn remoto_recebe_teto_de_leitura_e_o_operador_nao() {
+        assert!(teto_da_superficie(true).is_none(), "operador nao tem teto");
+        assert!(
+            teto_da_superficie(false).is_some(),
+            "remoto precisa de teto"
+        );
+    }
+
+    #[test]
+    fn teto_remoto_nega_bash_e_escrita_sem_modo() {
+        let portao = ToolGate::sem_politica().com_teto(teto_da_superficie(false));
+        assert!(!permite(&portao, "bash"));
+        assert!(!permite(&portao, "file_write"));
+        assert!(permite(&portao, "file_read"));
+    }
+
+    #[test]
+    fn operador_sem_teto_mantem_o_portao_aberto() {
+        let portao = ToolGate::sem_politica().com_teto(teto_da_superficie(true));
+        assert!(permite(&portao, "bash"));
+        assert!(permite(&portao, "file_write"));
+    }
+    /// Guarda de fiacao: o teto precisa estar ligado nos dois caminhos de
+    /// contexto que atendem superficie remota. Sem isto, a funcao acima
+    /// existe mas nenhum turno a usa — o estado que a auditoria encontrou.
+    #[test]
+    fn os_caminhos_de_contexto_remoto_aplicam_o_teto() {
+        let estado = include_str!("state.rs");
+        assert!(
+            estado.contains("teto_da_superficie("),
+            "state.rs (exec_context_for_inner) nao aplica o teto de superficie"
+        );
+        // A2A (`/a2a/tasks`) fica fora de proposito: a rota exige o bearer do
+        // gateway (401 sem ele), entao o chamador e o operador, e o teto
+        // cortaria os agentes que o operador configurou com `tools:`.
+    }
+}
