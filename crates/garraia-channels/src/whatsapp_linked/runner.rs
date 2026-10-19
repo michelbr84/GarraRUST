@@ -1204,14 +1204,25 @@ pub async fn serve_with(
                     matches!(
                         outcome,
                         Ok(ServeExit::Dropped {
-                            was_connected: true
+                            was_connected: true,
+                            ..
                         })
                     ),
                 );
+                let (motivo, codigo) = match &outcome {
+                    Ok(ServeExit::Dropped {
+                        reason,
+                        reason_code,
+                        ..
+                    }) => (*reason, *reason_code),
+                    _ => (None, None),
+                };
                 let delay = backoff_ms(attempt, jitter());
                 tracing::info!(
                     attempt,
                     delay_ms = delay,
+                    reason = %descricao_motivo(motivo),
+                    reason_code = ?codigo,
                     "WhatsApp vinculado caiu; reconectando"
                 );
                 tokio::select! {
@@ -1235,6 +1246,16 @@ pub async fn serve_with(
 /// Funcao nomeada, e nao duas linhas dentro do `loop`, porque assim a regra e
 /// testavel sem relogio, sem processo filho e sem esperar dois backoffs reais
 /// — o mesmo motivo de a maquina de estados nao ter relogio.
+/// Texto do motivo de uma queda para o log. Ausencia de motivo vira
+/// `nao_informado`, para a linha nunca sair muda e nao se confundir com um
+/// motivo vazio.
+fn descricao_motivo(reason: Option<DisconnectReason>) -> String {
+    match reason {
+        Some(r) => format!("{r:?}"),
+        None => "nao_informado".to_string(),
+    }
+}
+
 fn next_attempt(current: u32, was_connected: bool) -> u32 {
     if was_connected {
         1
@@ -1257,6 +1278,10 @@ enum ServeExit {
     /// deixa-lo crescer.
     Dropped {
         was_connected: bool,
+        /// Motivo que o bridge informou na queda, se informou.
+        reason: Option<DisconnectReason>,
+        /// Codigo numerico do Baileys que acompanha o motivo.
+        reason_code: Option<i64>,
     },
 }
 
@@ -1336,6 +1361,9 @@ async fn serve_once(
     let mut saw_logged_out = false;
     let mut dead_reason_code: Option<i64> = None;
     let mut saw_connected = false;
+    // Ultimo motivo de queda que o bridge informou. Sem isto a saida
+    // `Dropped` nao dizia POR QUE caiu, e o log de reconexao ficava mudo.
+    let mut last_disconnect: Option<(DisconnectReason, Option<i64>)> = None;
 
     // O relogio que faltava. `conn.send` e `conn.wait` ganharam prazo antes;
     // `conn.next_event()` nao tinha nenhum, e uma ponte que diz `started`,
@@ -1383,7 +1411,11 @@ async fn serve_once(
                         );
                         shutdown_politely(&mut conn).await;
                         conn.kill().await;
-                        return Ok(ServeExit::Dropped { was_connected: false });
+                        return Ok(ServeExit::Dropped {
+                            was_connected: false,
+                            reason: None,
+                            reason_code: None,
+                        });
                     }
                     // O outro relogio, e nao o mesmo: este conta desde o INICIO
                     // desta execucao e nao zera com evento nenhum. Como o braco
@@ -1397,7 +1429,11 @@ async fn serve_once(
                         );
                         shutdown_politely(&mut conn).await;
                         conn.kill().await;
-                        return Ok(ServeExit::Dropped { was_connected: false });
+                        return Ok(ServeExit::Dropped {
+                            was_connected: false,
+                            reason: None,
+                            reason_code: None,
+                        });
                     }
                 } else {
                     let silent = now.saturating_sub(last_event_secs);
@@ -1408,7 +1444,11 @@ async fn serve_once(
                         );
                         shutdown_politely(&mut conn).await;
                         conn.kill().await;
-                        return Ok(ServeExit::Dropped { was_connected: true });
+                        return Ok(ServeExit::Dropped {
+                            was_connected: true,
+                            reason: None,
+                            reason_code: None,
+                        });
                     }
                     if now.saturating_sub(last_ping_secs) >= options.ping_every_secs {
                         last_ping_secs = now;
@@ -1458,6 +1498,8 @@ async fn serve_once(
                             conn.kill().await;
                             return Ok(ServeExit::Dropped {
                                 was_connected: saw_connected,
+                                reason: last_disconnect.map(|d| d.0),
+                                reason_code: last_disconnect.and_then(|d| d.1),
                             });
                         }
                         Err(e) => {
@@ -1503,6 +1545,8 @@ async fn serve_once(
                             conn.kill().await;
                             return Ok(ServeExit::Dropped {
                                 was_connected: saw_connected,
+                                reason: last_disconnect.map(|d| d.0),
+                                reason_code: last_disconnect.and_then(|d| d.1),
                             });
                         }
                         Err(e) => {
@@ -1517,7 +1561,11 @@ async fn serve_once(
                         // 440 (outro aparelho assumiu). Para, sem apagar nada.
                         ServeExit::Stopped
                     } else {
-                        ServeExit::Dropped { was_connected: saw_connected }
+                        ServeExit::Dropped {
+                            was_connected: saw_connected,
+                            reason: last_disconnect.map(|d| d.0),
+                            reason_code: last_disconnect.and_then(|d| d.1),
+                        }
                     });
                 };
                 match event {
@@ -1533,6 +1581,9 @@ async fn serve_once(
                         reason_code,
                         ..
                     } => dead_reason_code = reason_code,
+                    BridgeEvent::Disconnected { reason, reason_code, .. } => {
+                        last_disconnect = Some((reason, reason_code));
+                    }
                     // Os demais eventos nao movem nada aqui: quem decide
                     // reconexao neste driver e o codigo de saida do filho, no
                     // braco acima, e nao uma fase de maquina.
@@ -1553,6 +1604,12 @@ mod tests {
     /// `ms / 1000` truncava: 1500 ms viravam "1s", e meio segundo depois a
     /// linha ja estava vencida na tela. Num comando cujo defeito recorrente e
     /// "a tela nao anda", uma linha que promete errado e do mesmo genero.
+    #[test]
+    fn a_queda_sem_motivo_diz_que_nao_veio_motivo_em_vez_de_sair_muda() {
+        assert_eq!(descricao_motivo(None), "nao_informado");
+        assert_eq!(descricao_motivo(Some(DisconnectReason::Network)), "Network");
+    }
+
     #[test]
     fn the_retry_line_never_promises_a_deadline_that_already_passed() {
         for (ms, esperado) in [(1000, "1s"), (1500, "2s"), (2000, "2s"), (2500, "3s")] {

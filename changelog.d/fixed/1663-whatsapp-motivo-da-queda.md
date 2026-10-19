@@ -1,0 +1,1 @@
+- O log de reconexao do canal WhatsApp vinculado agora informa o motivo da queda (`reason`) e o codigo do Baileys (`reason_code`) quando o bridge os envia; antes a linha `WhatsApp vinculado caiu; reconectando` nao dizia por que a sessao caiu (#1663).
