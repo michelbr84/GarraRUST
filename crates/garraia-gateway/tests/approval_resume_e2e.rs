@@ -673,11 +673,13 @@ async fn mobile(gw: &Gateway, token: &str, texto: &str) -> String {
     v["reply"].as_str().expect("reply").to_string()
 }
 
-/// No mobile o remetente e o `sub` do JWT (que tambem deriva a sessao): o
-/// "sim" do mesmo usuario roda uma vez; o de outro usuario cai em outra
-/// sessao e nao toca no pedido.
+/// A conta mobile e aberta (JWT so tem sub/email): superficie remota, sob o
+/// teto de leitura (#1665). Uma ferramenta destrutiva nem chega a pedir
+/// confirmacao — o portao a nega antes —, logo nenhum "sim", do mesmo `sub` ou
+/// de outro, tem o que aprovar. O isolamento por `sub` dentro da aprovacao
+/// segue coberto pelos testes de OpenAI/WS (com dono) e de canal.
 #[tokio::test]
-async fn mobile_sim_do_mesmo_sub_roda_e_outro_sub_nao_alcanca() {
+async fn mobile_remoto_nao_alcanca_ferramenta_destrutiva_nem_com_sim() {
     let mut tokens = (String::new(), String::new());
     let gw = subir(|st| {
         com_jwt(st);
@@ -691,11 +693,10 @@ async fn mobile_sim_do_mesmo_sub_roda_e_outro_sub_nao_alcanca() {
     .await;
     let (a, b) = tokens;
 
-    assert!(e_pedido(&mobile(&gw, &a, "apaga o arquivo").await));
-    assert!(e_pedido(&mobile(&gw, &b, "sim").await));
-    assert_eq!(gw.rodou(), 0);
+    assert!(!e_pedido(&mobile(&gw, &a, "apaga o arquivo").await));
+    assert!(!e_pedido(&mobile(&gw, &b, "sim").await));
     assert!(!e_pedido(&mobile(&gw, &a, "sim").await));
-    assert_eq!(gw.rodou(), 1);
+    assert_eq!(gw.rodou(), 0);
 }
 
 // ── Canais de chat (bootstrap) ──────────────────────────────────────────
