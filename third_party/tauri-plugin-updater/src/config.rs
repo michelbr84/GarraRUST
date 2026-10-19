@@ -107,8 +107,14 @@ pub struct Config {
     /// Dangerously allow using insecure transport protocols for update endpoints.
     pub dangerous_insecure_transport_protocol: bool,
     /// Dangerously accept invalid TLS certificates for update requests.
+    ///
+    /// Ignored in the GarraRUST fork (#1671): TLS verification is always
+    /// enforced. The flag is still accepted so existing configs keep parsing.
     pub dangerous_accept_invalid_certs: bool,
     /// Dangerously accept invalid hostnames for TLS certificates for update requests.
+    ///
+    /// Ignored in the GarraRUST fork (#1671): TLS verification is always
+    /// enforced. The flag is still accepted so existing configs keep parsing.
     pub dangerous_accept_invalid_hostnames: bool,
     /// Updater endpoints.
     pub endpoints: Vec<Url>,

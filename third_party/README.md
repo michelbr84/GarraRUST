@@ -10,6 +10,19 @@ não pode corrigir sem uma mudança de versão major.
 ### `tauri-plugin-updater` 2.14.0 (upstream: crates.io)
 
 - **Mudança:** dependência `zip` do alvo `windows` passou de `"4"` para `"9"`.
+- **Mudança (segurança, #1671):** o fork **nunca** desliga a verificação de TLS
+  do updater. Os campos `dangerousAcceptInvalidCerts` e
+  `dangerousAcceptInvalidHostnames` continuam sendo aceitos na config para não
+  quebrar instalações existentes, mas são ignorados (com `log::warn!`).
+  Motivo: os 4 sinks `danger_accept_invalid_certs(true)` /
+  `danger_accept_invalid_hostnames(true)` do upstream eram vetor de MITM de
+  update e apontavam pelo CodeQL (`rust/disabled-certificate-check`) no PR
+  #1668. Preferência do projeto: correção em código, não supressão
+  (`docs/security/codeql-suppressions.md` §3). Teste de guarda:
+  `crates/garraia-gateway/tests/updater_tls_nunca_desligado.rs`.
+  **Condição de remoção:** quando o upstream permitir desligar a verificação
+  por opt-in registrado e auditável (ou quando o fork for removido junto com o
+  do `zip`), reavaliar — a guarda impede a volta silenciosa.
 - **Motivo:** `zip` 4.x está afetado por RUSTSEC-2026-0367, -0368 e -0369.
   Versões `>= 9.0.0` corrigem os três. A dependência é usada somente na
   extração de atualizações `.zip` no Windows (`src/updater.rs`, `extract_zip`),

@@ -582,11 +582,17 @@ impl Updater {
             }
 
             let mut request = ClientBuilder::new().user_agent(UPDATER_USER_AGENT);
-            if self.context.config.dangerous_accept_invalid_certs {
-                request = request.danger_accept_invalid_certs(true);
-            }
-            if self.context.config.dangerous_accept_invalid_hostnames {
-                request = request.danger_accept_invalid_hostnames(true);
+            // GarraRUST fork (#1671): a verificacao de TLS nunca e desligada.
+            // Os campos `dangerousAcceptInvalidCerts`/`dangerousAcceptInvalidHostnames`
+            // continuam sendo aceitos na config para nao quebrar quem os tem
+            // declarado, mas sao ignorados aqui — fail-closed.
+            if self.context.config.dangerous_accept_invalid_certs
+                || self.context.config.dangerous_accept_invalid_hostnames
+            {
+                log::warn!(
+                    "dangerousAcceptInvalidCerts/dangerousAcceptInvalidHostnames sao \
+                     ignorados neste fork (GarraRUST #1671): o TLS do updater e sempre verificado"
+                );
             }
             if let Some(timeout) = self.timeout {
                 request = request.timeout(timeout);
@@ -840,11 +846,17 @@ impl Update {
         }
 
         let mut request = ClientBuilder::new().user_agent(UPDATER_USER_AGENT);
-        if self.context.config.dangerous_accept_invalid_certs {
-            request = request.danger_accept_invalid_certs(true);
-        }
-        if self.context.config.dangerous_accept_invalid_hostnames {
-            request = request.danger_accept_invalid_hostnames(true);
+        // GarraRUST fork (#1671): a verificacao de TLS nunca e desligada.
+        // Os campos `dangerousAcceptInvalidCerts`/`dangerousAcceptInvalidHostnames`
+        // continuam sendo aceitos na config para nao quebrar quem os tem
+        // declarado, mas sao ignorados aqui — fail-closed.
+        if self.context.config.dangerous_accept_invalid_certs
+            || self.context.config.dangerous_accept_invalid_hostnames
+        {
+            log::warn!(
+                "dangerousAcceptInvalidCerts/dangerousAcceptInvalidHostnames sao \
+                 ignorados neste fork (GarraRUST #1671): o TLS do updater e sempre verificado"
+            );
         }
         if let Some(timeout) = self.timeout {
             request = request.timeout(timeout);
