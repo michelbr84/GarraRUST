@@ -1,0 +1,1 @@
+- Atualiza `spin` 0.10.0 -> 0.10.1 no `Cargo.lock` (0.10.0 foi yanked; derrubava `Security Audit` e `cargo-deny` nos PRs).
