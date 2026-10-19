@@ -67,10 +67,12 @@ pub use bridge::{
     BridgeAssets, BridgeConnection, BridgeError, BridgeLauncher, EmbeddedAssets, NodeLauncher,
     NodeRuntime,
 };
-pub use health::{BridgeView, DiskFacts, LinkHealth, classify};
+pub use health::{
+    BridgeView, DiskFacts, LIMIAR_DEGRADADO, LinkHealth, MotivoTerminal, SaudeDoCanal, classify,
+};
 pub use permissions::LooseMode;
 pub use protocol::{
-    BridgeCommand, BridgeEvent, InboundMessage, Jid, PROTOCOL_VERSION, StartMode,
+    BridgeCommand, BridgeEvent, DisconnectReason, InboundMessage, Jid, PROTOCOL_VERSION, StartMode,
     UNAUTHORIZED_REASON_CODES, session_is_dead,
 };
 pub use qr::{Style as QrStyle, render as render_qr};
