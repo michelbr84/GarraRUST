@@ -673,13 +673,19 @@ async fn mobile(gw: &Gateway, token: &str, texto: &str) -> String {
     v["reply"].as_str().expect("reply").to_string()
 }
 
-/// A conta mobile e aberta (JWT so tem sub/email): superficie remota, sob o
-/// teto de leitura (#1665). Uma ferramenta destrutiva nem chega a pedir
-/// confirmacao — o portao a nega antes —, logo nenhum "sim", do mesmo `sub` ou
-/// de outro, tem o que aprovar. O isolamento por `sub` dentro da aprovacao
-/// segue coberto pelos testes de OpenAI/WS (com dono) e de canal.
+/// Mobile (#1665): conta de `POST /auth/register` nao e operador — a
+/// superficie `mobile` e `Remetente::Qualquer`, e a sessao le o teto de
+/// leitura ANTES de qualquer pedido de aprovacao.
+///
+/// O que este teste prende e o contrario do que existia antes do teto:
+/// "apaga o arquivo" do mobile criava um pedido de aprovacao e o MESMO `sub`
+/// respondia "sim" e a ferramenta rodava — qualquer conta auto-registrada
+/// apagava arquivo do host. Agora a escrita e negada pela superficie: nao
+/// nasce pedido nenhum (para nenhum `sub`) e nada roda, mesmo com "sim".
+/// A permissividade que sobra (leitura) esta no teste
+/// `teto_remoto_nega_bash_e_escrita_sem_modo` do `channels_view`.
 #[tokio::test]
-async fn mobile_remoto_nao_alcanca_ferramenta_destrutiva_nem_com_sim() {
+async fn mobile_nao_recebe_pedido_de_escrita_nem_roda_para_nenhum_sub() {
     let mut tokens = (String::new(), String::new());
     let gw = subir(|st| {
         com_jwt(st);
@@ -693,10 +699,24 @@ async fn mobile_remoto_nao_alcanca_ferramenta_destrutiva_nem_com_sim() {
     .await;
     let (a, b) = tokens;
 
-    assert!(!e_pedido(&mobile(&gw, &a, "apaga o arquivo").await));
-    assert!(!e_pedido(&mobile(&gw, &b, "sim").await));
-    assert!(!e_pedido(&mobile(&gw, &a, "sim").await));
-    assert_eq!(gw.rodou(), 0);
+    // Os dois subs pedem a escrita; os dois "sim" seguidos nao tem pedido que
+    // alcancem. `e_pedido` tambem prova que o marcador interno nao vazou.
+    for resposta in [
+        mobile(&gw, &a, "apaga o arquivo").await,
+        mobile(&gw, &b, "apaga o arquivo").await,
+        mobile(&gw, &a, "sim").await,
+        mobile(&gw, &b, "sim").await,
+    ] {
+        assert!(
+            !e_pedido(&resposta),
+            "pedido de aprovacao de escrita vazou para o mobile: {resposta}"
+        );
+    }
+    assert_eq!(
+        gw.rodou(),
+        0,
+        "nenhuma escrita pode rodar vinda do mobile, com ou sem \"sim\""
+    );
 }
 
 // ── Canais de chat (bootstrap) ──────────────────────────────────────────
