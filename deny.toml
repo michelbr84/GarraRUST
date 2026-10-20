@@ -150,6 +150,25 @@ ignore = [
     "RUSTSEC-2025-0081", # unic-char-property
     "RUSTSEC-2025-0098", # unic-ucd-version
     "RUSTSEC-2025-0100", # unic-ucd-ident
+
+    # --- Excecao TEMPORARIA — issue #1662 (zip) follow-up (autorizada 19/10/2026) ---
+    # Os tres abaixo sao SOMENTE `unmaintained`: as crates `zbus_names`,
+    # `zvariant` e `zvariant_derive` foram incorporadas ao `zbus` 6.0.0 (fonte:
+    # RUSTSEC-2026-0370/0371/0372, announcement z-galaxy/zbus#2043). Nao ha
+    # advisory de vulnerabilidade nem de unsound para essas crates. Afetadas:
+    # zbus_names 4.3.2, zvariant 5.12.0, zvariant_derive 5.12.0, todas via
+    # tauri-plugin-notification 2.7.0 -> notify-rust 4.18.2 (feature `z`, padrao)
+    # -> zbus 5.16.0, usado so no desktop (garraia-desktop). Nenhuma versao
+    # corrigivel existe no major atual: notify-rust 4.18.2 (a mais nova) ainda
+    # depende de zbus 5. Caminho definitivo: migrar a cadeia para zbus >= 6 quando
+    # notify-rust publicar essa versao (ou trocar o backend), registrado no roadmap.
+    # PRAZO: 30 dias (ate 2026-11-18). O cargo-deny 0.20.2 NAO suporta chave
+    # de expiracao por entrada (erro `unexpected-keys`), entao o prazo fica no
+    # `reason` e e verificado por scripts/check_deny_exceptions_expiry.py.
+    # Ao vencer, renovar com nova justificativa ou remover a entrada.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-11-18. Acompanhamento: #1667." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-11-18. Acompanhamento: #1667." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-11-18. Acompanhamento: #1667." },
 ]
 
 [licenses]

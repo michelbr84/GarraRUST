@@ -1,0 +1,2 @@
+- Corrigidos os advisories RUSTSEC-2026-0367, -0368 e -0369 (zip 4.6.1 e 8.6.0). O `tauri-plugin-updater` e o `utoipa-swagger-ui` passam a usar zip 9.0.5 por forks vendorizados em `third_party/` (ver `third_party/README.md`). Os assets do Swagger UI continuam embutidos e nao sao baixados no build. (#1662)
+- Excecao temporaria, com prazo ate 2026-11-18, para tres advisories somente `unmaintained` do desktop (zbus_names, zvariant, zvariant_derive). Acompanhamento em #1667. (#1662)
