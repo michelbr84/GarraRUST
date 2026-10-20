@@ -206,6 +206,24 @@ fn versao_curta() -> String {
     )
 }
 
+/// #1670: acrescenta a secao `catalog` ao relatorio — o enlace do catalogo
+/// versionado de funcionalidades embutido no binario (fonte:
+/// [`crate::tools::catalog_tool`], arquivo `assets/catalogo-funcionalidades.json`
+/// via `include_str!`). Enlace pequeno de proposito: a consulta em si e a
+/// tool `garra_capabilities`, com filtro e limite de itens (consumo de
+/// contexto baixo).
+///
+/// So sai no turno aberto: o relatorio restrito mantem o formato que o teste
+/// de campos previstos cobre, e o catalogo e contexto de operacao. A
+/// CONSULTA continua disponivel em turno restrito — a propria
+/// `garra_capabilities` la entrega o subconjunto que a permissao permite.
+fn com_secao_de_catalogo(restrito: bool, mut report: serde_json::Value) -> serde_json::Value {
+    if !restrito {
+        report["catalog"] = crate::tools::catalog_tool::enlace_do_catalogo();
+    }
+    report
+}
+
 #[async_trait]
 impl Tool for GarraStatusTool {
     fn name(&self) -> &str {
@@ -455,6 +473,8 @@ impl Tool for GarraStatusTool {
             // #1417: `null` quando nada esta em pausa, como `withheld_means`.
             "breaker_means": breaker_means,
         });
+
+        let report = com_secao_de_catalogo(restrito, report);
 
         let text = serde_json::to_string_pretty(&report).unwrap_or_else(|_| report.to_string());
         Ok(ToolOutput::success(text))

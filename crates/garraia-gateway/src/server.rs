@@ -882,6 +882,15 @@ impl GatewayServer {
                 push_channels.contagens(),
             )));
 
+        // #1670: a tool de consulta ao catálogo de funcionalidades embutido.
+        // Mesma janela do `garra_status` acima (depois dos push, antes do
+        // primeiro turno de canal pull): o catálogo é estático e vem do
+        // binário, mas a tool precisa do `AppState` para aplicar a mesma
+        // decisão de operador do `garra_status` em turnos restritos.
+        state.agents.register_tool(Box::new(
+            crate::tools::catalog_tool::GarraCapabilitiesTool::new(&state),
+        ));
+
         if let Some((client, rx)) = openclaw_rx {
             spawn_openclaw_router(Arc::clone(&state), client, rx);
         }
