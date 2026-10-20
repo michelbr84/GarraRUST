@@ -2724,3 +2724,97 @@ mod tests {
         }
     }
 }
+
+/// Seguranca de superficie (issue de auditoria do modo auto / #1663-linha):
+/// o que uma sessao **remota** (nao-operador) pode usar, com e sem o teto de
+/// superficie, e o que o operador continua podendo usar.
+///
+/// Os nomes de ferramenta e de classe sao os reais de `capacidades::NATIVAS`.
+#[cfg(test)]
+mod superficie_remota_tests {
+    use super::*;
+    use crate::exec_context::ExecContext;
+
+    /// O teto que a superficie remota recebe: o mesmo `Nivel::Read` que o
+    /// WhatsApp usa para quem nao e dono. Sem ele, nada e negado.
+    fn teto_remoto() -> Option<TetoDeCapacidades> {
+        Some(TetoDeCapacidades {
+            nome: "superficie remota (sem operador)".to_string(),
+            politica: politica_do_nivel(Nivel::Read, false),
+        })
+    }
+
+    /// Mesmo caminho do runtime (`portao_permite`): nome + classes reais da
+    /// ferramenta. `permite(nome)` sozinho passa classes vazias e nao serve
+    /// de prova para teto.
+    fn permite_real(portao: &ToolGate, nome: &str) -> bool {
+        portao.permite_com_capacidades(nome, crate::capacidades::capacidades_nativas(nome))
+    }
+
+    fn remoto(agent_mode: Option<&str>) -> ExecContext {
+        let mut exec = match agent_mode {
+            Some(m) => ExecContext::with_mode(Some(m.to_string())),
+            None => ExecContext::default(),
+        };
+        exec.teto = teto_remoto();
+        exec
+    }
+
+    const PERIGOSAS: &[&str] = &[
+        "bash",
+        "file_write",
+        "device_execute",
+        "telegram_send",
+        "schedule_recurring",
+    ];
+
+    const LEITURA: &[&str] = &["file_read", "garra_status", "web_fetch"];
+
+    #[test]
+    fn remoto_sem_modo_nao_executa_nem_escreve() {
+        let portao = ToolGate::para_o_turno(&remoto(None), "oi");
+        for t in PERIGOSAS {
+            assert!(!permite_real(&portao, t), "remoto sem modo liberou `{t}`");
+        }
+        for t in LEITURA {
+            assert!(
+                permite_real(&portao, t),
+                "remoto sem modo perdeu leitura `{t}`"
+            );
+        }
+    }
+
+    #[test]
+    fn remoto_que_troca_para_code_continua_capado() {
+        // /mode code por usuario remoto nao pode ser escalacao.
+        let portao = ToolGate::para_o_turno(&remoto(Some("code")), "oi");
+        for t in PERIGOSAS {
+            assert!(!permite_real(&portao, t), "remoto em `code` liberou `{t}`");
+        }
+    }
+
+    #[test]
+    fn remoto_no_auto_com_texto_de_codigo_continua_capado() {
+        // O auto escolhe o modo pelo TEXTO da mensagem. Texto de codigo nao
+        // pode levantar o teto de superficie.
+        let portao = ToolGate::para_o_turno(
+            &remoto(Some("auto")),
+            "implement a function that refactors the code and run it",
+        );
+        for t in PERIGOSAS {
+            assert!(
+                !permite_real(&portao, t),
+                "remoto no auto liberou `{t}` por texto"
+            );
+        }
+    }
+
+    #[test]
+    fn operador_sem_modo_e_sem_teto_continua_com_tudo() {
+        // Regressao: o dono nao perde nada. Sem teto, sem modo, o portao nao
+        // muda nada (decisao existente, teste `sem_modo_o_portao_nao_muda_nada`).
+        let portao = ToolGate::para_o_turno(&ExecContext::default(), "oi");
+        assert!(permite_real(&portao, "bash"));
+        assert!(permite_real(&portao, "file_write"));
+    }
+}
