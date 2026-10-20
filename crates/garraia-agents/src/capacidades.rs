@@ -147,6 +147,7 @@ pub const NATIVAS: &[(&str, &[Capacidade])] = &[
     ("device_read", &[Capacidade::DeviceRead]),
     ("device_execute", &[Capacidade::DeviceExecute]),
     ("garra_status", &[Capacidade::RuntimeInspect]),
+    ("garra_capabilities", &[Capacidade::RuntimeInspect]),
     ("schedule_heartbeat", &[Capacidade::Scheduling]),
     ("schedule_recurring", &[Capacidade::Scheduling]),
 ];
@@ -219,6 +220,7 @@ mod tests {
             "device_read",
             "file_read",
             "file_write",
+            "garra_capabilities",
             "garra_status",
             "git_diff",
             "list_dir",

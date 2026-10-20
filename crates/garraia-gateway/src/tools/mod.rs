@@ -6,6 +6,7 @@
 //! `garraia-agents → garraia-channels` edge. Such tools implement
 //! `garraia_agents::Tool` here instead and close over `Arc<AppState>`.
 
+pub mod catalog_tool;
 pub mod channel_send_tool;
 pub mod channel_send_voice_tool;
 pub mod garra_status_tool;

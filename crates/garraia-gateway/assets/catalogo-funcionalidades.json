@@ -1,0 +1,691 @@
+{
+  "schema": "garra.funcionalidades/v1",
+  "catalog_version": "0.4.9",
+  "language": "pt-BR",
+  "notes": "Catálogo versionado de funcionalidades (#1670). Chaves estáveis em inglês (machine-readable), valores em pt-BR. availability: 'disponivel' = funciona numa instalação limpa; 'configuravel' = existe nesta versão mas exige configuração (prerequisites); 'opcional' = só existe atrás de feature de compilação ou interruptor de config (campo gate). Nada aqui descreve funcionalidade futura: só o que ESTA versão entrega. O estado da instalação (ativo/offline/agora) vem do runtime — garra_status — nunca deste arquivo.",
+  "categories": [
+    "chat",
+    "files",
+    "execution",
+    "web",
+    "channels",
+    "mcp",
+    "memory-scheduling",
+    "devices",
+    "diagnostics-admin"
+  ],
+  "items": [
+    {
+      "id": "chat",
+      "name": "Conversa com o agente",
+      "category": "chat",
+      "summary": "Conversa com o agente por web chat, CLI, REST API e canais de mensagem, com streaming e histórico de sessão.",
+      "prerequisites": [],
+      "limitations": [
+        "o que a conversa pode fazer depende do modo de agente e do portão de permissões do turno (garra_status → session.mode e capabilities)"
+      ],
+      "availability": "disponivel"
+    },
+    {
+      "id": "modos-de-agente",
+      "name": "Modos de agente",
+      "category": "chat",
+      "summary": "Modos com ferramentas e políticas próprias (default_mode por canal e modos custom).",
+      "prerequisites": [
+        "modos custom: PATCH /api/modes/custom/{id} com Bearer api_key"
+      ],
+      "limitations": [
+        "o modo efetivo da sessão está em garra_status → session.mode"
+      ],
+      "availability": "configuravel"
+    },
+    {
+      "id": "aprovacao-humana",
+      "name": "Aprovação humana",
+      "category": "chat",
+      "summary": "Ferramentas mutantes podem pedir confirmação humana vinculada ao pedido que foi aprovado.",
+      "prerequisites": [],
+      "limitations": [
+        "vale conforme a política do modo atual; a aprovação é vinculada à ferramenta e ao assunto aprovados, não ao turno inteiro"
+      ],
+      "availability": "disponivel"
+    },
+    {
+      "id": "voz",
+      "name": "Voz (TTS/STT)",
+      "category": "chat",
+      "summary": "Síntese de voz e transcrição de áudio para os canais.",
+      "prerequisites": [
+        "provedor de voz configurado (as features tts/stt do /api/capabilities só aparecem com provedor no ar)"
+      ],
+      "limitations": [
+        "sem provedor configurado, envio de voz e transcrição não funcionam"
+      ],
+      "availability": "configuravel",
+      "gate": "config:provedor de voz (tts/stt)"
+    },
+    {
+      "id": "file_read",
+      "name": "Leitura de arquivo",
+      "category": "files",
+      "summary": "Lê arquivos dentro da raiz de arquivos da sessão.",
+      "prerequisites": [],
+      "limitations": [
+        "caminho fora da raiz (FileJail) é negado",
+        "sem raiz na sessão, file_tools.ready=false no garra_status e todo caminho é negado"
+      ],
+      "availability": "disponivel",
+      "tool": "file_read"
+    },
+    {
+      "id": "file_write",
+      "name": "Escrita de arquivo",
+      "category": "files",
+      "summary": "Escreve e edita arquivos dentro da raiz de arquivos da sessão.",
+      "prerequisites": [],
+      "limitations": [
+        "caminho fora da raiz (FileJail) é negado",
+        "negada em modos somente leitura (classe filesystem.write)"
+      ],
+      "availability": "disponivel",
+      "tool": "file_write"
+    },
+    {
+      "id": "list_dir",
+      "name": "Listagem de diretório",
+      "category": "files",
+      "summary": "Lista o conteúdo de um diretório dentro da raiz da sessão.",
+      "prerequisites": [],
+      "limitations": [
+        "caminho fora da raiz (FileJail) é negado"
+      ],
+      "availability": "disponivel",
+      "tool": "list_dir"
+    },
+    {
+      "id": "repo_search",
+      "name": "Busca no repositório",
+      "category": "files",
+      "summary": "Busca textual no repositório da sessão.",
+      "prerequisites": [],
+      "limitations": [
+        "precisa de repositório na sessão; sem ele a ferramenta entra em pausa (breaker) até o fim do turno"
+      ],
+      "availability": "disponivel",
+      "tool": "repo_search"
+    },
+    {
+      "id": "git_diff",
+      "name": "Diff do repositório",
+      "category": "files",
+      "summary": "Mostra o diff do repositório Git da sessão.",
+      "prerequisites": [],
+      "limitations": [
+        "precisa de repositório Git na sessão"
+      ],
+      "availability": "disponivel",
+      "tool": "git_diff"
+    },
+    {
+      "id": "code_review",
+      "name": "Revisão de código",
+      "category": "files",
+      "summary": "Analisa um diff do repositório da sessão para revisão de código.",
+      "prerequisites": [],
+      "limitations": [
+        "precisa de repositório na sessão"
+      ],
+      "availability": "disponivel",
+      "tool": "code_review"
+    },
+    {
+      "id": "bash",
+      "name": "Execução de comandos",
+      "category": "execution",
+      "summary": "Executa comandos no host (modo allowlist) ou no sandbox.",
+      "prerequisites": [
+        "config agent.bash_allowlist (execução no host, só comandos da lista) ou agent.sandbox.mode ligado"
+      ],
+      "limitations": [
+        "fora da allowlist o comando é negado",
+        "comandos perigosos são negados pela denylist mesmo liberados",
+        "curinga em ferramenta que re-executa código é proibido (git, cargo, interpretadores)"
+      ],
+      "availability": "configuravel",
+      "tool": "bash"
+    },
+    {
+      "id": "run_tests",
+      "name": "Execução de testes",
+      "category": "execution",
+      "summary": "Executa a suíte de testes do projeto da sessão.",
+      "prerequisites": [],
+      "limitations": [
+        "precisa de projeto/repositório na sessão"
+      ],
+      "availability": "disponivel",
+      "tool": "run_tests"
+    },
+    {
+      "id": "sandbox",
+      "name": "Sandbox de execução",
+      "category": "execution",
+      "summary": "Confinamento opcional de ferramentas de execução em container.",
+      "prerequisites": [
+        "config agent.sandbox.mode diferente de off (o padrão é off)",
+        "backend de container disponível — sem backend o sandbox falha fechado, sem fallback para o host"
+      ],
+      "limitations": [
+        "é camada ADICIONAL: a denylist de segurança vence o sandbox (comando perigoso não chega ao container)",
+        "tools em elevated escapam do container mas continuam passando pelo safety gate"
+      ],
+      "availability": "opcional",
+      "gate": "config:agent.sandbox.mode (default off)"
+    },
+    {
+      "id": "web_search",
+      "name": "Busca web",
+      "category": "web",
+      "summary": "Busca web para o agente.",
+      "prerequisites": [
+        "chave de API de busca configurada"
+      ],
+      "limitations": [
+        "sem chave, a ferramenta não é registrada"
+      ],
+      "availability": "configuravel",
+      "tool": "web_search"
+    },
+    {
+      "id": "web_fetch",
+      "name": "Busca de URL",
+      "category": "web",
+      "summary": "Busca o conteúdo de uma URL e devolve texto.",
+      "prerequisites": [],
+      "limitations": [
+        "recusa loopback e endereços privados (guarda SSRF)",
+        "páginas com bloqueio podem não renderizar"
+      ],
+      "availability": "disponivel",
+      "tool": "web_fetch"
+    },
+    {
+      "id": "web",
+      "name": "Web Chat",
+      "category": "channels",
+      "summary": "Chat web embutido no gateway.",
+      "prerequisites": [],
+      "limitations": [
+        "quem alcança a porta sem chave não é tratado como operador (turno restrito)"
+      ],
+      "availability": "disponivel",
+      "channel": "web"
+    },
+    {
+      "id": "api",
+      "name": "REST API",
+      "category": "channels",
+      "summary": "API REST do gateway (/api, /v1) para clientes próprios.",
+      "prerequisites": [
+        "Bearer api_key em gateway.api_key"
+      ],
+      "limitations": [
+        "rotas /api e /v1 sem credencial respondem 401"
+      ],
+      "availability": "configuravel",
+      "channel": "api"
+    },
+    {
+      "id": "telegram",
+      "name": "Telegram",
+      "category": "channels",
+      "summary": "Canal de conversa pelo Telegram.",
+      "prerequisites": [
+        "bot token em channels.telegram"
+      ],
+      "limitations": [
+        "estado ao vivo em garra_status → channels"
+      ],
+      "availability": "configuravel",
+      "channel": "telegram"
+    },
+    {
+      "id": "discord",
+      "name": "Discord",
+      "category": "channels",
+      "summary": "Canal de conversa pelo Discord.",
+      "prerequisites": [
+        "credencial em channels.discord"
+      ],
+      "limitations": [
+        "estado ao vivo em garra_status → channels"
+      ],
+      "availability": "configuravel",
+      "channel": "discord"
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "category": "channels",
+      "summary": "Canal de conversa pelo Slack.",
+      "prerequisites": [
+        "credencial em channels.slack"
+      ],
+      "limitations": [
+        "estado ao vivo em garra_status → channels"
+      ],
+      "availability": "configuravel",
+      "channel": "slack"
+    },
+    {
+      "id": "whatsapp",
+      "name": "WhatsApp (webhook)",
+      "category": "channels",
+      "summary": "Canal de conversa pelo WhatsApp Cloud API (webhook push).",
+      "prerequisites": [
+        "credencial da Cloud API da Meta em channels.whatsapp"
+      ],
+      "limitations": [
+        "estado ao vivo em garra_status → channels"
+      ],
+      "availability": "configuravel",
+      "channel": "whatsapp"
+    },
+    {
+      "id": "whatsapp_linked",
+      "name": "WhatsApp (dispositivo vinculado)",
+      "category": "channels",
+      "summary": "Canal de conversa pelo WhatsApp do próprio aparelho, via ponte local (Baileys).",
+      "prerequisites": [
+        "Node.js 20+ no host",
+        "pareamento via /pair ou allowlist em channels.whatsapp_linked.settings.allow"
+      ],
+      "limitations": [
+        "portão vazio (allowlist) descarta mensagens de quem não está na lista, sem resposta",
+        "recusa subir com tool MCP registrada fora do piso somente leitura do canal",
+        "pareamento pendente é memória do processo: restart do gateway o descarta"
+      ],
+      "availability": "configuravel",
+      "channel": "whatsapp_linked"
+    },
+    {
+      "id": "imessage",
+      "name": "iMessage",
+      "category": "channels",
+      "summary": "Canal de conversa pelo iMessage.",
+      "prerequisites": [
+        "config channels.imessage habilitado"
+      ],
+      "limitations": [
+        "estado ao vivo em garra_status → channels"
+      ],
+      "availability": "configuravel",
+      "channel": "imessage"
+    },
+    {
+      "id": "google_chat",
+      "name": "Google Chat",
+      "category": "channels",
+      "summary": "Canal de conversa pelo Google Chat.",
+      "prerequisites": [
+        "credencial em channels.google_chat"
+      ],
+      "limitations": [
+        "estado ao vivo em garra_status → channels"
+      ],
+      "availability": "configuravel",
+      "channel": "google_chat"
+    },
+    {
+      "id": "teams",
+      "name": "Microsoft Teams",
+      "category": "channels",
+      "summary": "Canal de conversa pelo Microsoft Teams.",
+      "prerequisites": [
+        "credencial em channels.teams"
+      ],
+      "limitations": [
+        "estado ao vivo em garra_status → channels"
+      ],
+      "availability": "configuravel",
+      "channel": "teams"
+    },
+    {
+      "id": "line",
+      "name": "LINE",
+      "category": "channels",
+      "summary": "Canal de conversa pelo LINE.",
+      "prerequisites": [
+        "credencial em channels.line"
+      ],
+      "limitations": [
+        "estado ao vivo em garra_status → channels"
+      ],
+      "availability": "configuravel",
+      "channel": "line"
+    },
+    {
+      "id": "irc",
+      "name": "IRC",
+      "category": "channels",
+      "summary": "Canal de conversa pelo IRC.",
+      "prerequisites": [
+        "config channels.irc habilitado"
+      ],
+      "limitations": [
+        "estado ao vivo em garra_status → channels"
+      ],
+      "availability": "configuravel",
+      "channel": "irc"
+    },
+    {
+      "id": "signal",
+      "name": "Signal",
+      "category": "channels",
+      "summary": "Canal de conversa pelo Signal.",
+      "prerequisites": [
+        "config channels.signal habilitado"
+      ],
+      "limitations": [
+        "estado ao vivo em garra_status → channels"
+      ],
+      "availability": "configuravel",
+      "channel": "signal"
+    },
+    {
+      "id": "matrix",
+      "name": "Matrix",
+      "category": "channels",
+      "summary": "Canal de conversa pelo Matrix.",
+      "prerequisites": [
+        "credencial em channels.matrix"
+      ],
+      "limitations": [
+        "estado ao vivo em garra_status → channels"
+      ],
+      "availability": "configuravel",
+      "channel": "matrix"
+    },
+    {
+      "id": "openclaw",
+      "name": "OpenClaw",
+      "category": "channels",
+      "summary": "Roteador OpenClaw conectado ao Garra.",
+      "prerequisites": [
+        "integração OpenClaw configurada (feature openclaw do /api/capabilities)"
+      ],
+      "limitations": [
+        "estado ao vivo em garra_status → channels"
+      ],
+      "availability": "configuravel",
+      "channel": "openclaw"
+    },
+    {
+      "id": "cli",
+      "name": "CLI (garra)",
+      "category": "channels",
+      "summary": "Linha de comando do Garra: chat, canais, diagnóstico e operação.",
+      "prerequisites": [],
+      "limitations": [
+        "comandos de operação rodam no host, fora da conversa"
+      ],
+      "availability": "disponivel",
+      "channel": "cli"
+    },
+    {
+      "id": "telegram_send",
+      "name": "Envio por Telegram",
+      "category": "channels",
+      "summary": "Envia mensagem de texto para um alvo do Telegram pela tool telegram_send.",
+      "prerequisites": [
+        "canal Telegram configurado"
+      ],
+      "limitations": [
+        "teto de envios por sessão (orçamento de envio)"
+      ],
+      "availability": "configuravel",
+      "tool": "telegram_send"
+    },
+    {
+      "id": "telegram_send_voice",
+      "name": "Envio de voz por Telegram",
+      "category": "channels",
+      "summary": "Envia áudio sintetizado (TTS) para um alvo do Telegram pela tool telegram_send_voice.",
+      "prerequisites": [
+        "canal Telegram configurado",
+        "provedor de voz (TTS) configurado"
+      ],
+      "limitations": [
+        "teto de envios por minuto da sessão"
+      ],
+      "availability": "configuravel",
+      "tool": "telegram_send_voice"
+    },
+    {
+      "id": "mcp-client",
+      "name": "Cliente MCP",
+      "category": "mcp",
+      "summary": "Ferramentas de servidores MCP externos disponíveis na conversa (mcp.json).",
+      "prerequisites": [
+        "mcp.json com servidores declarados (o primeiro boot provisiona o filesystem MCP sozinho; opt-out GARRAIA_DISABLE_MCP_AUTOPROVISION=1)"
+      ],
+      "limitations": [
+        "tool MCP sem anotação não tem classe e é negada em modo restrito por classe (fail-closed)",
+        "o canal whatsapp_linked recusa subir com tool MCP fora do piso somente leitura"
+      ],
+      "availability": "configuravel"
+    },
+    {
+      "id": "mcp-http",
+      "name": "Cliente MCP Streamable HTTP",
+      "category": "mcp",
+      "summary": "Consome um servidor MCP remoto por Streamable HTTP.",
+      "prerequisites": [
+        "build com a feature de compilação mcp-http (fora do build padrão)",
+        "servidor remoto declarado no mcp.json"
+      ],
+      "limitations": [
+        "fora do build padrão do release: sem a feature, o recurso não existe no binário"
+      ],
+      "availability": "opcional",
+      "gate": "feature:mcp-http"
+    },
+    {
+      "id": "mcp-http-server",
+      "name": "Ponte MCP do Garra (POST /mcp)",
+      "category": "mcp",
+      "summary": "Um orquestrador externo consome o Garra como servidor MCP (Streamable HTTP).",
+      "prerequisites": [
+        "feature de compilação mcp-http-server (ligada por padrão)",
+        "config gateway.mcp_http.enabled = true (o padrão é false)",
+        "gateway.api_key configurado (sem chave, o check de config reprova a montagem)"
+      ],
+      "limitations": [
+        "o interruptor é de runtime: a feature sozinha não publica a rota"
+      ],
+      "availability": "opcional",
+      "gate": "feature+config:mcp-http-server + gateway.mcp_http.enabled"
+    },
+    {
+      "id": "mcp-marketplace",
+      "name": "Marketplace de MCP",
+      "category": "mcp",
+      "summary": "Listagem de servidores MCP para instalar na instalação.",
+      "prerequisites": [],
+      "limitations": [
+        "a listagem de servidores remotos requer acesso à rede"
+      ],
+      "availability": "disponivel"
+    },
+    {
+      "id": "memoria",
+      "name": "Memória",
+      "category": "memory-scheduling",
+      "summary": "Memória de longo prazo do agente, por sessão e global (/api/memory).",
+      "prerequisites": [
+        "provedor de memória configurado (feature memory do /api/capabilities)"
+      ],
+      "limitations": [
+        "sem provedor, memory_enabled=false no garra_status"
+      ],
+      "availability": "configuravel"
+    },
+    {
+      "id": "agendamento-heartbeat",
+      "name": "Heartbeat agendado",
+      "category": "memory-scheduling",
+      "summary": "Agenda o retorno do agente após um intervalo (schedule_heartbeat).",
+      "prerequisites": [],
+      "limitations": [
+        "não há API HTTP de scheduling: o tile automations do mobile não aparece, de propósito"
+      ],
+      "availability": "disponivel",
+      "tool": "schedule_heartbeat"
+    },
+    {
+      "id": "agendamento-recorrente",
+      "name": "Tarefa recorrente",
+      "category": "memory-scheduling",
+      "summary": "Agenda tarefas recorrentes e disparos por webhook (schedule_recurring).",
+      "prerequisites": [],
+      "limitations": [
+        "não há API HTTP de scheduling: o tile automations do mobile não aparece, de propósito"
+      ],
+      "availability": "disponivel",
+      "tool": "schedule_recurring"
+    },
+    {
+      "id": "skills",
+      "name": "Skills e aprendizado",
+      "category": "memory-scheduling",
+      "summary": "Skills (procedimentos reutilizáveis) e aprendizado do agente (/api/skills, /api/learning).",
+      "prerequisites": [],
+      "limitations": [
+        "o conteúdo das skills vive no diretório de dados da instalação"
+      ],
+      "availability": "disponivel"
+    },
+    {
+      "id": "device_list",
+      "name": "Listagem de dispositivos",
+      "category": "devices",
+      "summary": "Lista dispositivos de hardware configurados (device_list).",
+      "prerequisites": [
+        "dispositivos configurados (garraia-hardware)"
+      ],
+      "limitations": [
+        "sem dispositivos configurados a lista sai vazia"
+      ],
+      "availability": "configuravel",
+      "tool": "device_list"
+    },
+    {
+      "id": "device_read",
+      "name": "Leitura de dispositivo",
+      "category": "devices",
+      "summary": "Lê o estado de um dispositivo configurado (device_read).",
+      "prerequisites": [
+        "dispositivos configurados (garraia-hardware)"
+      ],
+      "limitations": [
+        "só dispositivos da config; nenhum caminho do host é exposto"
+      ],
+      "availability": "configuravel",
+      "tool": "device_read"
+    },
+    {
+      "id": "device_execute",
+      "name": "Ação em dispositivo",
+      "category": "devices",
+      "summary": "Executa uma ação num dispositivo configurado (device_execute).",
+      "prerequisites": [
+        "dispositivos configurados (garraia-hardware)"
+      ],
+      "limitations": [
+        "classe device.execute: negada em modos somente leitura"
+      ],
+      "availability": "configuravel",
+      "tool": "device_execute"
+    },
+    {
+      "id": "garra_status",
+      "name": "Status do runtime",
+      "category": "diagnostics-admin",
+      "summary": "Relatório do runtime desta sessão: versão, tools do turno, canais, features, memória e o enlace do catálogo (garra_status).",
+      "prerequisites": [],
+      "limitations": [
+        "campos retidos em turno restrito (lista withheld)",
+        "mostra o estado AGORA; o que a versão entrega é o catálogo (garra_capabilities)"
+      ],
+      "availability": "disponivel",
+      "tool": "garra_status"
+    },
+    {
+      "id": "garra_capabilities",
+      "name": "Catálogo de funcionalidades",
+      "category": "diagnostics-admin",
+      "summary": "Consulta sob demanda ao catálogo de funcionalidades desta versão, com filtro por nome ou categoria (garra_capabilities).",
+      "prerequisites": [],
+      "limitations": [
+        "sem filtro devolve só o resumo (contagens por categoria); com filtro, no máximo 50 itens por resposta (padrão 10)",
+        "descreve o que ESTA versão entrega; o estado da instalação vai no garra_status"
+      ],
+      "availability": "disponivel",
+      "tool": "garra_capabilities"
+    },
+    {
+      "id": "diagnostics-api",
+      "name": "Diagnóstico por API",
+      "category": "diagnostics-admin",
+      "summary": "/api/diagnostics, /api/health e /api/capabilities para operação da instalação.",
+      "prerequisites": [
+        "Bearer api_key para /api/*"
+      ],
+      "limitations": [
+        "mesma visão do garra_status, para humanos e console"
+      ],
+      "availability": "configuravel",
+      "operator_only": true
+    },
+    {
+      "id": "doctor-cli",
+      "name": "Doctor (CLI)",
+      "category": "diagnostics-admin",
+      "summary": "Diagnóstico da instalação por área (garraia doctor <area>).",
+      "prerequisites": [],
+      "limitations": [
+        "roda no host, fora da conversa"
+      ],
+      "availability": "disponivel",
+      "operator_only": true
+    },
+    {
+      "id": "instalacao-atualizacao",
+      "name": "Instalação e atualização",
+      "category": "diagnostics-admin",
+      "summary": "Instalador (install.sh) e atualizador: o binário carrega o catálogo e as ferramentas embutidos.",
+      "prerequisites": [],
+      "limitations": [
+        "instalação limpa não depende do repositório: este catálogo viaja dentro do binário"
+      ],
+      "availability": "disponivel",
+      "operator_only": true
+    },
+    {
+      "id": "tls",
+      "name": "HTTPS/TLS",
+      "category": "diagnostics-admin",
+      "summary": "Servir o gateway por HTTPS com certificado próprio.",
+      "prerequisites": [
+        "build com a feature de compilação tls (fora do default)",
+        "config gateway.tls_cert_path e gateway.tls_key_path (os dois, ou nenhum)"
+      ],
+      "limitations": [
+        "sem a feature, o binário não serve TLS nem lê os caminhos de certificado"
+      ],
+      "availability": "opcional",
+      "gate": "feature+config:tls + gateway.tls_cert_path/gateway.tls_key_path",
+      "operator_only": true
+    }
+  ]
+}
