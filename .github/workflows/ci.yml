@@ -733,6 +733,17 @@ jobs:
       - name: Run cargo-deny (advisories + bans + licenses + sources)
         uses: EmbarkStudios/cargo-deny-action@v2
 
+      # Excecoes temporarias do `deny.toml` tem prazo (hoje: 3 ate 2026-11-18,
+      # #1667). O cargo-deny 0.20.2 nao tem chave de expiracao por entrada
+      # (`unexpected-keys`), entao o prazo fica no `reason` e e verificado
+      # aqui. Vermelho significa que uma excecao venceu e precisa ser renovada
+      # com justificativa nova ou removida — nao que ha vulnerabilidade nova.
+      - name: Prazo das excecoes temporarias do deny.toml
+        run: python3 scripts/security/check_deny_exceptions_expiry.py deny.toml
+
+      - name: Testes do verificador de prazo
+        run: python3 scripts/security/tests/test_check_deny_exceptions_expiry.py
+
   # Dependency review — catches new vulnerable/deprecated transitive deps
   # before they land on main. Runs only on pull_request (the action requires
   # a base SHA for the diff and has no useful meaning on push).

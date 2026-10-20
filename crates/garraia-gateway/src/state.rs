@@ -1312,7 +1312,19 @@ impl AppState {
         self.exec_context_for_inner(session_id, user_id).await
     }
 
+    /// Contexto do turno com o teto de superficie aplicado (auditoria do modo
+    /// `auto`). O teto nao depende do modo: um remoto que troca de modo ou cai
+    /// no `auto` continua limitado pela superficie. O operador nao recebe teto.
     async fn exec_context_for_inner(&self, session_id: &str, user_id: Option<&str>) -> ExecContext {
+        let mut exec = self.exec_context_base(session_id, user_id).await;
+        if exec.teto.is_none() {
+            let operador = crate::channels_view::sessao_do_operador(self, session_id).await;
+            exec.teto = crate::channels_view::teto_da_superficie(operador);
+        }
+        exec
+    }
+
+    async fn exec_context_base(&self, session_id: &str, user_id: Option<&str>) -> ExecContext {
         let goal = self.session_goal_for(session_id, user_id).await;
         // O diretorio da sessao existe desde a Fase 1.3 (`SessionState::working_dir`,
         // gravado por `POST /api/sessions` com `project_id`/`working_dir`) e nunca

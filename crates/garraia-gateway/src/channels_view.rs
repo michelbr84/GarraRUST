@@ -373,6 +373,53 @@ pub(crate) fn rotulo_da_sessao(state: &AppState, session_id: &str) -> Option<Str
     gravado.or_else(|| channel_of_session(session_id).map(str::to_string))
 }
 
+/// Fatos lidos do estado da sessao para decidir se ela e do operador.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FontesDaSessao {
+    /// Sem banco: nao ha `chat_session_keys` a consultar.
+    SemBanco,
+    /// Fontes persistidas lidas com sucesso.
+    Lidas(Vec<String>),
+    /// Leitura falhou: a sessao e tratada como remota.
+    Ilegivel,
+}
+
+/// Decisao pura de `sessao_do_operador`: so os fatos entram, nenhuma leitura.
+///
+/// `superficies` e `None` quando a sessao nao esta em memoria. A regra e
+/// fail-closed: qualquer sinal remoto, qualquer falha, ou nenhuma superficie
+/// gravada responde `false`.
+pub(crate) fn decide_operador(
+    porta_fechada: bool,
+    canal_do_prefixo: Option<&str>,
+    superficies: Option<&[String]>,
+    fontes: &FontesDaSessao,
+) -> bool {
+    if !porta_fechada {
+        return false;
+    }
+    if canal_do_prefixo.is_some_and(|c| remetente_da_superficie(c) == Remetente::Qualquer) {
+        return false;
+    }
+    let superficies = match superficies {
+        Some(s) if !s.is_empty() => s,
+        _ => return false,
+    };
+    if superficies
+        .iter()
+        .any(|s| remetente_da_superficie(s) != Remetente::Operador)
+    {
+        return false;
+    }
+    match fontes {
+        FontesDaSessao::SemBanco => true,
+        FontesDaSessao::Ilegivel => false,
+        FontesDaSessao::Lidas(fontes) => fontes
+            .iter()
+            .all(|f| remetente_da_superficie(f) == Remetente::Operador),
+    }
+}
+
 /// Esta sessao so pode ter o operador do outro lado? (#1347, C1)
 ///
 /// O `garra_status` entrega o que e do operador (`working_dir`, provedores,
@@ -393,50 +440,40 @@ pub(crate) fn rotulo_da_sessao(state: &AppState, session_id: &str) -> Option<Str
 ///
 /// Qualquer sinal remoto, qualquer falha de leitura ou nenhuma superficie
 /// gravada responde `false`: fail-closed.
+///
+/// Limite conhecido (auditoria #1666): `Operador` e um rotulo de canal, nao uma
+/// identidade. Com `api_key` configurada, cada superficie local so grava o
+/// rotulo depois que a chave foi validada na rota (`ws.rs`, `parrot_ws.rs`,
+/// `/api/*`, `/v1/*`). Sem chave, a porta fica fechada so em loopback, e a
+/// confianca e a do usuario local. Ver os testes de `decisao_operador_tests`.
+/// Coleta os fatos da sessao e aplica `decide_operador`.
 pub(crate) async fn sessao_do_operador(state: &AppState, session_id: &str) -> bool {
-    if !porta_do_operador_fechada(&state.config.gateway) {
-        return false;
-    }
-    if channel_of_session(session_id)
-        .is_some_and(|canal| remetente_da_superficie(canal) == Remetente::Qualquer)
-    {
-        return false;
-    }
-    let superficies: Vec<String> = match state.sessions.get(session_id) {
-        Some(s) => s.canais_dos_turnos.iter().cloned().collect(),
-        None => return false,
-    };
-    if superficies.is_empty()
-        || superficies
-            .iter()
-            .any(|s| remetente_da_superficie(s) != Remetente::Operador)
-    {
-        return false;
-    }
-    // Sem banco nao ha `chat_session_keys` — e tambem nao ha sessao por
-    // UUID: o Telegram cai em `telegram-{chat_id}`
-    // (`AppState::telegram_session_id`), e o prefixo acima ja o pegou.
-    if let Some(store) = &state.session_store {
-        let fontes = store.lock().await.get_sources_for_session(session_id);
-        match fontes {
-            Ok(fontes) => {
-                if fontes
-                    .iter()
-                    .any(|f| remetente_da_superficie(f) != Remetente::Operador)
-                {
-                    return false;
-                }
-            }
+    let porta_fechada = porta_do_operador_fechada(&state.config.gateway);
+    let superficies: Option<Vec<String>> = state
+        .sessions
+        .get(session_id)
+        .map(|s| s.canais_dos_turnos.iter().cloned().collect());
+    // Sem banco nao ha `chat_session_keys` — e tambem nao ha sessao por UUID:
+    // o Telegram cai em `telegram-{chat_id}`, e o prefixo ja o pega.
+    let fontes = match &state.session_store {
+        None => FontesDaSessao::SemBanco,
+        Some(store) => match store.lock().await.get_sources_for_session(session_id) {
+            Ok(f) => FontesDaSessao::Lidas(f),
             Err(e) => {
                 tracing::warn!(
                     erro = %e,
-                    "garra_status: chat_session_keys ilegivel; sessao tratada como remota"
+                    "chat_session_keys ilegivel; sessao tratada como remota"
                 );
-                return false;
+                FontesDaSessao::Ilegivel
             }
-        }
-    }
-    true
+        },
+    };
+    decide_operador(
+        porta_fechada,
+        channel_of_session(session_id),
+        superficies.as_deref(),
+        &fontes,
+    )
 }
 
 #[cfg(test)]
@@ -578,5 +615,196 @@ mod tests {
             !ligado_na_config(&config, "telegram"),
             "desligado nao e ligado"
         );
+    }
+}
+
+/// Teto de superficie (auditoria de seguranca do modo `auto`): o que uma
+/// sessao que **nao e do operador** pode usar, independentemente do modo
+/// escolhido com `/mode` ou deduzido pelo `auto` a partir do texto.
+///
+/// Operador: `None`, nenhum teto, comportamento de hoje. Remoto: o mesmo
+/// `Nivel::Read` que o WhatsApp aplica a quem nao e dono: nega execucao de
+/// processo, escrita de arquivo, dispositivo, envio de mensagem, escrita de
+/// memoria e agenda. Leitura continua.
+///
+/// Sem este teto, `exec.agent_mode == None` cai em `ToolGate::sem_politica`
+/// (portao aberto, decisao documentada em `sem_modo_o_portao_nao_muda_nada`),
+/// e nenhum canal remoto tinha outra fronteira alem do registro das tools.
+pub(crate) fn teto_da_superficie(
+    operador: bool,
+) -> Option<garraia_agents::modes::TetoDeCapacidades> {
+    if operador {
+        return None;
+    }
+    Some(garraia_agents::modes::TetoDeCapacidades {
+        nome: "superficie remota (sem operador)".to_string(),
+        politica: garraia_agents::modes::politica_do_nivel(
+            garraia_agents::modes::Nivel::Read,
+            false,
+        ),
+    })
+}
+
+#[cfg(test)]
+mod teto_superficie_tests {
+    use super::*;
+    use garraia_agents::capacidades::capacidades_nativas;
+    use garraia_agents::modes::ToolGate;
+
+    fn permite(portao: &ToolGate, nome: &str) -> bool {
+        portao.permite_com_capacidades(nome, capacidades_nativas(nome))
+    }
+
+    #[test]
+    fn remoto_recebe_teto_de_leitura_e_o_operador_nao() {
+        assert!(teto_da_superficie(true).is_none(), "operador nao tem teto");
+        assert!(
+            teto_da_superficie(false).is_some(),
+            "remoto precisa de teto"
+        );
+    }
+
+    #[test]
+    fn teto_remoto_nega_bash_e_escrita_sem_modo() {
+        let portao = ToolGate::sem_politica().com_teto(teto_da_superficie(false));
+        assert!(!permite(&portao, "bash"));
+        assert!(!permite(&portao, "file_write"));
+        assert!(permite(&portao, "file_read"));
+    }
+
+    #[test]
+    fn operador_sem_teto_mantem_o_portao_aberto() {
+        let portao = ToolGate::sem_politica().com_teto(teto_da_superficie(true));
+        assert!(permite(&portao, "bash"));
+        assert!(permite(&portao, "file_write"));
+    }
+    /// Guarda de fiacao: o teto precisa estar ligado nos dois caminhos de
+    /// contexto que atendem superficie remota. Sem isto, a funcao acima
+    /// existe mas nenhum turno a usa — o estado que a auditoria encontrou.
+    #[test]
+    fn os_caminhos_de_contexto_remoto_aplicam_o_teto() {
+        let estado = include_str!("state.rs");
+        assert!(
+            estado.contains("teto_da_superficie("),
+            "state.rs (exec_context_for_inner) nao aplica o teto de superficie"
+        );
+        // A2A (`/a2a/tasks`) fica fora de proposito: a rota exige o bearer do
+        // gateway (401 sem ele), entao o chamador e o operador, e o teto
+        // cortaria os agentes que o operador configurou com `tools:`.
+    }
+}
+
+#[cfg(test)]
+mod decisao_operador_tests {
+    use super::*;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn porta_fechada_com_superficie_local_e_operador() {
+        let sup = s(&["web"]);
+        assert!(decide_operador(
+            true,
+            None,
+            Some(&sup),
+            &FontesDaSessao::SemBanco
+        ));
+    }
+
+    #[test]
+    fn porta_aberta_nunca_e_operador() {
+        // LAN aberta por opt-out: nenhuma superficie vira operador.
+        let sup = s(&["web"]);
+        assert!(!decide_operador(
+            false,
+            None,
+            Some(&sup),
+            &FontesDaSessao::SemBanco
+        ));
+    }
+
+    #[test]
+    fn prefixo_remoto_derruba_mesmo_com_superficie_local() {
+        // Sessao telegram-* com rotulo local gravado por engano nao vira operador.
+        let sup = s(&["web"]);
+        assert!(!decide_operador(
+            true,
+            Some("telegram"),
+            Some(&sup),
+            &FontesDaSessao::SemBanco
+        ));
+    }
+
+    #[test]
+    fn superficie_mista_com_remota_e_remota() {
+        // Operador e remoto no mesmo historico: fail-closed.
+        let sup = s(&["web", "telegram"]);
+        assert!(!decide_operador(
+            true,
+            None,
+            Some(&sup),
+            &FontesDaSessao::SemBanco
+        ));
+    }
+
+    #[test]
+    fn sem_superficie_gravada_e_remota() {
+        assert!(!decide_operador(
+            true,
+            None,
+            Some(&[]),
+            &FontesDaSessao::SemBanco
+        ));
+    }
+
+    #[test]
+    fn sessao_fora_da_memoria_e_remota() {
+        assert!(!decide_operador(
+            true,
+            None,
+            None,
+            &FontesDaSessao::SemBanco
+        ));
+    }
+
+    #[test]
+    fn fonte_persistida_remota_derruba() {
+        // Sessao com superficie local em memoria, mas com fonte remota no banco.
+        let sup = s(&["web"]);
+        let fontes = FontesDaSessao::Lidas(s(&["whatsapp"]));
+        assert!(!decide_operador(true, None, Some(&sup), &fontes));
+    }
+
+    #[test]
+    fn fonte_persistida_local_mantem_operador() {
+        let sup = s(&["web"]);
+        let fontes = FontesDaSessao::Lidas(s(&["web", "api"]));
+        assert!(decide_operador(true, None, Some(&sup), &fontes));
+    }
+
+    #[test]
+    fn leitura_do_banco_falhou_e_remota() {
+        // Falha de leitura nunca concede privilegio (fail-closed).
+        let sup = s(&["web"]);
+        assert!(!decide_operador(
+            true,
+            None,
+            Some(&sup),
+            &FontesDaSessao::Ilegivel
+        ));
+    }
+
+    #[test]
+    fn mobile_nunca_e_operador() {
+        // A conta mobile e aberta (JWT so tem sub/email): remota por desenho.
+        let sup = s(&["mobile"]);
+        assert!(!decide_operador(
+            true,
+            None,
+            Some(&sup),
+            &FontesDaSessao::SemBanco
+        ));
     }
 }
