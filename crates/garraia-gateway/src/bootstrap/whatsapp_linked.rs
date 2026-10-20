@@ -74,6 +74,7 @@ use super::execution::politica_de_execucao;
 // ADR 0025 §4: Access Policy v2 — principal, nivel, teto.
 /// #1419/#1420: o motor do `doctor whatsapp` — a tabela pura que a CLI e o
 /// card "Test WhatsApp" do Web Console rodam.
+pub mod cadencia;
 pub mod doctor;
 pub mod numero;
 pub mod politica;
@@ -1360,6 +1361,8 @@ pub struct GatewaySink {
     /// O portao **deste** canal. Nao e o `state.allowlist`: ver
     /// [`PortaoDoCanal`].
     portao: Arc<std::sync::Mutex<PortaoDoCanal>>,
+    /// #1650: cadencia entre turnos, por chat.
+    cadencia: Arc<std::sync::Mutex<cadencia::Cadencia>>,
     outbound: mpsc::Sender<BridgeCommand>,
 }
 
@@ -1378,8 +1381,17 @@ impl GatewaySink {
             runtime,
             settings,
             portao,
+            cadencia: Arc::new(std::sync::Mutex::new(cadencia::Cadencia::default())),
             outbound,
         }
+    }
+
+    /// Troca o teto de cadencia (#1650). Os testes de politica disparam rajadas
+    /// de um unico chat que nao sao o assunto da guarda.
+    #[cfg(test)]
+    pub(crate) fn com_cadencia(mut self, c: cadencia::Cadencia) -> Self {
+        self.cadencia = Arc::new(std::sync::Mutex::new(c));
+        self
     }
 
     /// Responde num chat. Erro de fila nao derruba nada: a ponte caida descarta
@@ -1420,6 +1432,7 @@ impl GatewaySink {
         state: SharedState,
         settings: LinkedSettings,
         portao: Arc<std::sync::Mutex<PortaoDoCanal>>,
+        cadencia: Arc<std::sync::Mutex<cadencia::Cadencia>>,
         outbound: mpsc::Sender<BridgeCommand>,
         msg: InboundMessage,
     ) {
@@ -1603,6 +1616,38 @@ impl GatewaySink {
             }
         }
 
+        // #1650: cadencia entre turnos. Depois do portao e dos comandos (nada
+        // que ja foi recusado conta), ANTES do modelo — cada turno admitido e
+        // uma chamada paga. Mutex envenenado = admite (fail-open aqui so
+        // desliga a guarda, nunca o portao).
+        let decisao = cadencia
+            .lock()
+            .map(|mut c| c.admitir(msg.chat_jid.as_str(), std::time::Instant::now()))
+            .unwrap_or(cadencia::Decisao::Admitido);
+        if let cadencia::Decisao::Cortado {
+            turnos,
+            primeiro_corte,
+        } = decisao
+        {
+            warn!(
+                phone_last4 = %last4,
+                turnos,
+                janela_s = cadencia::JANELA.as_secs(),
+                "whatsapp_linked: possivel loop entre agentes ({turnos} turnos em {}s); turno cortado",
+                cadencia::JANELA.as_secs()
+            );
+            if primeiro_corte {
+                Self::responder(
+                    &outbound,
+                    &msg.chat_jid,
+                    "Muitas mensagens em pouco tempo; vou pausar as respostas nesta conversa por um instante."
+                        .to_string(),
+                )
+                .await;
+            }
+            return;
+        }
+
         let politica = politica_de_execucao(&state.config);
         let perfil_turno = perfil_do_turno(politica.perfil, &settings, &remetente, msg.is_group);
         let modo_do_piso = modo_do_piso(perfil_turno, &settings);
@@ -1692,8 +1737,11 @@ impl InboundSink for GatewaySink {
         let state = Arc::clone(&self.state);
         let settings = self.settings.clone();
         let portao = Arc::clone(&self.portao);
+        let cadencia = Arc::clone(&self.cadencia);
         let outbound = self.outbound.clone();
-        tokio::spawn(Self::turno(state, settings, portao, outbound, message));
+        tokio::spawn(Self::turno(
+            state, settings, portao, cadencia, outbound, message,
+        ));
     }
 
     fn on_connection(&self, jid: Option<&Jid>, connected: bool) {
