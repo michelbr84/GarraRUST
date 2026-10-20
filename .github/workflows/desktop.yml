@@ -22,6 +22,12 @@ on:
       # janela de drift que este workflow existe para fechar.
       - 'crates/garraia-desktop-core/**'
       - 'crates/garraia-cli/**'
+      # Forks vendorizados (third_party/): so o desktop consome
+      # `tauri-plugin-updater`, cujo caminho `#[cfg(target_os = "windows")]`
+      # (`extract_zip`) so compila quando o desktop builda. Sem este glob, uma
+      # mudanca de versao do fork (como a do zip 9, #1662) passaria pelo CI do
+      # workspace sem nunca checar o Windows. Verificado em 2026-10-19.
+      - 'third_party/**'
       - 'scripts/build-installer.ps1'
       - 'scripts/build-desktop-linux.sh'
       - 'scripts/build-desktop-macos.sh'
