@@ -1199,7 +1199,7 @@ pub async fn serve_with(
             return Err(RunError::SessionDead { reason_code: None });
         }
 
-        match serve_once(
+        let outcome = serve_once(
             launcher.as_ref(),
             &store,
             &key,
@@ -1208,71 +1208,69 @@ pub async fn serve_with(
             &mut cancel,
             options,
         )
-        .await
-        {
-            // Politica por motivo, decidida em uma funcao so
-            // ([`politica_da_saida`]). Cada braco destrutura so os dados de
-            // que precisa; a decisao de reconectar ou nao e a funcao.
-            outcome => match politica_da_saida(&outcome) {
-                // Ctrl+C / shutdown pedido: nao e falha e nao e terminal.
-                PoliticaDeSaida::Cancelado => {
-                    sink.on_connection(None, false);
-                    return Ok(());
+        .await;
+        // Politica por motivo, decidida em uma funcao so
+        // ([`politica_da_saida`]). Cada braco destrutura so os dados de
+        // que precisa; a decisao de reconectar ou nao e a funcao.
+        match politica_da_saida(&outcome) {
+            // Ctrl+C / shutdown pedido: nao e falha e nao e terminal.
+            PoliticaDeSaida::Cancelado => {
+                sink.on_connection(None, false);
+                return Ok(());
+            }
+            // `logged_out` (ou 440: outro aparelho assumiu): parou de vez,
+            // sem apagar nada. O operador precisa saber que e para
+            // re-vincular.
+            PoliticaDeSaida::Deslogado => {
+                sink.on_connection(None, false);
+                sink.on_terminal(super::health::MotivoTerminal::Deslogado);
+                return Ok(());
+            }
+            // O servidor declarou a sessao morta: parou de vez, e o
+            // material que ele recusou ja foi descartado.
+            PoliticaDeSaida::SessaoMorta => {
+                sink.on_connection(None, false);
+                let reason_code = match &outcome {
+                    Ok(ServeExit::SessionDead { reason_code }) => *reason_code,
+                    _ => None,
+                };
+                store.purge()?;
+                sink.on_terminal(super::health::MotivoTerminal::SessaoMorta);
+                return Err(RunError::SessionDead { reason_code });
+            }
+            PoliticaDeSaida::Reconectar => {
+                sink.on_connection(None, false);
+                let conectou = matches!(
+                    &outcome,
+                    Ok(ServeExit::Dropped {
+                        was_connected: true,
+                        ..
+                    })
+                );
+                attempt = next_attempt(attempt, conectou);
+                falhas_consecutivas = proxima_falha_consecutiva(falhas_consecutivas, conectou);
+                let (motivo, codigo) = match &outcome {
+                    Ok(ServeExit::Dropped {
+                        reason,
+                        reason_code,
+                        ..
+                    }) => (*reason, *reason_code),
+                    _ => (None, None),
+                };
+                sink.on_drop(motivo, codigo, falhas_consecutivas);
+                let delay = backoff_ms(attempt, jitter());
+                tracing::info!(
+                    attempt,
+                    delay_ms = delay,
+                    reason = %descricao_motivo(motivo),
+                    reason_code = ?codigo,
+                    "WhatsApp vinculado caiu; reconectando"
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
+                    _ = cancel.changed() => return Ok(()),
                 }
-                // `logged_out` (ou 440: outro aparelho assumiu): parou de vez,
-                // sem apagar nada. O operador precisa saber que e para
-                // re-vincular.
-                PoliticaDeSaida::Deslogado => {
-                    sink.on_connection(None, false);
-                    sink.on_terminal(super::health::MotivoTerminal::Deslogado);
-                    return Ok(());
-                }
-                // O servidor declarou a sessao morta: parou de vez, e o
-                // material que ele recusou ja foi descartado.
-                PoliticaDeSaida::SessaoMorta => {
-                    sink.on_connection(None, false);
-                    let reason_code = match &outcome {
-                        Ok(ServeExit::SessionDead { reason_code }) => *reason_code,
-                        _ => None,
-                    };
-                    store.purge()?;
-                    sink.on_terminal(super::health::MotivoTerminal::SessaoMorta);
-                    return Err(RunError::SessionDead { reason_code });
-                }
-                PoliticaDeSaida::Reconectar => {
-                    sink.on_connection(None, false);
-                    let conectou = matches!(
-                        &outcome,
-                        Ok(ServeExit::Dropped {
-                            was_connected: true,
-                            ..
-                        })
-                    );
-                    attempt = next_attempt(attempt, conectou);
-                    falhas_consecutivas = proxima_falha_consecutiva(falhas_consecutivas, conectou);
-                    let (motivo, codigo) = match &outcome {
-                        Ok(ServeExit::Dropped {
-                            reason,
-                            reason_code,
-                            ..
-                        }) => (*reason, *reason_code),
-                        _ => (None, None),
-                    };
-                    sink.on_drop(motivo, codigo, falhas_consecutivas);
-                    let delay = backoff_ms(attempt, jitter());
-                    tracing::info!(
-                        attempt,
-                        delay_ms = delay,
-                        reason = %descricao_motivo(motivo),
-                        reason_code = ?codigo,
-                        "WhatsApp vinculado caiu; reconectando"
-                    );
-                    tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
-                        _ = cancel.changed() => return Ok(()),
-                    }
-                }
-            },
+            }
         }
     }
 }
