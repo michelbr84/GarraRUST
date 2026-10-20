@@ -2589,7 +2589,11 @@ mod ponta_a_ponta {
                 Arc::clone(&state.whatsapp_linked),
                 settings,
                 outbound_tx.clone(),
-            ),
+            )
+            .com_cadencia(super::cadencia::Cadencia::new(
+                usize::MAX,
+                super::cadencia::JANELA,
+            )),
             recebidas: Mutex::new(Vec::new()),
         });
         let sink: Arc<dyn InboundSink> = Arc::clone(&espiao) as Arc<dyn InboundSink>;
