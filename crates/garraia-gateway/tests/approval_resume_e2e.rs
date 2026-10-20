@@ -673,11 +673,19 @@ async fn mobile(gw: &Gateway, token: &str, texto: &str) -> String {
     v["reply"].as_str().expect("reply").to_string()
 }
 
-/// No mobile o remetente e o `sub` do JWT (que tambem deriva a sessao): o
-/// "sim" do mesmo usuario roda uma vez; o de outro usuario cai em outra
-/// sessao e nao toca no pedido.
+/// Mobile (#1665): conta de `POST /auth/register` nao e operador — a
+/// superficie `mobile` e `Remetente::Qualquer`, e a sessao le o teto de
+/// leitura ANTES de qualquer pedido de aprovacao.
+///
+/// O que este teste prende e o contrario do que existia antes do teto:
+/// "apaga o arquivo" do mobile criava um pedido de aprovacao e o MESMO `sub`
+/// respondia "sim" e a ferramenta rodava — qualquer conta auto-registrada
+/// apagava arquivo do host. Agora a escrita e negada pela superficie: nao
+/// nasce pedido nenhum (para nenhum `sub`) e nada roda, mesmo com "sim".
+/// A permissividade que sobra (leitura) esta no teste
+/// `teto_remoto_nega_bash_e_escrita_sem_modo` do `channels_view`.
 #[tokio::test]
-async fn mobile_sim_do_mesmo_sub_roda_e_outro_sub_nao_alcanca() {
+async fn mobile_nao_recebe_pedido_de_escrita_nem_roda_para_nenhum_sub() {
     let mut tokens = (String::new(), String::new());
     let gw = subir(|st| {
         com_jwt(st);
@@ -691,11 +699,24 @@ async fn mobile_sim_do_mesmo_sub_roda_e_outro_sub_nao_alcanca() {
     .await;
     let (a, b) = tokens;
 
-    assert!(e_pedido(&mobile(&gw, &a, "apaga o arquivo").await));
-    assert!(e_pedido(&mobile(&gw, &b, "sim").await));
-    assert_eq!(gw.rodou(), 0);
-    assert!(!e_pedido(&mobile(&gw, &a, "sim").await));
-    assert_eq!(gw.rodou(), 1);
+    // Os dois subs pedem a escrita; os dois "sim" seguidos nao tem pedido que
+    // alcancem. `e_pedido` tambem prova que o marcador interno nao vazou.
+    for resposta in [
+        mobile(&gw, &a, "apaga o arquivo").await,
+        mobile(&gw, &b, "apaga o arquivo").await,
+        mobile(&gw, &a, "sim").await,
+        mobile(&gw, &b, "sim").await,
+    ] {
+        assert!(
+            !e_pedido(&resposta),
+            "pedido de aprovacao de escrita vazou para o mobile: {resposta}"
+        );
+    }
+    assert_eq!(
+        gw.rodou(),
+        0,
+        "nenhuma escrita pode rodar vinda do mobile, com ou sem \"sim\""
+    );
 }
 
 // ── Canais de chat (bootstrap) ──────────────────────────────────────────
