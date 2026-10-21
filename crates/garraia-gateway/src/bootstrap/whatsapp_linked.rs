@@ -56,10 +56,12 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use garraia_agents::ChatMessage;
 use garraia_agents::exec_context::ExecContext;
 use garraia_agents::modes::{AgentMode, ToolGate};
-use garraia_channels::whatsapp_linked::health::{BridgeView, DiskFacts, LinkHealth, classify};
+use garraia_channels::whatsapp_linked::health::{
+    BridgeView, DiskFacts, LinkHealth, MotivoTerminal, SaudeDoCanal, classify,
+};
 use garraia_channels::whatsapp_linked::{
-    BridgeCommand, DEFAULT_ACCOUNT, InboundMessage, Jid, NodeLauncher, RunError, SessionError,
-    SessionKey, SessionStore, bridge, runner::InboundSink, runner::serve,
+    BridgeCommand, DEFAULT_ACCOUNT, DisconnectReason, InboundMessage, Jid, NodeLauncher, RunError,
+    SessionError, SessionKey, SessionStore, bridge, runner::InboundSink, runner::serve,
 };
 use garraia_config::{AppConfig, ExecutionProfile};
 use garraia_security::{InputValidator, PairingManager};
@@ -157,6 +159,10 @@ pub struct WhatsAppLinkedRuntime {
     /// [`rejeicoes`]; envenenado, recupera-se o interior (contagem de apoio,
     /// nunca motivo de recusa).
     rejeicoes: std::sync::Mutex<rejeicoes::Rejeicoes>,
+    /// #1663: o que alem de a ponte estar de pe o runtime viu — quedas
+    /// seguidas, ultimo motivo e se parou de vez. O que faz o `garra_status`
+    /// dizer `degraded` em vez de so `offline`. Envenenado, vale o interior.
+    saude: std::sync::Mutex<SaudeDoCanal>,
 }
 
 impl Default for WhatsAppLinkedRuntime {
@@ -166,6 +172,7 @@ impl Default for WhatsAppLinkedRuntime {
             cancel: std::sync::Mutex::new(None),
             recusas_lid: AtomicU64::new(0),
             rejeicoes: std::sync::Mutex::new(rejeicoes::Rejeicoes::default()),
+            saude: std::sync::Mutex::new(SaudeDoCanal::default()),
         }
     }
 }
@@ -203,6 +210,46 @@ impl WhatsAppLinkedRuntime {
 
     pub fn set_bridge(&self, view: BridgeView) {
         self.bridge.store(view_to_u8(view), Ordering::Relaxed);
+    }
+
+    /// O que o runtime viu de queda e de estado terminal (#1663).
+    pub fn saude(&self) -> SaudeDoCanal {
+        self.saude.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// Registra uma queda que vale reconexao. `falhas_consecutivas` vem do
+    /// `serve_with`, que ja zera quando a ponte conecta.
+    pub fn registra_queda(
+        &self,
+        reason: Option<&str>,
+        reason_code: Option<i64>,
+        falhas_consecutivas: u32,
+    ) {
+        if let Ok(mut g) = self.saude.lock() {
+            g.falhas_consecutivas = falhas_consecutivas;
+            // A queda MAIS RECENTE e sempre registrada, mesmo sem motivo: o
+            // `garra_status` nunca pode mostrar o motivo de uma queda antiga
+            // como se fosse o ultimo. Sem motivo vira `nao_informado`, a
+            // mesma convencao do log (`descricao_motivo`).
+            let nome = reason.unwrap_or("nao_informado");
+            g.ultima_queda = Some((nome.to_string(), reason_code));
+        }
+    }
+
+    /// Registra que o canal parou de vez (nao reconecta sozinho).
+    pub fn registra_terminal(&self, motivo: MotivoTerminal) {
+        if let Ok(mut g) = self.saude.lock() {
+            g.terminal = Some(motivo);
+            g.falhas_consecutivas = 0;
+        }
+    }
+
+    /// Zera a contagem de quedas seguidas: a ponte conectou de novo.
+    pub fn registra_conexao(&self) {
+        if let Ok(mut g) = self.saude.lock() {
+            g.falhas_consecutivas = 0;
+            g.terminal = None;
+        }
     }
 
     /// Quantas mensagens de remetente `@lid` sem numero foram recusadas desde
@@ -1744,8 +1791,35 @@ impl InboundSink for GatewaySink {
         ));
     }
 
+    fn on_drop(
+        &self,
+        reason: Option<DisconnectReason>,
+        reason_code: Option<i64>,
+        falhas_consecutivas: u32,
+    ) {
+        // O nome do motivo entra no estado (para o `garra_status`); o `jid` e
+        // o valor de segredo nunca entram em log nem em estado.
+        let nome = reason.map(|r| match r {
+            DisconnectReason::RestartRequired => "restart_required",
+            DisconnectReason::Network => "network",
+            DisconnectReason::Timeout => "timeout",
+            DisconnectReason::LoggedOut => "logged_out",
+            DisconnectReason::Replaced => "replaced",
+            DisconnectReason::Unknown => "unknown",
+        });
+        self.runtime
+            .registra_queda(nome, reason_code, falhas_consecutivas);
+    }
+
+    fn on_terminal(&self, motivo: MotivoTerminal) {
+        self.runtime.registra_terminal(motivo);
+    }
+
     fn on_connection(&self, jid: Option<&Jid>, connected: bool) {
         self.runtime.set_bridge(if connected {
+            // Conectar de novo zera as quedas seguidas e limpa o estado
+            // terminal (#1663): a sessao provou que funciona.
+            self.runtime.registra_conexao();
             BridgeView::Connected
         } else {
             BridgeView::Down

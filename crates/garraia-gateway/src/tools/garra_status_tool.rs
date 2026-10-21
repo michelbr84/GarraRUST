@@ -219,7 +219,8 @@ impl Tool for GarraStatusTool {
             "Describes the Garra runtime you are running in: version, uptime, active ",
             "provider and model, the tools available in this turn, advertised features, ",
             "each enabled messaging channel with its status (`active` = connected now, ",
-            "`offline` = configured but down), the execution profile, MCP servers, whether ",
+            "`offline` = configured but down, `degraded` = down and falling repeatedly, ",
+            "`stopped` = will not reconnect by itself), the execution profile, MCP servers, whether ",
             "the file tools have a root in this session (`file_tools.ready`; when false, ",
             "`file_tools.means` says what to tell the user), and this session's channel and ",
             "mode. Some fields can be held back, and the report names ",
@@ -290,6 +291,7 @@ impl Tool for GarraStatusTool {
                             "id": row.id,
                             "name": row.display_name,
                             "status": status,
+                            "motivo": row.motivo,
                         })
                     })
                 })
@@ -781,6 +783,83 @@ mod tests {
             assert!(nota.contains("`offline`"), "{nota}");
             assert!(nota.contains("`withheld`"), "{nota}");
         }
+    }
+
+    // ─── #1663: o que o operador precisa para decidir ─────────────────────
+
+    /// Canal **saudavel** — sem quedas registradas — nunca mostra `motivo` e
+    /// nunca vira `degraded`/`stopped`. E a garantia de que a mudanca nao
+    /// toca em quem esta funcionando (#1663).
+    #[tokio::test]
+    async fn canal_saudavel_nao_mostra_motivo_nem_muda_o_status() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        vincula(dir.path());
+        let st = state_com(config_no(dir.path()));
+        st.whatsapp_linked.set_bridge(BridgeView::Down);
+        let json = relatorio(&tool(&st), &ctx(None)).await;
+        let linha = canal(&json, "whatsapp_linked").expect("canal ligado aparece");
+        assert_eq!(linha["status"], "offline", "{linha}");
+        assert!(
+            linha["motivo"].is_null(),
+            "saudavel nao tem motivo: {linha}"
+        );
+    }
+
+    /// Quedas seguidas sem conectar viram `degraded` com o motivo e o codigo
+    /// da ultima queda — e nao mais um `offline` igual ao de uma queda
+    /// transitaria (#1663).
+    #[tokio::test]
+    async fn quedas_seguidas_mostram_degraded_e_o_motivo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        vincula(dir.path());
+        let st = state_com(config_no(dir.path()));
+        st.whatsapp_linked.set_bridge(BridgeView::Down);
+        st.whatsapp_linked
+            .registra_queda(Some("network"), Some(408), 3);
+        let json = relatorio(&tool(&st), &ctx(None)).await;
+        let linha = canal(&json, "whatsapp_linked").expect("canal ligado aparece");
+        assert_eq!(linha["status"], "degraded", "{linha}");
+        let motivo = linha["motivo"].as_str().expect("motivo");
+        assert!(motivo.contains("network"), "{motivo}");
+        assert!(motivo.contains("408"), "{motivo}");
+        assert!(motivo.contains("3 quedas seguidas"), "{motivo}");
+    }
+
+    /// Canal que parou de vez mostra `stopped` e o passo do operador
+    /// (`garra whatsapp link`) — o `offline`/`degraded` diziam "espere", e
+    /// este nao melhora sozinho (#1663).
+    #[tokio::test]
+    async fn canal_parado_mostra_stopped_e_o_proximo_passo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        vincula(dir.path());
+        let st = state_com(config_no(dir.path()));
+        st.whatsapp_linked.set_bridge(BridgeView::Down);
+        st.whatsapp_linked
+            .registra_queda(Some("logged_out"), Some(401), 1);
+        st.whatsapp_linked
+            .registra_terminal(garraia_channels::whatsapp_linked::MotivoTerminal::Deslogado);
+        let json = relatorio(&tool(&st), &ctx(None)).await;
+        let linha = canal(&json, "whatsapp_linked").expect("canal ligado aparece");
+        assert_eq!(linha["status"], "stopped", "{linha}");
+        let motivo = linha["motivo"].as_str().expect("motivo");
+        assert!(motivo.contains("parou de vez"), "{motivo}");
+        assert!(motivo.contains("garra whatsapp link"), "{motivo}");
+    }
+
+    /// Conectar de novo zera as quedas seguidas e limpa o estado terminal:
+    /// a sessao provou que funciona, e o relatorio volta ao normal (#1663).
+    #[tokio::test]
+    async fn reconectar_limpa_degraded_e_stopped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        vincula(dir.path());
+        let st = state_com(config_no(dir.path()));
+        st.whatsapp_linked.registra_queda(Some("network"), None, 5);
+        st.whatsapp_linked.registra_conexao();
+        st.whatsapp_linked.set_bridge(BridgeView::Down);
+        let json = relatorio(&tool(&st), &ctx(None)).await;
+        let linha = canal(&json, "whatsapp_linked").expect("canal ligado aparece");
+        assert_eq!(linha["status"], "offline", "{linha}");
+        assert!(linha["motivo"].is_null(), "{linha}");
     }
 
     /// Nada de segredo: sem provider configurado, `provider`/`model` sao null,
