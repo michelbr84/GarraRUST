@@ -150,6 +150,10 @@ pub(crate) struct ChannelRow {
     /// O status do `GET /api/channels` — contrato do console, inalterado.
     pub status: &'static str,
     pub needs_secret: bool,
+    /// O que o `garra_status` mostra junto do status do canal (#1663):
+    /// o ultimo motivo de queda, ou porque o canal parou de vez. `None` para
+    /// os canais que nao tem o que dizer.
+    pub motivo: Option<String>,
     /// O status que o relatorio do agente (`garra_status`) mostra, ou `None`
     /// quando o canal nao entra nele (#1347, C2 e C4).
     ///
@@ -201,6 +205,14 @@ pub(crate) async fn channel_rows(state: &AppState, push: PushMounted) -> Vec<Cha
         // observa o canal de verdade — o supervisor —, e a leitura e a MESMA
         // que o `/api/diagnostics` faz (`whatsapp_linked_health`), para as duas
         // telas nao poderem discordar sobre o mesmo canal.
+        // #1663: alem de "esta de pe", o runtime do `whatsapp_linked` guarda
+        // quedas seguidas, o ultimo motivo e se o canal parou de vez. So este
+        // canal tem essa fonte; os demais ficam sem `motivo`.
+        let saude_runtime = if *id == crate::bootstrap::WHATSAPP_LINKED_CONFIG_KEY {
+            Some(state.whatsapp_linked.saude())
+        } else {
+            None
+        };
         let (live_aqui, provisioned) = if *id == crate::bootstrap::WHATSAPP_LINKED_CONFIG_KEY {
             let (saude, _) =
                 crate::bootstrap::whatsapp_linked_health(&state.config, &state.whatsapp_linked);
@@ -226,11 +238,22 @@ pub(crate) async fn channel_rows(state: &AppState, push: PushMounted) -> Vec<Cha
                 outro => Some(outro),
             }
         };
+        // O contrato do console (`status`) fica como estava. O que muda e o
+        // que o AGENTE ve (#1663): `degraded` quando o canal cai em loop, e
+        // `stopped` quando parou de vez — cada um com o motivo ao lado.
+        // Sem esta diferenca, um canal que cai 116 vezes seguidas parece
+        // igual a um que caiu uma vez.
+        let (status_do_agente, motivo) = match saude_runtime {
+            Some(saude) if saude.terminal.is_some() => (Some("stopped"), saude.motivo()),
+            Some(saude) if saude.degradado() => (Some("degraded"), saude.motivo()),
+            _ => (status_do_agente, None),
+        };
         rows.push(ChannelRow {
             id,
             display_name: display,
             status,
             needs_secret: *needs_secret,
+            motivo,
             status_do_agente,
         });
     }
