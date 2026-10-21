@@ -175,6 +175,85 @@ read the gateway log; `{bin} whatsapp status` confirms the session"
     }
 }
 
+// ---------------------------------------------------------------------------
+// Saude de runtime do canal (#1663): degradado, ultimo motivo e terminal.
+//
+// O `BridgeView` diz se a ponte esta de pe. Isto diz **como ela tem estado**:
+// quantas quedas seguidas, por que caiu a ultima vez, e se parou de vez. E a
+// diferenca entre "offline" (o console) e "degraded, ultimo motivo X" (o
+// `garra_status`), que e o que o operador precisa para decidir se espera ou se
+// re-vincula.
+// ---------------------------------------------------------------------------
+
+/// Quedas seguidas a partir das quais o canal e `degraded`.
+///
+/// Nao e configuravel ainda (nao ha campo em `channels.whatsapp_linked`):
+/// constante nomeada ate o proximo slice de configuracao. Tres e o numero que
+/// separa "uma queda transitaria" de "isto esta caindo em loop".
+pub const LIMIAR_DEGRADADO: u32 = 3;
+
+/// Por que o canal parou de vez: nao ha mais reconexao automatica.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotivoTerminal {
+    /// `logged_out` sem prova de morte: o logout foi pedido, ou outro aparelho
+    /// assumiu (440). **Nada e apagado** — a sessao gravada continua valendo.
+    Deslogado,
+    /// O servidor declarou a sessao morta (exit 2 / `session_is_dead`): o
+    /// material que o servidor recusou foi descartado.
+    SessaoMorta,
+}
+
+impl MotivoTerminal {
+    /// O que o operador faz agora, em pt-BR.
+    pub fn proximo_passo(self) -> &'static str {
+        match self {
+            Self::Deslogado => "rode `garra whatsapp link` de novo para re-vincular",
+            Self::SessaoMorta => "rode `garra whatsapp link` para vincular o aparelho de novo",
+        }
+    }
+}
+
+/// O que o runtime viu em rodada, alem de a ponte estar ou nao de pe.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SaudeDoCanal {
+    /// Quedas seguidas desde a ultima vez que a ponte chegou a conectar. Mesma
+    /// semantica do contador de reconexao do `serve_with`: zerar quando a
+    /// ponte conecta, porque ai a sessao provou que funciona.
+    pub falhas_consecutivas: u32,
+    /// Ultimo motivo de queda informado pelo bridge. O nome e texto pronto
+    /// para log — o enum `DisconnectReason` vive em `protocol`, e guardar o
+    /// nome evita acoplar o `/api/diagnostics` a ele.
+    pub ultima_queda: Option<(String, Option<i64>)>,
+    /// `Some` quando o canal parou de vez (nao reconecta sozinho).
+    pub terminal: Option<MotivoTerminal>,
+}
+
+impl SaudeDoCanal {
+    /// `true` quando ha quedas seguidas o bastante para reportar `degraded`.
+    ///
+    /// Um canal **saudavel** (zero quedas) nunca entra aqui: e a garantia de
+    /// que a mudanca nao afeta quem esta funcionando.
+    pub fn degradado(&self) -> bool {
+        self.terminal.is_none() && self.falhas_consecutivas >= LIMIAR_DEGRADADO
+    }
+
+    /// A linha que o `garra_status` mostra junto do status, ou `None`.
+    pub fn motivo(&self) -> Option<String> {
+        if let Some(terminal) = self.terminal {
+            return Some(format!("parou de vez: {}", terminal.proximo_passo()));
+        }
+        let (motivo, codigo) = self.ultima_queda.as_ref()?;
+        let mut linha = format!("ultimo motivo: {motivo}");
+        if let Some(codigo) = codigo {
+            linha.push_str(&format!(" (codigo {codigo})"));
+        }
+        if self.falhas_consecutivas > 1 {
+            linha.push_str(&format!(", {} quedas seguidas", self.falhas_consecutivas));
+        }
+        Some(linha)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +439,82 @@ mod tests {
             "ler o estado nao pode criar o diretorio da sessao"
         );
         assert!(!bridge.exists(), "ler o estado nao pode criar a ponte");
+    }
+
+    // ------------------------------------------------------------------
+    // #1663: degradado, motivo e estado terminal.
+    // ------------------------------------------------------------------
+
+    /// Um canal **saudavel** — zero quedas — nunca vira `degraded`. E a
+    /// garantia de que a mudanca nao toca em quem esta funcionando.
+    #[test]
+    fn canal_saudavel_nao_degrada() {
+        let saude = SaudeDoCanal::default();
+        assert_eq!(saude.falhas_consecutivas, 0);
+        assert!(!saude.degradado());
+        assert!(saude.motivo().is_none());
+    }
+
+    #[test]
+    fn abaixo_do_limiar_nao_degrada() {
+        let saude = SaudeDoCanal {
+            falhas_consecutivas: LIMIAR_DEGRADADO - 1,
+            ultima_queda: Some(("network".into(), Some(408))),
+            terminal: None,
+        };
+        assert!(!saude.degradado());
+    }
+
+    #[test]
+    fn no_limiar_degrada_e_mostra_o_motivo() {
+        let saude = SaudeDoCanal {
+            falhas_consecutivas: LIMIAR_DEGRADADO,
+            ultima_queda: Some(("network".into(), Some(408))),
+            terminal: None,
+        };
+        assert!(saude.degradado());
+        let motivo = saude.motivo().expect("motivo");
+        assert!(motivo.contains("network"), "{motivo}");
+        assert!(motivo.contains("408"), "{motivo}");
+        assert!(motivo.contains("3 quedas seguidas"), "{motivo}");
+    }
+
+    #[test]
+    fn motivo_sem_codigo_nao_inventa_codigo() {
+        let saude = SaudeDoCanal {
+            falhas_consecutivas: 1,
+            ultima_queda: Some(("timeout".into(), None)),
+            terminal: None,
+        };
+        let motivo = saude.motivo().expect("motivo");
+        assert!(motivo.contains("timeout"), "{motivo}");
+        assert!(!motivo.contains("codigo"), "{motivo}");
+        assert!(!motivo.contains("quedas seguidas"), "{motivo}");
+    }
+
+    #[test]
+    fn estado_terminal_vence_o_degradado() {
+        // Um canal que parou de vez nao e "degraded": e algo para o operador
+        // re-vincular. Os dois nunca valem ao mesmo tempo.
+        let saude = SaudeDoCanal {
+            falhas_consecutivas: LIMIAR_DEGRADADO,
+            ultima_queda: Some(("logged_out".into(), Some(401))),
+            terminal: Some(MotivoTerminal::Deslogado),
+        };
+        assert!(!saude.degradado());
+        let motivo = saude.motivo().expect("motivo");
+        assert!(motivo.contains("parou de vez"), "{motivo}");
+        assert!(motivo.contains("garra whatsapp link"), "{motivo}");
+    }
+
+    #[test]
+    fn sessao_morta_aponta_para_re_vinculo() {
+        let saude = SaudeDoCanal {
+            terminal: Some(MotivoTerminal::SessaoMorta),
+            ..SaudeDoCanal::default()
+        };
+        let motivo = saude.motivo().expect("motivo");
+        assert!(motivo.contains("parou de vez"), "{motivo}");
+        assert!(motivo.contains("vincular"), "{motivo}");
     }
 }

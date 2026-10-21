@@ -4117,3 +4117,66 @@ mod ponta_a_ponta {
         }
     }
 }
+
+// ─── #1663: o estado de saude que o `garra_status` le ──────────────────────
+
+/// O que o runtime registra de queda e de estado terminal, e o que isso
+/// significa para o relatorio (`degraded`/`stopped`/motivo).
+mod saude_do_canal {
+    use super::*;
+
+    #[test]
+    fn queda_sem_motivo_nao_guarda_o_motivo_de_uma_queda_antiga() {
+        let rt = WhatsAppLinkedRuntime::default();
+        rt.registra_queda(Some("network"), Some(408), 1);
+        rt.registra_queda(None, None, 2);
+        let saude = rt.saude();
+        assert_eq!(saude.falhas_consecutivas, 2);
+        // A queda mais recente SEM motivo nao pode deixar o "network" antigo
+        // aparecer como se fosse o ultimo motivo.
+        assert_eq!(
+            saude.ultima_queda,
+            Some(("nao_informado".to_string(), None)),
+            "{saude:?}"
+        );
+    }
+
+    #[test]
+    fn conectar_zera_as_quedas_e_limpa_o_terminal() {
+        let rt = WhatsAppLinkedRuntime::default();
+        rt.registra_queda(Some("network"), Some(408), 3);
+        rt.registra_terminal(MotivoTerminal::Deslogado);
+        rt.registra_conexao();
+        let saude = rt.saude();
+        assert_eq!(saude.falhas_consecutivas, 0, "{saude:?}");
+        assert!(saude.terminal.is_none(), "{saude:?}");
+        assert!(!saude.degradado(), "{saude:?}");
+    }
+
+    #[test]
+    fn terminal_zera_as_quedas_seguidas() {
+        // Um canal que parou de vez nao e "degraded": os dois nunca valem ao
+        // mesmo tempo (a garantia esta em `SaudeDoCanal::degradado`).
+        let rt = WhatsAppLinkedRuntime::default();
+        rt.registra_queda(Some("logged_out"), Some(401), 3);
+        rt.registra_terminal(MotivoTerminal::Deslogado);
+        let saude = rt.saude();
+        assert_eq!(saude.falhas_consecutivas, 0, "{saude:?}");
+        assert!(!saude.degradado(), "{saude:?}");
+        assert!(saude.motivo().expect("motivo").contains("parou de vez"));
+    }
+
+    /// A queda sem motivo ainda conta: a contagem sobe, e e ela que decide o
+    /// `degraded` — nunca o motivo, que pode faltar.
+    #[test]
+    fn queda_sem_motivo_conta_para_o_degradado() {
+        let rt = WhatsAppLinkedRuntime::default();
+        for _ in 0..3 {
+            rt.registra_queda(None, None, rt.saude().falhas_consecutivas + 1);
+        }
+        let saude = rt.saude();
+        assert!(saude.degradado(), "{saude:?}");
+        let motivo = saude.motivo().expect("motivo");
+        assert!(motivo.contains("nao_informado"), "{motivo}");
+    }
+}

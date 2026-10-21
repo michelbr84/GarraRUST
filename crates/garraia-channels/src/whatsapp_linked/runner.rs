@@ -1073,6 +1073,25 @@ pub trait InboundSink: Send + Sync {
 
     /// Chamado a cada mudanca de conexao, para o `/api/diagnostics`.
     fn on_connection(&self, _jid: Option<&Jid>, _connected: bool) {}
+
+    /// Chamado a cada queda que vale reconexao (#1663).
+    ///
+    /// `falhas_consecutivas` segue a mesma regra do contador de reconexao
+    /// ([`next_attempt`]): zera quando a ponte chegou a conectar, entao so
+    /// cresce em quedas seguidas **sem sucesso**. E o que separa "uma queda
+    /// transitaria" de "isto esta caindo em loop", que e o que o `degraded`
+    /// precisa mostrar.
+    fn on_drop(
+        &self,
+        _reason: Option<DisconnectReason>,
+        _reason_code: Option<i64>,
+        _falhas_consecutivas: u32,
+    ) {
+    }
+
+    /// Chamado quando o canal parou de vez: nao ha reconexao automatica
+    /// (#1663). Diferente de uma queda, que volta sozinha.
+    fn on_terminal(&self, _motivo: super::health::MotivoTerminal) {}
 }
 
 /// Persistencia da sessao vista pelo modo serve.
@@ -1168,6 +1187,9 @@ pub async fn serve_with(
     options: ServeOptions,
 ) -> Result<(), RunError> {
     let mut attempt: u32 = 0;
+    // Quedas seguidas sem a ponte conectar (#1663). Mesma regra do `attempt`:
+    // zera quando conecta. So ele alimenta o `degraded` do `garra_status`.
+    let mut falhas_consecutivas: u32 = 0;
 
     loop {
         if *cancel.borrow() {
@@ -1177,7 +1199,7 @@ pub async fn serve_with(
             return Err(RunError::SessionDead { reason_code: None });
         }
 
-        match serve_once(
+        let outcome = serve_once(
             launcher.as_ref(),
             &store,
             &key,
@@ -1186,32 +1208,62 @@ pub async fn serve_with(
             &mut cancel,
             options,
         )
-        .await
-        {
-            Ok(ServeExit::Cancelled) | Ok(ServeExit::Stopped) => {
+        .await;
+        // Politica por motivo, decidida em uma funcao so
+        // ([`politica_da_saida`]). Cada braco destrutura so os dados de
+        // que precisa; a decisao de reconectar ou nao e a funcao.
+        match politica_da_saida(&outcome) {
+            // Ctrl+C / shutdown pedido: nao e falha e nao e terminal.
+            PoliticaDeSaida::Cancelado => {
                 sink.on_connection(None, false);
                 return Ok(());
             }
-            Ok(ServeExit::SessionDead { reason_code }) => {
-                store.purge()?;
+            // `logged_out` (ou 440: outro aparelho assumiu): parou de vez,
+            // sem apagar nada. O operador precisa saber que e para
+            // re-vincular.
+            PoliticaDeSaida::Deslogado => {
                 sink.on_connection(None, false);
+                sink.on_terminal(super::health::MotivoTerminal::Deslogado);
+                return Ok(());
+            }
+            // O servidor declarou a sessao morta: parou de vez, e o
+            // material que ele recusou ja foi descartado.
+            PoliticaDeSaida::SessaoMorta => {
+                sink.on_connection(None, false);
+                let reason_code = match &outcome {
+                    Ok(ServeExit::SessionDead { reason_code }) => *reason_code,
+                    _ => None,
+                };
+                store.purge()?;
+                sink.on_terminal(super::health::MotivoTerminal::SessaoMorta);
                 return Err(RunError::SessionDead { reason_code });
             }
-            outcome @ (Ok(ServeExit::Dropped { .. }) | Err(_)) => {
+            PoliticaDeSaida::Reconectar => {
                 sink.on_connection(None, false);
-                attempt = next_attempt(
-                    attempt,
-                    matches!(
-                        outcome,
-                        Ok(ServeExit::Dropped {
-                            was_connected: true
-                        })
-                    ),
+                let conectou = matches!(
+                    &outcome,
+                    Ok(ServeExit::Dropped {
+                        was_connected: true,
+                        ..
+                    })
                 );
+                attempt = next_attempt(attempt, conectou);
+                falhas_consecutivas = proxima_falha_consecutiva(falhas_consecutivas, conectou);
+                let (motivo, codigo) = match &outcome {
+                    Ok(ServeExit::Dropped {
+                        reason,
+                        reason_code,
+                        ..
+                    }) => (*reason, *reason_code),
+                    _ => (None, None),
+                };
+                sink.on_drop(motivo, codigo, falhas_consecutivas);
                 let delay = backoff_ms(attempt, jitter());
                 tracing::info!(
                     attempt,
                     delay_ms = delay,
+                    reason = %descricao_motivo(motivo),
+                    reason_code = ?codigo,
                     "WhatsApp vinculado caiu; reconectando"
                 );
                 tokio::select! {
@@ -1220,6 +1272,65 @@ pub async fn serve_with(
                 }
             }
         }
+    }
+}
+
+/// O que fazer com o desfecho de uma rodada do [`serve_once`] (#1663).
+///
+/// A politica de reconexao **por motivo** e esta: cada motivo do bridge vira
+/// um [`ServeExit`] diferente, e cada [`ServeExit`] tem exatamente uma
+/// resposta aqui. O que nao pode acontecer — e o que a issue #1663 registrou —
+/// e reconectar para sempre em cima de um motivo que nao vai melhorar sozinho.
+///
+/// Funcao nomeada e testavel sem processo filho, pelo mesmo motivo de
+/// [`next_attempt`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PoliticaDeSaida {
+    /// Ctrl+C / shutdown pedido. **Nao e falha**: a instancia parou porque o
+    /// dono mandou. Nao conta como queda e nao vira estado terminal.
+    Cancelado,
+    /// `logged_out` sem prova de morte: logout pedido, ou 440 (outro aparelho
+    /// assumiu). Para de vez, **sem apagar nada** — a sessao gravada vale.
+    Deslogado,
+    /// O servidor declarou a sessao morta. Para de vez e o material que o
+    /// servidor recusou ja foi descartado. Precisa de novo `whatsapp link`.
+    SessaoMorta,
+    /// Caiu e vale reconectar (rede, timeout, `restart_required`, motivo
+    /// desconhecido). Reconectar aqui **e** a resposta certa: o bridge pediu
+    /// reinicio (`restart_required`) ou a queda e transitaria.
+    Reconectar,
+}
+
+fn politica_da_saida(saida: &Result<ServeExit, RunError>) -> PoliticaDeSaida {
+    match saida {
+        Ok(ServeExit::Cancelled) => PoliticaDeSaida::Cancelado,
+        Ok(ServeExit::Stopped) => PoliticaDeSaida::Deslogado,
+        Ok(ServeExit::SessionDead { .. }) => PoliticaDeSaida::SessaoMorta,
+        // Um erro do bridge e uma queda como outra qualquer: o filho caiu e
+        // vale tentar de novo. E por isso que `Err` casa aqui e nao em um
+        // quinto estado.
+        Ok(ServeExit::Dropped { .. }) | Err(_) => PoliticaDeSaida::Reconectar,
+    }
+}
+
+/// Proximo valor do contador de quedas seguidas do [`serve`] (#1663).
+///
+/// Mesma regra de [`next_attempt`]: uma execucao que chegou a conectar zera a
+/// contagem. A diferenca e o que ela alimenta — o `degraded` do
+/// `garra_status` —, entao ela mede **quedas seguidas sem a ponte conectar**.
+/// Uma queda depois de horas no ar nao e "caindo em loop"; dez sem nunca
+/// conectar sao.
+fn proxima_falha_consecutiva(atual: u32, conectou: bool) -> u32 {
+    if conectou { 0 } else { atual.saturating_add(1) }
+}
+
+/// Texto do motivo de uma queda para o log. Ausencia de motivo vira
+/// `nao_informado`, para a linha nunca sair muda e nao se confundir com um
+/// motivo vazio.
+fn descricao_motivo(reason: Option<DisconnectReason>) -> String {
+    match reason {
+        Some(r) => format!("{r:?}"),
+        None => "nao_informado".to_string(),
     }
 }
 
@@ -1257,6 +1368,10 @@ enum ServeExit {
     /// deixa-lo crescer.
     Dropped {
         was_connected: bool,
+        /// Motivo que o bridge informou na queda, se informou.
+        reason: Option<DisconnectReason>,
+        /// Codigo numerico do Baileys que acompanha o motivo.
+        reason_code: Option<i64>,
     },
 }
 
@@ -1336,6 +1451,9 @@ async fn serve_once(
     let mut saw_logged_out = false;
     let mut dead_reason_code: Option<i64> = None;
     let mut saw_connected = false;
+    // Ultimo motivo de queda que o bridge informou. Sem isto a saida
+    // `Dropped` nao dizia POR QUE caiu, e o log de reconexao ficava mudo.
+    let mut last_disconnect: Option<(DisconnectReason, Option<i64>)> = None;
 
     // O relogio que faltava. `conn.send` e `conn.wait` ganharam prazo antes;
     // `conn.next_event()` nao tinha nenhum, e uma ponte que diz `started`,
@@ -1383,7 +1501,11 @@ async fn serve_once(
                         );
                         shutdown_politely(&mut conn).await;
                         conn.kill().await;
-                        return Ok(ServeExit::Dropped { was_connected: false });
+                        return Ok(ServeExit::Dropped {
+                            was_connected: false,
+                            reason: None,
+                            reason_code: None,
+                        });
                     }
                     // O outro relogio, e nao o mesmo: este conta desde o INICIO
                     // desta execucao e nao zera com evento nenhum. Como o braco
@@ -1397,7 +1519,11 @@ async fn serve_once(
                         );
                         shutdown_politely(&mut conn).await;
                         conn.kill().await;
-                        return Ok(ServeExit::Dropped { was_connected: false });
+                        return Ok(ServeExit::Dropped {
+                            was_connected: false,
+                            reason: None,
+                            reason_code: None,
+                        });
                     }
                 } else {
                     let silent = now.saturating_sub(last_event_secs);
@@ -1408,7 +1534,11 @@ async fn serve_once(
                         );
                         shutdown_politely(&mut conn).await;
                         conn.kill().await;
-                        return Ok(ServeExit::Dropped { was_connected: true });
+                        return Ok(ServeExit::Dropped {
+                            was_connected: true,
+                            reason: None,
+                            reason_code: None,
+                        });
                     }
                     if now.saturating_sub(last_ping_secs) >= options.ping_every_secs {
                         last_ping_secs = now;
@@ -1458,6 +1588,8 @@ async fn serve_once(
                             conn.kill().await;
                             return Ok(ServeExit::Dropped {
                                 was_connected: saw_connected,
+                                reason: last_disconnect.map(|d| d.0),
+                                reason_code: last_disconnect.and_then(|d| d.1),
                             });
                         }
                         Err(e) => {
@@ -1503,6 +1635,8 @@ async fn serve_once(
                             conn.kill().await;
                             return Ok(ServeExit::Dropped {
                                 was_connected: saw_connected,
+                                reason: last_disconnect.map(|d| d.0),
+                                reason_code: last_disconnect.and_then(|d| d.1),
                             });
                         }
                         Err(e) => {
@@ -1517,7 +1651,11 @@ async fn serve_once(
                         // 440 (outro aparelho assumiu). Para, sem apagar nada.
                         ServeExit::Stopped
                     } else {
-                        ServeExit::Dropped { was_connected: saw_connected }
+                        ServeExit::Dropped {
+                            was_connected: saw_connected,
+                            reason: last_disconnect.map(|d| d.0),
+                            reason_code: last_disconnect.and_then(|d| d.1),
+                        }
                     });
                 };
                 match event {
@@ -1533,6 +1671,9 @@ async fn serve_once(
                         reason_code,
                         ..
                     } => dead_reason_code = reason_code,
+                    BridgeEvent::Disconnected { reason, reason_code, .. } => {
+                        last_disconnect = Some((reason, reason_code));
+                    }
                     // Os demais eventos nao movem nada aqui: quem decide
                     // reconexao neste driver e o codigo de saida do filho, no
                     // braco acima, e nao uma fase de maquina.
@@ -1553,6 +1694,12 @@ mod tests {
     /// `ms / 1000` truncava: 1500 ms viravam "1s", e meio segundo depois a
     /// linha ja estava vencida na tela. Num comando cujo defeito recorrente e
     /// "a tela nao anda", uma linha que promete errado e do mesmo genero.
+    #[test]
+    fn a_queda_sem_motivo_diz_que_nao_veio_motivo_em_vez_de_sair_muda() {
+        assert_eq!(descricao_motivo(None), "nao_informado");
+        assert_eq!(descricao_motivo(Some(DisconnectReason::Network)), "Network");
+    }
+
     #[test]
     fn the_retry_line_never_promises_a_deadline_that_already_passed() {
         for (ms, esperado) in [(1000, "1s"), (1500, "2s"), (2000, "2s"), (2500, "3s")] {
@@ -1577,8 +1724,96 @@ mod tests {
         );
     }
 
+    /// **A politica de reconexao por motivo, escrita na tabela.** Cada motivo
+    /// que o bridge pode informar vira um [`ServeExit`], e cada [`ServeExit`]
+    /// tem exatamente uma resposta — reconectar, parar de vez, ou encerrar sem
+    /// ser falha. E a prova de que o canal nao reconecta para sempre em cima
+    /// de um motivo que nao melhora sozinho (#1663).
+    #[test]
+    fn cada_saida_tem_exatamente_uma_politica() {
+        use PoliticaDeSaida as P;
+
+        // Queda transitoria (network, timeout, restart_required, desconhecido)
+        // e erro do bridge: reconectar. `restart_required` cai aqui de
+        // proposito — o bridge pediu reinicio, e reiniciar e a resposta.
+        assert_eq!(
+            politica_da_saida(&Ok(ServeExit::Dropped {
+                was_connected: false,
+                reason: Some(DisconnectReason::Network),
+                reason_code: Some(408),
+            })),
+            P::Reconectar
+        );
+        for motivo in [
+            DisconnectReason::Timeout,
+            DisconnectReason::RestartRequired,
+            DisconnectReason::Unknown,
+            DisconnectReason::Network,
+        ] {
+            assert_eq!(
+                politica_da_saida(&Ok(ServeExit::Dropped {
+                    was_connected: true,
+                    reason: Some(motivo),
+                    reason_code: None,
+                })),
+                P::Reconectar,
+                "{motivo:?} deve reconectar"
+            );
+        }
+        assert_eq!(
+            politica_da_saida(&Err(RunError::SessionDead { reason_code: None })),
+            P::Reconectar,
+            "erro do bridge e queda, nao estado terminal"
+        );
+
+        // `logged_out` e 440 (outro aparelho assumiu): para de vez, sem
+        // apagar nada. Reconectar aqui brigaria com o outro aparelho.
+        assert_eq!(politica_da_saida(&Ok(ServeExit::Stopped)), P::Deslogado);
+
+        // Sessao recusada pelo servidor: para de vez, material ja descartado.
+        assert_eq!(
+            politica_da_saida(&Ok(ServeExit::SessionDead {
+                reason_code: Some(401)
+            })),
+            P::SessaoMorta
+        );
+
+        // Cancelamento pedido pelo dono: nao e falha.
+        assert_eq!(politica_da_saida(&Ok(ServeExit::Cancelled)), P::Cancelado);
+    }
+
+    /// O que o `garra_status` mostra: `degraded` so quando as quedas sao
+    /// seguidas **sem conectar**. Uma queda depois de horas no ar nao e
+    /// "caindo em loop".
+    #[test]
+    fn quedas_seguidas_sem_conectar_crescem_e_conectar_zera() {
+        assert_eq!(proxima_falha_consecutiva(0, false), 1);
+        assert_eq!(proxima_falha_consecutiva(1, false), 2);
+        assert_eq!(proxima_falha_consecutiva(2, false), 3);
+        // Conectar zera, de qualquer altura — mesma regra do `next_attempt`.
+        assert_eq!(proxima_falha_consecutiva(3, true), 0);
+        assert_eq!(proxima_falha_consecutiva(u32::MAX, true), 0);
+        // E nunca estoura.
+        assert_eq!(proxima_falha_consecutiva(u32::MAX, false), u32::MAX);
+    }
+
+    /// Sessao **saudavel**: nenhuma queda, nenhuma chamada de terminal. O que
+    /// garante que a mudanca nao toca em quem esta funcionando (#1663).
+    #[test]
+    fn a_queda_sem_motivo_ainda_registra_a_contagem() {
+        // `on_drop` sem motivo e uma queda como outra qualquer: a contagem
+        // sobe e o motivo vira `nao_informado` no log (teste acima). O que
+        // nao pode acontecer e a contagem ficar parada.
+        let mut falhas = 0u32;
+        for _ in 0..3 {
+            falhas = proxima_falha_consecutiva(falhas, false);
+        }
+        assert_eq!(falhas, 3);
+        assert!(falhas >= super::super::health::LIMIAR_DEGRADADO);
+    }
+
     /// O contador de tentativas do `serve`, e o que ele significa para o
-    /// atraso real. A segunda asserção e a que importa: zerar o contador so
+    /// atraso real. A segunda assertcao e a que importa: zerar o contador so
     /// vale se o ATRASO voltar ao primeiro degrau.
     #[test]
     fn a_connection_that_worked_puts_the_backoff_back_on_the_first_step() {
