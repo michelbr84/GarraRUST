@@ -169,6 +169,12 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-11-18. Acompanhamento: #1667." },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-11-18. Acompanhamento: #1667." },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-11-18. Acompanhamento: #1667." },
+
+    # --- webpki-roots 0.26.11 (RUSTSEC-2026-0381): falso positivo do shim ---
+    # 0.26.11 so reexporta webpki-roots 1.0.x (lock: `webpki-roots 1.0.10`, que
+    # ja remove a raiz emSign). Sem 0.26.x corrigido; tokio-tungstenite 0.29/0.30
+    # ainda o puxam. Remover quando migrarem para 1.0.x.
+    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26.11 is a shim re-exporting webpki-roots 1.0.10 (patched); no unpatched 0.26.x exists; pulled by tokio-tungstenite 0.29/0.30. EXPIRA 2026-11-20. Acompanhamento: #1667." },
 ]
 
 [licenses]
