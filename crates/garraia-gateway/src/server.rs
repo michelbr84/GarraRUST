@@ -882,6 +882,18 @@ impl GatewayServer {
                 push_channels.contagens(),
             )));
 
+        // #1669: o diagnostico nativo da instalacao — mesma janela de registro
+        // do `garra_status` (depois dos canais push, antes de qualquer canal
+        // pull rodar turno). Somente leitura, sem shell, e fail-closed para
+        // quem nao e o operador (ver `tools::diagnostics_tool`).
+        state
+            .agents
+            .register_tool(Box::new(crate::tools::GarraDiagnosticsTool::new(
+                &state,
+                push_channels.contagens(),
+                garraia_config::ConfigLoader::default_config_dir(),
+            )));
+
         if let Some((client, rx)) = openclaw_rx {
             spawn_openclaw_router(Arc::clone(&state), client, rx);
         }
