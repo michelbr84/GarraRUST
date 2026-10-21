@@ -8,8 +8,10 @@
 
 pub mod channel_send_tool;
 pub mod channel_send_voice_tool;
+pub mod diagnostics_tool;
 pub mod garra_status_tool;
 
 pub use channel_send_tool::TelegramSendTool;
 pub use channel_send_voice_tool::TelegramSendVoiceTool;
+pub use diagnostics_tool::GarraDiagnosticsTool;
 pub use garra_status_tool::GarraStatusTool;
