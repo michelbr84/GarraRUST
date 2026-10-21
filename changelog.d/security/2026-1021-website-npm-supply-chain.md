@@ -1,0 +1,1 @@
+- `website/`: `overrides` no `package-lock.json` resolvem **6 dos 7** alertas Dependabot npm (tinypool 2.1.2, postcss-selector-parser 7.1.6, serialize-javascript 7.0.5, uuid 11.1.1) — todos transitivos do toolchain do Docusaurus; `braces <= 3.0.3` permanece sem patch upstream (risco residual documentado na PR, revisão 2026-11-21).
