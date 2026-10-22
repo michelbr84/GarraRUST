@@ -2769,7 +2769,7 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
           <div class="metric-card reveal-card" style="--i: 1;">
             <div class="metric-label"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 5.5a.5.5 0 0 1 .5-.5h8a.5.5 0 0 1 0 1H4a.5.5 0 0 1-.5-.5zm0 2.5a.5.5 0 0 1 .5-.5h8a.5.5 0 0 1 0 1H4a.5.5 0 0 1-.5-.5z"/></svg></span> Gateway port</div>
             <div class="metric-value" id="dashboard-metric-port">—</div>
-            <div class="metric-trend muted">Listening on 0.0.0.0</div>
+            <div class="metric-trend muted" id="dashboard-metric-bind" data-testid="dashboard-metric-bind">Listening on —</div>
           </div>
           <div class="metric-card reveal-card" style="--i: 2;">
             <div class="metric-label"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4a2 2 0 1 1 .195 1.41L1.5 8.5l1.695 3.09a2 2 0 1 1-.71.412L.71 8.5 2.485 4.58A2 2 0 0 1 3 4z"/></svg></span> Providers configurados</div>
@@ -2810,7 +2810,7 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
               <li><span>Server</span><span class="value" id="dashboard-health-server">checking…</span></li>
               <li><span>Provider</span><span class="value" id="dashboard-health-provider">—</span></li>
               <li><span>Model</span><span class="value" id="dashboard-health-model">—</span></li>
-              <li><span>Config dir</span><span class="value" id="dashboard-health-config">—</span></li>
+              <li><span>Config dir</span><span class="value" id="dashboard-health-config" data-testid="dashboard-health-config">—</span></li>
               <li><span>Secrets</span><span class="value" style="color: var(--garra-success);">masked</span></li>
             </ul>
           </div>
@@ -3971,7 +3971,12 @@ async function hydrateDashboard() {
       if (h.gateway_url) {
         try {
           const u = new URL(h.gateway_url);
-          set('dashboard-metric-port', u.port || (u.protocol === 'https:' ? '443' : '80'));
+          const port = u.port || (u.protocol === 'https:' ? '443' : '80');
+          set('dashboard-metric-port', port);
+          // The subtitle used to hardcode "Listening on 0.0.0.0"; show the real
+          // bind host:port from the backend so a 127.0.0.1 gateway stops
+          // reading as 0.0.0.0.
+          set('dashboard-metric-bind', 'Listening on ' + u.hostname + ':' + port);
         } catch (_e) { set('dashboard-metric-port', '—'); }
       }
       set('dashboard-metric-sessions', h.active_sessions !== undefined ? h.active_sessions : '—');
@@ -3979,6 +3984,9 @@ async function hydrateDashboard() {
       set('dashboard-health-server', h.status || 'ok');
       set('dashboard-health-provider', h.provider || '—');
       set('dashboard-health-model', h.model || '—');
+      // Config dir was always "—" (no JS ever set it). Fill it from the
+      // backend's effective config dir — the same path /api/diagnostics shows.
+      set('dashboard-health-config', h.config_dir || '—');
     }
     if (capsRes && capsRes.ok) {
       const c = await capsRes.json();
