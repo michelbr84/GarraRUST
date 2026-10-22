@@ -1897,6 +1897,7 @@ mod tests {
     #[test]
     fn vinculo_saudavel_com_portao_vazio_e_warning_com_o_allow() {
         let ligado_vazio = crate::bootstrap::WhatsAppLinkedSettings {
+            max_turnos_per_minute: None,
             access: Default::default(),
             enabled: true,
             ..Default::default()
@@ -1915,6 +1916,7 @@ mod tests {
 
         // Com alguem autorizado, segue `Ok` sem passo.
         let com_um = crate::bootstrap::WhatsAppLinkedSettings {
+            max_turnos_per_minute: None,
             access: Default::default(),
             enabled: true,
             allow: vec!["5511900000001".into()],
@@ -1970,6 +1972,7 @@ mod tests {
     fn rejeicoes_por_motivo_entram_como_contagem_sem_final() {
         use crate::bootstrap::whatsapp_linked_rejeicoes::{Motivo, Rejeicoes};
         let ligado = crate::bootstrap::WhatsAppLinkedSettings {
+            max_turnos_per_minute: None,
             allow: vec!["5511999998888".to_string()],
             enabled: true,
             ..Default::default()
@@ -2046,6 +2049,7 @@ mod tests {
     #[test]
     fn portao_vazio_sem_watcher_manda_reiniciar() {
         let ligado_vazio = crate::bootstrap::WhatsAppLinkedSettings {
+            max_turnos_per_minute: None,
             access: Default::default(),
             enabled: true,
             ..Default::default()
@@ -2075,6 +2079,7 @@ mod tests {
     #[test]
     fn admissao_aberta_e_secao_invalida_sao_warning_com_passo() {
         let mut aberto = crate::bootstrap::WhatsAppLinkedSettings {
+            max_turnos_per_minute: None,
             access: Default::default(),
             enabled: true,
             allow: vec!["5511900000001".into()],
@@ -2097,6 +2102,7 @@ mod tests {
         );
 
         let mut invalida = crate::bootstrap::WhatsAppLinkedSettings {
+            max_turnos_per_minute: None,
             access: Default::default(),
             enabled: true,
             allow: vec!["5511900000001".into()],
@@ -2124,6 +2130,7 @@ mod tests {
     #[test]
     fn ponte_conectada_com_canal_desligado_na_config_viva_e_warning() {
         let desligado_com_gente = crate::bootstrap::WhatsAppLinkedSettings {
+            max_turnos_per_minute: None,
             access: Default::default(),
             enabled: false,
             allow: vec!["5511900000001".into()],
@@ -2157,6 +2164,7 @@ mod tests {
     #[test]
     fn recusas_de_lid_sem_numero_aparecem_no_detalhe_como_contagem() {
         let com_um = crate::bootstrap::WhatsAppLinkedSettings {
+            max_turnos_per_minute: None,
             access: Default::default(),
             enabled: true,
             allow: vec!["5511900000001".into()],

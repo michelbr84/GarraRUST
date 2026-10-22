@@ -233,6 +233,7 @@ fn sobe(
     supervisionar(
         &state,
         LinkedSettings {
+            max_turnos_per_minute: None,
             access: Default::default(),
             enabled: true,
             ..LinkedSettings::default()
