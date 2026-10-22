@@ -395,6 +395,31 @@ async fn verificacoes_dos_canais(state: &AppState, push: PushMounted) -> Vec<Ver
             detalhe,
         ));
     }
+    // #1650: cadencia entre turnos — contagem viva da memoria deste processo.
+    // O `garraia doctor` de outro processo nao enxerga este estado (memoria de
+    // outro processo); quem mostra e o diagnostico do gateway.
+    out.push(match state.whatsapp_linked.cadencia_diagnostico() {
+        Some(d) => Verificacao::nova(
+            "canais.whatsapp_linked.cadencia",
+            EstadoDiag::Ok,
+            serde_json::json!({
+                "turnos_ultima_hora": d.turnos_ultima_hora,
+                "chats_ativos": d.chats_ativos,
+                "max_por_janela": d.max_por_janela,
+                "janela_s": d.janela_s,
+            }),
+            format!(
+                "cadencia entre turnos: {} turno(s) admitido(s) na ultima hora; teto {}/{}s por chat",
+                d.turnos_ultima_hora, d.max_por_janela, d.janela_s
+            ),
+        ),
+        None => Verificacao::nova(
+            "canais.whatsapp_linked.cadencia",
+            EstadoDiag::Erro,
+            serde_json::json!({ "estado": "mutex envenenado" }),
+            "estado da cadencia ilegivel (mutex envenenado) — contagem nao inventada",
+        ),
+    });
     out
 }
 
@@ -1490,6 +1515,7 @@ mod tests {
             "canais.signal",
             "canais.matrix",
             "canais.openclaw",
+            "canais.whatsapp_linked.cadencia",
             "mcp.servidores",
             "ferramentas.disponiveis",
             "capacidades.estado",

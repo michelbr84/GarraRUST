@@ -163,6 +163,10 @@ pub struct WhatsAppLinkedRuntime {
     /// seguidas, ultimo motivo e se parou de vez. O que faz o `garra_status`
     /// dizer `degraded` em vez de so `offline`. Envenenado, vale o interior.
     saude: std::sync::Mutex<SaudeDoCanal>,
+    /// #1650: guarda de cadencia entre turnos — a MESMA instancia que o
+    /// [`GatewaySink`] usa (embutida aqui para o diagnostico alcancar a
+    /// memoria viva sem que o estado precise saber do sink).
+    cadencia: std::sync::Arc<std::sync::Mutex<cadencia::Cadencia>>,
 }
 
 impl Default for WhatsAppLinkedRuntime {
@@ -173,6 +177,7 @@ impl Default for WhatsAppLinkedRuntime {
             recusas_lid: AtomicU64::new(0),
             rejeicoes: std::sync::Mutex::new(rejeicoes::Rejeicoes::default()),
             saude: std::sync::Mutex::new(SaudeDoCanal::default()),
+            cadencia: std::sync::Arc::new(std::sync::Mutex::new(cadencia::Cadencia::default())),
         }
     }
 }
@@ -203,6 +208,15 @@ fn u8_to_view(raw: u8) -> BridgeView {
 }
 
 impl WhatsAppLinkedRuntime {
+    /// Instantaneo da cadencia entre turnos para o diagnostico (#1650):
+    /// contagem, nunca identidade. Mutex envenenado devolve `None` — o
+    /// relatorio mostra a falha em vez de inventar um numero.
+    pub fn cadencia_diagnostico(&self) -> Option<cadencia::DiagDeCadencia> {
+        self.cadencia
+            .lock()
+            .ok()
+            .map(|c| c.diagnosticar(std::time::Instant::now()))
+    }
     /// O que o supervisor viu por ultimo.
     pub fn bridge(&self) -> BridgeView {
         u8_to_view(self.bridge.load(Ordering::Relaxed))
@@ -486,6 +500,11 @@ pub struct LinkedSettings {
     /// montado a mao com `access: Default::default()` continua valendo pelo
     /// legado, porque [`Self::entrada_de`] consulta as duas fontes.
     pub access: PoliticaDeAcesso,
+    /// #1650: teto de turnos por janela escolhido pelo operador
+    /// (`channels.whatsapp_linked.settings.max_turnos_per_minute`).
+    /// `None` = chave ausente ou invalida — e ai vale o default de
+    /// [`cadencia::MAX_TURNOS_POR_JANELA`], nao zero.
+    pub max_turnos_per_minute: Option<u32>,
 }
 
 impl LinkedSettings {
@@ -640,6 +659,11 @@ pub fn settings_da_secao(section: &garraia_config::ChannelConfig) -> LinkedSetti
         allow,
         owners,
         reply_in_groups,
+        max_turnos_per_minute: section
+            .settings
+            .get("max_turnos_per_minute")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
         access,
         default_mode: section
             .settings
@@ -1423,12 +1447,15 @@ impl GatewaySink {
         let portao = Arc::new(std::sync::Mutex::new(PortaoDoCanal::from_settings(
             &settings,
         )));
+        // Antes do move do `runtime` no literal (E0382): a guarda e a MESMA
+        // instancia que o diagnostico le, um Arc so.
+        let cadencia = Arc::clone(&runtime.cadencia);
         Self {
             state,
             runtime,
             settings,
             portao,
-            cadencia: Arc::new(std::sync::Mutex::new(cadencia::Cadencia::default())),
+            cadencia,
             outbound,
         }
     }
@@ -1436,8 +1463,10 @@ impl GatewaySink {
     /// Troca o teto de cadencia (#1650). Os testes de politica disparam rajadas
     /// de um unico chat que nao sao o assunto da guarda.
     #[cfg(test)]
-    pub(crate) fn com_cadencia(mut self, c: cadencia::Cadencia) -> Self {
-        self.cadencia = Arc::new(std::sync::Mutex::new(c));
+    pub(crate) fn com_cadencia(self, c: cadencia::Cadencia) -> Self {
+        if let Ok(mut guard) = self.runtime.cadencia.lock() {
+            *guard = c;
+        }
         self
     }
 
@@ -1669,7 +1698,17 @@ impl GatewaySink {
         // desliga a guarda, nunca o portao).
         let decisao = cadencia
             .lock()
-            .map(|mut c| c.admitir(msg.chat_jid.as_str(), std::time::Instant::now()))
+            .map(|mut c| {
+                // Knob do operador pode mudar com hot-reload (a mesma
+                // leitura por turno do allow/reply_in_groups); ausente volta
+                // ao default, nunca vira teto-zero.
+                c.set_max(settings.max_turnos_per_minute);
+                c.admitir(
+                    msg.chat_jid.as_str(),
+                    std::time::Instant::now(),
+                    cadencia::classifica(&bruto),
+                )
+            })
             .unwrap_or(cadencia::Decisao::Admitido);
         if let cadencia::Decisao::Cortado {
             turnos,
