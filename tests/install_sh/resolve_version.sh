@@ -94,5 +94,41 @@ got="$(PATH="${work}:${PATH}" GARRAIA_VERSION="v9.9.9" sh -c "
 assert_eq "pinned version bypasses network" "v9.9.9" "${got}"
 
 echo ""
+echo "== extract_first_stable_tag (last-resort fallback skips prereleases) =="
+
+# The installer's third tier parses `GET /releases` and must pick the newest
+# STABLE release: never a draft, never a prerelease. The inputs below mirror the
+# real GitHub payload shape — compact JSON, `tag_name` BEFORE `draft`/
+# `prerelease`, and asset objects carrying their own `"id"`/`"name"` noise — fed
+# through the same `tr ',' '\n'` normalization the installer applies.
+
+# stable_tag <compact-json>  → runs the real installer pipeline
+stable_tag() { printf '%s' "$1" | tr ',' '\n' | extract_first_stable_tag || true; }
+
+# --- prerelease on top, stable right below → the stable wins -----------------
+json_rc_then_stable='[{"url":"https://api.github.com/repos/x/y/releases/1","id":111,"author":{"login":"michelbr84","id":999},"node_id":"RE_1","tag_name":"v0.4.10-rc1","name":"Release v0.4.10-rc1","draft":false,"prerelease":true,"assets":[{"id":501,"name":"garraia-linux-x86_64","state":"uploaded"},{"id":502,"name":"garraia-linux-x86_64.sha256"}]},{"url":"https://api.github.com/repos/x/y/releases/2","id":222,"author":{"login":"michelbr84","id":999},"node_id":"RE_2","tag_name":"v0.4.9","name":"Release v0.4.9","draft":false,"prerelease":false,"assets":[{"id":601,"name":"garraia-linux-x86_64"}]},{"url":"https://api.github.com/repos/x/y/releases/3","id":333,"tag_name":"v0.4.8","draft":false,"prerelease":false,"assets":[]}]'
+assert_eq "prerelease on top is skipped, picks newest stable" "v0.4.9" "$(stable_tag "${json_rc_then_stable}")"
+
+# --- same, but with the GitHub web pretty-print (spaces after colons) ---------
+json_spaced='[{"id": 111, "tag_name": "v0.5.0-beta.2", "draft": false, "prerelease": true, "assets": [{"id": 7, "name": "garraia-linux-x86_64"}]}, {"id": 222, "tag_name": "v0.4.9", "draft": false, "prerelease": false, "assets": []}]'
+assert_eq "whitespace-tolerant: beta skipped, stable chosen" "v0.4.9" "$(stable_tag "${json_spaced}")"
+
+# --- stable already on top → returned as-is ----------------------------------
+json_stable_top='[{"id":10,"tag_name":"v0.4.9","draft":false,"prerelease":false,"assets":[{"id":1,"name":"garraia-linux-x86_64"}]},{"id":20,"tag_name":"v0.4.8","draft":false,"prerelease":false,"assets":[]}]'
+assert_eq "stable on top is returned" "v0.4.9" "$(stable_tag "${json_stable_top}")"
+
+# --- a draft on top (authenticated reuse) is skipped too ---------------------
+json_draft_then_stable='[{"id":10,"tag_name":"v0.5.0-wip","draft":true,"prerelease":false,"assets":[]},{"id":20,"tag_name":"v0.4.9","draft":false,"prerelease":false,"assets":[]}]'
+assert_eq "draft on top is skipped" "v0.4.9" "$(stable_tag "${json_draft_then_stable}")"
+
+# --- only prereleases exist → empty, so resolve_version errors loudly ---------
+json_only_pre='[{"id":10,"tag_name":"v0.5.0-rc1","draft":false,"prerelease":true,"assets":[]},{"id":20,"tag_name":"v0.5.0-rc2","draft":false,"prerelease":true,"assets":[]}]'
+assert_eq "all-prerelease list yields no stable tag" "" "$(stable_tag "${json_only_pre}")"
+
+# --- a single stable release (END-of-stream branch) --------------------------
+json_single='[{"id":10,"tag_name":"v0.4.9","draft":false,"prerelease":false,"assets":[{"id":1,"name":"garraia-linux-x86_64"}]}]'
+assert_eq "single stable release via END branch" "v0.4.9" "$(stable_tag "${json_single}")"
+
+echo ""
 echo "resolve_version.sh: ${results_pass} passed, ${results_fail} failed"
 [ "${results_fail}" -eq 0 ]

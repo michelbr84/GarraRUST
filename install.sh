@@ -264,7 +264,9 @@ resolve_version() {
     VERSION="$(resolve_version_from_redirect || true)"
 
     # Fallback: the REST API — /releases/latest first (404s when only
-    # prereleases exist), then the most recent non-draft release.
+    # prereleases exist), then the most recent STABLE release (neither draft
+    # nor prerelease). A `-rc`/`-beta`/`-alpha` must never be installed by the
+    # unpinned `curl | sh` path: set GARRAIA_VERSION=vX.Y.Z-rcN to opt in.
     if [ -z "${VERSION}" ]; then
         VERSION="$(github_api "https://api.github.com/repos/${REPO}/releases/latest" \
             | extract_tag_name || true)"
@@ -273,7 +275,7 @@ resolve_version() {
     if [ -z "${VERSION}" ]; then
         VERSION="$(github_api "https://api.github.com/repos/${REPO}/releases" \
             | tr ',' '\n' \
-            | extract_first_non_draft_tag || true)"
+            | extract_first_stable_tag || true)"
     fi
 
     if [ -z "${VERSION}" ]; then
@@ -312,22 +314,41 @@ extract_tag_name() {
         | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
 }
 
-# Filter out lines that declare draft:true, then pick the first tag_name.
-# Works on the normalized one-key-per-line stream produced by `tr ',' '\n'`.
-extract_first_non_draft_tag() {
+# Pick the first STABLE release tag: skip any release whose object declares
+# draft:true OR prerelease:true. Works on the normalized one-key-per-line
+# stream produced by `tr ',' '\n'`.
+#
+# Ordering matters. In the real GitHub `/releases` payload `"tag_name"` comes
+# BEFORE `"draft"` and `"prerelease"` within each release object (verified
+# against the live API), and every asset carries its own `"id"`/`"name"` but
+# never a `"tag_name"`. So `tag_name` is the only reliable per-release anchor:
+# a release is classified only once its draft/prerelease fields have been read,
+# i.e. when the NEXT `tag_name` (or EOF) is reached. The previous version keyed
+# off `draft` + `id` and silently returned the first release regardless of its
+# flags, because the flags had not been seen yet when its tag_name was read.
+#
+# Note: unauthenticated callers (the `curl | sh` path) never receive drafts
+# from GitHub at all, so in practice this filters prereleases; the draft guard
+# is kept for authenticated reuse and defence in depth.
+extract_first_stable_tag() {
     awk '
-        /"draft": *true/        { skip_until_next_release = 1; next }
-        /"id": *[0-9]+/         { skip_until_next_release = 0 }
         /"tag_name":/ {
-            if (!skip_until_next_release) {
-                match($0, /"tag_name": *"[^"]*"/)
-                tag = substr($0, RSTART, RLENGTH)
-                sub(/"tag_name": *"/, "", tag)
-                sub(/"$/, "", tag)
-                print tag
-                exit
-            }
+            # A new release block begins. Emit the PREVIOUS one first if it was
+            # stable, before this tag overwrites the buffered state. Clear
+            # `have` before `exit`: awk still runs the END rule on exit, and
+            # without this it would print the tag a second time.
+            if (have && ok) { print tag; have = 0; exit }
+            match($0, /"tag_name": *"[^"]*"/)
+            tag = substr($0, RSTART, RLENGTH)
+            sub(/"tag_name": *"/, "", tag)
+            sub(/"$/, "", tag)
+            have = 1
+            ok = 1
+            next
         }
+        /"draft": *true/        { if (have) { ok = 0 } }
+        /"prerelease": *true/   { if (have) { ok = 0 } }
+        END { if (have && ok) { print tag } }
     '
 }
 
