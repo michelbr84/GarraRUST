@@ -188,6 +188,11 @@ crates/garraia-desktop/src-tauri/target/
 crates/garraia-desktop/src-tauri/WixTools/
 crates/garraia-desktop/src-tauri/binaries/
 # node_modules/ covered by global rule above
+# Runtime Node privado + ponte pre-construida que a fatia C (#1636) gera antes
+# do `cargo tauri build` e o bundler empacota como resources. Artefato de build
+# (node oficial + node_modules): nunca versionado, montado do zero a cada build
+# por scripts/desktop/node-runtime/build-node-runtime.sh.
+crates/garraia-desktop/src-tauri/node-runtime/
 # parrot-sprite.png é COMMITADO (32KB): regenerar com gen_sprite.py e comitar junto.
 # (Estava ignorado até a v0.3.4 — o instalador saía com o papagaio invisível.)
 .quality-tmp/

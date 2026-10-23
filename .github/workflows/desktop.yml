@@ -54,6 +54,7 @@ jobs:
   assert-ui-assets:
     name: Assert UI assets exist
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -118,6 +119,7 @@ jobs:
   build-installer:
     name: Build MSI + NSIS (windows-latest)
     runs-on: windows-latest
+    timeout-minutes: 90
     permissions:
       contents: read
     env:
@@ -188,6 +190,7 @@ jobs:
   build-linux-bundles:
     name: Build Linux .deb + AppImage (ubuntu-22.04)
     runs-on: ubuntu-22.04
+    timeout-minutes: 90
     permissions:
       contents: read
     env:
@@ -244,6 +247,7 @@ jobs:
   build-macos-bundles:
     name: Build macOS .dmg (macos-latest)
     runs-on: macos-latest
+    timeout-minutes: 90
     permissions:
       contents: read
     env:
@@ -284,3 +288,669 @@ jobs:
         with:
           name: garraia-desktop-macos-pr
           path: ${{ runner.temp }}/bundles/
+
+  # ---------------------------------------------------------------------------
+  # Smoke dos instaladores (#1636, fatia C): NAO basta compilar. Cada job pega o
+  # instalador que o build gerou (artifact), extrai a arvore de instalacao num
+  # caminho COM ESPACO, ESCONDE todo Node global do PATH e roda o sidecar
+  # `garraia` instalado: `whatsapp self-test --json`. Exige:
+  #   - node_origin == "privado"  (o Node veio do pacote, nao do PATH),
+  #   - self_test == "ok" com baileys + pino + sharp carregando o addon nativo,
+  #   - o `node`/`node.exe` e o `bridge-whatsapp/node_modules` sao IRMAOS do
+  #     sidecar no layout do contrato da fatia A (prova empirica de onde o Tauri
+  #     v2 poe resources/externalBin em cada formato).
+  # Sem `continue-on-error`. O que nao da para automatizar numa plataforma
+  # (lancar a GUI headless, atualizacao/desinstalacao) fica fora destes jobs e
+  # esta documentado em docs/desktop.md como "nao executado" com o motivo.
+  smoke-windows:
+    name: Smoke Windows (MSI, caminho com espaco, sem Node global)
+    needs: build-installer
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Download Windows bundles
+        uses: actions/download-artifact@v7
+        with:
+          name: garraia-desktop-windows-pr
+          path: bundles
+
+      - name: Instala o MSI (silencioso, em Program Files = caminho com espaco) + self-test sem Node global + desinstala
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msi = (Resolve-Path "bundles/garraia-desktop-windows-x86_64.msi").Path
+          Write-Host "TAMANHO MSI (depois): $((Get-Item $msi).Length) bytes"
+
+          # Roda um processo com TETO de tempo: nada de hang de 1h. Em timeout,
+          # mata e falha, despejando o log verboso para diagnostico.
+          # NOTA: o parametro NAO pode se chamar $args — e variavel automatica do
+          # PowerShell; usa-la como parametro faz o -ArgumentList nao receber o
+          # array (o /qn some e o msiexec abre em modo interativo, travando).
+          function Invoke-Bounded($file, $procArgs, $timeoutSec, $log) {
+            $p = Start-Process -FilePath $file -ArgumentList $procArgs -PassThru -NoNewWindow
+            if (-not $p.WaitForExit($timeoutSec * 1000)) {
+              try { $p.Kill($true) } catch {}
+              if ($log -and (Test-Path $log)) { Write-Host "---- log (tail) ----"; Get-Content $log -Tail 60 }
+              throw "TIMEOUT ($timeoutSec s) em: $file $($procArgs -join ' ')"
+            }
+            return $p.ExitCode
+          }
+
+          # Marcador de dado do usuario: tem de sobreviver a desinstalacao.
+          $userData = Join-Path $env:USERPROFILE ".garraia\whatsapp"
+          New-Item -ItemType Directory -Force -Path $userData | Out-Null
+          Set-Content -Path (Join-Path $userData "smoke-marker.txt") -Value "sobrevive ao uninstall"
+
+          # Instalacao REAL silenciosa: o default do MSI e C:\Program Files\...
+          # (caminho COM ESPACO). `/i /qn`, log verboso, com teto de tempo.
+          $instLog = "install.log"
+          $rc = Invoke-Bounded "msiexec.exe" @('/i', $msi, '/qn', '/norestart', '/l*v', $instLog) 900 $instLog
+          if ($rc -ne 0) {
+            if (Test-Path $instLog) { Write-Host "---- install.log (tail) ----"; Get-Content $instLog -Tail 60 }
+            throw "msiexec /i falhou (exit $rc)"
+          }
+
+          # Acha o sidecar garraia.exe instalado (sob Program Files). O layout do
+          # contrato (fatia A) poe node/ e bridge-whatsapp/ irmaos do exe.
+          $exe = Get-ChildItem "C:\Program Files\garraia-desktop" -Recurse -Filter garraia.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) {
+            $exe = Get-ChildItem "C:\Program Files" -Recurse -Filter garraia.exe -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.DirectoryName 'node\node.exe') } | Select-Object -First 1
+          }
+          if (-not $exe) { throw "sidecar garraia.exe nao encontrado apos a instalacao" }
+          $dir = $exe.DirectoryName
+          Write-Host "sidecar instalado: $($exe.FullName)"
+          if ($dir -notmatch ' ') { Write-Host "::warning ::diretorio de instalacao sem espaco: $dir" } else { Write-Host "caminho com espaco: $dir" }
+          if (-not (Test-Path "$dir\node\node.exe")) { throw "node\node.exe nao e irmao do sidecar ($dir)" }
+          if (-not (Test-Path "$dir\bridge-whatsapp\node_modules")) { throw "bridge-whatsapp\node_modules ausente" }
+          if (-not (Test-Path "$dir\THIRD_PARTY_NOTICES.txt")) { throw "THIRD_PARTY_NOTICES.txt ausente no pacote" }
+          if (-not (Test-Path "$dir\node\LICENSE")) { throw "LICENSE do Node ausente no pacote" }
+          Write-Host "LAYOUT OK: node.exe + bridge-whatsapp irmaos do sidecar garraia.exe"
+
+          # Ambiente limpo: tira do PATH toda pasta que contenha node.exe.
+          $clean = ($env:PATH -split ';' | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'node.exe')) }) -join ';'
+          $env:PATH = $clean
+          $env:GARRAIA_NODE_BIN = ""
+          $where = (& cmd /c "where node" 2>$null)
+          if ($LASTEXITCODE -eq 0 -and $where) { throw "Node global ainda visivel no PATH: $where" }
+          Write-Host "where node: vazio (ambiente sem Node global)"
+
+          # self-test com teto de tempo; stdout para arquivo.
+          $outFile = "selftest.json"
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList @('whatsapp','self-test','--json') -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError "selftest.err"
+          if (-not $p.WaitForExit(180000)) { try { $p.Kill($true) } catch {}; throw "TIMEOUT no self-test" }
+          if ($p.ExitCode -ne 0) { if (Test-Path "selftest.err") { Get-Content "selftest.err" }; throw "self-test saiu com codigo $($p.ExitCode)" }
+          $json = (Get-Content $outFile -Raw)
+          Write-Host "self-test: $json"
+          $o = ($json -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1) | ConvertFrom-Json
+          if ($o.self_test -ne "ok") { throw "self_test != ok ($($o.self_test))" }
+          if ($o.node_origin -ne "privado") { throw "node_origin != privado ($($o.node_origin))" }
+          $names = $o.deps.PSObject.Properties.Name
+          foreach ($d in @('@whiskeysockets/baileys','pino','sharp')) {
+            if ($names -notcontains $d) { throw "dependencia ausente no self-test: $d" }
+          }
+          Write-Host "SELF-TEST OK: origin=privado, self_test=ok, node $($o.node_version), deps baileys/pino/sharp"
+
+          # Desinstalacao: o pacote some; o dado do usuario fica.
+          $rc = Invoke-Bounded "msiexec.exe" @('/x', $msi, '/qn', '/norestart', '/l*v', 'uninstall.log') 900 'uninstall.log'
+          if ($rc -ne 0) { throw "msiexec /x falhou (exit $rc)" }
+          if (Test-Path "$dir\node\node.exe") { throw "node\node.exe ainda presente apos desinstalar" }
+          if (Test-Path "$dir\bridge-whatsapp") { throw "bridge-whatsapp ainda presente apos desinstalar" }
+          if (-not (Test-Path (Join-Path $userData "smoke-marker.txt"))) { throw "dado do usuario (~/.garraia/whatsapp) foi removido pela desinstalacao" }
+          Write-Host "DESINSTALACAO OK: node/ e bridge-whatsapp/ removidos; ~/.garraia/whatsapp preservado"
+          Write-Host "SMOKE WINDOWS OK: instalar limpo + caminho com espaco + self-test(privado) + desinstalar"
+          # Sucesso explicito: `& cmd /c "where node"` deixou $LASTEXITCODE=1
+          # (node ausente, esperado) e o epilogo pwsh do GitHub sai com esse
+          # codigo. Todos os caminhos de falha usam `throw` antes daqui.
+          exit 0
+
+  smoke-linux:
+    name: Smoke Linux (.deb + AppImage, caminho com espaco, sem Node global)
+    needs: build-linux-bundles
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download Linux bundles
+        uses: actions/download-artifact@v7
+        with:
+          name: garraia-desktop-linux-pr
+          path: bundles
+
+      - name: Extrai .deb e AppImage em caminho com espaco + self-test sem Node global
+        run: |
+          set -euo pipefail
+          deb="bundles/garraia-desktop-linux-x86_64.deb"
+          appimage="bundles/garraia-desktop-linux-x86_64.AppImage"
+          [ -s "$deb" ] || { echo "::error ::.deb ausente"; exit 1; }
+          [ -s "$appimage" ] || { echo "::error ::AppImage ausente"; exit 1; }
+          echo "TAMANHO .deb (depois): $(stat -c%s "$deb") bytes"
+          echo "TAMANHO AppImage (depois): $(stat -c%s "$appimage") bytes"
+
+          # Prova a asserção do self-test com jq (preinstalado nos runners), sem
+          # heredoc Python (fragil dentro de `run: |`): ultima linha do stdout e o
+          # JSON; exige self_test=ok, node_origin=privado e as 3 deps carregadas.
+          assert_selftest() {
+            local sidecar="$1"
+            local cleanpath="" p
+            local IFS=':'
+            for p in $PATH; do
+              [ -n "$p" ] || continue
+              [ -x "$p/node" ] && continue
+              cleanpath="${cleanpath:+$cleanpath:}$p"
+            done
+            unset IFS
+            if PATH="$cleanpath" command -v node >/dev/null 2>&1; then
+              echo "::error ::Node global ainda no PATH limpo"; exit 1
+            fi
+            local out
+            # `|| true`: o self-test sai !=0 quando falha, mas em --json ele ja
+            # imprimiu o JSON de erro; capturamos para o jq dar o diagnostico.
+            out="$(PATH="$cleanpath" GARRAIA_NODE_BIN="" "$sidecar" whatsapp self-test --json || true)"
+            echo "self-test: $out"
+            echo "$out" | tail -1 | jq -e '.self_test=="ok" and .node_origin=="privado" and (.deps|has("@whiskeysockets/baileys")) and (.deps|has("pino")) and (.deps|has("sharp"))' >/dev/null \
+              || { echo "::error ::self-test nao satisfez origin=privado + ok + baileys/pino/sharp"; exit 1; }
+            echo "  node $(echo "$out" | tail -1 | jq -r '.node_version') (origin=privado)"
+          }
+
+          # --- .deb: arvore extraida num caminho COM ESPACO (sem instalar) ---
+          debroot="/tmp/gi smoke/deb-root"
+          mkdir -p "$debroot"
+          dpkg-deb -x "$deb" "$debroot"
+          sidecar="$debroot/usr/bin/garraia"
+          node="$debroot/usr/lib/garraia-desktop/node/bin/node"
+          [ -x "$sidecar" ] || { echo "::error ::sidecar $sidecar ausente/no-exec"; exit 1; }
+          [ -x "$node" ] || { echo "::error ::node privado ausente em $node (layout nao bate com o contrato)"; exit 1; }
+          [ -d "$debroot/usr/lib/garraia-desktop/bridge-whatsapp/node_modules" ] || { echo "::error ::bridge-whatsapp/node_modules ausente no .deb"; exit 1; }
+          [ -f "$debroot/usr/lib/garraia-desktop/THIRD_PARTY_NOTICES.txt" ] || { echo "::error ::THIRD_PARTY_NOTICES.txt ausente no .deb"; exit 1; }
+          echo "LAYOUT .deb OK (node em ../lib/garraia-desktop relativo ao sidecar /usr/bin/garraia)"
+          assert_selftest "$sidecar"
+
+          # --- AppImage: extraido (sem FUSE) num caminho COM ESPACO ---
+          appdir="/tmp/gi smoke/appimage"
+          mkdir -p "$appdir"
+          cp "$appimage" "$appdir/app.AppImage"
+          chmod +x "$appdir/app.AppImage"
+          ( cd "$appdir" && ./app.AppImage --appimage-extract >/dev/null )
+          aroot="$appdir/squashfs-root"
+          asidecar="$aroot/usr/bin/garraia"
+          anode="$aroot/usr/lib/garraia-desktop/node/bin/node"
+          [ -x "$asidecar" ] || { echo "::error ::sidecar do AppImage ausente"; exit 1; }
+          [ -x "$anode" ] || { echo "::error ::node privado ausente no AppImage ($anode)"; exit 1; }
+          echo "LAYOUT AppImage OK"
+          assert_selftest "$asidecar"
+          echo "SMOKE LINUX OK (.deb + AppImage): origin=privado, self_test=ok, caminho com espaco"
+
+  smoke-macos:
+    name: Smoke macOS (.app do DMG, caminho com espaco, sem Node global)
+    needs: build-macos-bundles
+    runs-on: macos-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download macOS bundles
+        uses: actions/download-artifact@v7
+        with:
+          name: garraia-desktop-macos-pr
+          path: bundles
+
+      - name: Monta o DMG, copia o .app para caminho com espaco + self-test sem Node global
+        run: |
+          set -euo pipefail
+          dmg="$(find bundles -maxdepth 1 -name '*.dmg' | head -1)"
+          [ -n "$dmg" ] || { echo "::error ::DMG nao encontrado no artifact"; exit 1; }
+          echo "TAMANHO DMG (depois): $(stat -f%z "$dmg") bytes"
+
+          # Monta o DMG (preserva permissoes/assinaturas; o artifact zipado do
+          # .app perderia o bit de exec e a assinatura do node).
+          mnt="/tmp/gi mnt"
+          mkdir -p "$mnt"
+          hdiutil attach "$dmg" -nobrowse -mountpoint "$mnt"
+          app="$(find "$mnt" -maxdepth 1 -name '*.app' | head -1)"
+          [ -n "$app" ] || { hdiutil detach "$mnt" || true; echo "::error ::.app nao encontrado no DMG"; exit 1; }
+          dest="/tmp/gi smoke"
+          mkdir -p "$dest"
+          cp -R "$app" "$dest/"
+          hdiutil detach "$mnt" || true
+          appcopy="$dest/$(basename "$app")"
+
+          sidecar="$appcopy/Contents/MacOS/garraia"
+          node="$appcopy/Contents/Resources/node/bin/node"
+          [ -x "$sidecar" ] || { echo "::error ::sidecar ausente em $sidecar"; exit 1; }
+          [ -x "$node" ] || { echo "::error ::node privado ausente em $node (layout nao bate com o contrato)"; exit 1; }
+          [ -d "$appcopy/Contents/Resources/bridge-whatsapp/node_modules" ] || { echo "::error ::bridge-whatsapp/node_modules ausente no .app"; exit 1; }
+          [ -f "$appcopy/Contents/Resources/THIRD_PARTY_NOTICES.txt" ] || { echo "::error ::THIRD_PARTY_NOTICES.txt ausente no .app"; exit 1; }
+          echo "LAYOUT .app OK (node em ../Resources relativo ao sidecar Contents/MacOS/garraia)"
+
+          # Ambiente limpo: PATH sem node.
+          cleanpath=""
+          IFS=':'
+          for p in $PATH; do
+            [ -n "$p" ] || continue
+            [ -x "$p/node" ] && continue
+            cleanpath="${cleanpath:+$cleanpath:}$p"
+          done
+          unset IFS
+          if PATH="$cleanpath" command -v node >/dev/null 2>&1; then
+            echo "::error ::Node global ainda no PATH limpo"; exit 1
+          fi
+          out="$(PATH="$cleanpath" GARRAIA_NODE_BIN="" "$sidecar" whatsapp self-test --json || true)"
+          echo "self-test: $out"
+          echo "$out" | tail -1 | jq -e '.self_test=="ok" and .node_origin=="privado" and (.deps|has("@whiskeysockets/baileys")) and (.deps|has("pino")) and (.deps|has("sharp"))' >/dev/null \
+            || { echo "::error ::self-test nao satisfez origin=privado + ok + baileys/pino/sharp"; exit 1; }
+          echo "node $(echo "$out" | tail -1 | jq -r '.node_version') (origin=privado)"
+          echo "SMOKE MACOS OK: origin=privado, self_test=ok, deps baileys/pino/sharp, caminho com espaco"
+
+  # ---------------------------------------------------------------------------
+  # Atualizacao + desinstalacao (#1636, fatia C): instala o instalador PUBLICADO
+  # da v0.4.9 (sem o bundle do Node), cria um marcador em ~/.garraia/whatsapp,
+  # instala o novo por cima, roda o self-test (tem de virar origin=privado) e
+  # prova que o marcador SOBREVIVE; depois desinstala e prova que o pacote some
+  # (node/, bridge-whatsapp/) e o dado do usuario fica. Linux (dpkg -i reinstala
+  # mesmo com versao igual) e macOS (copia do .app substitui) sao determinísticos.
+  # O upgrade-sobre-o-anterior do MSI Windows nao entra aqui: a `main` ainda e
+  # 0.4.9, e um major-upgrade real do WiX exige ProductVersion maior (bump de
+  # versao); o smoke-windows ja cobre instalar-limpo + self-test + desinstalar +
+  # dado do usuario preservado. Ver docs/desktop.md.
+  update-linux:
+    name: Update/Uninstall Linux (.deb v0.4.9 -> novo, sessao sobrevive)
+    needs: build-linux-bundles
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download Linux bundles
+        uses: actions/download-artifact@v7
+        with:
+          name: garraia-desktop-linux-pr
+          path: bundles
+
+      - name: Instala v0.4.9, atualiza para o novo, self-test, desinstala
+        run: |
+          set -euo pipefail
+          new="$PWD/bundles/garraia-desktop-linux-x86_64.deb"
+          old="/tmp/old-v049.deb"
+          curl -fsSL -o "$old" "https://github.com/michelbr84/GarraRUST/releases/download/v0.4.9/garraia-desktop-linux-x86_64.deb"
+          echo "v0.4.9 .deb: $(stat -c%s "$old") B | novo .deb: $(stat -c%s "$new") B"
+
+          sudo apt-get update -qq
+          # v0.4.9 (sem bundle de Node); apt resolve as deps de sistema do Tauri.
+          sudo apt-get install -y "$old"
+          [ ! -e /usr/lib/garraia-desktop/node/bin/node ] || echo "nota: v0.4.9 ja tinha node/ (inesperado)"
+          # marcador de sessao do usuario — tem de sobreviver ao update e ao uninstall
+          mkdir -p "$HOME/.garraia/whatsapp"
+          echo "sessao-vinculada" > "$HOME/.garraia/whatsapp/smoke-marker.txt"
+          # atualiza para o novo (com bundle). dpkg -i reinstala mesmo com versao igual.
+          sudo dpkg -i "$new"
+          [ -x /usr/lib/garraia-desktop/node/bin/node ] || { echo "::error ::node privado ausente apos o update"; exit 1; }
+
+          cleanpath=""
+          IFS=':'
+          for p in $PATH; do [ -n "$p" ] || continue; [ -x "$p/node" ] && continue; cleanpath="${cleanpath:+$cleanpath:}$p"; done
+          unset IFS
+          out="$(PATH="$cleanpath" GARRAIA_NODE_BIN="" /usr/bin/garraia whatsapp self-test --json || true)"
+          echo "self-test pos-update: $out"
+          echo "$out" | tail -1 | jq -e '.self_test=="ok" and .node_origin=="privado"' >/dev/null \
+            || { echo "::error ::self-test pos-update nao deu origin=privado + ok"; exit 1; }
+          [ -f "$HOME/.garraia/whatsapp/smoke-marker.txt" ] || { echo "::error ::a sessao do usuario sumiu no update"; exit 1; }
+          echo "UPDATE OK: node privado ativo apos upgrade, sessao do usuario preservada"
+
+          # desinstala: pacote some, dado do usuario fica
+          sudo dpkg -r garraia-desktop
+          [ ! -e /usr/lib/garraia-desktop/node/bin/node ] || { echo "::error ::node ainda presente apos desinstalar"; exit 1; }
+          [ ! -e /usr/lib/garraia-desktop/bridge-whatsapp ] || { echo "::error ::bridge-whatsapp ainda presente apos desinstalar"; exit 1; }
+          [ -f "$HOME/.garraia/whatsapp/smoke-marker.txt" ] || { echo "::error ::dado do usuario removido na desinstalacao"; exit 1; }
+          echo "UNINSTALL OK: node/ e bridge-whatsapp/ removidos, ~/.garraia/whatsapp preservado"
+
+  update-macos:
+    name: Update/Uninstall macOS (.app v0.4.9 -> novo, sessao sobrevive)
+    needs: build-macos-bundles
+    runs-on: macos-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download macOS bundles
+        uses: actions/download-artifact@v7
+        with:
+          name: garraia-desktop-macos-pr
+          path: bundles
+
+      - name: Instala .app v0.4.9, atualiza para o novo, self-test, desinstala
+        run: |
+          set -euo pipefail
+          newdmg="$(find "$PWD/bundles" -maxdepth 1 -name '*.dmg' | head -1)"
+          [ -n "$newdmg" ] || { echo "::error ::DMG novo ausente no artifact"; exit 1; }
+          olddmg="/tmp/old-v049.dmg"
+          curl -fsSL -o "$olddmg" "https://github.com/michelbr84/GarraRUST/releases/download/v0.4.9/garraia-desktop_0.4.9_aarch64.dmg"
+          echo "v0.4.9 dmg: $(stat -f%z "$olddmg") B | novo dmg: $(stat -f%z "$newdmg") B"
+
+          # "Instala" = copia o .app para /Applications (fluxo real do macOS).
+          appdest="/Applications/garraia-desktop.app"
+          copy_app_from_dmg() {
+            local dmg="$1" mnt; mnt="$(mktemp -d)"
+            hdiutil attach "$dmg" -nobrowse -mountpoint "$mnt" >/dev/null
+            local app; app="$(find "$mnt" -maxdepth 1 -name '*.app' | head -1)"
+            [ -n "$app" ] || { hdiutil detach "$mnt" >/dev/null || true; echo "::error ::.app ausente no dmg $dmg"; exit 1; }
+            sudo rm -rf "$appdest"
+            sudo cp -R "$app" "$appdest"
+            hdiutil detach "$mnt" >/dev/null || true
+          }
+
+          copy_app_from_dmg "$olddmg"
+          mkdir -p "$HOME/.garraia/whatsapp"
+          echo "sessao-vinculada" > "$HOME/.garraia/whatsapp/smoke-marker.txt"
+          # atualiza para o novo (.app com bundle) por cima
+          copy_app_from_dmg "$newdmg"
+          node="$appdest/Contents/Resources/node/bin/node"
+          [ -x "$node" ] || { echo "::error ::node privado ausente apos o update ($node)"; exit 1; }
+
+          cleanpath=""
+          IFS=':'
+          for p in $PATH; do [ -n "$p" ] || continue; [ -x "$p/node" ] && continue; cleanpath="${cleanpath:+$cleanpath:}$p"; done
+          unset IFS
+          out="$(PATH="$cleanpath" GARRAIA_NODE_BIN="" "$appdest/Contents/MacOS/garraia" whatsapp self-test --json || true)"
+          echo "self-test pos-update: $out"
+          echo "$out" | tail -1 | jq -e '.self_test=="ok" and .node_origin=="privado"' >/dev/null \
+            || { echo "::error ::self-test pos-update nao deu origin=privado + ok"; exit 1; }
+          [ -f "$HOME/.garraia/whatsapp/smoke-marker.txt" ] || { echo "::error ::a sessao do usuario sumiu no update"; exit 1; }
+          echo "UPDATE OK: node privado ativo apos upgrade, sessao do usuario preservada"
+
+          # desinstala: apaga o .app, dado do usuario fica
+          sudo rm -rf "$appdest"
+          [ ! -e "$appdest" ] || { echo "::error ::.app ainda presente apos desinstalar"; exit 1; }
+          [ -f "$HOME/.garraia/whatsapp/smoke-marker.txt" ] || { echo "::error ::dado do usuario removido na desinstalacao"; exit 1; }
+          echo "UNINSTALL OK: .app removido, ~/.garraia/whatsapp preservado"
+
+  # ---------------------------------------------------------------------------
+  # Inicializacao pelo desktop (#1636, fatia C + fatia D): lanca o APP instalado
+  # (GUI), espera o sidecar `garraia start` responder GET /api/health em
+  # 127.0.0.1:3888, mata o app de forma ABRUPTA e prova que o sidecar morre em
+  # <= 15 s (fatia D: Job Object no Windows, --exit-with-parent/parent-watch no
+  # Unix). timeout-minutes garante que nada fica pendurado. Se o runner nao subir
+  # a GUI, o passo falha com a evidencia (app.log + ps) para o roteiro manual.
+  desktop-launch-linux:
+    name: Desktop sobe o sidecar e morre junto (Linux, xvfb)
+    needs: build-linux-bundles
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download Linux bundles
+        uses: actions/download-artifact@v7
+        with:
+          name: garraia-desktop-linux-pr
+          path: bundles
+
+      - name: Instala o .deb, roda o app sob xvfb+dbus, /api/health, mata o app, sidecar morre
+        run: |
+          set -uo pipefail
+          sudo apt-get update -qq
+          # o .deb puxa as libs de runtime do Tauri (webkit2gtk etc.) como deps
+          sudo apt-get install -y ./bundles/garraia-desktop-linux-x86_64.deb xvfb dbus-x11
+
+          applog=/tmp/app.log
+          nohup dbus-run-session -- xvfb-run -a /usr/bin/garraia-desktop >"$applog" 2>&1 &
+          echo "app lancado (xvfb + dbus)"
+
+          ok=0
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:3888/api/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error ::/api/health nao respondeu em 90s"
+            echo "---- app.log ----"; cat "$applog" 2>/dev/null || true
+            ps -ef | grep -i garra | grep -v grep || true
+            exit 1
+          fi
+          echo "OK: o desktop subiu o sidecar e ele respondeu GET /api/health"
+
+          app_pid="$(pgrep -x garraia-desktop | head -1 || true)"
+          sc_pid="$(pgrep -f 'garraia start' | head -1 || true)"
+          echo "app_pid=$app_pid sidecar_pid=$sc_pid"
+          [ -n "$sc_pid" ] || { echo "::error ::sidecar 'garraia start' nao encontrado"; exit 1; }
+
+          # morte ABRUPTA do app (SIGKILL): nenhum RunEvent::Exit roda; o
+          # --exit-with-parent (parent-watch da fatia D) tem de derrubar o sidecar.
+          [ -n "$app_pid" ] && kill -9 "$app_pid" 2>/dev/null || true
+
+          dead=0
+          for i in $(seq 1 15); do
+            if ! kill -0 "$sc_pid" 2>/dev/null; then dead=1; break; fi
+            sleep 1
+          done
+          if [ "$dead" != 1 ]; then
+            echo "::error ::sidecar (PID $sc_pid) sobreviveu >15s a morte abrupta do app"
+            ps -ef | grep -i garra | grep -v grep || true
+            exit 1
+          fi
+          if curl -fsS http://127.0.0.1:3888/api/health >/dev/null 2>&1; then
+            echo "::error ::/api/health ainda responde apos matar o app"; exit 1
+          fi
+          echo "DESKTOP-LAUNCH LINUX OK: app subiu o sidecar; morte abrupta do app derrubou o sidecar em <=15s"
+
+  desktop-launch-windows:
+    name: Desktop sobe o sidecar e morre junto (Windows)
+    needs: build-installer
+    runs-on: windows-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Download Windows bundles
+        uses: actions/download-artifact@v7
+        with:
+          name: garraia-desktop-windows-pr
+          path: bundles
+
+      - name: Instala MSI, roda o app, /api/health, taskkill /F do app, sidecar morre
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msi = (Resolve-Path "bundles/garraia-desktop-windows-x86_64.msi").Path
+          $p = Start-Process msiexec.exe -ArgumentList @('/i',$msi,'/qn','/norestart','/l*v','install.log') -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(600000)) { try { $p.Kill($true) } catch {}; if (Test-Path install.log) { Get-Content install.log -Tail 60 }; throw "TIMEOUT instalando" }
+          if ($p.ExitCode -ne 0) { if (Test-Path install.log) { Get-Content install.log -Tail 60 }; throw "msiexec /i falhou ($($p.ExitCode))" }
+
+          $appExe = Get-ChildItem "C:\Program Files\garraia-desktop" -Recurse -Filter garraia-desktop.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $appExe) { throw "garraia-desktop.exe nao encontrado apos a instalacao" }
+          Start-Process -FilePath $appExe.FullName
+          Write-Host "app lancado: $($appExe.FullName)"
+
+          $ok = $false
+          for ($i=0; $i -lt 90; $i++) {
+            try { Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:3888/api/health" -TimeoutSec 3 | Out-Null; $ok = $true; break } catch { Start-Sleep 1 }
+          }
+          if (-not $ok) { throw "/api/health nao respondeu em 90s" }
+          Write-Host "OK: o desktop subiu o sidecar e ele respondeu GET /api/health"
+
+          $sc = Get-Process garraia -ErrorAction SilentlyContinue
+          if (-not $sc) { throw "sidecar 'garraia' nao esta rodando" }
+          Write-Host "sidecar PID(s): $($sc.Id -join ',')"
+
+          # morte ABRUPTA do app (simula crash): o Job Object KILL_ON_JOB_CLOSE da
+          # fatia D deve derrubar o sidecar (taskkill /IM so mata o app, nao o garraia).
+          taskkill /F /IM garraia-desktop.exe | Out-Host
+
+          $dead = $false
+          for ($i=0; $i -lt 15; $i++) {
+            if (-not (Get-Process garraia -ErrorAction SilentlyContinue)) { $dead = $true; break }
+            Start-Sleep 1
+          }
+          if (-not $dead) { throw "sidecar 'garraia' sobreviveu >15s a morte abrupta do app" }
+          $still = $true; try { Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:3888/api/health" -TimeoutSec 3 | Out-Null } catch { $still = $false }
+          if ($still) { throw "/api/health ainda responde apos matar o app" }
+          Write-Host "DESKTOP-LAUNCH WINDOWS OK: app subiu o sidecar; taskkill /F do app derrubou o sidecar em <=15s (Job Object)"
+          # Sucesso explicito: `taskkill` pode ter deixado $LASTEXITCODE != 0
+          # (ex.: 128 se o app ja tivesse saido). Falhas reais usam `throw`.
+          exit 0
+
+  desktop-launch-macos:
+    name: Desktop sobe o sidecar e morre junto (macOS)
+    needs: build-macos-bundles
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download macOS bundles
+        uses: actions/download-artifact@v7
+        with:
+          name: garraia-desktop-macos-pr
+          path: bundles
+
+      - name: Instala o .app, roda via open -a, /api/health, mata o app, sidecar morre
+        run: |
+          set -uo pipefail
+          dmg="$(find bundles -maxdepth 1 -name '*.dmg' | head -1)"
+          [ -n "$dmg" ] || { echo "::error ::DMG ausente"; exit 1; }
+          mnt="$(mktemp -d)"
+          hdiutil attach "$dmg" -nobrowse -mountpoint "$mnt" >/dev/null
+          app="$(find "$mnt" -maxdepth 1 -name '*.app' | head -1)"
+          dest="/Applications/garraia-desktop.app"
+          sudo rm -rf "$dest"; sudo cp -R "$app" "$dest"
+          hdiutil detach "$mnt" >/dev/null || true
+
+          applog=/tmp/app.log
+          if ! open -a "$dest"; then
+            echo "::warning ::open -a falhou; tentando o binario direto"
+            "$dest/Contents/MacOS/garraia-desktop" >"$applog" 2>&1 &
+          fi
+          ok=0
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:3888/api/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error ::/api/health nao respondeu em 90s (runner pode bloquear GUI)"
+            echo "---- app.log ----"; cat "$applog" 2>/dev/null || true
+            ps -ef | grep -i garra | grep -v grep || true
+            exit 1
+          fi
+          echo "OK: o desktop subiu o sidecar e ele respondeu GET /api/health"
+
+          sc_pid="$(pgrep -f 'garraia start' | head -1 || true)"
+          [ -n "$sc_pid" ] || { echo "::error ::sidecar 'garraia start' nao encontrado"; exit 1; }
+          # morte ABRUPTA do app: parent-watch (fatia D) tem de derrubar o sidecar
+          pkill -9 -x garraia-desktop || true
+          dead=0
+          for i in $(seq 1 15); do
+            if ! kill -0 "$sc_pid" 2>/dev/null; then dead=1; break; fi
+            sleep 1
+          done
+          if [ "$dead" != 1 ]; then
+            echo "::error ::sidecar (PID $sc_pid) sobreviveu >15s a morte abrupta do app"
+            ps -ef | grep -i garra | grep -v grep || true
+            exit 1
+          fi
+          echo "DESKTOP-LAUNCH MACOS OK: app subiu o sidecar; morte abrupta do app derrubou o sidecar em <=15s"
+
+  # ---------------------------------------------------------------------------
+  # Atualizacao REAL do MSI (#1636, fatia C): a `main` esta em 0.4.9, e um major
+  # upgrade do WiX exige ProductVersion maior. Este job faz um bump SO no job
+  # (sed no Cargo.toml, sem commitar) para 0.4.10, compila o MSI novo, instala a
+  # v0.4.9 PUBLICADA, marca a sessao, instala o 0.4.10 por cima (upgrade real),
+  # roda o self-test (tem de virar origin=privado), prova que a sessao sobrevive
+  # e desinstala. Pesado (compila o desktop), mas e a unica forma de provar o
+  # upgrade real sem subir a versao da branch.
+  update-windows:
+    name: Update/Uninstall Windows (MSI v0.4.9 -> 0.4.10, sessao sobrevive)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Bump de versao (so no job, sem commit) 0.4.9 -> 0.4.10
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i '0,/^version = "0.4.9"$/s//version = "0.4.10"/' Cargo.toml
+          echo "versao do workspace agora:"; grep -nE '^version = ' Cargo.toml | head -1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build MSI 0.4.10
+        shell: pwsh
+        run: ./scripts/build-installer.ps1 -StageDir "${env:RUNNER_TEMP}\bundles"
+
+      - name: Instala v0.4.9, marca sessao, atualiza para 0.4.10, self-test, desinstala
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $new = "$env:RUNNER_TEMP\bundles\garraia-desktop-windows-x86_64.msi"
+          if (-not (Test-Path $new)) { throw "MSI novo (0.4.10) nao foi gerado" }
+          Write-Host "TAMANHO MSI 0.4.10: $((Get-Item $new).Length) bytes"
+          $old = "$env:RUNNER_TEMP\old-v049.msi"
+          Invoke-WebRequest -UseBasicParsing "https://github.com/michelbr84/GarraRUST/releases/download/v0.4.9/garraia-desktop-windows-x86_64.msi" -OutFile $old
+
+          # $args e variavel automatica do PowerShell: usar como parametro faz o
+          # -ArgumentList nao receber o array (o /qn some e o msiexec trava). Por
+          # isso o parametro se chama $msiArgs.
+          function Inst($msiArgs,$log) {
+            $p = Start-Process msiexec.exe -ArgumentList $msiArgs -PassThru -NoNewWindow
+            if (-not $p.WaitForExit(900000)) { try { $p.Kill($true) } catch {}; if (Test-Path $log) { Get-Content $log -Tail 60 }; throw "TIMEOUT: msiexec $($msiArgs -join ' ')" }
+            return $p.ExitCode
+          }
+
+          if ((Inst @('/i',$old,'/qn','/norestart','/l*v','i1.log') 'i1.log') -ne 0) { if (Test-Path i1.log) { Get-Content i1.log -Tail 40 }; throw "instalar v0.4.9 falhou" }
+          $ud = Join-Path $env:USERPROFILE ".garraia\whatsapp"
+          New-Item -ItemType Directory -Force -Path $ud | Out-Null
+          Set-Content -Path (Join-Path $ud "smoke-marker.txt") -Value "sessao-vinculada"
+
+          # upgrade real (0.4.10 > 0.4.9 dispara o major upgrade do WiX)
+          if ((Inst @('/i',$new,'/qn','/norestart','/l*v','i2.log') 'i2.log') -ne 0) { if (Test-Path i2.log) { Get-Content i2.log -Tail 40 }; throw "upgrade para 0.4.10 falhou" }
+
+          $exe = Get-ChildItem "C:\Program Files\garraia-desktop" -Recurse -Filter garraia.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw "sidecar ausente apos o upgrade" }
+          if (-not (Test-Path "$($exe.DirectoryName)\node\node.exe")) { throw "node privado ausente apos o upgrade" }
+
+          $clean = ($env:PATH -split ';' | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'node.exe')) }) -join ';'
+          $env:PATH = $clean; $env:GARRAIA_NODE_BIN = ""
+          $outFile = "selftest.json"
+          $sp = Start-Process -FilePath $exe.FullName -ArgumentList @('whatsapp','self-test','--json') -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError "selftest.err"
+          if (-not $sp.WaitForExit(180000)) { try { $sp.Kill($true) } catch {}; throw "TIMEOUT no self-test" }
+          if ($sp.ExitCode -ne 0) { if (Test-Path "selftest.err") { Get-Content "selftest.err" }; throw "self-test saiu com codigo $($sp.ExitCode)" }
+          $o = ((Get-Content $outFile -Raw) -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1) | ConvertFrom-Json
+          if ($o.self_test -ne "ok" -or $o.node_origin -ne "privado") { throw "self-test pos-upgrade falhou: $($o | ConvertTo-Json -Compress)" }
+          if (-not (Test-Path (Join-Path $ud "smoke-marker.txt"))) { throw "a sessao do usuario sumiu no upgrade" }
+          Write-Host "UPGRADE OK: 0.4.9 -> 0.4.10, origin=privado, sessao do usuario preservada"
+
+          if ((Inst @('/x',$new,'/qn','/norestart','/l*v','u.log') 'u.log') -ne 0) { throw "desinstalar falhou" }
+          if (Test-Path "$($exe.DirectoryName)\node\node.exe") { throw "node ainda presente apos desinstalar" }
+          if (Test-Path "$($exe.DirectoryName)\bridge-whatsapp") { throw "bridge-whatsapp ainda presente apos desinstalar" }
+          if (-not (Test-Path (Join-Path $ud "smoke-marker.txt"))) { throw "sessao removida na desinstalacao" }
+          Write-Host "UNINSTALL OK: node/ e bridge-whatsapp/ removidos, ~/.garraia/whatsapp preservado"
+          exit 0

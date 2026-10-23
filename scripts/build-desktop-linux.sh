@@ -31,10 +31,18 @@ cd "$root"
 host_triple="$(rustc -vV | sed -n 's/^host: //p')"
 arch="${host_triple%%-*}"
 
-echo "==> [1/4] Compilando gateway (release)..."
+# #1636 (fatia C): o runtime Node privado hoje so e montado para x86_64 no
+# Linux (fatia B so vendoriza chaves/artefato desse alvo). Falha alto num host
+# diferente em vez de empacotar um app sem a ponte.
+case "$arch" in
+  x86_64) node_platform="linux-x64" ;;
+  *) echo "ERRO: bundle do Node privado (#1636) so suporta x86_64 no Linux hoje; host=$arch" >&2; exit 1 ;;
+esac
+
+echo "==> [1/5] Compilando gateway (release)..."
 cargo build -p garraia --release
 
-echo "==> [2/4] Copiando sidecar para binaries/..."
+echo "==> [2/5] Copiando sidecar para binaries/..."
 bin_dir="crates/garraia-desktop/src-tauri/binaries"
 mkdir -p "$bin_dir"
 # Tauri externalBin = "binaries/garraia" espera "binaries/garraia-<triple>".
@@ -44,13 +52,25 @@ mkdir -p "$bin_dir"
 cp "target/release/garra" "$bin_dir/garraia-$host_triple"
 echo "    Copiado: $bin_dir/garraia-$host_triple"
 
-echo "==> [3/4] Gerando bundles com cargo tauri build (deb + appimage)..."
+# #1636 (fatia C): monta o runtime Node privado + a ponte pre-construida ANTES
+# do `cargo tauri build` — o build.rs do tauri-build copia os resources no
+# compile do crate desktop, entao `node-runtime/` precisa ja existir. Mesma
+# fonte unica da fatia B. A saida vai para src-tauri/node-runtime/, que o
+# tauri.conf.json mapeia para node/ e bridge-whatsapp/ no diretorio de resources
+# (no .deb/.AppImage: /usr/lib/garraia-desktop/), exatamente onde o resolver da
+# fatia A procura relativo ao sidecar garraia (/usr/bin/garraia -> ../lib/...).
+echo "==> [3/5] Montando runtime Node privado (download + GPG + SHA-256 + npm ci)..."
+bash scripts/desktop/node-runtime/build-node-runtime.sh \
+  --platform "$node_platform" \
+  --out crates/garraia-desktop/src-tauri/node-runtime
+
+echo "==> [4/5] Gerando bundles com cargo tauri build (deb + appimage)..."
 (
   cd crates/garraia-desktop/src-tauri
   NO_STRIP=1 APPIMAGE_EXTRACT_AND_RUN=1 cargo tauri build --bundles deb appimage
 )
 
-echo "==> [4/4] Localizando bundles..."
+echo "==> [5/5] Localizando bundles..."
 # Falha alto de propósito, como o build-installer.ps1: um `cargo tauri build`
 # que saia 0 sem emitir bundle não pode deixar o script verde.
 shopt -s nullglob
