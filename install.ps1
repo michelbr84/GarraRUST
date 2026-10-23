@@ -354,7 +354,7 @@ function Resolve-GarraiaVersion {
         }
     }
 
-    # Last resort: the newest STABLE release — neither draft nor prerelease.
+    # Last resort: the newest STABLE release - neither draft nor prerelease.
     # /releases/latest 404s on a repository whose only releases are
     # prereleases. This mirrors the awk pipeline of extract_first_stable_tag
     # (install.sh): a `-rc`/`-beta`/`-alpha` must never be installed by the

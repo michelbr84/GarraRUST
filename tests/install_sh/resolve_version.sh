@@ -150,6 +150,8 @@ assert_eq "reversed order (flags before tag_name), indented" "v0.4.9" "$(stable_
 # --- a release body with braces, escaped quotes and the literal text
 #     "prerelease": true must NOT fool the scanner (braces are inside a string;
 #     the escaped quotes mean the key-like text never matches the real key).
+# The ${{ }} below is literal on purpose: the body must stay unexpanded.
+# shellcheck disable=SC2016
 json_tricky_body='[{"url":"u1","tag_name":"v0.4.10-rc1","draft":false,"prerelease":true,"assets":[{"id":1,"name":"a"}]},{"url":"u2","tag_name":"v0.4.9","draft":false,"prerelease":false,"body":"uses ${{ matrix.os }} and a closing } brace and \"prerelease\": true as text","assets":[{"id":2,"name":"b"}]}]'
 assert_eq "body braces + escaped quotes do not corrupt boundaries" "v0.4.9" "$(stable_tag "${json_tricky_body}")"
 
