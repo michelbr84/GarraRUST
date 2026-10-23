@@ -45,6 +45,7 @@
 //! OOM esperando uma linha sem `\n`.
 
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -333,6 +334,18 @@ pub enum BridgeError {
     #[error("{0} nao encontrado na PATH")]
     ToolMissing(&'static str),
 
+    /// `GARRAIA_NODE_BIN` aponta algo que nao e um executavel absoluto
+    /// existente. NAO caimos para a PATH (ver [`resolve_node`]): um caminho
+    /// explicito errado e para corrigir, nao para contornar em silencio.
+    /// Mapeado para `EX_UNAVAILABLE` (69) na CLI.
+    #[error("{env}={value:?} nao e um executavel absoluto existente", env = NODE_BIN_ENV)]
+    NodeBinInvalid { value: String },
+
+    /// O `--self-test` da ponte falhou: dependencia que nao carrega, codigo de
+    /// saida != 0, ou saida ilegivel. Mapeado para `EX_UNAVAILABLE` (69).
+    #[error("autoteste da ponte falhou (codigo {code}): {detail}")]
+    SelfTest { code: String, detail: String },
+
     #[error("falha ao lancar `{program}`: {source}")]
     Spawn {
         program: String,
@@ -432,20 +445,244 @@ fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
-/// Node e npm resolvidos.
+// ---------------------------------------------------------------------------
+// Resolver de Node por caminho explicito (#1636)
+// ---------------------------------------------------------------------------
+
+/// Variavel que aponta um `node` por caminho absoluto. Vence tudo; setada e
+/// invalida RECUSA, nao cai para a PATH. Ver [`resolve_node`].
+pub const NODE_BIN_ENV: &str = "GARRAIA_NODE_BIN";
+
+/// Nome do diretorio onde o Node privado e empacotado, relativo ao executavel.
+/// Ver [`private_node_candidates`].
+const PRIVATE_NODE_DIR: &str = "node";
+
+/// Nome do diretorio de ponte pre-construida que a fatia C poe ao lado do Node
+/// privado. Ver [`prebuilt_seed_near`].
+const PREBUILT_BRIDGE_DIR: &str = "bridge-whatsapp";
+
+/// Nome do produto desktop (Tauri `productName`): o `.deb`/`.rpm` poe os
+/// resources em `/usr/lib/<produto>/`. Ver [`private_node_candidates`].
+const DESKTOP_PRODUCT: &str = "garraia-desktop";
+
+/// De onde o resolver tirou o `node` — para log e diagnostico.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeOrigin {
+    /// `GARRAIA_NODE_BIN` (caminho explicito do operador).
+    Env,
+    /// Node privado empacotado ao lado do executavel em execucao.
+    Private,
+    /// `PATH` (o `which` de sempre).
+    Path,
+}
+
+impl NodeOrigin {
+    /// Rotulo curto e estavel, para log e para o `self-test`.
+    pub fn rotulo(self) -> &'static str {
+        match self {
+            NodeOrigin::Env => "env",
+            NodeOrigin::Private => "privado",
+            NodeOrigin::Path => "path",
+        }
+    }
+}
+
+/// Um `node` resolvido e de onde ele veio.
+#[derive(Debug, Clone)]
+pub struct ResolvedNode {
+    pub node: PathBuf,
+    pub origin: NodeOrigin,
+}
+
+/// Resolve o `node` por caminho explicito, nesta ordem:
+///
+/// 1. **`GARRAIA_NODE_BIN`** — caminho absoluto de um executavel existente.
+///    Setado e invalido e ERRO ([`BridgeError::NodeBinInvalid`]), nunca um
+///    fallback silencioso para a PATH.
+/// 2. **Node privado empacotado** — `node`/`node.exe` em layouts fixos
+///    relativos ao executavel em execucao ([`private_node_candidates`]). E o
+///    que a fatia C usa para o usuario nao precisar instalar Node.
+/// 3. **PATH** — o `which` de sempre ([`find_executable`]).
+///
+/// NUNCA muda `PATH` nem outra variavel do processo: o `node` escolhido e
+/// sempre invocado pelo caminho absoluto.
+pub fn resolve_node() -> Result<ResolvedNode, BridgeError> {
+    resolve_node_from(
+        std::env::var_os(NODE_BIN_ENV),
+        std::env::current_exe().ok().as_deref(),
+        &find_executable,
+    )
+}
+
+/// O miolo de [`resolve_node`], com as tres fontes injetadas para teste.
+fn resolve_node_from(
+    env_bin: Option<OsString>,
+    current_exe: Option<&Path>,
+    which: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Result<ResolvedNode, BridgeError> {
+    if let Some(raw) = env_bin.filter(|v| !v.is_empty()) {
+        let path = PathBuf::from(&raw);
+        if path.is_absolute() && is_executable_file(&path) {
+            return Ok(ResolvedNode {
+                node: path,
+                origin: NodeOrigin::Env,
+            });
+        }
+        return Err(BridgeError::NodeBinInvalid {
+            value: path.display().to_string(),
+        });
+    }
+    if let Some(dir) = current_exe.and_then(Path::parent) {
+        for candidate in private_node_candidates(dir) {
+            if is_executable_file(&candidate) {
+                return Ok(ResolvedNode {
+                    node: candidate,
+                    origin: NodeOrigin::Private,
+                });
+            }
+        }
+    }
+    if let Some(node) = which("node") {
+        return Ok(ResolvedNode {
+            node,
+            origin: NodeOrigin::Path,
+        });
+    }
+    Err(BridgeError::ToolMissing("node"))
+}
+
+/// Os caminhos onde o Node privado pode estar, relativos ao DIRETORIO do
+/// executavel em execucao. O primeiro que existir vence.
+///
+/// # Layout (contrato da fatia C), por plataforma
+///
+/// O executavel em execucao e o app desktop (`garraia-desktop[.exe]`) ou a CLI
+/// (`garraia[.exe]`), que o app empacota como sidecar NO MESMO diretorio. Os
+/// caminhos cobrem onde o Tauri v2 poe `externalBin`/`bundle.resources`:
+///
+/// - **Windows** (install dir plano): `<exe>\node\node.exe` — o zip oficial do
+///   Node poe `node.exe` na raiz da pasta.
+/// - **macOS** (`.app`, exe em `Contents/MacOS`):
+///   `<exe>/../Resources/node/bin/node`.
+/// - **Linux** (`.deb`/`.rpm`, exe em `/usr/bin`):
+///   `<exe>/../lib/garraia-desktop/node/bin/node` — resources vao para
+///   `/usr/lib/<produto>/`.
+/// - **AppImage / layout plano Unix**: `<exe>/node/bin/node`.
+#[cfg(windows)]
+fn private_node_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        exe_dir.join(PRIVATE_NODE_DIR).join("node.exe"),
+        exe_dir
+            .join("..")
+            .join("Resources")
+            .join(PRIVATE_NODE_DIR)
+            .join("node.exe"),
+    ]
+}
+
+#[cfg(not(windows))]
+fn private_node_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        exe_dir.join(PRIVATE_NODE_DIR).join("bin").join("node"),
+        exe_dir
+            .join("..")
+            .join("Resources")
+            .join(PRIVATE_NODE_DIR)
+            .join("bin")
+            .join("node"),
+        exe_dir
+            .join("..")
+            .join("lib")
+            .join(DESKTOP_PRODUCT)
+            .join(PRIVATE_NODE_DIR)
+            .join("bin")
+            .join("node"),
+    ]
+}
+
+/// Nomes do executavel do `npm` ao lado do `node`, por plataforma.
+#[cfg(windows)]
+const NPM_NAMES: &[&str] = &["npm.cmd", "npm.exe", "npm"];
+#[cfg(not(windows))]
+const NPM_NAMES: &[&str] = &["npm"];
+
+/// O `npm` que acompanha um `node` resolvido, ou o da PATH.
+///
+/// Um Node privado (ou o oficial) traz o `npm` ao lado: `node/bin/npm` no
+/// Unix, `node\npm.cmd` no Windows. So quando nao ha vizinho e que caimos para
+/// o `which npm` da PATH. Nunca muda o ambiente do processo.
+pub fn resolve_npm(node: &Path) -> Option<PathBuf> {
+    if let Some(dir) = node.parent() {
+        for name in NPM_NAMES {
+            let candidate = dir.join(name);
+            if is_executable_file(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    find_executable("npm")
+}
+
+/// O diretorio de ponte pre-construida que a fatia C poe ao lado do Node
+/// privado, se existir — irmao do `node/`, com um `node_modules/` dentro.
+///
+/// Best-effort e so pelo layout: le `current_exe()`, devolve `None` fora dele.
+/// Quem valida se a arvore serve e [`prepare_with_seed`] (contra o lock
+/// embutido).
+pub fn prebuilt_seed() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    prebuilt_seed_near(exe.parent()?)
+}
+
+/// Candidatos de ponte pre-construida, espelhando [`private_node_candidates`]:
+/// o `bridge-whatsapp/` e sempre irmao do diretorio `node/`.
+fn prebuilt_seed_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        exe_dir.join(PREBUILT_BRIDGE_DIR),
+        exe_dir
+            .join("..")
+            .join("Resources")
+            .join(PREBUILT_BRIDGE_DIR),
+        exe_dir
+            .join("..")
+            .join("lib")
+            .join(DESKTOP_PRODUCT)
+            .join(PREBUILT_BRIDGE_DIR),
+    ]
+}
+
+fn prebuilt_seed_near(exe_dir: &Path) -> Option<PathBuf> {
+    prebuilt_seed_candidates(exe_dir)
+        .into_iter()
+        .find(|seed| seed.join("node_modules").is_dir())
+}
+
+/// Node resolvido, mais o `npm` quando existe.
+///
+/// `node` e obrigatorio; `npm` e `Option` porque **so** faz falta quando o
+/// plano de dependencias e [`DepsPlan::Install`]. Com a arvore pronta
+/// ([`DepsPlan::Current`]) — o caso do instalador que ja semeou o
+/// `node_modules` — o pareamento e o atendimento sobem sem `npm` nenhum.
 #[derive(Debug, Clone)]
 pub struct NodeRuntime {
     pub node: PathBuf,
-    pub npm: PathBuf,
+    pub origin: NodeOrigin,
+    pub npm: Option<PathBuf>,
 }
 
 impl NodeRuntime {
-    /// Localiza os dois. Falta de qualquer um vira [`BridgeError::ToolMissing`],
-    /// que a CLI traduz em exit 69 com uma frase de instalacao.
+    /// Resolve o `node` por caminho explicito ([`resolve_node`]) e o `npm` que
+    /// o acompanha ([`resolve_npm`]). Falta de `node` vira
+    /// [`BridgeError::ToolMissing`] / [`BridgeError::NodeBinInvalid`]; falta de
+    /// `npm` NAO e erro aqui — ela so pesa se [`DepsPlan::Install`] precisar.
     pub fn detect() -> Result<Self, BridgeError> {
-        let node = find_executable("node").ok_or(BridgeError::ToolMissing("node"))?;
-        let npm = find_executable("npm").ok_or(BridgeError::ToolMissing("npm"))?;
-        Ok(Self { node, npm })
+        let resolved = resolve_node()?;
+        let npm = resolve_npm(&resolved.node);
+        Ok(Self {
+            node: resolved.node,
+            origin: resolved.origin,
+            npm,
+        })
     }
 }
 
@@ -853,6 +1090,28 @@ pub struct Preparation {
 /// E I/O sincrono de disco: quem esta num runtime async chama por
 /// `tokio::task::spawn_blocking`.
 pub fn prepare(dir: &Path, assets: &dyn BridgeAssets) -> Result<Preparation, BridgeError> {
+    prepare_with_seed(dir, assets, None)
+}
+
+/// [`prepare`] que ainda pode SEMEAR o `node_modules` de uma arvore
+/// pre-construida, em vez de rodar `npm ci` (#1636, preparacao da fatia C).
+///
+/// Quando o plano seria [`DepsPlan::Install`] e `seed` aponta um diretorio de
+/// ponte pre-construida (`<seed>/node_modules` com o `.package-lock.json`
+/// oculto que o `npm ci` grava), a arvore e copiada para `dir` e o plano vira
+/// [`DepsPlan::Current`] — sem rede, sem `npm`. A copia so acontece se a arvore
+/// empacotada BATER com o `package-lock.json` embutido ([`seed_matches_lock`]);
+/// se nao bater (ou a copia falhar), cai no comportamento de sempre
+/// (`Install`), com um aviso no log. A copia e atomica (diretorio temporario
+/// irmao + rename) e nao usa shell — caminho com espaco nao a quebra.
+///
+/// `seed` e tipicamente [`prebuilt_seed`] (o `bridge-whatsapp/` ao lado do Node
+/// privado); `None` reproduz [`prepare`] exato.
+pub fn prepare_with_seed(
+    dir: &Path,
+    assets: &dyn BridgeAssets,
+    seed: Option<&Path>,
+) -> Result<Preparation, BridgeError> {
     let materialized = materialize_files(dir, assets)?;
 
     let digest = deps_digest(assets);
@@ -863,7 +1122,7 @@ pub fn prepare(dir: &Path, assets: &dyn BridgeAssets) -> Result<Preparation, Bri
         .find(|f| f.name == LOCKFILE)
         .map(|f| f.contents);
 
-    let deps = if !has_node_modules(dir) {
+    let mut deps = if !has_node_modules(dir) {
         DepsPlan::Install
     } else if std::fs::read_to_string(&stamp).is_ok_and(|recorded| recorded.trim() == digest) {
         DepsPlan::Current
@@ -874,6 +1133,30 @@ pub fn prepare(dir: &Path, assets: &dyn BridgeAssets) -> Result<Preparation, Bri
     } else {
         DepsPlan::Install
     };
+
+    // Fatia C: antes de desistir para `npm ci`, tenta a arvore pre-construida.
+    if deps == DepsPlan::Install
+        && let (Some(seed), Some(lock)) = (seed, lock)
+    {
+        match seed_node_modules(dir, seed, lock) {
+            Ok(true) => {
+                // A arvore em disco agora e a do lock embutido; o carimbo
+                // registra isso para o boot seguinte nao precisar reolhar.
+                let _ = std::fs::write(&stamp, &digest);
+                deps = DepsPlan::Current;
+            }
+            Ok(false) => {} // nao bate / sem arvore: log em `seed_node_modules`
+            Err(e) => {
+                // Best-effort: um erro de copia nao bloqueia o boot; o
+                // `npm ci` ainda e a saida. O carimbo ja esta `pending`.
+                tracing::warn!(
+                    "whatsapp_linked: falha ao semear o node_modules de {}: {e}",
+                    seed.display()
+                );
+            }
+        }
+    }
+
     if deps == DepsPlan::Install {
         mark_deps_pending(dir)?;
     }
@@ -881,6 +1164,107 @@ pub fn prepare(dir: &Path, assets: &dyn BridgeAssets) -> Result<Preparation, Bri
         assets: materialized,
         deps,
     })
+}
+
+/// Semeia `dir/node_modules` a partir de `seed/node_modules` quando a arvore
+/// empacotada bate com `lock` (o `package-lock.json` embutido).
+///
+/// Devolve `Ok(true)` quando semeou, `Ok(false)` quando a arvore nao serve
+/// (ausente, ou nao bate com o lock — com aviso no log), `Err` so em falha de
+/// I/O da copia. Carimba [`DEPS_PENDING`] ANTES de tocar o `node_modules`: uma
+/// copia interrompida nunca deixa o destino parecendo atual. A troca e atomica
+/// (copia para um irmao temporario e so entao `rename` no lugar).
+fn seed_node_modules(dir: &Path, seed: &Path, lock: &str) -> Result<bool, BridgeError> {
+    let src_modules = seed.join("node_modules");
+    if !src_modules.is_dir() {
+        return Ok(false);
+    }
+    if !seed_matches_lock(seed, lock) {
+        tracing::warn!(
+            "whatsapp_linked: arvore pre-construida em {} nao bate com o lock embutido; ignorando",
+            seed.display()
+        );
+        return Ok(false);
+    }
+
+    // O diretorio de destino ja existe e e `0700` (o `materialize` o criou).
+    // Carimbo pendente antes de qualquer mexida: fail-closed se cair no meio.
+    mark_deps_pending(dir)?;
+
+    let staging = dir.join(format!(".node_modules.seed.{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    copy_tree(&src_modules, &staging).map_err(|e| BridgeError::io(&staging, e))?;
+
+    let dst_modules = dir.join("node_modules");
+    if dst_modules.exists() {
+        std::fs::remove_dir_all(&dst_modules).map_err(|e| BridgeError::io(&dst_modules, e))?;
+    }
+    std::fs::rename(&staging, &dst_modules).map_err(|e| BridgeError::io(&dst_modules, e))?;
+    tracing::info!(
+        "whatsapp_linked: node_modules semeado da arvore pre-construida em {}",
+        seed.display()
+    );
+    Ok(true)
+}
+
+/// A arvore pre-construida em `seed` satisfaz `lock` (o `package-lock.json`
+/// embutido)? Mesma comparacao de [`lock_satisfied`], sobre o
+/// `node_modules/.package-lock.json` que o `npm ci` gravou — SEM a guarda de
+/// mtime de [`tree_matches_lock`], que existe para detectar adulteracao de uma
+/// arvore viva, nao para validar um pacote recem-extraido.
+fn seed_matches_lock(seed: &Path, lock: &str) -> bool {
+    let hidden = seed.join("node_modules").join(NPM_HIDDEN_LOCKFILE);
+    match std::fs::metadata(&hidden) {
+        Ok(meta) if meta.is_file() && meta.len() <= HIDDEN_LOCKFILE_MAX_BYTES => {}
+        _ => return false,
+    }
+    let Ok(bytes) = std::fs::read(&hidden) else {
+        return false;
+    };
+    let (Ok(installed), Ok(wanted)) = (
+        serde_json::from_slice::<serde_json::Value>(&bytes),
+        serde_json::from_str::<serde_json::Value>(lock),
+    ) else {
+        return false;
+    };
+    lock_satisfied(&wanted, &installed)
+}
+
+/// Copia recursiva de `src` para `dst`, sem shell e sem seguir symlink para
+/// fora. So para semear o `node_modules`: preserva symlink no Unix (o `.bin`
+/// do npm usa) e, no Windows, copia o alvo (symlink exige privilegio e o npm
+/// nao usa symlink de pacote la).
+fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            copy_symlink(&from, &to)?;
+        } else if ft.is_dir() {
+            copy_tree(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
+    let target = std::fs::read_link(from)?;
+    std::os::unix::fs::symlink(target, to)
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
+    // Sem privilegio de symlink no Windows: segue o link e copia o alvo.
+    match std::fs::metadata(from) {
+        Ok(meta) if meta.is_dir() => copy_tree(from, to),
+        _ => std::fs::copy(from, to).map(|_| ()),
+    }
 }
 
 /// `npm ci` com carimbo: [`DEPS_PENDING`] antes, [`deps_digest`] depois.
@@ -1020,6 +1404,115 @@ pub async fn npm_ci(npm: &Path, dir: &Path) -> Result<(), BridgeError> {
 }
 
 // ---------------------------------------------------------------------------
+// Autoteste da ponte (#1636)
+// ---------------------------------------------------------------------------
+
+/// Teto do `node bridge.mjs --self-test`. O import do `sharp` carrega um addon
+/// nativo; alguns segundos numa maquina carregada, nunca minutos.
+pub const SELF_TEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// O que o `--self-test` da ponte reportou: a versao do Node que rodou e a
+/// versao de cada dependencia de execucao que carregou.
+#[derive(Debug, Clone)]
+pub struct SelfTestReport {
+    pub node_version: String,
+    pub deps: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Roda `node bridge.mjs --self-test` com o Node JA resolvido e o diretorio da
+/// ponte JA materializado, le a unica linha JSON do veredito e a traduz.
+///
+/// O `--self-test` importa TODAS as dependencias de execucao (Baileys, pino,
+/// sharp) sem abrir socket nem parear, entao e o smoke exato que a fatia C
+/// precisa num ambiente sem Node global: prova que a arvore (semeada ou
+/// instalada) carrega neste Node, inclusive o addon nativo do sharp.
+///
+/// Mesma contencao de ambiente de [`npm_ci`] e do spawn da ponte
+/// ([`apply_child_env`]): o filho nasce com a allowlist R3, nunca com os
+/// segredos deste processo. Falha (codigo != 0, dependencia que nao carrega,
+/// saida ilegivel) vira [`BridgeError::SelfTest`], com o detalhe ja redigido.
+pub async fn self_test(node: &Path, dir: &Path) -> Result<SelfTestReport, BridgeError> {
+    let mut cmd = Command::new(node);
+    cmd.arg("bridge.mjs")
+        .arg("--self-test")
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    apply_child_env(&mut cmd);
+
+    let child = cmd.spawn().map_err(|e| BridgeError::Spawn {
+        program: node.display().to_string(),
+        source: e,
+    })?;
+    let output = tokio::time::timeout(SELF_TEST_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| BridgeError::Timeout)?
+        .map_err(|e| BridgeError::Spawn {
+            program: node.display().to_string(),
+            source: e,
+        })?;
+
+    // A ultima linha nao-vazia do stdout e o veredito JSON.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let veredito: serde_json::Value = stdout
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .and_then(|l| serde_json::from_str(l.trim()).ok())
+        .unwrap_or(serde_json::Value::Null);
+
+    let ok = output.status.success()
+        && veredito
+            .get("self_test")
+            .and_then(serde_json::Value::as_str)
+            == Some("ok");
+    if ok {
+        return Ok(SelfTestReport {
+            node_version: veredito
+                .get("node")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            deps: veredito
+                .get("deps")
+                .and_then(serde_json::Value::as_object)
+                .cloned()
+                .unwrap_or_default(),
+        });
+    }
+
+    // Falha: o detalhe vem do campo `error` do JSON (ja redigido pelo lado JS)
+    // ou, na falta dele, da cauda redigida do stderr.
+    let detail = veredito
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .map(redact_tail_line)
+        .unwrap_or_else(|| {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            stderr
+                .lines()
+                .rev()
+                .take(STDERR_TAIL_LINES)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .map(redact_tail_line)
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+    Err(BridgeError::SelfTest {
+        code: output
+            .status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "sinal".into()),
+        detail,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Lancamento
 // ---------------------------------------------------------------------------
 
@@ -1088,12 +1581,51 @@ const EXTRA_CHILD_ENV: &[&str] = &[
     "LANGUAGE",
 ];
 
+/// Complemento do Windows. **Obrigatorio, nao conveniencia**: sem `SystemRoot`
+/// o Node aborta logo no boot com `Assertion failed: ncrypto::CSPRNG(nullptr,
+/// 0)` (codigo 134) — a inicializacao do RNG de cripto nao acha a cripto do
+/// sistema sem ele. E o mesmo motivo (e os mesmos nomes) de
+/// `garraia_common::safety_gate::MCP_ENV_WINDOWS`, que o transporte stdio dos
+/// servidores MCP ja carregava; a ponte usava so a base R3, entao nunca subia
+/// `node` no Windows. Nenhum nome aqui carrega segredo nem e vetor de execucao
+/// de codigo (o teste `the_child_env_allowlist_carries_no_secret` prova).
+///
+/// Compilada em TODA plataforma, de proposito — e isso que faz o gate de
+/// seguranca varre-la no CI Linux, que e o unico que executa testes. Fora do
+/// Windows ela so e referenciada por esse teste (alvo `--test`), nao pelo
+/// `EXTRA_CHILD_ENV_PLATFORM`; dai o `allow(dead_code)`, para o build do `lib`
+/// nao-Windows nao a tratar como morta. Mesma disciplina de `MCP_ENV_WINDOWS`.
+#[allow(dead_code)]
+const EXTRA_CHILD_ENV_WINDOWS: &[&str] = &[
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "COMSPEC",
+    "PATHEXT",
+    "USERPROFILE",
+    "USERNAME",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMDATA",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+];
+
+/// O complemento da plataforma corrente. Fora do Windows e vazio: a base R3 ja
+/// cobre `PATH`/`HOME`/locale.
+#[cfg(windows)]
+const EXTRA_CHILD_ENV_PLATFORM: &[&str] = EXTRA_CHILD_ENV_WINDOWS;
+#[cfg(not(windows))]
+const EXTRA_CHILD_ENV_PLATFORM: &[&str] = &[];
+
 fn apply_child_env(cmd: &mut Command) {
     cmd.env_clear();
     for (key, value) in garraia_common::safety_gate::allowed_child_env() {
         cmd.env(key, value);
     }
-    for key in EXTRA_CHILD_ENV {
+    for key in EXTRA_CHILD_ENV.iter().chain(EXTRA_CHILD_ENV_PLATFORM) {
         if let Some(value) = std::env::var_os(key) {
             cmd.env(key, value);
         }
@@ -2626,10 +3158,14 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
     /// segredo do processo pai pode estar nela.
     #[test]
     fn the_child_env_allowlist_carries_no_secret() {
+        // `EXTRA_CHILD_ENV_WINDOWS` entra SEMPRE (nao atras de `cfg`): o CI que
+        // executa testes e Linux, e um segredo colado na lista do Windows tem
+        // de ser pego mesmo assim — mesma disciplina do `MCP_ENV_PLATFORM`.
         let all: Vec<&str> = garraia_common::safety_gate::R3_ENV_ALLOWLIST
             .iter()
             .copied()
             .chain(EXTRA_CHILD_ENV.iter().copied())
+            .chain(EXTRA_CHILD_ENV_WINDOWS.iter().copied())
             .collect();
         for name in &all {
             let upper = name.to_uppercase();
@@ -2727,6 +3263,7 @@ o que o `return` anterior fazia.",
             .iter()
             .copied()
             .chain(EXTRA_CHILD_ENV.iter().copied())
+            .chain(EXTRA_CHILD_ENV_PLATFORM.iter().copied())
             .collect();
 
         let seen = String::from_utf8_lossy(&output.stdout);
@@ -2762,5 +3299,208 @@ esta sendo aplicado: {intrusas:?}"
     fn a_missing_tool_is_reported_by_name() {
         let err = BridgeError::ToolMissing("node");
         assert!(err.to_string().contains("node"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Resolver de Node por caminho explicito (#1636)
+    // -----------------------------------------------------------------------
+
+    /// Cria um executavel falso em `path` (com o bit de execucao no Unix, que
+    /// `is_executable_file` exige).
+    fn make_exec(path: &Path) {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(path, b"#!/bin/sh\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+    }
+
+    /// Caminho privado do Node que o layout da plataforma procura primeiro.
+    fn primeiro_candidato_privado(exe_dir: &Path) -> PathBuf {
+        private_node_candidates(exe_dir)
+            .into_iter()
+            .next()
+            .expect("ao menos um candidato")
+    }
+
+    #[test]
+    fn env_vence_privado_e_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Um node na env, um node privado e um node na PATH: a env vence.
+        let env_node =
+            dir.path()
+                .join("explicito")
+                .join(if cfg!(windows) { "node.exe" } else { "node" });
+        make_exec(&env_node);
+        let exe_dir = dir.path().join("app");
+        make_exec(&primeiro_candidato_privado(&exe_dir));
+        let path_node = dir.path().join("path").join("node");
+        make_exec(&path_node);
+
+        let resolved = resolve_node_from(
+            Some(env_node.clone().into_os_string()),
+            Some(&exe_dir.join("garraia")),
+            &|_| Some(path_node.clone()),
+        )
+        .expect("resolve");
+        assert_eq!(resolved.origin, NodeOrigin::Env);
+        assert_eq!(resolved.node, env_node);
+    }
+
+    #[test]
+    fn env_invalida_e_erro_claro_sem_cair_para_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Caminho que nao existe, mas absoluto.
+        let inexistente = dir.path().join("nao").join("existe").join("node");
+        // Um node na PATH esta disponivel — e NAO pode ser usado: a env setada
+        // e invalida tem de falhar, nao cair em silencio para a PATH.
+        let path_node = dir.path().join("path").join("node");
+        make_exec(&path_node);
+
+        let res = resolve_node_from(Some(inexistente.clone().into_os_string()), None, &|_| {
+            Some(path_node.clone())
+        });
+        assert!(
+            matches!(res, Err(BridgeError::NodeBinInvalid { .. })),
+            "env invalida tem de ser NodeBinInvalid, veio {res:?}"
+        );
+
+        // Caminho RELATIVO tambem e recusado (exige absoluto).
+        let res = resolve_node_from(Some(OsString::from("node")), None, &|_| {
+            Some(path_node.clone())
+        });
+        assert!(matches!(res, Err(BridgeError::NodeBinInvalid { .. })));
+    }
+
+    #[test]
+    fn env_vazia_e_tratada_como_nao_setada() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path_node = dir.path().join("path").join("node");
+        make_exec(&path_node);
+        let resolved = resolve_node_from(Some(OsString::new()), None, &|_| Some(path_node.clone()))
+            .expect("resolve");
+        assert_eq!(resolved.origin, NodeOrigin::Path);
+    }
+
+    #[test]
+    fn privado_vence_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exe_dir = dir.path().join("app");
+        let privado = primeiro_candidato_privado(&exe_dir);
+        make_exec(&privado);
+        let path_node = dir.path().join("path").join("node");
+        make_exec(&path_node);
+
+        let resolved = resolve_node_from(None, Some(&exe_dir.join("garraia")), &|_| {
+            Some(path_node.clone())
+        })
+        .expect("resolve");
+        assert_eq!(resolved.origin, NodeOrigin::Private);
+        assert_eq!(resolved.node, privado);
+    }
+
+    #[test]
+    fn sem_env_sem_privado_cai_na_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exe_dir = dir.path().join("app");
+        std::fs::create_dir_all(&exe_dir).expect("mkdir");
+        let path_node = dir.path().join("path").join("node");
+        make_exec(&path_node);
+
+        let resolved = resolve_node_from(None, Some(&exe_dir.join("garraia")), &|name| {
+            if name == "node" {
+                Some(path_node.clone())
+            } else {
+                None
+            }
+        })
+        .expect("resolve");
+        assert_eq!(resolved.origin, NodeOrigin::Path);
+        assert_eq!(resolved.node, path_node);
+    }
+
+    #[test]
+    fn sem_node_em_lugar_nenhum_e_tool_missing() {
+        let res = resolve_node_from(None, None, &|_| None);
+        assert!(matches!(res, Err(BridgeError::ToolMissing("node"))));
+    }
+
+    #[test]
+    fn resolve_npm_acha_o_vizinho_do_node() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Unix: node/bin/node + node/bin/npm ; Windows: node\node.exe + node\npm.cmd
+        let node = primeiro_candidato_privado(&dir.path().join("app"));
+        make_exec(&node);
+        let npm_vizinho =
+            node.parent()
+                .expect("parent")
+                .join(if cfg!(windows) { "npm.cmd" } else { "npm" });
+        make_exec(&npm_vizinho);
+        assert_eq!(resolve_npm(&node), Some(npm_vizinho));
+    }
+
+    // -----------------------------------------------------------------------
+    // Semeadura da arvore pre-construida (#1636)
+    // -----------------------------------------------------------------------
+
+    /// Monta um diretorio de ponte pre-construida: `node_modules` com o
+    /// registro do npm (`.package-lock.json`) de `lock`.
+    fn seed_pre_construido(seed: &Path, lock: &str) {
+        let modules = seed.join("node_modules");
+        std::fs::create_dir_all(modules.join("baileys")).expect("node_modules");
+        std::fs::write(modules.join(NPM_HIDDEN_LOCKFILE), registro_do_npm(lock)).expect("registro");
+    }
+
+    #[test]
+    fn uma_arvore_pre_construida_que_bate_e_semeada_sem_npm() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        let seed = dir.path().join("seed");
+        // Destino sem node_modules (plano seria Install).
+        materialize(&target, &FakeAssets(COM_LOCK)).expect("materializa");
+        assert!(!has_node_modules(&target), "premissa: destino vazio");
+        seed_pre_construido(&seed, LOCK_700);
+
+        let prep = prepare_with_seed(&target, &FakeAssets(COM_LOCK), Some(&seed)).expect("prepare");
+        assert_eq!(prep.deps, DepsPlan::Current, "semeado, sem npm ci");
+        assert!(
+            target.join("node_modules").join("baileys").is_dir(),
+            "a arvore foi copiada para o destino"
+        );
+        assert!(deps_installed(&target), "o carimbo ficou com o digest");
+        assert_eq!(carimbo(&target), deps_digest(&FakeAssets(COM_LOCK)));
+    }
+
+    #[test]
+    fn uma_arvore_pre_construida_de_outro_lock_e_ignorada() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        let seed = dir.path().join("seed");
+        materialize(&target, &FakeAssets(COM_LOCK)).expect("materializa");
+        // A arvore empacotada e de OUTRO lock (7.0.1); o embutido e 7.0.0.
+        seed_pre_construido(&seed, LOCK_701);
+
+        let prep = prepare_with_seed(&target, &FakeAssets(COM_LOCK), Some(&seed)).expect("prepare");
+        assert_eq!(prep.deps, DepsPlan::Install, "nao bate: cai no npm ci");
+        assert!(
+            !has_node_modules(&target),
+            "nada foi copiado de uma arvore que nao serve"
+        );
+        assert_eq!(carimbo(&target), DEPS_PENDING);
+    }
+
+    #[test]
+    fn sem_seed_prepare_with_seed_e_identico_a_prepare() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        materialize(&target, &FakeAssets(COM_LOCK)).expect("materializa");
+        assert_eq!(
+            prepare_with_seed(&target, &FakeAssets(COM_LOCK), None)
+                .expect("prepare")
+                .deps,
+            DepsPlan::Install
+        );
     }
 }

@@ -106,6 +106,12 @@ pub enum Action {
     Logout,
     /// Traz de volta a sessao que ficou em `session.enc.prev`.
     Restore,
+    /// `self-test [--json]`: resolve o Node e roda `bridge.mjs --self-test`
+    /// (importa as dependencias de execucao, sem socket nem pareamento).
+    /// Smoke da fatia C (#1636).
+    SelfTest {
+        json: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +312,7 @@ pub fn run(action: Action, ctx: &Context, prompter: &dyn Prompter) -> i32 {
         Action::Unowner(pedido) => acesso::unowner(ctx, prompter, &pedido),
         Action::Access(comando) => politica::access(ctx, prompter, &comando),
         Action::Cloud => cloud(ctx, prompter),
+        Action::SelfTest { json } => self_test(ctx, json),
     }
 }
 
@@ -1228,7 +1235,15 @@ fn link_with(
     // reportando a versao velha em `started.baileys_version`. Quem decide e
     // `bridge::prepare` — a MESMA regra que o gateway aplica no boot (W1 da
     // v0.4.5), com o carimbo de dependencias que as duas pontas mantem.
-    let preparo = match bridge::prepare(&bridge_dir, &bridge::EmbeddedAssets) {
+    // #1636: `prepare_with_seed` ainda pode SEMEAR o `node_modules` de uma
+    // arvore pre-construida ao lado do Node privado, em vez de rodar `npm ci`.
+    // Sem Node privado (ou sem arvore que bata com o lock), `prebuilt_seed`
+    // devolve `None` e o comportamento e o de sempre.
+    let preparo = match bridge::prepare_with_seed(
+        &bridge_dir,
+        &bridge::EmbeddedAssets,
+        bridge::prebuilt_seed().as_deref(),
+    ) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{e}");
@@ -1245,6 +1260,13 @@ fn link_with(
     };
 
     if preparo.deps == bridge::DepsPlan::Install {
+        // `npm` so e exigido AQUI: com a arvore pronta (`Current`), o
+        // pareamento sobe sem `npm` nenhum. Sem `npm` e com dependencias a
+        // instalar, o erro e claro em vez de uma falha de `spawn` crua.
+        let Some(npm) = node.npm.as_deref() else {
+            print_missing_npm(ctx, &bridge_dir);
+            return EX_UNAVAILABLE;
+        };
         println!(
             "→ {}",
             t(
@@ -1254,7 +1276,7 @@ fn link_with(
             )
         );
         if let Err(e) = runtime.block_on(bridge::install_deps(
-            &node.npm,
+            npm,
             &bridge_dir,
             &bridge::EmbeddedAssets,
         )) {
@@ -1533,7 +1555,11 @@ fn link_machine_with(
     };
 
     let bridge_dir = ctx.bridge_dir();
-    let preparo = match bridge::prepare(&bridge_dir, &bridge::EmbeddedAssets) {
+    let preparo = match bridge::prepare_with_seed(
+        &bridge_dir,
+        &bridge::EmbeddedAssets,
+        bridge::prebuilt_seed().as_deref(),
+    ) {
         Ok(p) => p,
         Err(e) => {
             ui.emit_error("internal_error", &e.to_string(), &[]);
@@ -1550,9 +1576,23 @@ fn link_machine_with(
     };
 
     if preparo.deps == bridge::DepsPlan::Install {
+        // `npm` so e exigido com dependencias a instalar; arvore pronta sobe
+        // sem ele. Sem `npm`, erro claro em vez de falha de `spawn` crua.
+        let Some(npm) = node.npm.as_deref() else {
+            ui.emit_error(
+                "deps_failed",
+                &tb(
+                    ctx.lang,
+                    "npm nao encontrado: as dependencias do bridge precisam ser instaladas e nao ha npm (nem ao lado do Node nem na PATH).",
+                    "npm not found: the bridge dependencies need installing and there is no npm (neither beside Node nor on PATH).",
+                ),
+                &[],
+            );
+            return EX_UNAVAILABLE;
+        };
         ui.emit_status(maquina::fase::INSTALLING_DEPS);
         if let Err(e) = runtime.block_on(bridge::install_deps(
-            &node.npm,
+            npm,
             &bridge_dir,
             &bridge::EmbeddedAssets,
         )) {
@@ -1750,6 +1790,139 @@ path does; the rest of GarraIA does not)."
 {bin} whatsapp cloud"
         )
     );
+}
+
+/// `npm` ausente quando as dependencias precisam ser instaladas (#1636).
+///
+/// So acontece com a arvore AINDA nao pronta: com `node_modules` ja no lugar
+/// (seja semeado pelo instalador, seja de um `npm ci` anterior), o pareamento
+/// sobe sem `npm` nenhum. A dica aponta o passo: instalar as dependencias no
+/// diretorio da ponte com um `npm` qualquer.
+fn print_missing_npm(ctx: &Context, bridge_dir: &std::path::Path) {
+    eprintln!();
+    eprintln!(
+        "{}",
+        t(
+            ctx.lang,
+            "O bridge precisa instalar dependências e não há npm — nem ao lado do Node nem na PATH.",
+            "The bridge needs to install dependencies and there is no npm — neither beside Node nor on PATH."
+        )
+    );
+    eprintln!(
+        "{} {}",
+        t(ctx.lang, "Rode `npm ci` em", "Run `npm ci` in"),
+        bridge_dir.display()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Autoteste da ponte (#1636)
+// ---------------------------------------------------------------------------
+
+/// `garra whatsapp self-test [--json]`: resolve o Node (env > privado > PATH),
+/// materializa/semeia a ponte e roda `node bridge.mjs --self-test`, que importa
+/// todas as dependencias de execucao sem abrir socket nem parear.
+///
+/// Imprime a ORIGEM do Node, o caminho, a versao e o resultado — o smoke que a
+/// fatia C usa num ambiente sem Node global. Exit codes (sysexits, como o resto
+/// do `whatsapp`): 0 ok, 69 falta Node / autoteste falhou, 70 erro interno.
+fn self_test(ctx: &Context, json: bool) -> i32 {
+    let resolved = match bridge::resolve_node() {
+        Ok(r) => r,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({
+                    "self_test": "error",
+                    "stage": "resolve_node",
+                    "error": e.to_string(),
+                }));
+            } else {
+                print_missing_node(ctx, &e);
+            }
+            return EX_UNAVAILABLE;
+        }
+    };
+
+    let bridge_dir = ctx.bridge_dir();
+    // Materializa os assets e, se houver, semeia o `node_modules` da arvore
+    // pre-construida. NAO roda `npm ci`: o autoteste checa a arvore que existe.
+    if let Err(e) = bridge::prepare_with_seed(
+        &bridge_dir,
+        &bridge::EmbeddedAssets,
+        bridge::prebuilt_seed().as_deref(),
+    ) {
+        if json {
+            print_json(&serde_json::json!({
+                "self_test": "error",
+                "stage": "prepare",
+                "error": e.to_string(),
+            }));
+        } else {
+            eprintln!("{e}");
+        }
+        return EX_SOFTWARE;
+    }
+
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("{e}");
+            return EX_SOFTWARE;
+        }
+    };
+
+    let origem = resolved.origin.rotulo();
+    let caminho = resolved.node.display().to_string();
+    match runtime.block_on(bridge::self_test(&resolved.node, &bridge_dir)) {
+        Ok(report) => {
+            if json {
+                print_json(&serde_json::json!({
+                    "self_test": "ok",
+                    "node_origin": origem,
+                    "node_path": caminho,
+                    "node_version": report.node_version,
+                    "deps": report.deps,
+                }));
+            } else {
+                println!("{} {origem} ({caminho})", t(ctx.lang, "Node:", "Node:"));
+                println!(
+                    "{} {}",
+                    t(ctx.lang, "Versão:", "Version:"),
+                    report.node_version
+                );
+                let mut deps: Vec<_> = report.deps.iter().collect();
+                deps.sort_by(|a, b| a.0.cmp(b.0));
+                for (nome, versao) in deps {
+                    println!("  {nome} {}", versao.as_str().unwrap_or("?"));
+                }
+                println!(
+                    "✓ {}",
+                    t(ctx.lang, "Autoteste da ponte: ok", "Bridge self-test: ok")
+                );
+            }
+            0
+        }
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({
+                    "self_test": "error",
+                    "stage": "self_test",
+                    "node_origin": origem,
+                    "node_path": caminho,
+                    "error": e.to_string(),
+                }));
+            } else {
+                eprintln!("{} {origem} ({caminho})", t(ctx.lang, "Node:", "Node:"));
+                eprintln!("{e}");
+            }
+            EX_UNAVAILABLE
+        }
+    }
+}
+
+/// Imprime um valor JSON em uma linha, para `--json`.
+fn print_json(value: &serde_json::Value) {
+    println!("{value}");
 }
 
 // ---------------------------------------------------------------------------
