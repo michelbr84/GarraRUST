@@ -126,6 +126,11 @@ pub enum Denial {
     Unresolvable,
     /// Resolveu, e caiu fora de todas as raizes.
     Outside,
+    /// Ferramenta do servidor MCP `filesystem` que o jail nao mapeia (#1482).
+    /// Nao e sobre um caminho: a tool inteira e recusada fail-closed porque
+    /// pode carregar um argumento de caminho que o confinamento nao sabe
+    /// reescrever. So acontece no servidor filesystem.
+    FerramentaFilesystemNaoMapeada,
 }
 
 /// A frase que volta ao modelo para `Outside` e `Unresolvable`. Nao nomeia
@@ -142,13 +147,22 @@ configurada para esta sessao (nao ha diretorio de trabalho nem `agent.file_roots
 Nao e um caminho errado — e a sessao sem workspace. Selecione um projeto com \
 `/project <nome>` (ou peca ao operador para configurar `agent.file_roots`) e tente de novo.";
 
+/// A frase de `FerramentaFilesystemNaoMapeada` (#1482). Nao nomeia caminho:
+/// a tool nao e conhecida pelo confinamento, entao nem chega ao servidor.
+pub const UNMAPPED_FS_TOOL_MESSAGE: &str = "acesso negado: esta ferramenta do servidor \
+filesystem nao e reconhecida pelo confinamento de sessao (#1482) e foi recusada para \
+que um caminho fora do diretorio de trabalho nao escape por ela. Use as operacoes de \
+arquivo conhecidas (read_file, list_directory, write_file, ...).";
+
 impl Denial {
-    /// [`NO_ROOTS_MESSAGE`] para `NoRoots`; [`DENIAL_MESSAGE`] para as outras
-    /// duas, identicas de proposito.
+    /// [`NO_ROOTS_MESSAGE`] para `NoRoots`; [`DENIAL_MESSAGE`] para
+    /// `Unresolvable`/`Outside`, identicas de proposito;
+    /// [`UNMAPPED_FS_TOOL_MESSAGE`] para a tool de filesystem nao mapeada.
     pub fn message(self) -> &'static str {
         match self {
             Self::NoRoots => NO_ROOTS_MESSAGE,
             Self::Unresolvable | Self::Outside => DENIAL_MESSAGE,
+            Self::FerramentaFilesystemNaoMapeada => UNMAPPED_FS_TOOL_MESSAGE,
         }
     }
 }

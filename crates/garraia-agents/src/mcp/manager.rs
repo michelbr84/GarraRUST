@@ -144,6 +144,17 @@ impl ConnectionParams {
             ConnectionParams::Http { timeout_secs, .. } => *timeout_secs,
         }
     }
+
+    /// `true` quando este servidor e o `@modelcontextprotocol/server-filesystem`.
+    /// So nesse servidor o confinamento recusa uma tool fora do mapa em vez de
+    /// repassa-la (#1482). HTTP nunca e: o filesystem autoprovisionado e stdio.
+    fn e_servidor_filesystem(&self) -> bool {
+        match self {
+            ConnectionParams::Stdio { command, args, .. } => servidor_e_filesystem(command, args),
+            #[cfg(feature = "mcp-http")]
+            ConnectionParams::Http { .. } => false,
+        }
+    }
 }
 
 /// GAR-293: Tracks auto-restart history for one MCP server.
@@ -1175,6 +1186,7 @@ impl McpManager {
             return Vec::new();
         };
 
+        let e_filesystem = conn.params.e_servidor_filesystem();
         conn.tools
             .iter()
             .filter(|t| is_tool_allowed(&conn.allowed_tools, &t.name))
@@ -1187,6 +1199,7 @@ impl McpManager {
                     t.input_schema.clone(),
                     timeout,
                     (t.read_only_hint, t.destructive_hint),
+                    e_filesystem,
                 )) as Box<dyn Tool>
             })
             .collect()
@@ -1531,7 +1544,7 @@ impl McpManager {
         // execution below awaits an RPC, and holding `connections.read()`
         // across it lets one slow server block the write-fair lock for the
         // whole subsystem (reconnects included).
-        let (tool_info, timeout_secs) = {
+        let (tool_info, timeout_secs, e_filesystem) = {
             let conns = self.connections.read().await;
             let conn = match conns.get(server_name) {
                 Some(c) => c,
@@ -1562,7 +1575,11 @@ impl McpManager {
                 ));
             }
 
-            (tool_info, conn.params.timeout_secs())
+            (
+                tool_info,
+                conn.params.timeout_secs(),
+                conn.params.e_servidor_filesystem(),
+            )
         };
 
         // The tool resolves the current peer itself at execution time.
@@ -1574,6 +1591,7 @@ impl McpManager {
             tool_info.input_schema.clone(),
             Duration::from_secs(timeout_secs),
             (tool_info.read_only_hint, tool_info.destructive_hint),
+            e_filesystem,
         );
 
         // Execute the tool
@@ -1826,6 +1844,28 @@ fn cause_hint(cause: &McpFailureCause) -> &'static str {
 /// slash commands). Empty allowlist = every discovered tool is allowed.
 fn is_tool_allowed(allowed: &[String], tool_name: &str) -> bool {
     allowed.is_empty() || allowed.iter().any(|t| t == tool_name)
+}
+
+/// #1482: este `command`/`args` sobe o `@modelcontextprotocol/server-filesystem`?
+///
+/// Dois jeitos legitimos de rodar o pacote: `npx -y <pacote>[@versao] <raizes>`
+/// (o autoprovisionamento) ou o binario global `mcp-server-filesystem` que o
+/// pacote instala. So quando a resposta e `true` o confinamento recusa uma tool
+/// fora do mapa (ver [`confinamento::confinar_argumentos`]); num servidor
+/// qualquer uma tool desconhecida nao e de filesystem e passa. A deteccao
+/// espelha a do `versao_do_filesystem_efetivo` do gateway (npx + pacote, ou o
+/// binario fora do npx).
+fn servidor_e_filesystem(command: &str, args: &[String]) -> bool {
+    if npx_cache::is_npx_command(command)
+        && npx_cache::package_from_args(args).as_deref()
+            == Some(super::confinamento::PACOTE_FILESYSTEM)
+    {
+        return true;
+    }
+    Path::new(command)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|b| b.eq_ignore_ascii_case("mcp-server-filesystem"))
 }
 
 /// Path of the termux-exec shim, relative to `$PREFIX`.
