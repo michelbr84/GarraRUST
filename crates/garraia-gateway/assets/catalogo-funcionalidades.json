@@ -297,13 +297,15 @@
       "category": "channels",
       "summary": "Canal de conversa pelo WhatsApp do próprio aparelho, via ponte local (Baileys).",
       "prerequisites": [
-        "Node.js 20+ no host",
-        "pareamento via /pair ou allowlist em channels.whatsapp_linked.settings.allow"
+        "Node.js 20+ no host para a CLI (ou GARRAIA_NODE_BIN apontando um Node); o app desktop já traz um Node privado e as dependências da ponte, sem mexer no PATH",
+        "pareamento pelo Assistente de Primeiro Uso do desktop (QR na tela), por garraia whatsapp link ou via /pair; ou allowlist em channels.whatsapp_linked.settings.allow"
       ],
       "limitations": [
         "portão vazio (allowlist) descarta mensagens de quem não está na lista, sem resposta",
         "recusa subir com tool MCP registrada fora do piso somente leitura do canal",
-        "pareamento pendente é memória do processo: restart do gateway o descarta"
+        "pareamento pendente é memória do processo: restart do gateway o descarta",
+        "cadência entre turnos por chat: acima de channels.whatsapp_linked.settings.max_turnos_per_minute (padrão 20 em 60s) o turno é cortado como possível loop entre agentes, com backoff crescente",
+        "garraia whatsapp self-test prova que a ponte carrega (Node + Baileys), não que o aparelho está pareado"
       ],
       "availability": "configuravel",
       "channel": "whatsapp_linked"
@@ -433,6 +435,22 @@
       "channel": "cli"
     },
     {
+      "id": "desktop",
+      "name": "App desktop",
+      "category": "channels",
+      "summary": "App para Windows, Linux e macOS Apple Silicon com bandeja, papagaio (Alt+G) e Chat Bar (Ctrl+Space); no primeiro uso, um assistente pareia o WhatsApp por QR na tela, define a persona e o modo de acesso, sem terminal.",
+      "prerequisites": [
+        "instalar o app desktop (.msi ou -setup.exe no Windows, .deb ou AppImage no Linux, .dmg no macOS Apple Silicon); a CLI sozinha não traz a interface"
+      ],
+      "limitations": [
+        "instaladores sem assinatura de code signing: o SmartScreen do Windows e o Gatekeeper do macOS podem avisar",
+        "o Node privado embutido serve só à ponte do WhatsApp e é chamado por caminho explícito",
+        "o modo dedicado autoriza o número pessoal informado no assistente; o modo próprio responde qualquer pessoa e exige confirmação explícita"
+      ],
+      "availability": "configuravel",
+      "operator_only": true
+    },
+    {
       "id": "telegram_send",
       "name": "Envio por Telegram",
       "category": "channels",
@@ -471,7 +489,8 @@
       ],
       "limitations": [
         "tool MCP sem anotação não tem classe e é negada em modo restrito por classe (fail-closed)",
-        "o canal whatsapp_linked recusa subir com tool MCP fora do piso somente leitura"
+        "o canal whatsapp_linked recusa subir com tool MCP fora do piso somente leitura",
+        "o servidor filesystem provisionado fica fixado em @modelcontextprotocol/server-filesystem 2.0.0, e uma tool de filesystem que o jail da sessão não reconhece é negada (fail-closed)"
       ],
       "availability": "configuravel"
     },
@@ -634,6 +653,20 @@
       "tool": "garra_capabilities"
     },
     {
+      "id": "garra_diagnostics",
+      "name": "Diagnóstico nativo da instalação",
+      "category": "diagnostics-admin",
+      "summary": "Relatório somente leitura da própria instalação pela tool garra_diagnostics: versão, gateway, canais, servidores MCP, capacidades, config validada, origem das credenciais (nunca o valor), componentes como a ponte Node do WhatsApp e uma amostra redigida do log.",
+      "prerequisites": [],
+      "limitations": [
+        "só a sessão do operador recebe o relatório; qualquer outra sessão recebe uma recusa",
+        "sem shell e sem rede; o único log lido é o garraia.log dentro do diretório do produto",
+        "sem classe no registro de capacidades nesta versão: em modo com whitelist por classe ela fica negada (fail-closed)"
+      ],
+      "availability": "disponivel",
+      "operator_only": true
+    },
+    {
       "id": "diagnostics-api",
       "name": "Diagnóstico por API",
       "category": "diagnostics-admin",
@@ -663,10 +696,11 @@
       "id": "instalacao-atualizacao",
       "name": "Instalação e atualização",
       "category": "diagnostics-admin",
-      "summary": "Instalador (install.sh) e atualizador: o binário carrega o catálogo e as ferramentas embutidos.",
+      "summary": "Instaladores (install.sh e install.ps1, com verificação SHA-256) e atualizador (garraia update): o binário carrega o catálogo e as ferramentas embutidos.",
       "prerequisites": [],
       "limitations": [
-        "instalação limpa não depende do repositório: este catálogo viaja dentro do binário"
+        "instalação limpa não depende do repositório: este catálogo viaja dentro do binário",
+        "versões de pré-lançamento (-rcN) só são instaladas com a versão fixada (GARRAIA_VERSION ou --version); o garraia update e o auto-updater do desktop só oferecem a estável"
       ],
       "availability": "disponivel",
       "operator_only": true
