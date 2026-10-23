@@ -32,11 +32,109 @@
 //! - `Avancar` so passa da tela do QR quando o pareamento **concluiu**; nao da
 //!   para pular o vinculo.
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 /// Versao do formato persistido em `onboarding.json`. Sobe quando o formato
 /// muda de forma incompativel; hoje 1.
 pub const VERSAO_PERSISTIDA: u32 = 1;
+
+/// Nome do arquivo que marca o estado do onboarding, em `app_config_dir()`.
+/// Mesmo padrao do `chat-bar.json` da casca.
+pub const ARQUIVO_ONBOARDING: &str = "onboarding.json";
+
+/// Os argumentos do sidecar que iniciam o pareamento em modo-maquina (fatia 1).
+///
+/// E uma constante, nao uma montagem com opcoes, de proposito: o pareamento e
+/// **igual** nos dois modos (`Proprio`/`Dedicado`) — o que muda e a politica de
+/// acesso aplicada DEPOIS do `done` (ver [`args_aplicar_modo`]). O `--machine`
+/// recusa `--allow`/`--owner` (fatia 1), entao nada de politica viaja aqui: o
+/// canal nasce fail-closed e so abre quando a casca roda [`args_aplicar_modo`].
+pub const ARGS_PAREAMENTO: [&str; 3] = ["whatsapp", "link", "--machine"];
+
+/// Os argumentos do sidecar que aplicam a politica de acesso do modo escolhido,
+/// rodados DEPOIS do pareamento concluir (ADR 0025; `docs/whatsapp.md`).
+///
+/// A semantica (confirmada em `docs/whatsapp.md` §Comandos e no `main.rs`
+/// `AccessCommands`):
+///
+/// - [`Modo::Proprio`] → `whatsapp access open --yes`: o numero pessoal do
+///   usuario, e o Garra responde **qualquer** um que mandar mensagem, com o
+///   default do desconhecido. `open` AFROUXA a admissao (qualquer numero
+///   entra), entao a tela de modo tem de dizer isso em letras grandes — e o
+///   `--yes` existe porque, sem terminal, `open` sem confirmacao recusaria
+///   (exit 64).
+/// - [`Modo::Dedicado`] → `whatsapp access restricted`: so quem esta declarado
+///   ou pareou por codigo fala com o Garra. E o **default seguro** (fail-closed)
+///   da politica; aplica-lo explicitamente torna a escolha auditavel e, o que
+///   importa para o botao de settings, **reverte** um `open` anterior quando o
+///   usuario troca de volta para dedicado.
+///
+/// Nenhum dos dois AFROUXA um default de seguranca em silencio: `restricted` e
+/// o proprio piso seguro, e `open` so e emitido quando o usuario escolhe
+/// "proprio" numa tela que explica o que isso significa.
+pub fn args_aplicar_modo(modo: Modo) -> Vec<&'static str> {
+    match modo {
+        Modo::Proprio => vec!["whatsapp", "access", "open", "--yes"],
+        Modo::Dedicado => vec!["whatsapp", "access", "restricted"],
+    }
+}
+
+/// O caminho de `onboarding.json` dentro de `config_dir` (a casca passa o
+/// `app_config_dir()`). Separado para o teste cobrir a juncao sem tocar disco.
+pub fn arquivo_onboarding(config_dir: &Path) -> PathBuf {
+    config_dir.join(ARQUIVO_ONBOARDING)
+}
+
+/// `true` quando o wizard ainda deve abrir — ninguem concluiu o onboarding.
+///
+/// Fail-open de proposito: ausencia de arquivo (primeira execucao), arquivo
+/// ilegivel ou `concluido: false` contam como primeiro uso. So um
+/// [`OnboardingPersistido`] com `concluido: true` suprime o wizard — e e
+/// exatamente o que a casca grava no fim ([`Onboarding::persistido`]).
+pub fn primeiro_uso(persistido: Option<&OnboardingPersistido>) -> bool {
+    !persistido.map(|p| p.concluido).unwrap_or(false)
+}
+
+/// Monta a persona (`agent.system_prompt`) a partir do que o usuario escolheu
+/// na tela de personalidade.
+///
+/// Puro e deterministico: a casca so grava a string de volta no `config.yml`
+/// (via `ConfigLoader::set_agent_system_prompt`). O texto segue o idioma — o
+/// default do projeto e pt-BR — e o tom muda com o [`EstiloPersona`]. Nome
+/// vazio cai em "Garra". O prompt diz explicitamente para responder no idioma
+/// escolhido, que e o que o runtime do WhatsApp le.
+pub fn montar_system_prompt(persona: &Personalidade) -> String {
+    let nome = persona.nome.trim();
+    let nome = if nome.is_empty() { "Garra" } else { nome };
+    match persona.idioma {
+        Idioma::PtBr => {
+            let tom = match persona.estilo {
+                EstiloPersona::Amigavel => "Seja caloroso, proximo e acolhedor",
+                EstiloPersona::Profissional => "Seja objetivo, cordial e profissional",
+                EstiloPersona::Divertido => "Seja leve, bem-humorado e descontraido",
+            };
+            format!(
+                "Voce e {nome}, um assistente pessoal que conversa pelo WhatsApp. \
+Responda sempre em portugues do Brasil. {tom}. \
+Seja breve e util, e peca o que faltar antes de agir."
+            )
+        }
+        Idioma::En => {
+            let tom = match persona.estilo {
+                EstiloPersona::Amigavel => "Be warm, close and welcoming",
+                EstiloPersona::Profissional => "Be objective, polite and professional",
+                EstiloPersona::Divertido => "Be light, good-humored and relaxed",
+            };
+            format!(
+                "You are {nome}, a personal assistant chatting over WhatsApp. \
+Always reply in English. {tom}. \
+Be brief and helpful, and ask for missing details before acting."
+            )
+        }
+    }
+}
 
 /// Como o WhatsApp sera usado. A diferenca e de **politica de acesso**, nao de
 /// mecanismo: os dois pareiam igual (ver ADR 0025). `Proprio` deixa
@@ -620,6 +718,110 @@ mod tests {
     fn o_idioma_default_e_pt_br() {
         assert_eq!(Idioma::default(), Idioma::PtBr);
         assert_eq!(Personalidade::default().idioma, Idioma::PtBr);
+    }
+
+    // --- Fatia 3: costura com a casca (comando do sidecar, modo->config, persona) ---
+
+    #[test]
+    fn o_pareamento_e_so_link_machine_sem_politica() {
+        // O pareamento e igual nos dois modos; a politica so entra depois.
+        assert_eq!(ARGS_PAREAMENTO, ["whatsapp", "link", "--machine"]);
+        // Nunca pode carregar --allow/--owner (o --machine os recusa) nem um
+        // suposto --modo: a politica e um passo separado.
+        for proibido in ["--allow", "--owner", "--modo"] {
+            assert!(
+                !ARGS_PAREAMENTO.contains(&proibido),
+                "o pareamento nao pode carregar {proibido}"
+            );
+        }
+    }
+
+    #[test]
+    fn modo_proprio_abre_a_admissao_e_o_dedicado_a_fecha() {
+        // Proprio = qualquer um fala (open), e sem terminal precisa do --yes.
+        let proprio = args_aplicar_modo(Modo::Proprio);
+        assert_eq!(proprio, ["whatsapp", "access", "open", "--yes"]);
+        assert!(
+            proprio.contains(&"--yes"),
+            "sem terminal o open precisa de --yes, senao recusa (exit 64)"
+        );
+
+        // Dedicado = o default seguro (fail-closed). NUNCA pode virar open.
+        let dedicado = args_aplicar_modo(Modo::Dedicado);
+        assert_eq!(dedicado, ["whatsapp", "access", "restricted"]);
+        assert!(
+            !dedicado.contains(&"open"),
+            "o modo dedicado nunca pode afrouxar a admissao"
+        );
+    }
+
+    #[test]
+    fn o_arquivo_de_onboarding_fica_no_config_dir() {
+        let p = arquivo_onboarding(Path::new("/tmp/cfg"));
+        assert_eq!(p.file_name().unwrap(), "onboarding.json");
+        assert!(p.ends_with("onboarding.json"));
+    }
+
+    #[test]
+    fn primeiro_uso_so_e_falso_com_concluido_true() {
+        // Sem arquivo (None) ou ilegivel -> primeiro uso (fail-open).
+        assert!(primeiro_uso(None), "sem estado persistido abre o wizard");
+        // concluido: false -> ainda e primeiro uso.
+        let incompleto = OnboardingPersistido {
+            concluido: false,
+            modo: Some(Modo::Proprio),
+            versao: VERSAO_PERSISTIDA,
+        };
+        assert!(primeiro_uso(Some(&incompleto)));
+        // concluido: true -> nao abre mais.
+        let feito = OnboardingPersistido {
+            concluido: true,
+            modo: Some(Modo::Dedicado),
+            versao: VERSAO_PERSISTIDA,
+        };
+        assert!(!primeiro_uso(Some(&feito)), "concluido suprime o wizard");
+    }
+
+    #[test]
+    fn o_system_prompt_segue_idioma_nome_e_tom() {
+        let base = Personalidade {
+            nome: "Papa-Léguas".into(),
+            estilo: EstiloPersona::Amigavel,
+            idioma: Idioma::PtBr,
+        };
+        let pt = montar_system_prompt(&base);
+        assert!(pt.contains("Papa-Léguas"), "o nome escolhido aparece: {pt}");
+        assert!(
+            pt.contains("portugues do Brasil"),
+            "pt-BR instrui a responder em pt-BR: {pt}"
+        );
+
+        // O idioma troca o prompt inteiro.
+        let en = montar_system_prompt(&Personalidade {
+            idioma: Idioma::En,
+            ..base.clone()
+        });
+        assert!(en.contains("English"), "en instrui a responder em ingles");
+        assert_ne!(pt, en, "idioma muda o prompt");
+
+        // O tom troca com o estilo.
+        let prof = montar_system_prompt(&Personalidade {
+            estilo: EstiloPersona::Profissional,
+            ..base.clone()
+        });
+        let div = montar_system_prompt(&Personalidade {
+            estilo: EstiloPersona::Divertido,
+            ..base.clone()
+        });
+        assert_ne!(pt, prof, "amigavel != profissional");
+        assert_ne!(prof, div, "profissional != divertido");
+
+        // Nome vazio cai em "Garra".
+        let anon = montar_system_prompt(&Personalidade {
+            nome: "   ".into(),
+            ..base
+        });
+        assert!(anon.contains("Garra"), "nome vazio cai em Garra: {anon}");
     }
 
     /// Tabela de transicoes: de uma tela, uma acao leva a outra tela.

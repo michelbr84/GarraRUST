@@ -126,6 +126,28 @@
       </div>
     </div>
 
+    <!-- #1636: modo do WhatsApp (proprio/dedicado) persistido pelo wizard;
+         configuravel aqui, com opcao de refazer o pareamento. -->
+    <div class="section" data-testid="wa-section">
+      <h2>WhatsApp</h2>
+      <div class="row">
+        <div>
+          <label for="wa-modo">Quem fala com o Garra</label>
+          <div class="hint" id="wa-modo-hint">Carregando…</div>
+        </div>
+        <select id="wa-modo" data-testid="wa-modo"
+                style="background:#1a1a24;color:#ddd;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:6px 8px;font-size:13px">
+          <option value="dedicado">Só eu (dedicado)</option>
+          <option value="proprio">Qualquer um (meu número)</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>Pareamento do WhatsApp</label>
+        <button class="btn" id="wa-refazer" data-testid="wa-refazer">Refazer pareamento</button>
+      </div>
+      <div class="hint" id="wa-status" data-testid="wa-status" aria-live="polite" style="margin-top:8px"></div>
+    </div>
+
     <div class="section">
       <h2>Updates</h2>
       <div class="row">
@@ -149,6 +171,37 @@
         if (el) el.textContent = 'v' + v;
       }
     }).catch(() => {});
+
+    // ── WhatsApp: modo (proprio/dedicado) + refazer pareamento (#1636) ──────
+    const waHints = {
+      dedicado: 'Só você conversa com o Garra. É o ajuste mais seguro (padrão).',
+      proprio: 'O Garra responde qualquer pessoa que mandar mensagem no seu número.',
+    };
+    const waModoSel = document.getElementById('wa-modo');
+    const waHint = document.getElementById('wa-modo-hint');
+    const waStatus = document.getElementById('wa-status');
+
+    function waRenderHint() { if (waHint) waHint.textContent = waHints[waModoSel.value] || ''; }
+
+    invoke('onboarding_estado').then((st) => {
+      if (st && st.modo) waModoSel.value = st.modo;
+      waRenderHint();
+    }).catch(() => { waRenderHint(); });
+
+    waModoSel?.addEventListener('change', async () => {
+      waRenderHint();
+      waStatus.textContent = 'Aplicando e reiniciando o Garra…';
+      try {
+        await invoke('onboarding_aplicar_modo', { modo: waModoSel.value });
+        waStatus.textContent = 'Pronto — o modo foi atualizado.';
+      } catch (e) {
+        waStatus.textContent = 'Falhou ao aplicar: ' + String(e);
+      }
+    });
+
+    document.getElementById('wa-refazer')?.addEventListener('click', () => {
+      invoke('onboarding_reabrir');
+    });
 
     // Check for updates button
     document.getElementById('check-update')?.addEventListener('click', async () => {

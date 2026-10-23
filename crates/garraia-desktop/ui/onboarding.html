@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Assistente do Garra</title>
+  <!--
+    Assistente de Primeiro Uso (#1636, fatia 3). Garra Glass (ADR 0009): fundo
+    escuro, dourado nos CTAs, cyan no foco/info. Tudo inline — NUNCA CDN. A
+    logica de transicao espelha a maquina pura de `garraia-desktop-core::onboarding`
+    (testada no CI); aqui ela e dirigida por cliques e pelos eventos NDJSON que a
+    casca repassa (`wa://ndjson`). O QR vem como MATRIZ (`modules`) e e
+    rasterizado no canvas; a credencial nunca chega aqui.
+  -->
+  <style>
+    :root {
+      --garra-bg: #12121a;
+      --garra-surface: rgba(255, 255, 255, 0.05);
+      --garra-border: rgba(255, 255, 255, 0.10);
+      --garra-text: #eceef5;
+      --garra-muted: #9aa0b4;
+      --garra-gold: #ffd400;
+      --garra-cyan: #16d9ff;
+      --garra-ok: #37d67a;
+      --garra-danger: #ff6b6b;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      background: var(--garra-bg);
+      color: var(--garra-text);
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    body { display: flex; flex-direction: column; min-height: 100vh; }
+    .wrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      max-width: 440px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 28px 20px 24px;
+    }
+    .marca { font-size: 13px; color: var(--garra-muted); letter-spacing: .4px; margin-bottom: 18px; }
+    .marca b { color: var(--garra-gold); }
+    .tela { display: none; flex-direction: column; gap: 16px; flex: 1; }
+    .tela.ativa { display: flex; }
+    h1 { font-size: 23px; line-height: 1.25; }
+    h2 { font-size: 18px; }
+    p { color: var(--garra-muted); font-size: 14px; line-height: 1.5; }
+    .passos { counter-reset: p; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    .passos li { position: relative; padding-left: 30px; font-size: 14px; color: var(--garra-text); }
+    .passos li::before {
+      counter-increment: p; content: counter(p);
+      position: absolute; left: 0; top: -1px;
+      width: 22px; height: 22px; border-radius: 50%;
+      background: var(--garra-cyan); color: #04202a;
+      font-size: 12px; font-weight: 700;
+      display: grid; place-items: center;
+    }
+    .spacer { flex: 1; }
+    button {
+      font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid transparent;
+      transition: background .15s, border-color .15s, transform .05s;
+    }
+    button:active { transform: translateY(1px); }
+    .btn-primario {
+      background: var(--garra-gold); color: #241f00; font-weight: 700;
+      padding: 13px 18px; font-size: 15px; width: 100%;
+    }
+    .btn-primario:hover { background: #ffe24d; }
+    .btn-secundario {
+      background: transparent; color: var(--garra-text);
+      border-color: var(--garra-border); padding: 11px 16px; font-size: 14px;
+    }
+    .btn-secundario:hover { border-color: var(--garra-cyan); }
+    .cartao-modo {
+      text-align: left; width: 100%;
+      background: var(--garra-surface); border: 1px solid var(--garra-border);
+      padding: 16px; display: flex; gap: 14px; align-items: flex-start;
+    }
+    .cartao-modo:hover { border-color: var(--garra-gold); background: rgba(255,212,0,0.06); }
+    .cartao-modo .emoji { font-size: 26px; line-height: 1; }
+    .cartao-modo .titulo { font-size: 15px; font-weight: 600; color: var(--garra-text); }
+    .cartao-modo .sub { font-size: 13px; color: var(--garra-muted); margin-top: 3px; }
+    .aviso {
+      font-size: 12.5px; color: #ffe08a; background: rgba(255,212,0,0.08);
+      border: 1px solid rgba(255,212,0,0.25); border-radius: 8px; padding: 8px 11px;
+    }
+    .qr-box {
+      align-self: center; background: #fff; border-radius: 14px; padding: 14px;
+      width: 268px; height: 268px; display: grid; place-items: center;
+    }
+    #qr-canvas { width: 240px; height: 240px; image-rendering: pixelated; }
+    .status {
+      display: flex; align-items: center; gap: 9px; justify-content: center;
+      font-size: 14px; color: var(--garra-cyan); min-height: 22px;
+    }
+    .pulso {
+      width: 9px; height: 9px; border-radius: 50%; background: var(--garra-cyan);
+      animation: pulso 1.1s ease-in-out infinite;
+    }
+    @keyframes pulso { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+    .erro {
+      display: none; color: var(--garra-danger); background: rgba(255,107,107,0.08);
+      border: 1px solid rgba(255,107,107,0.3); border-radius: 8px; padding: 11px 13px;
+      font-size: 13.5px; line-height: 1.45;
+    }
+    .erro.ativo { display: block; }
+    label.campo { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--garra-muted); }
+    input[type=text], select {
+      font: inherit; color: var(--garra-text); background: var(--garra-surface);
+      border: 1px solid var(--garra-border); border-radius: 9px; padding: 10px 12px; font-size: 15px;
+    }
+    input[type=text]:focus, select:focus, .cartao-modo:focus-visible, button:focus-visible {
+      outline: 2px solid var(--garra-cyan); outline-offset: 2px;
+    }
+    .radios { display: flex; gap: 8px; }
+    .radios label {
+      flex: 1; text-align: center; font-size: 14px; color: var(--garra-text);
+      background: var(--garra-surface); border: 1px solid var(--garra-border);
+      border-radius: 9px; padding: 10px 6px; cursor: pointer;
+    }
+    .radios input { position: absolute; opacity: 0; }
+    .radios input:checked + span { color: var(--garra-gold); font-weight: 700; }
+    .radios label:has(input:checked) { border-color: var(--garra-gold); }
+    .check { font-size: 46px; color: var(--garra-ok); text-align: center; }
+    .conversa {
+      background: var(--garra-surface); border: 1px solid var(--garra-border);
+      border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px;
+    }
+    .bolha { max-width: 85%; padding: 8px 11px; border-radius: 12px; font-size: 13.5px; line-height: 1.4; }
+    .bolha.eu { align-self: flex-end; background: #114d3a; color: #d8ffe9; }
+    .bolha.garra { align-self: flex-start; background: rgba(255,255,255,0.08); }
+    .conectado { display: flex; align-items: center; gap: 8px; color: var(--garra-ok); font-size: 14px; font-weight: 600; }
+    .conectado .ponto { width: 9px; height: 9px; border-radius: 50%; background: var(--garra-ok); }
+    .barra-botoes { display: flex; gap: 10px; }
+    .barra-botoes .btn-secundario { flex: 0 0 auto; }
+    .barra-botoes .btn-primario { flex: 1; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  </style>
+</head>
+<body>
+  <div class="wrap" role="main">
+    <div class="marca"><b>GarraIA</b> — Assistente de primeiro uso</div>
+    <div id="live-region" class="sr-only" aria-live="polite"></div>
+
+    <!-- 1) Boas-vindas -->
+    <section class="tela ativa" id="tela-boas-vindas" data-testid="tela-boas-vindas" aria-labelledby="bv-h">
+      <h1 id="bv-h" tabindex="-1">Vamos conectar seu WhatsApp ao Garra</h1>
+      <p>Em poucos passos, sem terminal nenhum: você escaneia um QR code e já pode
+         conversar com o seu assistente pessoal pelo WhatsApp.</p>
+      <ul class="passos">
+        <li>Escolha como o Garra vai atender</li>
+        <li>Escaneie o QR code com o seu celular</li>
+        <li>Dê um nome e um jeito ao seu assistente</li>
+      </ul>
+      <div class="spacer"></div>
+      <button class="btn-primario" id="btn-comecar" data-testid="btn-comecar">Começar</button>
+    </section>
+
+    <!-- 2) Modo -->
+    <section class="tela" id="tela-modo" data-testid="tela-modo" aria-labelledby="modo-h">
+      <h1 id="modo-h" tabindex="-1">Como o Garra vai usar o WhatsApp?</h1>
+      <button class="cartao-modo" id="btn-modo-proprio" data-testid="btn-modo-proprio">
+        <span class="emoji" aria-hidden="true">📱</span>
+        <span>
+          <span class="titulo">Meu próprio número</span>
+          <span class="sub">O Garra responde quem mandar mensagem no seu WhatsApp pessoal.</span>
+        </span>
+      </button>
+      <button class="cartao-modo" id="btn-modo-dedicado" data-testid="btn-modo-dedicado">
+        <span class="emoji" aria-hidden="true">💼</span>
+        <span>
+          <span class="titulo">Número dedicado</span>
+          <span class="sub">Um número só do Garra — só você conversa com ele (assistente pessoal).</span>
+        </span>
+      </button>
+      <div class="aviso" id="modo-aviso" data-testid="modo-aviso" role="note">
+        No modo <b>Meu próprio número</b>, qualquer pessoa que mandar mensagem recebe
+        resposta do Garra. No <b>dedicado</b>, só você — é o ajuste mais seguro, e é
+        o padrão. Dá para trocar depois em Ajustes.
+      </div>
+      <div class="spacer"></div>
+      <button class="btn-secundario" id="btn-modo-voltar" data-testid="btn-modo-voltar">Voltar</button>
+    </section>
+
+    <!-- 3) QR -->
+    <section class="tela" id="tela-qr" data-testid="tela-qr" aria-labelledby="qr-h">
+      <h1 id="qr-h" tabindex="-1">Escaneie o QR code</h1>
+      <div class="qr-box">
+        <canvas id="qr-canvas" width="240" height="240" data-testid="qr-canvas"
+                role="img" aria-label="QR code para conectar o WhatsApp"></canvas>
+      </div>
+      <div class="status" id="qr-status" data-testid="qr-status" aria-live="polite">
+        <span class="pulso" aria-hidden="true"></span>
+        <span id="qr-status-texto">Preparando a conexão…</span>
+      </div>
+      <ol class="passos" aria-label="Como escanear">
+        <li>Abra o <b>WhatsApp</b> no seu celular</li>
+        <li>Toque em <b>Aparelhos conectados</b></li>
+        <li>Toque em <b>Conectar um aparelho</b> e aponte para esta tela</li>
+      </ol>
+      <div class="erro" id="qr-erro" data-testid="qr-erro" role="alert"></div>
+      <div class="spacer"></div>
+      <div class="barra-botoes">
+        <button class="btn-secundario" id="btn-qr-voltar" data-testid="btn-qr-voltar">Voltar</button>
+        <button class="btn-primario" id="btn-tentar-novamente" data-testid="btn-tentar-novamente"
+                style="display:none">Gerar um QR novo</button>
+      </div>
+    </section>
+
+    <!-- 4) Personalidade -->
+    <section class="tela" id="tela-personalidade" data-testid="tela-personalidade" aria-labelledby="pers-h">
+      <h1 id="pers-h" tabindex="-1">Dê um jeito ao seu Garra</h1>
+      <p>Isso muda o nome e o tom das respostas. Você pode mudar depois.</p>
+      <label class="campo">Nome do assistente
+        <input type="text" id="persona-nome" data-testid="persona-nome" value="Garra"
+               maxlength="40" autocomplete="off" spellcheck="false" />
+      </label>
+      <div class="campo">Estilo
+        <div class="radios" role="radiogroup" aria-label="Estilo" data-testid="persona-estilo">
+          <label><input type="radio" name="estilo" value="amigavel" checked /><span>Amigável</span></label>
+          <label><input type="radio" name="estilo" value="profissional" /><span>Profissional</span></label>
+          <label><input type="radio" name="estilo" value="divertido" /><span>Divertido</span></label>
+        </div>
+      </div>
+      <label class="campo">Idioma
+        <select id="persona-idioma" data-testid="persona-idioma">
+          <option value="pt_br" selected>Português (Brasil)</option>
+          <option value="en">English</option>
+        </select>
+      </label>
+      <div class="erro" id="persona-erro" data-testid="persona-erro" role="alert"></div>
+      <div class="spacer"></div>
+      <button class="btn-primario" id="btn-persona-continuar" data-testid="btn-persona-continuar">Continuar</button>
+    </section>
+
+    <!-- 5) Pronto -->
+    <section class="tela" id="tela-pronto" data-testid="tela-pronto" aria-labelledby="pronto-h">
+      <div class="check" aria-hidden="true">✓</div>
+      <h1 id="pronto-h" tabindex="-1" style="text-align:center">Tudo pronto!</h1>
+      <div class="conectado" id="pronto-status" data-testid="pronto-status">
+        <span class="ponto"></span><span id="pronto-status-texto">Preparando o Garra…</span>
+      </div>
+      <p style="text-align:center">Mande um <b>“oi”</b> para o seu WhatsApp pelo celular e veja o Garra responder.</p>
+      <div class="conversa" aria-hidden="true">
+        <div class="bolha eu">oi</div>
+        <div class="bolha garra">Oi! Eu sou o seu Garra. Em que posso ajudar? 😊</div>
+      </div>
+      <div class="erro" id="pronto-erro" data-testid="pronto-erro" role="alert"></div>
+      <div class="spacer"></div>
+      <button class="btn-primario" id="btn-abrir-garra" data-testid="btn-abrir-garra">Abrir o Garra</button>
+    </section>
+  </div>
+
+  <script>
+    'use strict';
+    // Superficie Tauri com no-ops seguros: a UI nunca quebra fora da casca, e o
+    // teste Playwright injeta um __TAURI__ falso que emite NDJSON gravado.
+    const T = window.__TAURI__ || {};
+    const invoke = (cmd, args) => (T.core?.invoke ? T.core.invoke(cmd, args) : Promise.resolve());
+    const listen = (ev, cb) => (T.event?.listen ? T.event.listen(ev, cb) : Promise.resolve(() => {}));
+
+    const $ = (id) => document.getElementById(id);
+    const telas = ['tela-boas-vindas', 'tela-modo', 'tela-qr', 'tela-personalidade', 'tela-pronto'];
+    let modoEscolhido = null;   // "proprio" | "dedicado"
+    let pareado = false;        // o `done` chegou
+    let erroMostrado = false;   // um `error` ja apareceu nesta tentativa
+
+    function anunciar(texto) { $('live-region').textContent = texto; }
+
+    function mostrar(tela) {
+      for (const t of telas) $(t).classList.toggle('ativa', t === tela);
+      // Foco no titulo da tela (acessibilidade).
+      const h = document.querySelector('#' + tela + ' h1');
+      if (h) h.focus({ preventScroll: false });
+    }
+
+    // Marca que a tela de primeiro uso apareceu (roteiro manual / smoke CI).
+    invoke('onboarding_marcar_exibido');
+
+    // ── Boas-vindas ──────────────────────────────────────────────────────────
+    $('btn-comecar').addEventListener('click', () => mostrar('tela-modo'));
+    $('btn-modo-voltar').addEventListener('click', () => mostrar('tela-boas-vindas'));
+
+    // ── Modo ─────────────────────────────────────────────────────────────────
+    function escolherModo(modo) {
+      modoEscolhido = modo;
+      iniciarPareamento();
+      mostrar('tela-qr');
+    }
+    $('btn-modo-proprio').addEventListener('click', () => escolherModo('proprio'));
+    $('btn-modo-dedicado').addEventListener('click', () => escolherModo('dedicado'));
+
+    // ── QR ───────────────────────────────────────────────────────────────────
+    function iniciarPareamento() {
+      pareado = false;
+      erroMostrado = false;
+      esconderErro();
+      setStatus('Preparando a conexão…', true);
+      $('btn-tentar-novamente').style.display = 'none';
+      invoke('wa_iniciar_pareamento').catch((e) => mostrarErro(String(e)));
+    }
+
+    function setStatus(texto, pulsando) {
+      $('qr-status-texto').textContent = texto;
+      $('qr-status').querySelector('.pulso').style.visibility = pulsando ? 'visible' : 'hidden';
+      anunciar(texto);
+    }
+
+    function esconderErro() { const e = $('qr-erro'); e.classList.remove('ativo'); e.textContent = ''; }
+    function mostrarErro(msg) {
+      erroMostrado = true;
+      const e = $('qr-erro'); e.textContent = msg; e.classList.add('ativo');
+      setStatus('Não deu para conectar.', false);
+      $('btn-tentar-novamente').style.display = 'block';
+      anunciar(msg);
+    }
+
+    // Mensagem acionavel por codigo de erro (contrato da fatia 1).
+    function mensagemDeErro(code, message) {
+      switch (code) {
+        case 'qr_expired': return 'O QR code expirou antes de ser lido. Gere um novo e escaneie mais rápido.';
+        case 'session_dead': return 'Esta conexão não vale mais. Gere um QR novo para reconectar.';
+        case 'missing_node': return 'Faltou o Node.js, que acompanha o Garra. Reinstale pelo instalador oficial do site.';
+        case 'missing_dependencies': return 'A ponte do WhatsApp está incompleta. Reinstale o Garra pelo instalador oficial.';
+        case 'cancelled': return '';
+        default: return message || 'Algo deu errado ao conectar. Tente gerar um QR novo.';
+      }
+    }
+
+    // Desenha a matriz (linhas de "0"/"1", 1 = modulo escuro) num canvas, com
+    // zona de silencio de 4 modulos — o motor e o MESMO `qr::modules` da fatia 1.
+    function desenharQr(modules, width) {
+      const canvas = $('qr-canvas');
+      const ctx = canvas.getContext('2d');
+      const n = Array.isArray(modules) ? modules.length : 0;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (!n) return;
+      const quiet = 4;
+      const total = (width || n) + quiet * 2;
+      const cell = Math.floor(canvas.width / total);
+      const origem = Math.floor((canvas.width - cell * total) / 2) + quiet * cell;
+      ctx.fillStyle = '#000000';
+      for (let y = 0; y < n; y++) {
+        const linha = modules[y] || '';
+        for (let x = 0; x < linha.length; x++) {
+          if (linha[x] === '1') ctx.fillRect(origem + x * cell, origem + y * cell, cell, cell);
+        }
+      }
+    }
+
+    function aoConcluirPareamento() {
+      pareado = true;
+      setStatus('Conectado!', false);
+      mostrar('tela-personalidade');
+    }
+
+    // Trata cada linha NDJSON do sidecar (repassada pela casca).
+    function tratarNdjson(linha) {
+      let obj;
+      try { obj = JSON.parse(linha); } catch (_e) { return; }
+      switch (obj.event) {
+        case 'qr':
+          esconderErro();
+          $('btn-tentar-novamente').style.display = 'none';
+          desenharQr(obj.modules, obj.width);
+          setStatus('Aponte a câmera do WhatsApp para o código.', true);
+          break;
+        case 'status':
+          switch (obj.status) {
+            case 'done': aoConcluirPareamento(); break;
+            case 'authenticated':
+            case 'session_saved':
+            case 'channel_enabled':
+              setStatus('Conectando a sua conta…', true); break;
+            case 'waiting_qr':
+              setStatus('Aguardando a leitura do código…', true); break;
+            case 'connecting':
+            case 'detecting_node':
+            case 'installing_deps':
+            case 'deps_ready':
+            case 'starting_bridge':
+              setStatus('Preparando a conexão…', true); break;
+            default: break; // status desconhecido: nao mexe
+          }
+          break;
+        case 'error': {
+          const msg = mensagemDeErro(obj.code, obj.message);
+          if (msg) mostrarErro(msg);
+          break;
+        }
+        case 'log':
+        default:
+          break; // cosmetico / desconhecido
+      }
+    }
+
+    listen('wa://ndjson', (e) => tratarNdjson(typeof e.payload === 'string' ? e.payload : JSON.stringify(e.payload)));
+    listen('wa://fim', (e) => {
+      // O sidecar saiu. Se nao pareou e nenhum erro apareceu, foi queda silenciosa.
+      if (!pareado && !erroMostrado) {
+        mostrarErro('A conexão foi encerrada antes de concluir. Tente gerar um QR novo.');
+      }
+    });
+
+    $('btn-tentar-novamente').addEventListener('click', iniciarPareamento);
+    $('btn-qr-voltar').addEventListener('click', () => {
+      invoke('wa_cancelar_pareamento');
+      mostrar('tela-modo');
+    });
+
+    // ── Personalidade ──────────────────────────────────────────────────────────
+    $('btn-persona-continuar').addEventListener('click', async () => {
+      const btn = $('btn-persona-continuar');
+      const nome = $('persona-nome').value.trim();
+      const estilo = document.querySelector('input[name=estilo]:checked')?.value || 'amigavel';
+      const idioma = $('persona-idioma').value || 'pt_br';
+      btn.disabled = true;
+      $('persona-erro').classList.remove('ativo');
+      try {
+        await invoke('onboarding_aplicar_persona', { nome, estilo, idioma });
+        mostrar('tela-pronto');
+        finalizar();
+      } catch (e) {
+        const el = $('persona-erro');
+        el.textContent = 'Não deu para salvar a persona: ' + String(e);
+        el.classList.add('ativo');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // ── Pronto ───────────────────────────────────────────────────────────────
+    async function finalizar() {
+      const txt = $('pronto-status-texto');
+      txt.textContent = 'Ligando o Garra…';
+      anunciar('Ligando o Garra.');
+      try {
+        await invoke('onboarding_aplicar_modo', { modo: modoEscolhido });
+        txt.textContent = 'Garra conectado';
+        $('pronto-status').style.color = 'var(--garra-ok)';
+        anunciar('Garra conectado e pronto para receber mensagens.');
+      } catch (e) {
+        txt.textContent = 'Conectado, mas houve um aviso';
+        const el = $('pronto-erro');
+        el.textContent = 'O canal foi vinculado, mas algo falhou ao ligar o Garra: ' + String(e) +
+          '. Abra os Ajustes e tente novamente.';
+        el.classList.add('ativo');
+      }
+    }
+    $('btn-abrir-garra').addEventListener('click', () => invoke('onboarding_fechar'));
+  </script>
+</body>
+</html>

@@ -5,7 +5,8 @@
   "windows": [
     "parrot",
     "chat-bar",
-    "settings"
+    "settings",
+    "onboarding"
   ],
   "permissions": [
     "core:default",

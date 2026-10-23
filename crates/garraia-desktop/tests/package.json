@@ -1,0 +1,13 @@
+{
+  "name": "garraia-desktop-ui-tests",
+  "version": "1.0.0",
+  "description": "Playwright test for the desktop first-use assistant (onboarding.html) — #1636 fatia 3. Runs the static page with a fake window.__TAURI__, no gateway.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0"
+  }
+}

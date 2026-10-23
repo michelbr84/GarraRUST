@@ -131,13 +131,97 @@ rede da fatia D (Job Object `KILL_ON_JOB_CLOSE` no Windows, `--exit-with-parent`
 / parent-watch no Linux/macOS). Se um runner não subir a GUI, o job falha com a
 evidência (`app.log` + `ps`) para o roteiro manual.
 
+O job `onboarding-ui` (Playwright, Ubuntu, **sem gateway**) abre
+`ui/onboarding.html` por `file://` com um `window.__TAURI__` falso e dirige o
+wizard emitindo os eventos NDJSON gravados da fatia 1 — inclusive um `qr` **real**
+(`crates/garraia-desktop/tests/fixtures/qr-line.json`, 33×33, gerado pelo mesmo
+`qr::modules`). Prova a navegação das telas, o canvas do QR **desenhado** (pixels
+opacos escuros ≠ 0), a escolha de modo e a persona chegando aos comandos, e o
+caminho de erro (QR expirado → mensagem acionável + "gerar um QR novo"). O job
+`assert-ui-assets` tem um tripwire de grep que garante que a janela, os sete
+comandos e a entrada em `capabilities` continuam ligados.
+
 ### Fora do escopo automatizado (hoje)
 
 - **Pareamento real do WhatsApp**: exige um telefone e leitura de QR —
   intervenção externa. O `self-test` prova que a ponte **carrega**, não que
-  pareia; os dois nunca são confundidos.
+  pareia; os dois nunca são confundidos. O `onboarding-ui` prova a UI com um QR
+  gravado, não um pareamento vivo.
 - **macOS**: o app não é assinado nem notarizado hoje (igual ao Windows). O
   binário `node` dentro do `.app` mantém a assinatura Developer ID da Node
   Foundation; o CI confirmou que rodá-lo por caminho a partir de um `.app` não
   assinado, em ambiente sem quarentena, **funciona** (o self-test passou).
   Assinatura/notarização é decisão do dono.
+
+## Assistente de Primeiro Uso (#1636)
+
+Na primeira execução — sem `onboarding.json` com `concluido: true` em
+`app_config_dir()` — o app abre o wizard `ui/onboarding.html`. São cinco telas:
+**Boas-vindas → Modo → QR → Personalidade → Pronto**, em pt-BR por padrão. O
+usuário não-dev instala o `.msi`, abre, escaneia o QR e troca mensagens com o
+Garra **sem abrir terminal nenhuma vez**.
+
+**Onde mora a lógica.** A casca Tauri (`src-tauri/src/onboarding.rs`) é fina: a
+decisão vive em `garraia_desktop_core::onboarding` (puro, testado no CI — ADR
+0021). A casca só lança o sidecar, transmite os eventos e grava config/estado.
+
+- **QR**: a casca lança o sidecar `garraia whatsapp link --machine` (fatia 1,
+  mesmo resolver de Node privado) e repassa cada linha NDJSON do stdout à webview
+  pelo evento Tauri `wa://ndjson`. A webview rasteriza a **matriz** (`modules`,
+  linhas de `0`/`1`) num `<canvas>`. O payload cru do QR (credencial) nunca chega
+  à webview nem ao `/api/*`.
+- **Cancelar** mata o processo do pareamento; no Windows ele entra no mesmo Job
+  Object do gateway (`KILL_ON_JOB_CLOSE`), então uma morte abrupta do app durante
+  o pareamento derruba a árvore Node (o `link` não aceita `--exit-with-parent`).
+- **Modo → config** (confirmado em `docs/whatsapp.md` §Comandos, ADR 0025): o
+  pareamento é igual nos dois modos; a política de acesso entra **depois** do
+  `done`:
+  - **Meu próprio número** → `garraia whatsapp access open --yes`: o Garra responde
+    **qualquer** pessoa que mandar mensagem. A tela de Modo avisa isso em letras
+    grandes — `open` afrouxa a admissão, e nenhum default de segurança é afrouxado
+    em silêncio.
+  - **Número dedicado** → `garraia whatsapp access restricted`: só quem está
+    declarado/pareou fala com o Garra. É o **default fail-closed**; reaplicá-lo é
+    o que reverte um `open` anterior quando se troca de volta.
+- **Personalidade** → `agent.system_prompt`, montado por
+  `garraia_desktop_core::montar_system_prompt` (nome, estilo, idioma) e gravado por
+  `ConfigLoader::set_agent_system_prompt` (o mesmo writer de config do projeto, com
+  modo `0600` no Unix).
+- **Pronto** aplica a política do modo, persiste `onboarding.json`
+  (`concluido: true`, `modo`) em `app_config_dir()` e **reinicia o gateway** para o
+  canal recém-vinculado entrar no ar.
+
+A escolha de modo **persiste e é configurável depois** em `ui/settings.html` →
+seção **WhatsApp** (trocar modo e "Refazer pareamento").
+
+### Validar o assistente (roteiro manual do dono)
+
+O pareamento real precisa de um celular, então não é automatizável — este é o
+passo manual. O artefato é o **MSI do run de CI** (`desktop.yml` →
+`build-installer` → artifact `garraia-desktop-windows-pr`), ou o `.deb`/`.dmg` dos
+jobs irmãos.
+
+1. **Instale num Windows limpo** (idealmente sem Node global). Baixe o MSI do run
+   de CI, rode o instalador e abra **Garra** pelo menu Iniciar. **Não abra
+   terminal nenhum.**
+2. **Boas-vindas**: a janela do assistente abre sozinha. Clique **Começar**.
+   (Prova sem celular: o app grava `app_config_dir()/onboarding-shown.marker` ao
+   exibir a tela.)
+3. **Modo**: escolha **Meu próprio número** (o Garra responde todo mundo) ou
+   **Número dedicado** (só você). Confira que o aviso amarelo explica a diferença.
+4. **QR**: o código aparece no canvas com o status pulsante "Aponte a câmera…".
+   No celular: **WhatsApp → Aparelhos conectados → Conectar um aparelho** e aponte
+   para a tela. Se o QR expirar, use **Gerar um QR novo**. Esperado: o status passa
+   por "Conectando a sua conta…" e some para a próxima tela.
+5. **Personalidade**: dê um nome, escolha o estilo e deixe **Português (Brasil)**.
+   Clique **Continuar**.
+6. **Pronto**: o status deve virar **● Garra conectado**. Do celular, mande um
+   **"oi"** para o número vinculado e confirme que o Garra responde. Clique
+   **Abrir o Garra**.
+7. **Settings**: abra Ajustes → **WhatsApp**, confirme que o modo escolhido está
+   lá, troque-o e veja o status "o modo foi atualizado". "Refazer pareamento"
+   reabre o wizard.
+
+Em nenhum passo foi preciso abrir terminal. Se quiser conferir o
+"sem-terminal" por fora: `onboarding-shown.marker` em `app_config_dir()` e a seção
+`channels.whatsapp_linked` no `config.yml` provam que o fluxo todo passou pela UI.

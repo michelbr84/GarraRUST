@@ -115,6 +115,79 @@ jobs:
           print(f'parrot-sprite.png ok: {width}x{height}, {len(data)} bytes')
           EOF
 
+      # #1636 (fatia 3): contrato de fiacao do Assistente de Primeiro Uso. Mesmo
+      # estilo do grep do /ws/parrot acima — nao ha harness de Rust para a casca
+      # (fora do CI), entao o acoplamento janela<->comando<->testid e verificado
+      # por grep, que pega o modo de falha real (o plumbing sumir num refactor).
+      # O comportamento de verdade da UI e provado no job onboarding-ui (Playwright).
+      - name: Assistente de Primeiro Uso esta ligado de ponta a ponta
+        run: |
+          set -euo pipefail
+          html=crates/garraia-desktop/ui/onboarding.html
+          lib=crates/garraia-desktop/src-tauri/src/lib.rs
+          cmds=crates/garraia-desktop/src-tauri/src/onboarding.rs
+          caps=crates/garraia-desktop/src-tauri/capabilities/default.json
+
+          [ -f "$html" ] || { echo "::error ::$html ausente — o wizard nao existe"; exit 1; }
+
+          # A webview ouve os eventos NDJSON e tem o canvas do QR.
+          grep -q "wa://ndjson" "$html" \
+            || { echo "::error ::$html nao ouve wa://ndjson — o QR/status nunca chegaria do sidecar (#1636)"; exit 1; }
+          grep -q 'data-testid="qr-canvas"' "$html" \
+            || { echo "::error ::$html nao tem o canvas do QR com data-testid estavel (#1636)"; exit 1; }
+
+          # Cada comando que a webview chama tem de existir e estar registrado.
+          for cmd in onboarding_estado wa_iniciar_pareamento wa_cancelar_pareamento \
+                     onboarding_aplicar_persona onboarding_aplicar_modo onboarding_fechar onboarding_reabrir; do
+            grep -q "pub async fn $cmd" "$cmds" \
+              || { echo "::error ::$cmds nao define $cmd (#1636)"; exit 1; }
+            grep -q "onboarding::$cmd" "$lib" \
+              || { echo "::error ::$cmd nao esta no invoke_handler! de $lib — o invoke da webview falharia (#1636)"; exit 1; }
+          done
+
+          # A janela abre no primeiro uso e esta na allowlist de capabilities.
+          grep -q "abrir_se_primeiro_uso" "$lib" \
+            || { echo "::error ::$lib nao abre o wizard no primeiro uso (#1636)"; exit 1; }
+          grep -q '"onboarding"' "$caps" \
+            || { echo "::error ::$caps nao lista a janela 'onboarding' — a webview nao poderia chamar comando nenhum (#1636)"; exit 1; }
+
+          echo "ok: wizard ouve NDJSON, desenha o QR, e os 7 comandos existem + estao registrados + a janela esta nas capabilities"
+
+  # #1636 (fatia 3): o unico teste AUTOMATIZADO da UI do wizard. Abre
+  # `ui/onboarding.html` por file:// com um `window.__TAURI__` falso (sem Tauri,
+  # sem gateway) e dirige o fluxo emitindo os eventos NDJSON gravados da fatia 1
+  # — inclusive um `qr` REAL (`tests/fixtures/qr-line.json`, 33x33). Prova a
+  # navegacao, o canvas desenhado (pixels != 0), a persistencia do modo/persona
+  # (invoke gravado) e o caminho de erro. O pareamento REAL com celular nao e
+  # automatizavel e esta no roteiro manual (docs/desktop.md).
+  onboarding-ui:
+    name: UI do Assistente de Primeiro Uso (Playwright, sem gateway)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: crates/garraia-desktop/tests
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps + Chromium
+        run: |
+          set -euo pipefail
+          npm install
+          npx playwright install --with-deps chromium
+
+      - name: Run the onboarding UI spec
+        run: npx playwright test
+
   build-installer:
     name: Build MSI + NSIS (windows-latest)
     runs-on: windows-latest
