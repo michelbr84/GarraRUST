@@ -21,7 +21,12 @@ Como cortar uma release `vX.Y.Z` do GarraIA. Tudo depois do tag é automático.
 4. `CHANGELOG.md`: mover o conteúdo de `## [Unreleased]` para uma nova seção
    `## [X.Y.Z] - AAAA-MM-DD` (data narrativa em horário da Flórida,
    ver CLAUDE.md §Convenção de datas). `[Unreleased]` volta vazio.
-5. Abrir PR, aguardar CI verde (6 checks obrigatórios da ruleset: Format Check, Clippy Linting, Test ubuntu e windows, Security Gate, Auth Integration) e mergear.
+5. Abrir PR, aguardar CI verde e mergear. A ruleset "Protect main" exige **7
+   checks obrigatorios** (confira na API: `GET /repos/michelbr84/GarraRUST/rulesets`
+   → o ruleset ativo): **Format Check**, **Clippy Linting**, **Test (ubuntu-latest)**,
+   **Test (windows-latest)**, **Security Gate (BOLA & Tenant Isolation)**,
+   **Auth Integration (test-support)** e **Gateway Integration (Postgres)**.
+   Preserve os sete — o RC nao afrouxa gate obrigatorio.
 
 ## 1.5 Gate de dogfood — obrigatório antes do tag (#1439)
 
@@ -61,12 +66,20 @@ Daí duas consequências que valem como regra, não como opinião:
 
 Para o que sobra, os caminhos reais, e a escolha é do dono:
 
-1. **Prerelease `vX.Y.Z-rcN`** por push de tag — produz assets reais e é marcado
-   prerelease automaticamente, então não vira `latest` e nem o `install.sh` nem
-   o `garra update` o alcançam. Habilita D2 (via `-Version vX.Y.Z-rcN`). Limite
-   conhecido: o `ProductVersion` do WiX é numérico de três partes, então **tag
-   `-rc` faz o job do MSI falhar** — mas o D5 não depende disso, porque o
-   `desktop.yml` acima entrega o MSI sem tag.
+1. **Prerelease `vX.Y.Z-rcN`** por push de tag — produz assets reais e e marcado
+   prerelease automaticamente (`release.yml` usa `prerelease: true` e, desde o
+   preparo do RC, `make_latest: false` explicito), entao nao vira `latest` nem
+   e servido por `/releases/latest`, e nem o `install.sh` nem o `garra update`
+   o alcancam. Habilita D2 (via `-Version vX.Y.Z-rcN`). Ponto de atencao sobre
+   o MSI: o `ProductVersion` do WiX e numerico de tres partes e **nao expressa
+   prerelease semver**, mas quem o alimenta e a **versao do Cargo** (o
+   `crates/garraia-desktop/src-tauri/tauri.conf.json` nao declara `version`,
+   entao o bundler Tauri le `version.workspace` do `Cargo.toml`), **nao a tag
+   git**. Com o bump de RC mantido **puro** (`0.4.10` no `Cargo.toml`, sem
+   `-rcN` — ver a secao "Pre-lancamento (RC)"), o job do MSI e os demais
+   bundlers desktop passam no tag `-rc`, e o step fail-closed do `latest.json`
+   (que recusa sem ao menos um `.sig` de updater) tambem. Fosse a versao do
+   Cargo `0.4.10-rc1`, o WiX quebraria.
 2. **Aceite de risco registrado**, como na v0.4.6 (PR #1522): tagear com a
    cobertura que existe e rodar as linhas manuais depois, com o compromisso
    escrito de que uma falha vira a versão seguinte. A decisão vai no corpo da PR
@@ -124,6 +137,72 @@ D4, D5, D6 e o trecho WhatsApp de D1) segue manual e está aqui de propósito
 o que o CI cobre e o que só pessoa cobre, está em
 [`plans/0364-release-v0.4.6-preflight.md`](../plans/0364-release-v0.4.6-preflight.md) §6.
 
+## 1.6 Pre-lancamento (RC)
+
+Quando o dono autoriza publicar um candidato (`vX.Y.Z-rcN`) **como
+pre-release**, antes da estavel. O objetivo e provar o pacote no mundo real
+sem mover o canal estavel: a automacao marca o RC como prerelease, **nao** o
+torna `latest` e **nao** o distribui pelo canal de atualizacao estavel.
+
+Runbook (exemplo `v0.4.10-rc1`):
+
+1. **Branch `release/v0.4.10`.** O `check_presence.py` isenta exatamente
+   `^release/v\d+\.\d+\.\d+$` deste repo (`scripts/changelog/check_presence.py:56`),
+   entao a PR de bump+nota nao precisa de fragmento proprio. Qualquer outro
+   nome de branch continua cobrado.
+2. **Bump PURO: `0.4.10`** em `Cargo.toml` (`[workspace.package] version`),
+   **sem** `-rcN`. O `-rcN` vive **so na tag git**. Motivo: o `ProductVersion`
+   do WiX e o campo `version` do `latest.json` vem da versao do Cargo (o
+   `tauri.conf.json` nao declara `version`); uma versao de Cargo com `-rc`
+   quebraria o job do MSI e poderia derrubar o step fail-closed do
+   `latest.json` (§1.5, item 1). `cargo check` para o `Cargo.lock` acompanhar.
+3. **NAO rode `assemble.py --write`.** Juntar os fragmentos no `[Unreleased]`
+   e apaga-los e **passo da estavel** (§1 passo 3). No RC os fragmentos
+   **ficam** em `changelog.d/` — eles entram de uma vez quando a estavel sair.
+4. **CHANGELOG (opcional):** se quiser uma nota no corpo da Release, adicione
+   uma secao curta `## [0.4.10-rc1] - AAAA-MM-DD` (data narrativa, horario da
+   Florida) com um paragrafo de abertura — o `scripts/release/notes.py` extrai
+   so a prosa antes da primeira subsecao `###`. Nao mova os fragmentos para
+   dentro dela.
+5. **Merge da PR com os 7 checks verdes** (§1 passo 5).
+6. **Dogfood no CI (§1.5):** Actions → **Dogfood Linux (clean install)** → Run
+   workflow, `ref = release/v0.4.10` (antes do tag) ou `ref = v0.4.10-rc1`
+   (depois). Roda `scripts/dogfood/linux-clean-install.sh --source local` num
+   `ubuntu-latest`, falha se o `resumo.txt` disser FALHOU e sobe
+   `dogfood/linux/**` como artifact. (O `workflow_dispatch` so aparece depois
+   que `dogfood-linux.yml` esta na default branch.)
+7. **Tag por push** (nunca `workflow_dispatch` — ele publicaria a Release
+   mesmo, §1.5):
+
+   ```bash
+   git fetch origin main
+   git tag v0.4.10-rc1 <sha-do-merge>
+   git push origin v0.4.10-rc1
+   ```
+
+8. **Conferencias pos-run** (a automacao, nao o humano, garante o canal):
+   - `GET /repos/michelbr84/GarraRUST/releases/tags/v0.4.10-rc1` → `.prerelease == true`.
+   - `/releases/latest` **continua apontando para a estavel anterior**
+     (ex.: `v0.4.9`) — o `make_latest: false` do `release.yml` garante isso.
+   - O `latest.json` servido por `releases/latest/download/latest.json`
+     permanece o da estavel: **inalterado**. O `latest.json` do RC existe so
+     como asset do proprio prerelease, nao e servido pela `latest`, entao o
+     updater Tauri dos apps instalados nao o enxerga.
+   - `garra update` (que so conhece `/releases/latest`,
+     `crates/garraia-cli/src/update.rs:9`) **nao** oferece o RC.
+   - Docker (`deploy.yml`): a imagem sai so com `0.4.10-rc1` + sha — **sem**
+     `latest` e **sem** `0.4` (o `docker/metadata-action` nao deriva
+     `{{major}}.{{minor}}` de prerelease, e `latest` so entra em default
+     branch ou dispatch com `latest=true`).
+
+9. **Precisou de `-rc2`?** Corte uma tag **nova** (`v0.4.10-rc2`) — **nunca
+   reutilize** `v0.4.10-rc1` (clientes podem ter cacheado assets; ver Rollback).
+   A versao do Cargo segue `0.4.10`.
+
+Quando a estavel `v0.4.10` for cortada, ai sim roda-se o `assemble.py --write`
+(os fragmentos acumulados viram changelog), remove-se a secao `[rcN]` de
+rascunho se existir, e segue-se o §1 normal.
+
 ## 2. Tag
 
 ```bash
@@ -176,8 +255,11 @@ Os jobs `build-windows-installer`, `build-windows-aarch64`, `package-linux`,
 **fora** da condição `if:` — mesmo padrão do `build-linux-arm64`. Uma falha emite `::warning::` e a
 release sai sem o asset correspondente, sem `continue-on-error` (proibido pelo
 CLAUDE.md). Modo de falha conhecido: o `ProductVersion` do WiX é numérico de
-três partes e não expressa prerelease semver, então **tags `-rc` fazem o job
-do MSI falhar** — o gating absorve isso. O `package-linux` roda separado do
+três partes e não expressa prerelease semver, e ele vem da **versao do Cargo**
+(o `tauri.conf.json` nao declara `version`, entao o bundler le
+`version.workspace` do `Cargo.toml`), **nao da tag git** — uma **versao de
+Cargo com `-rc`** faz o job do MSI falhar, nao o tag `-rc` por si so. O gating
+absorve isso. O `package-linux` roda separado do
 job `release` de propósito: nfpm e appimagetool são pinados por versão +
 SHA-256, e uma falha deles não pode bloquear a release (ADR 0015).
 
