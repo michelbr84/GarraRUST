@@ -410,6 +410,29 @@ impl ConfigLoader {
         self.save(&config)?;
         Ok(true)
     }
+
+    /// Grava `agent.system_prompt`, sem tocar em mais nada.
+    ///
+    /// Mesmo padrao load-modify-save do [`set_channel_enabled`], e pela mesma
+    /// razao: o Assistente de Primeiro Uso do desktop (#1636) precisa persistir
+    /// a persona que o usuario escolheu, e fazer isso reescrevendo o `config.yml`
+    /// a mao na casca (que esta fora dos gates de CI) duplicaria a serializacao
+    /// e a protecao de modo `0600` que o [`save`](Self::save) ja centraliza aqui.
+    /// A string da persona vem pronta de `garraia_desktop_core::montar_system_prompt`
+    /// (puro, testado); este metodo so a coloca no lugar certo e grava.
+    ///
+    /// Devolve `true` quando o valor mudou; `false` quando ja era exatamente
+    /// esse prompt (idempotente — o botao de settings pode reaplicar sem churn).
+    pub fn set_agent_system_prompt(&self, prompt: &str) -> Result<bool> {
+        self.ensure_dirs()?;
+        let mut config = self.load()?;
+        if config.agent.system_prompt.as_deref() == Some(prompt) {
+            return Ok(false);
+        }
+        config.agent.system_prompt = Some(prompt.to_string());
+        self.save(&config)?;
+        Ok(true)
+    }
 }
 
 /// Escreve `path` de forma atomica e ja apertada: tmp no **mesmo** diretorio,
@@ -1167,6 +1190,79 @@ mod tests {
         assert!(dir.join("plugins").exists());
         assert!(dir.join("skills").exists());
         assert!(dir.join("data").exists());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// #1636: o Assistente de Primeiro Uso grava a persona por aqui. So mexe em
+    /// `agent.system_prompt`, e idempotente, e nasce ate numa maquina que nunca
+    /// rodou `garra init` (sem `config.yml`).
+    #[test]
+    fn set_agent_system_prompt_grava_so_a_persona_e_e_idempotente() {
+        let dir = temp_dir("set-persona");
+        let loader = ConfigLoader::with_dir(&dir);
+
+        // Primeira gravacao, sem config.yml previo: muda.
+        assert!(
+            loader
+                .set_agent_system_prompt("Voce e a Garra, responda em pt-BR.")
+                .expect("primeira gravacao"),
+            "a primeira gravacao muda o valor"
+        );
+        let cfg = loader.load().expect("recarrega");
+        assert_eq!(
+            cfg.agent.system_prompt.as_deref(),
+            Some("Voce e a Garra, responda em pt-BR.")
+        );
+
+        // Reaplicar o MESMO prompt e no-op (idempotente — settings pode insistir).
+        assert!(
+            !loader
+                .set_agent_system_prompt("Voce e a Garra, responda em pt-BR.")
+                .expect("reaplicacao"),
+            "reaplicar o mesmo prompt nao reescreve"
+        );
+
+        // Trocar o prompt muda de novo.
+        assert!(
+            loader
+                .set_agent_system_prompt("Voce e o Papagaio, responda em pt-BR.")
+                .expect("troca"),
+            "um prompt diferente muda o valor"
+        );
+        assert_eq!(
+            loader
+                .load()
+                .expect("recarrega")
+                .agent
+                .system_prompt
+                .as_deref(),
+            Some("Voce e o Papagaio, responda em pt-BR.")
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A persona nao pode pisar em outras secoes do `config.yml`.
+    #[test]
+    fn set_agent_system_prompt_preserva_o_resto_da_config() {
+        let dir = temp_dir("set-persona-preserva");
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(
+            dir.join("config.yml"),
+            "llm:\n  openrouter:\n    provider: openrouter\n    model: z-ai/glm-5.3-flash\nagent:\n  default_provider: openrouter\n",
+        )
+        .expect("seed");
+
+        let loader = ConfigLoader::with_dir(&dir);
+        loader
+            .set_agent_system_prompt("persona nova")
+            .expect("grava a persona");
+
+        let cfg = loader.load().expect("recarrega");
+        assert_eq!(cfg.agent.system_prompt.as_deref(), Some("persona nova"));
+        assert_eq!(cfg.agent.default_provider.as_deref(), Some("openrouter"));
+        assert!(cfg.llm.contains_key("openrouter"), "o llm sobrevive");
 
         let _ = fs::remove_dir_all(dir);
     }

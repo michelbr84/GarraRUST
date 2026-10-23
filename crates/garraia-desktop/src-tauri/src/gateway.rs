@@ -24,8 +24,14 @@ static GATEWAY_JOB: std::sync::OnceLock<Option<garraia_desktop_core::KillOnClose
 
 /// Poe o sidecar recem-lancado no Job Object. Best-effort: falha so loga, o
 /// `RunEvent::Exit` e o `kill` continuam valendo.
+///
+/// #1636 (fatia 3): tambem usado pelo `onboarding.rs` para conter o sidecar de
+/// pareamento (`whatsapp link --machine`) e sua arvore Node — o `link` nao
+/// aceita `--exit-with-parent` (so o `start`), entao no Windows o Job Object e
+/// a unica rede que mata a ponte Node se o app morrer de forma abrupta durante
+/// o pareamento.
 #[cfg(windows)]
-fn contain_in_kill_on_close_job(child: &tauri_plugin_shell::process::CommandChild) {
+pub(crate) fn contain_in_kill_on_close_job(child: &tauri_plugin_shell::process::CommandChild) {
     let job = GATEWAY_JOB.get_or_init(|| match garraia_desktop_core::KillOnCloseJob::new() {
         Ok(job) => Some(job),
         Err(e) => {

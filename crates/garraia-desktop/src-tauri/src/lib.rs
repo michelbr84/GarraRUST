@@ -2,6 +2,7 @@ mod chat_bar;
 mod commands;
 mod gateway;
 mod hotkey;
+mod onboarding;
 mod overlay;
 mod tray;
 
@@ -41,6 +42,12 @@ pub fn run() {
             // Register global hotkeys (Alt+G overlay toggle, Ctrl+Space chat bar)
             hotkey::register_hotkeys(app.handle(), visible)?;
 
+            // #1636: estado do Assistente de Primeiro Uso + abertura da janela
+            // so no primeiro uso. O `manage` precede a abertura (os comandos
+            // leem o estado gerenciado). A janela nasce DEPOIS do config copiado
+            // abaixo, para a persona/modo terem um `config.yml` para escrever.
+            app.manage(onboarding::OnboardingState::default());
+
             // Copy default config if not present.
             //
             // #1240: o path vem do `ConfigLoader::default_config_dir()`, o
@@ -65,6 +72,9 @@ pub fn run() {
                 }
             }
 
+            // Com o config no lugar, abre o wizard se for a primeira vez.
+            onboarding::abrir_se_primeiro_uso(app.handle());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -77,6 +87,15 @@ pub fn run() {
             commands::gateway_api_key,
             commands::check_for_updates,
             commands::install_update,
+            onboarding::onboarding_estado,
+            onboarding::onboarding_marcar_exibido,
+            onboarding::wa_iniciar_pareamento,
+            onboarding::wa_cancelar_pareamento,
+            onboarding::onboarding_validar_numero,
+            onboarding::onboarding_aplicar_persona,
+            onboarding::onboarding_aplicar_modo,
+            onboarding::onboarding_fechar,
+            onboarding::onboarding_reabrir,
         ])
         .build(tauri::generate_context!())
         .expect("error while running garraia-desktop")

@@ -59,8 +59,10 @@ pub use detect::{AgentKind, Confidence, DetectedAgent, Detector, Evidence, Files
 pub use jobobject::KillOnCloseJob;
 pub use locate::{DESKTOP_BINARY, DesktopApp, EnvDirs, Locator, Platform, Source, install_dirs};
 pub use onboarding::{
-    EstiloPersona, EventoNdjson, FaseQr, Idioma, Modo, Onboarding, OnboardingPersistido,
-    Personalidade, Tela, VERSAO_PERSISTIDA,
+    ARGS_PAREAMENTO, ARQUIVO_ONBOARDING, EstiloPersona, EventoNdjson, FaseQr, Idioma, Modo,
+    NOME_MAX_CHARS, Onboarding, OnboardingPersistido, Personalidade, Tela, VERSAO_PERSISTIDA,
+    args_aplicar_modo, args_autorizar_numero, arquivo_onboarding, montar_system_prompt,
+    normalizar_numero, primeiro_uso, sanitizar_nome,
 };
 pub use state::{Desired, ModuleId, ModuleState, Modules, Power, PowerEvent};
 pub use supervise::{
