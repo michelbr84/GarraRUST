@@ -133,7 +133,6 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
-    "Win32_System_Diagnostics_ToolHelp",
 ] }
 
 [dev-dependencies]
@@ -147,3 +146,11 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # `#[cfg(test)]` e vale para `google_chat` e `teams`, que nao ligam `line`.
 base64 = { workspace = true }
 tempfile = "3"
+
+# `Win32_System_Diagnostics_ToolHelp` so e usada pelo teste do Job Object
+# (descobrir o PID do neto pela snapshot de processos), nunca pelo codigo de
+# producao de `jobobject.rs`. Como dev-dependency, a feature e unificada com a
+# `windows-sys` normal apenas no build de teste; o binario de release nao a
+# carrega. Mesma versao da dep normal acima.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Diagnostics_ToolHelp"] }

@@ -2,6 +2,11 @@
 //! `garraia start`, e por tabela a arvore que ele lanca) quando o pai — a
 //! casca do desktop — morre de forma abrupta, sem rodar `Drop`.
 //!
+//! **Copia gemea em `crates/garraia-channels/src/whatsapp_linked/jobobject.rs`;
+//! manter as duas em sincronia.** A duplicacao e proposital: evita que esta
+//! crate (deliberadamente minima, ADR 0021) dependa de `garraia-common` so por
+//! este modulo. Mesmo precedente do `find_executable` copiado em `bridge.rs`.
+//!
 //! # Por que existe, alem do kill no `Drop` do [`crate::supervise::Supervisor`]
 //!
 //! O `Supervisor` ja mata o filho no `stop`, no `restart` e no `Drop`. Mas

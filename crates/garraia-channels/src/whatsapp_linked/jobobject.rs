@@ -2,6 +2,11 @@
 //! morre de forma abrupta (crash, kill do Gerenciador de Tarefas), onde nenhum
 //! `Drop` roda.
 //!
+//! **Copia gemea em `crates/garraia-desktop-core/src/jobobject.rs`; manter as
+//! duas em sincronia.** A duplicacao e proposital: evita que `garraia-desktop-core`
+//! (deliberadamente minimo, ADR 0021) dependa de `garraia-common` so por este
+//! modulo. Mesmo precedente do `find_executable` copiado em `bridge.rs`.
+//!
 //! # Por que existe, alem do `kill_on_drop` e do PDEATHSIG
 //!
 //! No Unix a ponte ja se protege por tres camadas (ver o topo de

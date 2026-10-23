@@ -117,9 +117,17 @@ enum Commands {
         /// Encerra o gateway quando o processo de PID <PID> (quem o lancou, ex.:
         /// o app desktop) sumir. Evita que o sidecar fique orfao numa morte
         /// abrupta do pai no Linux/macOS, onde nao ha equivalente do Job Object
-        /// do Windows. So vale em primeiro plano (nao com `-d`). Flag e nao env,
-        /// para o PID nao vazar para processos filhos. #1636.
-        #[arg(long = "exit-with-parent", value_name = "PID")]
+        /// do Windows. So vale em primeiro plano. Flag e nao env, para o PID
+        /// nao vazar para processos filhos. #1636.
+        ///
+        /// `conflicts_with = "daemon"`: um daemon se destaca do pai de
+        /// proposito, entao vigia-lo nao faz sentido. Preferimos falhar alto
+        /// (`-d --exit-with-parent` e erro de uso) a um no-op silencioso.
+        #[arg(
+            long = "exit-with-parent",
+            value_name = "PID",
+            conflicts_with = "daemon"
+        )]
         exit_with_parent: Option<u32>,
     },
 
@@ -4011,6 +4019,13 @@ mod tests {
         assert_eq!(
             parsed(&["garra", "start", "--exit-with-parent", "4242"]),
             Some(4242)
+        );
+
+        // `conflicts_with = "daemon"`: `-d` + a flag e erro de uso, nao um
+        // no-op silencioso (vigiar um daemon destacado nao faz sentido).
+        assert!(
+            Cli::try_parse_from(["garra", "start", "-d", "--exit-with-parent", "4242"]).is_err(),
+            "--exit-with-parent com -d deve falhar no parse"
         );
     }
 
