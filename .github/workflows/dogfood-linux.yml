@@ -86,8 +86,8 @@ jobs:
           set -euo pipefail
           # Servidor em background, sem systemd. Default bind 127.0.0.1:11434 —
           # o mesmo loopback que o container do dogfood (--network host) enxerga.
+          # Sem guardar o PID: o runner e efemero e o processo morre com o job.
           ollama serve > "${RUNNER_TEMP}/ollama-serve.log" 2>&1 &
-          echo "OLLAMA_PID=$!" >> "$GITHUB_ENV"
           ready=0
           for _ in $(seq 1 60); do
             if curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
