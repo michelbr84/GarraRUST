@@ -109,8 +109,25 @@ jobs `smoke-*`:
 5. provam que `node/` e `bridge-whatsapp/node_modules` são irmãos do sidecar no
    caminho do contrato.
 
+No Windows o smoke faz uma **instalação real silenciosa** (`msiexec /i /qn`, que
+cai no default `C:\Program Files\...` — caminho com espaço), prova o layout e o
+self-test, depois **desinstala** (`msiexec /x /qn`) e checa que `node/` e
+`bridge-whatsapp/` somem e que `~/.garraia/whatsapp` fica.
+
+Os jobs `update-linux` e `update-macos` cobrem **atualização + desinstalação**:
+instalam o instalador publicado da **v0.4.9** (sem o bundle), criam um marcador
+em `~/.garraia/whatsapp`, instalam o novo por cima, rodam o self-test de novo
+(tem de virar `origin=privado`) e provam que o marcador **sobrevive**; depois
+desinstalam e provam que o pacote some e o dado do usuário fica.
+
 ### Fora do escopo automatizado (hoje)
 
+- **Upgrade-sobre-o-anterior do MSI (Windows)**: a `main` ainda está na versão
+  0.4.9, e um major-upgrade real do WiX exige `ProductVersion` maior (bump de
+  versão). O `smoke-windows` já cobre instalar-limpo + self-test + desinstalar +
+  dado do usuário preservado; o upgrade-sobre-o-anterior volta ao CI quando a
+  versão subir. Em Linux (`dpkg -i`) e macOS (cópia do `.app`) o upgrade é
+  determinístico mesmo com versão igual e **é** testado.
 - **Inicialização pela GUI do desktop** (o app Tauri sobe, lança o sidecar, o
   gateway responde `/api/health` e o sidecar morre ao fechar o app): depende de
   sessão gráfica; nos runners headless é instável e não é rodado como gate.
@@ -119,5 +136,6 @@ jobs `smoke-*`:
   pareia; os dois nunca são confundidos.
 - **macOS**: o app não é assinado nem notarizado hoje (igual ao Windows). O
   binário `node` dentro do `.app` mantém a assinatura Developer ID da Node
-  Foundation; rodá-lo por caminho a partir de um `.app` não assinado em ambiente
-  sem quarentena funciona. Assinatura/notarização é decisão do dono.
+  Foundation; o CI confirmou que rodá-lo por caminho a partir de um `.app` não
+  assinado, em ambiente sem quarentena, **funciona** (o self-test passou).
+  Assinatura/notarização é decisão do dono.
