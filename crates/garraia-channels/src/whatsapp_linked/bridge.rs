@@ -1111,6 +1111,30 @@ fn apply_parent_death_signal(cmd: &mut Command) {
     }
 }
 
+/// Cria um Job Object `KILL_ON_JOB_CLOSE` e assina o filho recem-lancado.
+///
+/// Falha em qualquer etapa nao derruba o spawn: devolve `None`, loga e segue —
+/// as outras camadas (`kill_on_drop`, o `Drop` do [`BridgeConnection`])
+/// continuam valendo. O job devolvido tem de ser guardado pela conexao; e o
+/// `Drop` dele (fechar o handle) que arma a morte da subarvore.
+#[cfg(windows)]
+fn assign_bridge_to_kill_on_close_job(child: &Child) -> Option<super::jobobject::KillOnCloseJob> {
+    let handle = child.raw_handle()?;
+    let job = match super::jobobject::KillOnCloseJob::new() {
+        Ok(job) => job,
+        Err(e) => {
+            tracing::warn!(erro = %e, "nao criou Job Object para a ponte; seguindo sem ele");
+            return None;
+        }
+    };
+    // `RawHandle` e `*mut c_void`; o job recebe o valor como `isize`.
+    if let Err(e) = job.assign_handle(handle as isize) {
+        tracing::warn!(erro = %e, "nao assinou a ponte ao Job Object; seguindo sem ele");
+        return None;
+    }
+    Some(job)
+}
+
 /// Conexao viva com o bridge.
 pub struct BridgeConnection {
     child: Child,
@@ -1124,6 +1148,14 @@ pub struct BridgeConnection {
     stderr_tail: mpsc::UnboundedReceiver<String>,
     tail: VecDeque<String>,
     dir: PathBuf,
+    /// Job Object do Windows que mata o filho se ESTE processo for encerrado
+    /// de forma abrupta (crash, Gerenciador de Tarefas), caso em que nenhum
+    /// `Drop` roda. Existe so pelo efeito do proprio `Drop` (fecha o handle →
+    /// `KILL_ON_JOB_CLOSE`); por isso o campo nunca e lido. No Unix o papel e
+    /// do PDEATHSIG + `kill_on_drop`, e este campo nao existe.
+    #[cfg(windows)]
+    #[allow(dead_code)]
+    job: Option<super::jobobject::KillOnCloseJob>,
 }
 
 impl BridgeConnection {
@@ -1171,6 +1203,14 @@ impl BridgeConnection {
             }
         });
 
+        // Windows: poe o filho num Job Object com `KILL_ON_JOB_CLOSE`. Se esta
+        // CLI/gateway morrer de forma abrupta (crash, `TerminateProcess` do
+        // Gerenciador de Tarefas), o SO fecha o handle do job e o `node` — e
+        // qualquer neto que ele tenha lancado — morre junto. E o caso que
+        // `kill_on_drop`/`Drop` nao cobrem, e que no Unix o PDEATHSIG cobre.
+        #[cfg(windows)]
+        let job = assign_bridge_to_kill_on_close_job(&child);
+
         Ok(Self {
             child,
             stdin: Some(stdin),
@@ -1178,6 +1218,8 @@ impl BridgeConnection {
             stderr_tail: rx,
             tail: VecDeque::with_capacity(STDERR_TAIL_LINES),
             dir: launcher.dir(),
+            #[cfg(windows)]
+            job,
         })
     }
 

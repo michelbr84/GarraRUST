@@ -50,6 +50,10 @@
 
 pub mod bridge;
 pub mod health;
+/// Job Object do Windows para o filho `node` (contencao contra orfao em morte
+/// abrupta do pai). So existe no Windows; o Unix usa PDEATHSIG + `kill_on_drop`.
+#[cfg(windows)]
+pub mod jobobject;
 /// Analise de texto para varredura de fonte (`chamadas_de_log`,
 /// `parte_arriscada`, `bindings_contaminados`). Superficie de teste, nao API do
 /// canal — e `pub` porque o gateway varre o proprio fonte com as mesmas regras,
