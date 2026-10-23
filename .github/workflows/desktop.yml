@@ -395,6 +395,10 @@ jobs:
           if (-not (Test-Path (Join-Path $userData "smoke-marker.txt"))) { throw "dado do usuario (~/.garraia/whatsapp) foi removido pela desinstalacao" }
           Write-Host "DESINSTALACAO OK: node/ e bridge-whatsapp/ removidos; ~/.garraia/whatsapp preservado"
           Write-Host "SMOKE WINDOWS OK: instalar limpo + caminho com espaco + self-test(privado) + desinstalar"
+          # Sucesso explicito: `& cmd /c "where node"` deixou $LASTEXITCODE=1
+          # (node ausente, esperado) e o epilogo pwsh do GitHub sai com esse
+          # codigo. Todos os caminhos de falha usam `throw` antes daqui.
+          exit 0
 
   smoke-linux:
     name: Smoke Linux (.deb + AppImage, caminho com espaco, sem Node global)
@@ -789,6 +793,9 @@ jobs:
           $still = $true; try { Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:3888/api/health" -TimeoutSec 3 | Out-Null } catch { $still = $false }
           if ($still) { throw "/api/health ainda responde apos matar o app" }
           Write-Host "DESKTOP-LAUNCH WINDOWS OK: app subiu o sidecar; taskkill /F do app derrubou o sidecar em <=15s (Job Object)"
+          # Sucesso explicito: `taskkill` pode ter deixado $LASTEXITCODE != 0
+          # (ex.: 128 se o app ja tivesse saido). Falhas reais usam `throw`.
+          exit 0
 
   desktop-launch-macos:
     name: Desktop sobe o sidecar e morre junto (macOS)
@@ -935,3 +942,4 @@ jobs:
           if (Test-Path "$($exe.DirectoryName)\node\node.exe") { throw "node ainda presente apos desinstalar" }
           if (-not (Test-Path (Join-Path $ud "smoke-marker.txt"))) { throw "sessao removida na desinstalacao" }
           Write-Host "UNINSTALL OK: node/ e bridge-whatsapp/ removidos, ~/.garraia/whatsapp preservado"
+          exit 0
