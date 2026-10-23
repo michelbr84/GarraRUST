@@ -264,7 +264,9 @@ resolve_version() {
     VERSION="$(resolve_version_from_redirect || true)"
 
     # Fallback: the REST API — /releases/latest first (404s when only
-    # prereleases exist), then the most recent non-draft release.
+    # prereleases exist), then the most recent STABLE release (neither draft
+    # nor prerelease). A `-rc`/`-beta`/`-alpha` must never be installed by the
+    # unpinned `curl | sh` path: set GARRAIA_VERSION=vX.Y.Z-rcN to opt in.
     if [ -z "${VERSION}" ]; then
         VERSION="$(github_api "https://api.github.com/repos/${REPO}/releases/latest" \
             | extract_tag_name || true)"
@@ -272,8 +274,7 @@ resolve_version() {
 
     if [ -z "${VERSION}" ]; then
         VERSION="$(github_api "https://api.github.com/repos/${REPO}/releases" \
-            | tr ',' '\n' \
-            | extract_first_non_draft_tag || true)"
+            | extract_first_stable_tag || true)"
     fi
 
     if [ -z "${VERSION}" ]; then
@@ -312,21 +313,74 @@ extract_tag_name() {
         | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
 }
 
-# Filter out lines that declare draft:true, then pick the first tag_name.
-# Works on the normalized one-key-per-line stream produced by `tr ',' '\n'`.
-extract_first_non_draft_tag() {
+# Print the tag_name of the first STABLE release in a GitHub `/releases` list
+# (array of release objects): the first that is neither draft:true nor
+# prerelease:true. Reads the raw JSON on stdin — no `tr ',' '\n'`, which would
+# split commas inside string values too.
+#
+# Field-order-INDEPENDENT by design. It tracks brace depth with a string-aware
+# scanner (quotes toggle "in string", `\` escapes the next char), so braces and
+# the literal text `}`/`"prerelease"` inside a release `body` can never move a
+# boundary or false-match. Each top-level `{..}` (depth 0 -> 1 -> 0) is one
+# release; its whole text is buffered and `tag_name`/`draft`/`prerelease` are
+# matched within it in ANY order. `tag_name`, `draft` and `prerelease` appear
+# only at the release level — assets/author/uploader carry `name`/`id` but none
+# of those three (verified against the live API: each occurs once per release).
+# This replaces the earlier version that keyed off the order tag_name-then-flags
+# and would have let a reordered payload slip a prerelease through.
+#
+# Works on both the pretty-printed payload the API returns and a compact
+# single-line body. POSIX awk only (string-aware scan + match/substr/sub; no
+# gawk extensions). Note: unauthenticated callers never receive drafts from
+# GitHub, so in practice this filters prereleases; the draft guard is defence
+# in depth for authenticated reuse.
+extract_first_stable_tag() {
     awk '
-        /"draft": *true/        { skip_until_next_release = 1; next }
-        /"id": *[0-9]+/         { skip_until_next_release = 0 }
-        /"tag_name":/ {
-            if (!skip_until_next_release) {
-                match($0, /"tag_name": *"[^"]*"/)
-                tag = substr($0, RSTART, RLENGTH)
-                sub(/"tag_name": *"/, "", tag)
-                sub(/"$/, "", tag)
-                print tag
-                exit
+        {
+            line = $0
+            m = length(line)
+            for (i = 1; i <= m; i++) {
+                c = substr(line, i, 1)
+                if (instr) {
+                    if (collecting) cur = cur c
+                    if (esc)            { esc = 0 }
+                    else if (c == "\\") { esc = 1 }
+                    else if (c == "\"") { instr = 0 }
+                    continue
+                }
+                if (c == "\"") {
+                    instr = 1
+                    if (collecting) cur = cur c
+                    continue
+                }
+                if (c == "{") {
+                    depth++
+                    if (depth == 1) { collecting = 1; cur = "{"; continue }
+                }
+                if (collecting) cur = cur c
+                if (c == "}") {
+                    depth--
+                    if (depth == 0 && collecting) {
+                        draftf = (cur ~ /"draft"[[:space:]]*:[[:space:]]*true/)
+                        pref   = (cur ~ /"prerelease"[[:space:]]*:[[:space:]]*true/)
+                        # POSIX awk swallows a newline after `&&`, so this
+                        # condition continues on the next line without a `\`.
+                        if (!draftf && !pref &&
+                            match(cur, /"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+                            t = substr(cur, RSTART, RLENGTH)
+                            sub(/"tag_name"[[:space:]]*:[[:space:]]*"/, "", t)
+                            sub(/"$/, "", t)
+                            print t
+                            exit
+                        }
+                        collecting = 0; cur = ""
+                    }
+                }
             }
+            # JSON strings never span raw newlines, so instr is 0 here; keep the
+            # record break as whitespace in the buffer for the pretty-printed
+            # layout (one field per line).
+            if (collecting) cur = cur "\n"
         }
     '
 }

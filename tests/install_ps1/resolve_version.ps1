@@ -119,14 +119,38 @@ Assert-Equal 'tag read from /releases/latest' 'v0.3.2' (Resolve-GarraiaVersion)
 Assert-True  'the API was reached only after the redirect failed' ($script:Calls.Count -eq 2)
 
 Write-Host ''
-Write-Host 'Resolve-GarraiaVersion: falls back to the newest non-draft release'
+Write-Host 'Resolve-GarraiaVersion: falls back to the newest stable release'
+Reset-Mock
+$script:Responses['https://github.com/*/releases/latest'] = 'THROW'
+$script:Responses['https://api.github.com/*/releases/latest'] = 'THROW'
+# Real GitHub payloads always carry both `draft` and `prerelease`; the fixtures
+# mirror that so the skip logic is exercised exactly as it runs in the field.
+$script:Responses['https://api.github.com/*/releases'] = New-JsonResponse @'
+[{"draft":true,"prerelease":false,"tag_name":"v0.4.0-wip"},{"draft":false,"prerelease":false,"tag_name":"v0.3.1"},{"draft":false,"prerelease":false,"tag_name":"v0.3.0"}]
+'@
+Assert-Equal 'draft releases are skipped' 'v0.3.1' (Resolve-GarraiaVersion)
+
+Write-Host ''
+Write-Host 'Resolve-GarraiaVersion: a prerelease on top is skipped for the newest stable'
+# Mirrors tests/install_sh/resolve_version.sh (extract_first_stable_tag): the
+# unpinned fallback must never return a -rc/-beta/-alpha. Pinning opts in.
 Reset-Mock
 $script:Responses['https://github.com/*/releases/latest'] = 'THROW'
 $script:Responses['https://api.github.com/*/releases/latest'] = 'THROW'
 $script:Responses['https://api.github.com/*/releases'] = New-JsonResponse @'
-[{"draft":true,"tag_name":"v0.4.0-wip"},{"draft":false,"tag_name":"v0.3.1"},{"draft":false,"tag_name":"v0.3.0"}]
+[{"draft":false,"prerelease":true,"tag_name":"v0.4.10-rc1"},{"draft":false,"prerelease":false,"tag_name":"v0.4.9"},{"draft":false,"prerelease":false,"tag_name":"v0.4.8"}]
 '@
-Assert-Equal 'draft releases are skipped' 'v0.3.1' (Resolve-GarraiaVersion)
+Assert-Equal 'prerelease on top skipped, newest stable chosen' 'v0.4.9' (Resolve-GarraiaVersion)
+
+Write-Host ''
+Write-Host 'Resolve-GarraiaVersion: a list of only prereleases resolves nothing'
+Reset-Mock
+$script:Responses['https://github.com/*/releases/latest'] = 'THROW'
+$script:Responses['https://api.github.com/*/releases/latest'] = 'THROW'
+$script:Responses['https://api.github.com/*/releases'] = New-JsonResponse @'
+[{"draft":false,"prerelease":true,"tag_name":"v0.5.0-rc1"},{"draft":false,"prerelease":true,"tag_name":"v0.5.0-rc2"}]
+'@
+Assert-Throws 'no stable release -> throws rather than installing a prerelease' { Resolve-GarraiaVersion }
 
 Write-Host ''
 Write-Host 'Resolve-GarraiaVersion: every channel down'
