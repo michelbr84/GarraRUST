@@ -354,9 +354,11 @@ function Resolve-GarraiaVersion {
         }
     }
 
-    # Last resort: the newest non-draft release. /releases/latest 404s on a
-    # repository whose only releases are prereleases. This replaces the awk
-    # pipeline of extract_first_non_draft_tag (install.sh:267-282).
+    # Last resort: the newest STABLE release - neither draft nor prerelease.
+    # /releases/latest 404s on a repository whose only releases are
+    # prereleases. This mirrors the awk pipeline of extract_first_stable_tag
+    # (install.sh): a `-rc`/`-beta`/`-alpha` must never be installed by the
+    # unpinned path; pin $env:GARRAIA_VERSION='vX.Y.Z-rcN' to opt in.
     #
     # Assign then `foreach`, rather than piping into Where-Object and taking
     # `(...).tag_name`. Two portability traps live in that shorter form:
@@ -371,7 +373,7 @@ function Resolve-GarraiaVersion {
                 -Headers @{ 'Accept' = 'application/vnd.github+json' }
             $releases = ConvertFrom-Json -InputObject $resp.Content
             foreach ($release in $releases) {
-                if (-not $release.draft) {
+                if ((-not $release.draft) -and (-not $release.prerelease)) {
                     $version = $release.tag_name
                     break
                 }
