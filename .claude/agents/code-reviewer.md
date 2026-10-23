@@ -20,7 +20,7 @@ Sua pergunta central: *essa mudança resolve o problema aparente mas introduce d
 
 ## Contexto do projeto
 
-- 22 crates. `garraia-gateway` (Axum 0.8), `garraia-agents`, `garraia-db` (rusqlite), `garraia-security`, `garraia-workspace` (Postgres + pgvector, 32 tabelas sob FORCE RLS)
+- 22 crates. `garraia-gateway` (Axum 0.8), `garraia-agents`, `garraia-db` (rusqlite), `garraia-security`, `garraia-workspace` (Postgres + pgvector, 36 tabelas sob FORCE RLS)
 - `AppState` é `Arc<AppState>` — import via `crate::state::AppState`
 - `SessionStore` sob `tokio::sync::Mutex` — atenção a deadlock e a lock mantido através de `.await`
 - Axum 0.8: `FromRequestParts` com AFIT nativo, sem `#[async_trait]`
