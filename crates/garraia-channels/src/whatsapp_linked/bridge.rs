@@ -1111,6 +1111,31 @@ fn apply_parent_death_signal(cmd: &mut Command) {
     }
 }
 
+/// Poe o filho no proprio grupo de processos (`setpgid(0, 0)`), para que o
+/// teardown possa varrer a subarvore inteira com um unico `kill(-pgid)` — nao
+/// so o filho direto. No Linux soma-se ao PDEATHSIG; no macOS, onde ele nao
+/// existe, e o que garante que um neto da ponte nao fique para tras no
+/// encerramento normal. Morte ABRUPTA do pai no macOS continua coberta pelo
+/// watch de stdin do lado do bridge (EOF -> saida), do `bridge.mjs`.
+///
+/// Nao muda o tratamento de `Ctrl+C`: a CLI captura o sinal no proprio laco e
+/// chama `kill`/`shutdown` — o filho em grupo proprio apenas deixa de receber
+/// o SIGINT do terminal direto, que a CLI ja reemite fechando o stdin.
+#[cfg(unix)]
+fn apply_process_group(cmd: &mut Command) {
+    // SAFETY: `setpgid` e async-signal-safe e so afeta o proprio filho (pid 0,
+    // no contexto do pre_exec, e este processo apos o fork e antes do exec).
+    unsafe {
+        cmd.pre_exec(|| {
+            // Falha aqui e rara (pid/pgid ja em uso) e nao e fatal: o filho
+            // fica no grupo herdado e o teardown ainda tem o `start_kill`
+            // direto. Por isso o resultado e ignorado.
+            let _ = libc::setpgid(0, 0);
+            Ok(())
+        });
+    }
+}
+
 /// Cria um Job Object `KILL_ON_JOB_CLOSE` e assina o filho recem-lancado.
 ///
 /// Falha em qualquer etapa nao derruba o spawn: devolve `None`, loga e segue —
@@ -1171,6 +1196,8 @@ impl BridgeConnection {
         apply_child_env(&mut cmd);
         #[cfg(any(target_os = "linux", target_os = "android"))]
         apply_parent_death_signal(&mut cmd);
+        #[cfg(unix)]
+        apply_process_group(&mut cmd);
 
         let mut child = cmd.spawn().map_err(|e| BridgeError::Spawn {
             program: launcher.describe(),
@@ -1363,15 +1390,38 @@ impl BridgeConnection {
     /// Mata o filho. Idempotente.
     pub async fn kill(&mut self) {
         self.close_stdin();
+        #[cfg(unix)]
+        self.kill_process_group();
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
+    }
+
+    /// Varre o grupo de processos do filho com `SIGKILL` (`kill(-pgid)`),
+    /// pegando netos que a ponte tenha lancado. [`apply_process_group`] fez o
+    /// filho lider do proprio grupo, entao o pgid e o pid do filho. No-op
+    /// seguro quando o pid ja nao existe (ESRCH) ou quando o `setpgid` falhou
+    /// (o grupo de pgid == pid do filho simplesmente nao tem membros).
+    #[cfg(unix)]
+    fn kill_process_group(&self) {
+        if let Some(pid) = self.child.id() {
+            // `id()` nunca devolve 0; o negativo mira o GRUPO, nao o processo.
+            // SAFETY: `kill` com um pgid derivado do pid do proprio filho; um
+            // grupo inexistente devolve ESRCH, sem efeito colateral.
+            unsafe {
+                libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+            }
+        }
     }
 }
 
 impl Drop for BridgeConnection {
     fn drop(&mut self) {
         // Rede de seguranca sobre o `kill_on_drop`: um filho que sobrevive a
-        // esta CLI continua segurando a sessao do WhatsApp aberta.
+        // esta CLI continua segurando a sessao do WhatsApp aberta. No Unix,
+        // varre tambem o grupo (netos); no Windows o `KILL_ON_JOB_CLOSE` do
+        // campo `job` cuida da subarvore ao fechar o handle.
+        #[cfg(unix)]
+        self.kill_process_group();
         let _ = self.child.start_kill();
     }
 }
