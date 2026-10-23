@@ -49,13 +49,27 @@ export async function loadProviders() {
   try {
     const r = await fetch("/api/providers");
     const j = await r.json();
-    GarraState.providers = j.providers || [];
+    // Real registered instances first (listed by their own id, e.g.
+    // `ollama-qwen3`), then catalog types with no backing instance so a new one
+    // can still be configured. A type backed by an instance with another id is
+    // never shown as "Not Configured" (fix for the #1540 registration fallout).
+    const instances = Array.isArray(j.instances) ? j.instances : [];
+    const catalog = Array.isArray(j.providers) ? j.providers : [];
+    GarraState.providers = instances.concat(catalog.filter((p) => !p.active));
 
     dom.providerSelect.innerHTML = "";
+    const notConfigured = window.t ? window.t("provider.not_configured_suffix") : " (Not Configured)";
     for (const p of GarraState.providers) {
       const opt = document.createElement("option");
       opt.value = p.id;
-      opt.textContent = p.active ? p.display_name : p.display_name + (window.t ? window.t("provider.not_configured_suffix") : " (Not Configured)");
+      let label = p.display_name || p.id;
+      if (p.active) {
+        if (p.kind && p.kind !== p.id) label += " · " + p.kind;
+        if (p.is_default) label += " ★";
+      } else {
+        label += notConfigured;
+      }
+      opt.textContent = label;
       dom.providerSelect.appendChild(opt);
     }
 
@@ -81,7 +95,8 @@ export function updateProviderUI() {
     return;
   }
   if (p.active) {
-    const tag = p.is_default ? (window.t ? window.t("provider.active_default") : "Active Default") : (window.t ? window.t("provider.active") : "Active");
+    let tag = p.is_default ? (window.t ? window.t("provider.active_default") : "Active Default") : (window.t ? window.t("provider.active") : "Active");
+    if (!p.is_default && p.in_fallback) tag += " (Fallback)";
     dom.providerStatus.innerHTML = `<span class="status-dot dot-ok"></span>${tag}`;
     if (dom.providerKeySection) dom.providerKeySection.style.display = "none";
   } else {
