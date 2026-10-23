@@ -3414,7 +3414,7 @@ mod tests_mcp_1346 {
         assert!(matches!(c.status, CheckStatus::Warning));
         let passo = c.next_step.expect("passo");
         assert!(
-            passo.contains(r#"["-y","@modelcontextprotocol/server-filesystem@2026.8.31","/srv"]"#),
+            passo.contains(r#"["-y","@modelcontextprotocol/server-filesystem@2.0.0","/srv"]"#),
             "{passo}"
         );
         assert!(passo.contains("`garraia`"), "{passo}");
@@ -3423,6 +3423,10 @@ mod tests_mcp_1346 {
     #[test]
     fn filesystem_fixado_ou_fora_do_npx_e_ok_e_ausente_e_skipped() {
         for v in [
+            // Pin novo (default atual) e pin antigo: os dois sao Fixada → OK.
+            // Uma instalacao que ja tem `@2026.8.31` no mcp.json segue sem
+            // warning e sem reescrita.
+            VersaoDoFilesystem::Fixada("2.0.0".into()),
             VersaoDoFilesystem::Fixada("2026.8.31".into()),
             VersaoDoFilesystem::ForaDoNpx,
         ] {

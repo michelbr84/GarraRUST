@@ -72,7 +72,7 @@ backoff:
 ```json
 {
   "mcpServers": {
-    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/root"] },
+    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem@2.0.0", "/root"] },
     "hermes": {
       "command": "hermes",
       "args": ["mcp", "serve"],

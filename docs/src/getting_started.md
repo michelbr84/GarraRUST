@@ -83,7 +83,7 @@ memory:
 mcp:
   filesystem:
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem@2.0.0", "/tmp"]
 ```
 
 ---

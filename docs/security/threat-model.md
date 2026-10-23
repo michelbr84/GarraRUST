@@ -76,6 +76,43 @@ Boundaries críticos:
 
 ---
 
+## 2.5. Grants do pool `garraia_app` e a ADP da migration 007
+
+**Padrão (obrigatório a partir da migration 007):** a migration 007 declara
+`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE
+ON TABLES TO garraia_app`. Essa ADP vale para **toda tabela criada depois dela**
+pelo mesmo role. Logo:
+
+- Uma tabela nova nasce com **CRUD completo** para `garraia_app`
+  automaticamente — sem precisar de `GRANT` na migration.
+- Um `GRANT` seletivo mais estreito **não reduz** nada: `GRANT` é aditivo, só
+  concede. Quem quer privilégio **menor** que CRUD completo tem de fazer um
+  `REVOKE` explícito na mesma migration que cria a tabela.
+
+**Como o invariante é quebrado (classe E — elevation of privilege):** declarar
+a intenção só no comentário ou na lista de um `GRANT` seletivo (ex.: `GRANT
+SELECT, INSERT` para "sem UPDATE/DELETE") dá a falsa impressão de least
+privilege, enquanto a ADP já concedeu o excesso. Em produção isso dá a
+`garraia_app` mutação onde o autor pretendia negá-la. O caso com maior peso é
+uma fila de máquina de estados exclusiva de funções `SECURITY DEFINER` (ex.:
+`account_deletion_requests`, migration 034): com `UPDATE`/`DELETE` reais, um
+handler no escopo do próprio titular (RLS owner-only satisfeita) poderia fechar
+o pedido como concluído **sem o purge** ou cancelá-lo fora do fluxo.
+
+**Correção já aplicada:** a migration 036 revoga o excesso vazado pela ADP em
+nove tabelas criadas entre 014 e 034 (regressão provada em
+`migration_smoke.rs` por `has_table_privilege(...) = false` + um bloqueio
+`42501` no DML de `account_deletion_requests`). O apagamento LGPD cross-tenant
+continua rodando em `SECURITY DEFINER` como `garraia_purge`/owner — essas
+funções **não** usam os privilégios de `garraia_app`, então o `REVOKE` não as
+afeta.
+
+**Regra de revisão:** toda nova migration que cria tabela e pretende privilégio
+menor que CRUD completo para `garraia_app` precisa de `REVOKE` explícito; o
+teste de grants em `migration_smoke.rs` é o gate.
+
+---
+
 ## 3. `garraia-storage` (ADR 0004 — planned)
 
 Componente ainda não implementado (crate `garraia-storage` é tracked em GAR-394). Matriz abaixo é **pre-implementation threat model** para informar o design.

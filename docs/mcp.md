@@ -18,7 +18,7 @@ Configure MCP servers in `config.yml`:
 mcp:
   filesystem:
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "/tmp"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem@2.0.0", "/tmp"]
   
   github:
     command: npx
@@ -74,17 +74,25 @@ Access local filesystem:
 mcp:
   filesystem:
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "/path/to/directory"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem@2.0.0", "/path/to/directory"]
 ```
 
-Pin the version (`@2026.8.31`). A bare `npx -y @modelcontextprotocol/server-filesystem`
+Pin the version (`@2.0.0`). A bare `npx -y @modelcontextprotocol/server-filesystem`
 resolves to whatever is newest on the registry every time the npx cache is
 cold, so the gateway runs a build nobody tested. A dist-tag (`@latest`,
-`@next`) or a range (`@^1`, `@~2026.8`) floats the same way and is not
+`@next`) or a range (`@^1`, `@~2.0`) floats the same way and is not
 counted as pinned. New installs are provisioned with the pinned form (#1346);
 the `mcp.filesystem_pinned` check of `GET /api/diagnostics` warns about an
 existing unpinned entry and prints the exact `args` to paste — `mcp.json`
 itself is never rewritten.
+
+The upstream package switched versioning schemes in 2026-10: the date-based
+series (`@2026.8.31`) was deprecated and the package resumed semantic
+versioning at `1.0.0`, with `latest` now at `2.0.0`. The `initialize` +
+`tools/list` handshake is identical between `2026.8.31` and `2.0.0` (the same
+14 tools, the same path arguments), so an existing `mcp.json` pinned to
+`@2026.8.31` keeps working and is still reported as pinned (OK) — the gateway
+never rewrites it. New installs get `@2.0.0`.
 
 Pinning fixes the top-level package only. Its own dependencies
 (`@modelcontextprotocol/sdk`, `zod`, `glob`, ...) are declared with semver
@@ -178,7 +186,7 @@ Create `mcp.json` in the active config directory (default
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "/tmp"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2.0.0", "/tmp"]
     }
   }
 }

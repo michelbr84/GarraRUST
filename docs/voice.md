@@ -105,6 +105,32 @@ GarraIA talks to it over the Gradio API
 `multilingual_app.py` exposes. The `chatterbox-tts` PyPI wheel is a
 library only and has no `serve` subcommand.
 
+The client **adapts to the endpoint signature**: on the first
+synthesis it reads `GET /gradio_api/info`, finds
+`named_endpoints["/generate_tts_audio"].parameters`, and builds the `data`
+array with exactly that number of values — text, language, reference
+(`null`), and for the remaining parameters the `parameter_default` the
+server declares, or the stock app's defaults when it does not. The result
+is cached. The stock app binds **7** inputs
+(`text`, `language_id`, `ref_wav`, `exaggeration=0.5`, `temperature=0.8`,
+`seed_num=0`, `cfg_weight=0.5`); a custom server that exposes only
+`[text, lang, ref, number]` (4 values) keeps working. If
+`/gradio_api/info` does not answer, the client falls back to the stock
+7-value layout.
+
+### GPU compatibility: torch pin vs RTX 50xx (sm_120)
+
+`chatterbox-tts` pins `torch==2.6.0` / `torchaudio==2.6.0` (on Python
+< 3.14), and those default wheels ship no Blackwell (sm_120) kernels — on
+an RTX 50xx the server crashes with `no kernel image is available for
+execution on the device`. Override with the CUDA 12.8 wheels after
+`pip install -e .`:
+
+```bash
+pip install --force-reinstall torch torchaudio \
+  --index-url https://download.pytorch.org/whl/cu128
+```
+
 ### Known pitfalls with the stock app
 
 #### 1. Health-probe route mismatch (fixed in the gateway, #1538)
@@ -254,13 +280,16 @@ Returns audio file (WAV/MP3).
 
 ### STT Endpoint
 
+The handler reads **multipart form data** and only looks at the field named
+`file` — a raw `--data-binary` body is ignored and the request comes back
+`400 No audio file provided`. Send the audio as a multipart part:
+
 ```bash
 curl -X POST http://127.0.0.1:3888/api/stt \
-  -H "Content-Type: audio/wav" \
-  --data-binary @audio.wav
+  -F "file=@audio.wav"
 ```
 
-Returns transcribed text.
+Returns transcribed text as JSON (`{"text": "..."}`).
 
 ## Health Checks
 

@@ -18,7 +18,7 @@ Você é convocado seletivamente: risco **R4** ou gatilho de superfície sensív
 - Secrets: `GARRAIA_JWT_SECRET`, `GARRAIA_REFRESH_HMAC_SECRET`, `GARRAIA_METRICS_TOKEN`, `GARRAIA_VAULT_PASSPHRASE` (canônico) / `GarraIA_VAULT_PASSPHRASE` (deprecated). Leitura de env de secret só em `garraia-config/src/auth.rs`
 
 **Isolamento multi-tenant**
-- 32 tabelas sob FORCE RLS; 5 fora (users, roles, permissions, role_permissions, group_invites)
+- 36 tabelas sob FORCE RLS; 6 fora (users, roles, permissions, role_permissions, group_invites, plans)
 - `garraia_login` e `garraia_signup`: roles NOLOGIN BYPASSRLS, acessíveis só via `LoginPool` / `SignupPool`
 - GUC de RLS por `SELECT set_config('app.current_group_id', $1, true)` com bind — nunca `SET LOCAL` interpolado
 - **Anti-pattern:** ler `user_identities.password_hash` pelo pool `garraia_app` (RLS zera as linhas, e tratar 0 rows como "não encontrado" é falha de segurança)

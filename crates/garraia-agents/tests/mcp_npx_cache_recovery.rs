@@ -144,7 +144,7 @@ impl Sandbox {
         std::fs::create_dir_all(dir.join("node_modules").join("zod")).expect("mkdir");
         std::fs::write(
             dir.join("package.json"),
-            serde_json::json!({"dependencies": {PKG: "^2026.8.31"}}).to_string(),
+            serde_json::json!({"dependencies": {PKG: "^2.0.0"}}).to_string(),
         )
         .expect("write package.json");
         std::fs::write(dir.join("SENTINEL"), b"x").expect("sentinel");
@@ -164,7 +164,7 @@ async fn um_por_vez() -> tokio::sync::MutexGuard<'static, ()> {
 }
 
 fn args() -> Vec<String> {
-    vec!["-y".into(), format!("{PKG}@2026.8.31"), "/tmp".into()]
+    vec!["-y".into(), format!("{PKG}@2.0.0"), "/tmp".into()]
 }
 
 async fn connect(

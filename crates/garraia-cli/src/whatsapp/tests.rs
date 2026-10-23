@@ -4072,3 +4072,114 @@ fn o_status_diz_a_admissao_e_o_default_do_desconhecido() {
     let doc = acesso::json_de_usuarios(restrito, &[]);
     assert_eq!(doc["admission"], "restricted");
 }
+
+// ---------------------------------------------------------------------------
+// #1636: npm so pesa quando as dependencias precisam ser instaladas
+// ---------------------------------------------------------------------------
+
+/// Um Node resolvido de mentira: caminho inexistente (o launcher falha rapido
+/// se o fluxo chegar a lanca-lo), origem PATH e o `npm` injetado.
+fn fake_node(npm: Option<std::path::PathBuf>) -> impl FnOnce() -> Result<NodeRuntime, BridgeError> {
+    move || {
+        Ok(NodeRuntime {
+            node: std::path::PathBuf::from("/nao/existe/garraia-node-de-teste"),
+            origin: garraia_channels::whatsapp_linked::bridge::NodeOrigin::Path,
+            npm,
+        })
+    }
+}
+
+/// Deixa `bridge_dir` no estado `DepsPlan::Current`: assets materializados,
+/// `node_modules` e o carimbo de dependencias com o digest dos embutidos.
+///
+/// O nome do carimbo espelha `DEPS_STAMP_FILE` de `garraia-channels` (interno).
+/// Se ele mudar, `prepare` devolve `Install`, o portao do `npm` e alcancado e
+/// este teste falha com `deps_failed` em vez de `starting_bridge` — falha
+/// informativa, nao silenciosa.
+fn bridge_dir_current(bridge_dir: &std::path::Path) {
+    bridge::prepare(bridge_dir, &bridge::EmbeddedAssets).expect("materializa");
+    std::fs::create_dir_all(bridge_dir.join("node_modules")).expect("node_modules");
+    std::fs::write(
+        bridge_dir.join(".garraia-deps-sha256"),
+        bridge::deps_digest(&bridge::EmbeddedAssets),
+    )
+    .expect("carimbo");
+}
+
+/// Com dependencias a instalar e SEM `npm`, o modo-maquina falha com um erro
+/// claro — nao uma falha de `spawn` crua — e nunca chega a subir a ponte.
+#[test]
+fn sem_npm_e_com_deps_a_instalar_o_erro_e_claro() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    ctx.loader
+        .as_ref()
+        .expect("loader")
+        .ensure_dirs()
+        .expect("dirs");
+    // bridge_dir sem node_modules -> DepsPlan::Install.
+    let sink = CaptureSink::new();
+    let mut ui = maquina::JsonUi::with_sink(ctx.lang, Box::new(sink.clone()));
+
+    let code = link_machine_with(&ctx, &Pedido::default(), fake_node(None), &mut ui);
+    assert_eq!(
+        code, EX_UNAVAILABLE,
+        "sem npm para instalar = EX_UNAVAILABLE"
+    );
+
+    let eventos = eventos_ndjson(&sink.text());
+    let erro = eventos
+        .iter()
+        .find(|e| e["event"] == serde_json::json!("error"))
+        .expect("um evento error");
+    assert_eq!(erro["code"], serde_json::json!("deps_failed"));
+    assert!(
+        erro["message"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("npm"),
+        "a mensagem nomeia o npm: {erro}"
+    );
+    assert!(
+        !marcadores(&eventos)
+            .iter()
+            .any(|m| m == "status:starting_bridge"),
+        "o portao do npm barra antes de subir a ponte: {:?}",
+        marcadores(&eventos)
+    );
+}
+
+/// Com a arvore pronta (`DepsPlan::Current`), o `npm` nem e consultado: o fluxo
+/// passa do portao e vai subir a ponte, mesmo com `npm = None`.
+#[test]
+fn com_deps_prontas_o_npm_e_dispensado() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    ctx.loader
+        .as_ref()
+        .expect("loader")
+        .ensure_dirs()
+        .expect("dirs");
+    bridge_dir_current(&ctx.bridge_dir());
+
+    let sink = CaptureSink::new();
+    let mut ui = maquina::JsonUi::with_sink(ctx.lang, Box::new(sink.clone()));
+    let code = link_machine_with(&ctx, &Pedido::default(), fake_node(None), &mut ui);
+
+    let eventos = eventos_ndjson(&sink.text());
+    let marcas = marcadores(&eventos);
+    assert!(
+        marcas.iter().any(|m| m == "status:starting_bridge"),
+        "deps prontas: o fluxo passa do npm e tenta subir a ponte: {marcas:?}"
+    );
+    assert!(
+        !eventos
+            .iter()
+            .any(|e| e["event"] == serde_json::json!("error")
+                && e["code"] == serde_json::json!("deps_failed")),
+        "sem npm, mas com deps prontas, nao ha deps_failed: {marcas:?}"
+    );
+    // A ponte falsa nao sobe; o desfecho e um erro de execucao, nao do portao.
+    assert_eq!(code, EX_UNAVAILABLE);
+}
