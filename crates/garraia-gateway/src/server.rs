@@ -134,6 +134,40 @@ fn refuse_inert_auth_flag(config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
+/// Qual linha logar para o probe de STT (Whisper) no boot — funcao pura, sem
+/// I/O e sem relogio, testavel no padrao de `channel_retry_delay` e do
+/// `voice_check` do `diagnostics_handler`. O `run()` aplica o timeout e faz a
+/// chamada de rede; aqui so se traduz o resultado em qual linha sai. Antes o
+/// boot logava `🎙️  STT initialized` incondicionalmente, escondendo um
+/// Whisper morto atras de uma linha de sucesso — ao contrario do TTS logo
+/// acima, que ja era sondado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SttBootLog {
+    /// Whisper respondeu — `info!`.
+    Ready,
+    /// Whisper nao respondeu (`health_check` devolveu `Ok(false)`) ou o probe
+    /// estourou o `timeouts.health` (`None`) — `warn!` "not reachable".
+    Unreachable,
+    /// O probe em si falhou com erro (`Err`) — `warn!` com o texto do erro.
+    /// Hoje e um ramo DEFENSIVO: `WhisperClient::health_check()` converte erro
+    /// de rede em `Ok(false)` (nunca devolve `Err`), entao este caso so dispara
+    /// se essa implementacao passar a propagar erro — nao se perde o sinal.
+    ProbeError(String),
+}
+
+/// `probe`: `Some(Ok(true|false))` do `health_check`, `Some(Err(_))` em erro de
+/// probe, `None` quando o probe estourou o `timeouts.health`. Timeout e
+/// `Ok(false)` sao o mesmo sinal para o operador — o servidor nao esta
+/// alcancavel agora. O cliente segue registrado nos tres casos (o servidor
+/// pode subir depois), igual ao caminho do TTS.
+fn classify_stt_boot(probe: Option<std::result::Result<bool, String>>) -> SttBootLog {
+    match probe {
+        Some(Ok(true)) => SttBootLog::Ready,
+        Some(Ok(false)) | None => SttBootLog::Unreachable,
+        Some(Err(e)) => SttBootLog::ProbeError(e),
+    }
+}
+
 impl GatewayServer {
     pub fn new(config: AppConfig) -> Self {
         Self {
@@ -355,15 +389,40 @@ impl GatewayServer {
             };
             state.voice_client = Some(tts_client);
 
-            // Initialize Whisper STT client (works for both standalone Whisper and LM Studio)
+            // Initialize Whisper STT client (works for both standalone Whisper
+            // and LM Studio). Probe it the same way the TTS above is probed —
+            // the old unconditional "STT initialized" line logged success even
+            // with Whisper down, which is exactly how the owner (and the Garra
+            // agent) were misled into thinking STT was live. The client stays
+            // registered either way: the server may come up later, same as TTS.
             let stt_client = garraia_voice::WhisperClient::new(
                 &state.config.voice.stt_endpoint,
                 &state.config.voice.language,
             );
-            info!(
-                "🎙️  STT initialized — Whisper at {}",
-                state.config.voice.stt_endpoint
-            );
+            let stt_endpoint = state.config.voice.stt_endpoint.clone();
+            // `WhisperClient` builds a timeout-less reqwest client, so bound the
+            // boot probe by `timeouts.health`: a silently-dropping host must not
+            // hang the whole boot. `max(1)` stops a `0` config from meaning
+            // "no probe at all".
+            let health_budget =
+                std::time::Duration::from_secs(state.config.timeouts.health.default_secs.max(1));
+            let probe = tokio::time::timeout(health_budget, stt_client.health_check())
+                .await
+                .ok()
+                .map(|r| r.map_err(|e| e.to_string()));
+            match classify_stt_boot(probe) {
+                SttBootLog::Ready => {
+                    info!("🎙️  STT ready — Whisper at {stt_endpoint}");
+                }
+                SttBootLog::Unreachable => {
+                    warn!(
+                        "⚠️  Voice mode requested but Whisper STT is not reachable at {stt_endpoint}"
+                    );
+                }
+                SttBootLog::ProbeError(e) => {
+                    warn!("⚠️  Whisper STT health check failed: {e}");
+                }
+            }
             state.stt_client = Some(Arc::new(stt_client));
         }
 
@@ -2079,6 +2138,19 @@ mod tests {
         ));
         shutdown_subsystems(&state).await;
         assert!(!state.whatsapp_linked.cancelamento_vivo());
+    }
+
+    #[test]
+    fn classify_stt_boot_mapeia_cada_resultado_do_probe() {
+        assert_eq!(classify_stt_boot(Some(Ok(true))), SttBootLog::Ready);
+        // `Ok(false)` do health_check e o timeout (`None`) sao o mesmo sinal
+        // para o operador: Whisper nao esta alcancavel agora.
+        assert_eq!(classify_stt_boot(Some(Ok(false))), SttBootLog::Unreachable);
+        assert_eq!(classify_stt_boot(None), SttBootLog::Unreachable);
+        assert_eq!(
+            classify_stt_boot(Some(Err("connect failed".to_string()))),
+            SttBootLog::ProbeError("connect failed".to_string())
+        );
     }
 
     #[test]

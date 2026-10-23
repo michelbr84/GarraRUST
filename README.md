@@ -686,13 +686,19 @@ Learning agent, this benchmark harness, and the v0.3.x distribution wave
 native Windows ARM64, `garra agents setup` with the Anthropic-compatible
 `/v1/messages` shim, and Garra Desktop for Linux with the Chat Bar.
 
-**v0.3.9** (Sep 2026) closed 48 issues and PRs across three tracks: the
-terminal stopped being a black box (per-tool activity lines, Markdown
-rendered without stalling the stream, `/status` `/tools` `/logs`, and a
-`garra logs` command), memory became inspectable (`garra memory` with
-`add`, `reindex`, `backup`, `pin`, `ttl`), and execution modes started
-being enforced in the executor rather than merely requested in the prompt.
-See [What's New in v0.3.9](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.3.9).
+**v0.4.9** (Oct 2026) landed two big fronts and a security sweep. Data-subject
+rights went live: `GET /v1/me/export` now returns a user's personal content
+across every group they belong to (messages, mentions, files, memories,
+tasks) and declares what it left out, `PATCH /v1/me` changes an email through
+a safe out-of-band flow instead of blindly, and `DELETE /v1/me` queues a
+30-day-grace erasure run by a dedicated-credential worker. The gateway also
+became an MCP server over HTTP with task delegation — `garra_ask`,
+`garra_agent`, external orchestrators with their own identity, policy, and
+per-orchestrator audit, and operator-defined regex redaction — all off by
+default and fail-closed. Alongside: 24 RUSTSEC advisories closed in one pass,
+verifiable provenance attestation on every release asset, and the request path
+now rejects `unwrap()`/`expect()`.
+See [What's New in v0.4.9](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.4.9).
 
 ## Contributing
 
