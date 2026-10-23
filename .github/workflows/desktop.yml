@@ -54,6 +54,7 @@ jobs:
   assert-ui-assets:
     name: Assert UI assets exist
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -191,6 +192,7 @@ jobs:
   build-installer:
     name: Build MSI + NSIS (windows-latest)
     runs-on: windows-latest
+    timeout-minutes: 90
     permissions:
       contents: read
     env:
@@ -261,6 +263,7 @@ jobs:
   build-linux-bundles:
     name: Build Linux .deb + AppImage (ubuntu-22.04)
     runs-on: ubuntu-22.04
+    timeout-minutes: 90
     permissions:
       contents: read
     env:
@@ -317,6 +320,7 @@ jobs:
   build-macos-bundles:
     name: Build macOS .dmg (macos-latest)
     runs-on: macos-latest
+    timeout-minutes: 90
     permissions:
       contents: read
     env:
@@ -449,6 +453,7 @@ jobs:
           $outFile = "selftest.json"
           $p = Start-Process -FilePath $exe.FullName -ArgumentList @('whatsapp','self-test','--json') -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError "selftest.err"
           if (-not $p.WaitForExit(180000)) { try { $p.Kill($true) } catch {}; throw "TIMEOUT no self-test" }
+          if ($p.ExitCode -ne 0) { if (Test-Path "selftest.err") { Get-Content "selftest.err" }; throw "self-test saiu com codigo $($p.ExitCode)" }
           $json = (Get-Content $outFile -Raw)
           Write-Host "self-test: $json"
           $o = ($json -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1) | ConvertFrom-Json
@@ -477,6 +482,7 @@ jobs:
     name: Smoke Linux (.deb + AppImage, caminho com espaco, sem Node global)
     needs: build-linux-bundles
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     permissions:
       contents: read
     defaults:
@@ -557,6 +563,7 @@ jobs:
     name: Smoke macOS (.app do DMG, caminho com espaco, sem Node global)
     needs: build-macos-bundles
     runs-on: macos-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     defaults:
@@ -631,6 +638,7 @@ jobs:
     name: Update/Uninstall Linux (.deb v0.4.9 -> novo, sessao sobrevive)
     needs: build-linux-bundles
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     permissions:
       contents: read
     defaults:
@@ -684,6 +692,7 @@ jobs:
     name: Update/Uninstall macOS (.app v0.4.9 -> novo, sessao sobrevive)
     needs: build-macos-bundles
     runs-on: macos-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     defaults:
@@ -1006,6 +1015,7 @@ jobs:
           $outFile = "selftest.json"
           $sp = Start-Process -FilePath $exe.FullName -ArgumentList @('whatsapp','self-test','--json') -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError "selftest.err"
           if (-not $sp.WaitForExit(180000)) { try { $sp.Kill($true) } catch {}; throw "TIMEOUT no self-test" }
+          if ($sp.ExitCode -ne 0) { if (Test-Path "selftest.err") { Get-Content "selftest.err" }; throw "self-test saiu com codigo $($sp.ExitCode)" }
           $o = ((Get-Content $outFile -Raw) -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1) | ConvertFrom-Json
           if ($o.self_test -ne "ok" -or $o.node_origin -ne "privado") { throw "self-test pos-upgrade falhou: $($o | ConvertTo-Json -Compress)" }
           if (-not (Test-Path (Join-Path $ud "smoke-marker.txt"))) { throw "a sessao do usuario sumiu no upgrade" }
@@ -1013,6 +1023,7 @@ jobs:
 
           if ((Inst @('/x',$new,'/qn','/norestart','/l*v','u.log') 'u.log') -ne 0) { throw "desinstalar falhou" }
           if (Test-Path "$($exe.DirectoryName)\node\node.exe") { throw "node ainda presente apos desinstalar" }
+          if (Test-Path "$($exe.DirectoryName)\bridge-whatsapp") { throw "bridge-whatsapp ainda presente apos desinstalar" }
           if (-not (Test-Path (Join-Path $ud "smoke-marker.txt"))) { throw "sessao removida na desinstalacao" }
           Write-Host "UNINSTALL OK: node/ e bridge-whatsapp/ removidos, ~/.garraia/whatsapp preservado"
           exit 0
