@@ -1031,20 +1031,35 @@ sobreviva orfao:
   (EOF) e ela sai** (`bridge.mjs`). Isso cobre as tres plataformas de graca.
 
 **No app desktop**, a cadeia e app (Tauri) -> sidecar `garraia start` (gateway)
--> ponte Node. O `RunEvent::Exit` ja mata o sidecar na saida normal; para a
-morte abrupta do desktop, a casca poe o sidecar num Job Object
-`KILL_ON_JOB_CLOSE` (por PID, reusando a logica testada de
-`garraia-desktop-core::jobobject`). Decisao #1636: a logica do job vive no core
-sem Tauri (coberta pelos gates de CI); a casca so a aplica, em vez de migrar o
-lancamento do sidecar para o `supervise` do core — a casca Tauri esta fora dos
-gates de CI e a resolucao do sidecar pelo plugin shell do Tauri ja e robusta.
+-> ponte Node, e o par app->sidecar precisa da mesma garantia. O
+`RunEvent::Exit` ja mata o sidecar na saida normal; para a morte ABRUPTA do
+desktop cada plataforma tem o seu mecanismo:
+
+- **Windows:** a casca poe o sidecar num Job Object `KILL_ON_JOB_CLOSE` (por
+  PID, reusando a logica testada de `garraia-desktop-core::jobobject`). Quando
+  o app morre, o SO fecha o handle e a arvore do sidecar cai.
+- **Linux/macOS:** a casca lanca o sidecar com `garra start --exit-with-parent
+  <pid-do-app>`. O gateway vigia esse PID numa task de ~1 s
+  (`garraia_common::parent_watch`: `getppid()` mudou — a prova a prova de reuso
+  de PID — ou o PID sumiu) e, quando o app some, pede o encerramento gracioso
+  pelo caminho do SIGTERM — a ponte Node cai pelo caminho normal. **Flag e nao
+  env**, para o PID nao vazar para processos filhos; so vale em primeiro plano
+  (nunca com `-d`, que destaca do pai de proposito). No Windows a `garra`
+  ignora a flag (o Job Object cobre).
+
+Decisao #1636: a logica do Job Object e da vigia vivem em crates sem Tauri
+(`garraia-desktop-core`, `garraia-common`), cobertas pelos gates de CI; a casca
+so as aplica, em vez de migrar o lancamento do sidecar para o `supervise` do
+core — a casca Tauri esta fora dos gates de CI e a resolucao do sidecar pelo
+plugin shell do Tauri ja e robusta.
 
 Provas automatizadas (job `orphan-processes` do CI, em ubuntu/windows/macos,
 porque o job `test` padrao so executa testes no Linux): no Windows um teste
 sobe uma arvore pai->filho->neto, mata o pai com `TerminateProcess` e afirma
 que nenhum descendente sobrevive; no Unix um teste poe a arvore num grupo e
-confirma que o teardown a varre; e um `node --test` prova a saida da ponte em
-EOF do stdin.
+confirma que o teardown a varre; a vigia do pai tem um teste que mata o PID
+observado e afirma que o sidecar sai; e um `node --test` prova a saida da ponte
+em EOF do stdin.
 
 ## Troubleshooting
 

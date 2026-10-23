@@ -24,6 +24,7 @@ mod mcp_server;
 mod memory_cmd;
 mod migrate;
 mod migrate_workspace;
+mod parent_watch;
 mod repo_workflow;
 mod runs_cmd;
 #[cfg(unix)]
@@ -112,6 +113,14 @@ enum Commands {
         /// Enable voice mode (Chatterbox TTS)
         #[arg(long)]
         with_voice: bool,
+
+        /// Encerra o gateway quando o processo de PID <PID> (quem o lancou, ex.:
+        /// o app desktop) sumir. Evita que o sidecar fique orfao numa morte
+        /// abrupta do pai no Linux/macOS, onde nao ha equivalente do Job Object
+        /// do Windows. So vale em primeiro plano (nao com `-d`). Flag e nao env,
+        /// para o PID nao vazar para processos filhos. #1636.
+        #[arg(long = "exit-with-parent", value_name = "PID")]
+        exit_with_parent: Option<u32>,
     },
 
     /// Show the full GarraIA banner and what each command does
@@ -2397,6 +2406,7 @@ async fn async_main(
             host,
             port,
             with_voice,
+            exit_with_parent,
             ..
         } => {
             let mut config = config;
@@ -2427,6 +2437,14 @@ async fn async_main(
             // `garraia start` without -d): without it, `status` reported
             // "No daemon PID file found." while the gateway answered HTTP.
             let _pid_guard = PidFileGuard::write();
+            // #1636: liga a vigia do pai (foreground so). Quando o processo que
+            // lancou este gateway some — o app desktop morto de forma abrupta
+            // no Linux/macOS —, a vigia pede o encerramento gracioso (SIGTERM),
+            // e a ponte Node cai pelo caminho normal. No Windows e no-op (o Job
+            // Object da casca cobre o caso).
+            if let Some(parent_pid) = exit_with_parent {
+                parent_watch::spawn(parent_pid);
+            }
             let server = garraia_gateway::GatewayServer::new(config);
             // Plan 0024 (GAR-412): pipe the PrometheusHandle and
             // TelemetryConfig into the server. One consistent snapshot
@@ -3975,6 +3993,25 @@ mod tests {
         let (host, port) = parsed(&["garra", "start"]);
         assert_eq!(port, 3888, "fallback default port must be 3888");
         assert_eq!(host, "127.0.0.1", "fallback default host must be 127.0.0.1");
+    }
+
+    /// #1636: `--exit-with-parent <pid>` parseia para `Some(pid)`, e e `None`
+    /// quando ausente. E a flag que a casca do desktop passa ao sidecar.
+    #[test]
+    fn start_parseia_exit_with_parent() {
+        fn parsed(args: &[&str]) -> Option<u32> {
+            match Cli::try_parse_from(args).expect("parse").command {
+                Commands::Start {
+                    exit_with_parent, ..
+                } => exit_with_parent,
+                _ => panic!("expected Start subcommand"),
+            }
+        }
+        assert_eq!(parsed(&["garra", "start"]), None, "ausente = None");
+        assert_eq!(
+            parsed(&["garra", "start", "--exit-with-parent", "4242"]),
+            Some(4242)
+        );
     }
 
     /// L1 (smoke da v0.4.4): o descritor que o daemon herda como

@@ -955,6 +955,11 @@ jobs:
           cargo test -p garraia-desktop-core --lib jobobject -- --nocapture
           cargo test -p garraia-channels --features whatsapp-linked --test orphan_unix -- --nocapture
           cargo test -p garraia-channels --features whatsapp-linked --lib jobobject -- --nocapture
+          # Vigia do pai (`garra start --exit-with-parent`): o sidecar nao fica
+          # orfao no Linux/macOS numa morte abrupta do app. Logica pura + o
+          # teste de ponta a ponta (mata o PID vigiado, afirma que a vigia sai).
+          cargo test -p garraia-common --lib parent_watch -- --nocapture
+          cargo test -p garraia-common --test parent_watch -- --nocapture
 
   # Integração garraia-auth com test-support (plan 0354).
   #

@@ -48,16 +48,28 @@ pub fn launch(app: &AppHandle) -> GatewayHandle {
 
 pub fn spawn(app: &AppHandle, handle: GatewayHandle) {
     match app.shell().sidecar("garraia") {
-        Ok(cmd) => match cmd.args(["start"]).spawn() {
-            Ok((_, child)) => {
-                #[cfg(windows)]
-                contain_in_kill_on_close_job(&child);
-                *handle.lock().unwrap() = Some(child);
+        Ok(cmd) => {
+            // #1636: passa o PID deste app ao sidecar. No Linux/macOS, onde
+            // nao ha Job Object para o par app->sidecar, a `garra` vigia este
+            // PID e se encerra (graciosamente, derrubando a ponte Node) quando
+            // o app morre de forma abrupta. No Windows a `garra` ignora a flag
+            // (o Job Object acima ja cobre). Flag e nao env: nao vaza para os
+            // filhos do sidecar.
+            let parent_pid = std::process::id().to_string();
+            match cmd
+                .args(["start", "--exit-with-parent", &parent_pid])
+                .spawn()
+            {
+                Ok((_, child)) => {
+                    #[cfg(windows)]
+                    contain_in_kill_on_close_job(&child);
+                    *handle.lock().unwrap() = Some(child);
+                }
+                Err(e) => {
+                    eprintln!("[garra] gateway spawn failed: {e}");
+                }
             }
-            Err(e) => {
-                eprintln!("[garra] gateway spawn failed: {e}");
-            }
-        },
+        }
         Err(e) => {
             eprintln!("[garra] gateway sidecar not found: {e}");
         }

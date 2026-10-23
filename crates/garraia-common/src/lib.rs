@@ -5,6 +5,7 @@ pub mod fs_perms;
 pub mod handoff;
 pub mod message;
 pub mod metrics;
+pub mod parent_watch;
 pub mod process_hardening;
 pub mod safety_gate;
 #[cfg(feature = "ssrf")]
