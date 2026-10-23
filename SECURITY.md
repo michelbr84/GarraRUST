@@ -38,7 +38,7 @@ GarraIA is built with security as a core requirement:
   upgrade path for legacy hashes (transactional under `FOR NO KEY UPDATE`)
 * JWT HS256 access tokens with explicit algorithm-confusion guards; opaque refresh
   tokens fingerprinted with a separate HMAC-SHA256 secret
-* Multi-tenant isolation in `garraia-workspace`: 32 tables under FORCE RLS, plus
+* Multi-tenant isolation in `garraia-workspace`: 36 tables under FORCE RLS, plus
   dedicated `garraia_login` / `garraia_signup` Postgres roles fronted by typed
   `LoginPool` / `SignupPool` newtypes (raw `PgPool` access forbidden in auth paths)
 * Authentication required by default on the WebSocket gateway and the REST `/v1/*`

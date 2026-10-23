@@ -129,8 +129,8 @@ crates/
                         Boot gate (#1247, `boot_gate`): o mesmo `run_check` roda em todo `start`/`restart`/`start -d`; so `Error` da allowlist fechada `BLOQUEIA_O_BOOT` (hoje: TLS pela metade) recusa (exit 78; escotilha `GARRAIA_ALLOW_INVALID_CONFIG=1`, exatamente `1`).
   garraia-telemetry/  — OpenTelemetry + Prometheus baseline — feature-gated
   garraia-workspace/  — Postgres 16 + pgvector multi-tenant (Fase 3 schema completo).
-                        37 tabelas em 33 migrations; 32 sob FORCE RLS e 5 fora (users,
-                        roles, permissions, role_permissions, group_invites). Marcos:
+                        42 tabelas em 35 migrations; 36 sob FORCE RLS e 6 fora (users,
+                        roles, permissions, role_permissions, group_invites, plans). Marcos:
                         001 tenant roots (users/groups/identities/sessions/api_keys/
                         invites) · 002 RBAC + audit_events · 003 folders/files/
                         file_versions (compound FK, object_key UNIQUE, HMAC integrity)
@@ -139,8 +139,12 @@ crates/
                         wrap-up com NULLIF fail-closed · 008 role `garraia_login`
                         NOLOGIN BYPASSRLS · 010 role `garraia_signup` · 013 audit WITH
                         CHECK explícito · 014 `tus_uploads` (CHECK ≤ 5 GiB, índice
-                        parcial `expires_in_progress_idx`). Handle PII-safe via
-                        skip(config) + Debug redigido. ADRs 0003 e 0004.
+                        parcial `expires_in_progress_idx`) · 034 direitos do titular
+                        (email change + account deletion, SECURITY DEFINER purge) ·
+                        035 billing `plans` (catalogo global, sem RLS) +
+                        `subscriptions`/`invoices` (FORCE RLS, fatura imutavel, valor
+                        em centavos + ISO 4217, so schema — #1652/ADR 0026). Handle
+                        PII-safe via skip(config) + Debug redigido. ADRs 0003, 0004 e 0026.
   garraia-plugins/    — sandbox WASM inicial (wasmtime) — features adicionais na Fase 2.2
   garraia-voice/      — STT (Whisper) + TTS (Chatterbox/Hibiki/LM Studio
                         OpenAI-compativel). Adaptadores ElevenLabs e Kokoro
