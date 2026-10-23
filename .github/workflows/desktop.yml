@@ -660,3 +660,271 @@ jobs:
           [ ! -e "$appdest" ] || { echo "::error ::.app ainda presente apos desinstalar"; exit 1; }
           [ -f "$HOME/.garraia/whatsapp/smoke-marker.txt" ] || { echo "::error ::dado do usuario removido na desinstalacao"; exit 1; }
           echo "UNINSTALL OK: .app removido, ~/.garraia/whatsapp preservado"
+
+  # ---------------------------------------------------------------------------
+  # Inicializacao pelo desktop (#1636, fatia C + fatia D): lanca o APP instalado
+  # (GUI), espera o sidecar `garraia start` responder GET /api/health em
+  # 127.0.0.1:3888, mata o app de forma ABRUPTA e prova que o sidecar morre em
+  # <= 15 s (fatia D: Job Object no Windows, --exit-with-parent/parent-watch no
+  # Unix). timeout-minutes garante que nada fica pendurado. Se o runner nao subir
+  # a GUI, o passo falha com a evidencia (app.log + ps) para o roteiro manual.
+  desktop-launch-linux:
+    name: Desktop sobe o sidecar e morre junto (Linux, xvfb)
+    needs: build-linux-bundles
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download Linux bundles
+        uses: actions/download-artifact@v7
+        with:
+          name: garraia-desktop-linux-pr
+          path: bundles
+
+      - name: Instala o .deb, roda o app sob xvfb+dbus, /api/health, mata o app, sidecar morre
+        run: |
+          set -uo pipefail
+          sudo apt-get update -qq
+          # o .deb puxa as libs de runtime do Tauri (webkit2gtk etc.) como deps
+          sudo apt-get install -y ./bundles/garraia-desktop-linux-x86_64.deb xvfb dbus-x11
+
+          applog=/tmp/app.log
+          nohup dbus-run-session -- xvfb-run -a /usr/bin/garraia-desktop >"$applog" 2>&1 &
+          echo "app lancado (xvfb + dbus)"
+
+          ok=0
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:3888/api/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error ::/api/health nao respondeu em 90s"
+            echo "---- app.log ----"; cat "$applog" 2>/dev/null || true
+            ps -ef | grep -i garra | grep -v grep || true
+            exit 1
+          fi
+          echo "OK: o desktop subiu o sidecar e ele respondeu GET /api/health"
+
+          app_pid="$(pgrep -x garraia-desktop | head -1 || true)"
+          sc_pid="$(pgrep -f 'garraia start' | head -1 || true)"
+          echo "app_pid=$app_pid sidecar_pid=$sc_pid"
+          [ -n "$sc_pid" ] || { echo "::error ::sidecar 'garraia start' nao encontrado"; exit 1; }
+
+          # morte ABRUPTA do app (SIGKILL): nenhum RunEvent::Exit roda; o
+          # --exit-with-parent (parent-watch da fatia D) tem de derrubar o sidecar.
+          [ -n "$app_pid" ] && kill -9 "$app_pid" 2>/dev/null || true
+
+          dead=0
+          for i in $(seq 1 15); do
+            if ! kill -0 "$sc_pid" 2>/dev/null; then dead=1; break; fi
+            sleep 1
+          done
+          if [ "$dead" != 1 ]; then
+            echo "::error ::sidecar (PID $sc_pid) sobreviveu >15s a morte abrupta do app"
+            ps -ef | grep -i garra | grep -v grep || true
+            exit 1
+          fi
+          if curl -fsS http://127.0.0.1:3888/api/health >/dev/null 2>&1; then
+            echo "::error ::/api/health ainda responde apos matar o app"; exit 1
+          fi
+          echo "DESKTOP-LAUNCH LINUX OK: app subiu o sidecar; morte abrupta do app derrubou o sidecar em <=15s"
+
+  desktop-launch-windows:
+    name: Desktop sobe o sidecar e morre junto (Windows)
+    needs: build-installer
+    runs-on: windows-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Download Windows bundles
+        uses: actions/download-artifact@v7
+        with:
+          name: garraia-desktop-windows-pr
+          path: bundles
+
+      - name: Instala MSI, roda o app, /api/health, taskkill /F do app, sidecar morre
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msi = (Resolve-Path "bundles/garraia-desktop-windows-x86_64.msi").Path
+          $p = Start-Process msiexec.exe -ArgumentList @('/i',$msi,'/qn','/norestart','/l*v','install.log') -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(600000)) { try { $p.Kill($true) } catch {}; if (Test-Path install.log) { Get-Content install.log -Tail 60 }; throw "TIMEOUT instalando" }
+          if ($p.ExitCode -ne 0) { if (Test-Path install.log) { Get-Content install.log -Tail 60 }; throw "msiexec /i falhou ($($p.ExitCode))" }
+
+          $appExe = Get-ChildItem "C:\Program Files\garraia-desktop" -Recurse -Filter garraia-desktop.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $appExe) { throw "garraia-desktop.exe nao encontrado apos a instalacao" }
+          Start-Process -FilePath $appExe.FullName
+          Write-Host "app lancado: $($appExe.FullName)"
+
+          $ok = $false
+          for ($i=0; $i -lt 90; $i++) {
+            try { Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:3888/api/health" -TimeoutSec 3 | Out-Null; $ok = $true; break } catch { Start-Sleep 1 }
+          }
+          if (-not $ok) { throw "/api/health nao respondeu em 90s" }
+          Write-Host "OK: o desktop subiu o sidecar e ele respondeu GET /api/health"
+
+          $sc = Get-Process garraia -ErrorAction SilentlyContinue
+          if (-not $sc) { throw "sidecar 'garraia' nao esta rodando" }
+          Write-Host "sidecar PID(s): $($sc.Id -join ',')"
+
+          # morte ABRUPTA do app (simula crash): o Job Object KILL_ON_JOB_CLOSE da
+          # fatia D deve derrubar o sidecar (taskkill /IM so mata o app, nao o garraia).
+          taskkill /F /IM garraia-desktop.exe | Out-Host
+
+          $dead = $false
+          for ($i=0; $i -lt 15; $i++) {
+            if (-not (Get-Process garraia -ErrorAction SilentlyContinue)) { $dead = $true; break }
+            Start-Sleep 1
+          }
+          if (-not $dead) { throw "sidecar 'garraia' sobreviveu >15s a morte abrupta do app" }
+          $still = $true; try { Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:3888/api/health" -TimeoutSec 3 | Out-Null } catch { $still = $false }
+          if ($still) { throw "/api/health ainda responde apos matar o app" }
+          Write-Host "DESKTOP-LAUNCH WINDOWS OK: app subiu o sidecar; taskkill /F do app derrubou o sidecar em <=15s (Job Object)"
+
+  desktop-launch-macos:
+    name: Desktop sobe o sidecar e morre junto (macOS)
+    needs: build-macos-bundles
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download macOS bundles
+        uses: actions/download-artifact@v7
+        with:
+          name: garraia-desktop-macos-pr
+          path: bundles
+
+      - name: Instala o .app, roda via open -a, /api/health, mata o app, sidecar morre
+        run: |
+          set -uo pipefail
+          dmg="$(find bundles -maxdepth 1 -name '*.dmg' | head -1)"
+          [ -n "$dmg" ] || { echo "::error ::DMG ausente"; exit 1; }
+          mnt="$(mktemp -d)"
+          hdiutil attach "$dmg" -nobrowse -mountpoint "$mnt" >/dev/null
+          app="$(find "$mnt" -maxdepth 1 -name '*.app' | head -1)"
+          dest="/Applications/garraia-desktop.app"
+          sudo rm -rf "$dest"; sudo cp -R "$app" "$dest"
+          hdiutil detach "$mnt" >/dev/null || true
+
+          applog=/tmp/app.log
+          if ! open -a "$dest"; then
+            echo "::warning ::open -a falhou; tentando o binario direto"
+            "$dest/Contents/MacOS/garraia-desktop" >"$applog" 2>&1 &
+          fi
+          ok=0
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:3888/api/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error ::/api/health nao respondeu em 90s (runner pode bloquear GUI)"
+            echo "---- app.log ----"; cat "$applog" 2>/dev/null || true
+            ps -ef | grep -i garra | grep -v grep || true
+            exit 1
+          fi
+          echo "OK: o desktop subiu o sidecar e ele respondeu GET /api/health"
+
+          sc_pid="$(pgrep -f 'garraia start' | head -1 || true)"
+          [ -n "$sc_pid" ] || { echo "::error ::sidecar 'garraia start' nao encontrado"; exit 1; }
+          # morte ABRUPTA do app: parent-watch (fatia D) tem de derrubar o sidecar
+          pkill -9 -x garraia-desktop || true
+          dead=0
+          for i in $(seq 1 15); do
+            if ! kill -0 "$sc_pid" 2>/dev/null; then dead=1; break; fi
+            sleep 1
+          done
+          if [ "$dead" != 1 ]; then
+            echo "::error ::sidecar (PID $sc_pid) sobreviveu >15s a morte abrupta do app"
+            ps -ef | grep -i garra | grep -v grep || true
+            exit 1
+          fi
+          echo "DESKTOP-LAUNCH MACOS OK: app subiu o sidecar; morte abrupta do app derrubou o sidecar em <=15s"
+
+  # ---------------------------------------------------------------------------
+  # Atualizacao REAL do MSI (#1636, fatia C): a `main` esta em 0.4.9, e um major
+  # upgrade do WiX exige ProductVersion maior. Este job faz um bump SO no job
+  # (sed no Cargo.toml, sem commitar) para 0.4.10, compila o MSI novo, instala a
+  # v0.4.9 PUBLICADA, marca a sessao, instala o 0.4.10 por cima (upgrade real),
+  # roda o self-test (tem de virar origin=privado), prova que a sessao sobrevive
+  # e desinstala. Pesado (compila o desktop), mas e a unica forma de provar o
+  # upgrade real sem subir a versao da branch.
+  update-windows:
+    name: Update/Uninstall Windows (MSI v0.4.9 -> 0.4.10, sessao sobrevive)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Bump de versao (so no job, sem commit) 0.4.9 -> 0.4.10
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i '0,/^version = "0.4.9"$/s//version = "0.4.10"/' Cargo.toml
+          echo "versao do workspace agora:"; grep -nE '^version = ' Cargo.toml | head -1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build MSI 0.4.10
+        shell: pwsh
+        run: ./scripts/build-installer.ps1 -StageDir "${env:RUNNER_TEMP}\bundles"
+
+      - name: Instala v0.4.9, marca sessao, atualiza para 0.4.10, self-test, desinstala
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $new = "$env:RUNNER_TEMP\bundles\garraia-desktop-windows-x86_64.msi"
+          if (-not (Test-Path $new)) { throw "MSI novo (0.4.10) nao foi gerado" }
+          Write-Host "TAMANHO MSI 0.4.10: $((Get-Item $new).Length) bytes"
+          $old = "$env:RUNNER_TEMP\old-v049.msi"
+          Invoke-WebRequest -UseBasicParsing "https://github.com/michelbr84/GarraRUST/releases/download/v0.4.9/garraia-desktop-windows-x86_64.msi" -OutFile $old
+
+          function Inst($args,$log) {
+            $p = Start-Process msiexec.exe -ArgumentList $args -PassThru -NoNewWindow
+            if (-not $p.WaitForExit(600000)) { try { $p.Kill($true) } catch {}; if (Test-Path $log) { Get-Content $log -Tail 60 }; throw "TIMEOUT: msiexec $($args -join ' ')" }
+            return $p.ExitCode
+          }
+
+          if ((Inst @('/i',$old,'/qn','/norestart','/l*v','i1.log') 'i1.log') -ne 0) { if (Test-Path i1.log) { Get-Content i1.log -Tail 40 }; throw "instalar v0.4.9 falhou" }
+          $ud = Join-Path $env:USERPROFILE ".garraia\whatsapp"
+          New-Item -ItemType Directory -Force -Path $ud | Out-Null
+          Set-Content -Path (Join-Path $ud "smoke-marker.txt") -Value "sessao-vinculada"
+
+          # upgrade real (0.4.10 > 0.4.9 dispara o major upgrade do WiX)
+          if ((Inst @('/i',$new,'/qn','/norestart','/l*v','i2.log') 'i2.log') -ne 0) { if (Test-Path i2.log) { Get-Content i2.log -Tail 40 }; throw "upgrade para 0.4.10 falhou" }
+
+          $exe = Get-ChildItem "C:\Program Files\garraia-desktop" -Recurse -Filter garraia.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw "sidecar ausente apos o upgrade" }
+          if (-not (Test-Path "$($exe.DirectoryName)\node\node.exe")) { throw "node privado ausente apos o upgrade" }
+
+          $clean = ($env:PATH -split ';' | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'node.exe')) }) -join ';'
+          $env:PATH = $clean; $env:GARRAIA_NODE_BIN = ""
+          $outFile = "selftest.json"
+          $sp = Start-Process -FilePath $exe.FullName -ArgumentList @('whatsapp','self-test','--json') -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError "selftest.err"
+          if (-not $sp.WaitForExit(180000)) { try { $sp.Kill($true) } catch {}; throw "TIMEOUT no self-test" }
+          $o = ((Get-Content $outFile -Raw) -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1) | ConvertFrom-Json
+          if ($o.self_test -ne "ok" -or $o.node_origin -ne "privado") { throw "self-test pos-upgrade falhou: $($o | ConvertTo-Json -Compress)" }
+          if (-not (Test-Path (Join-Path $ud "smoke-marker.txt"))) { throw "a sessao do usuario sumiu no upgrade" }
+          Write-Host "UPGRADE OK: 0.4.9 -> 0.4.10, origin=privado, sessao do usuario preservada"
+
+          if ((Inst @('/x',$new,'/qn','/norestart','/l*v','u.log') 'u.log') -ne 0) { throw "desinstalar falhou" }
+          if (Test-Path "$($exe.DirectoryName)\node\node.exe") { throw "node ainda presente apos desinstalar" }
+          if (-not (Test-Path (Join-Path $ud "smoke-marker.txt"))) { throw "sessao removida na desinstalacao" }
+          Write-Host "UNINSTALL OK: node/ e bridge-whatsapp/ removidos, ~/.garraia/whatsapp preservado"

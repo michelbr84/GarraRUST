@@ -114,23 +114,25 @@ cai no default `C:\Program Files\...` — caminho com espaço), prova o layout e
 self-test, depois **desinstala** (`msiexec /x /qn`) e checa que `node/` e
 `bridge-whatsapp/` somem e que `~/.garraia/whatsapp` fica.
 
-Os jobs `update-linux` e `update-macos` cobrem **atualização + desinstalação**:
-instalam o instalador publicado da **v0.4.9** (sem o bundle), criam um marcador
+**Atualização + desinstalação** (`update-linux`, `update-macos`, `update-windows`):
+instalam o instalador **publicado da v0.4.9** (sem o bundle), criam um marcador
 em `~/.garraia/whatsapp`, instalam o novo por cima, rodam o self-test de novo
 (tem de virar `origin=privado`) e provam que o marcador **sobrevive**; depois
-desinstalam e provam que o pacote some e o dado do usuário fica.
+desinstalam e provam que o pacote some (`node/`, `bridge-whatsapp/`) e o dado do
+usuário fica. No Windows, como a `main` está em 0.4.9 e um major-upgrade do WiX
+exige `ProductVersion` maior, o job faz um bump só no CI (0.4.9 → 0.4.10, sem
+commit), compila o MSI e testa o upgrade real por cima da v0.4.9 publicada.
+
+**Inicialização pelo desktop** (`desktop-launch-{linux,windows,macos}`): lançam o
+app instalado (Linux sob `xvfb`+`dbus`, Windows headed, macOS `open -a`), esperam
+o sidecar `garraia start` responder `GET http://127.0.0.1:3888/api/health`,
+**matam o app de forma abrupta** e provam que o sidecar morre em ≤ 15 s — pela
+rede da fatia D (Job Object `KILL_ON_JOB_CLOSE` no Windows, `--exit-with-parent`
+/ parent-watch no Linux/macOS). Se um runner não subir a GUI, o job falha com a
+evidência (`app.log` + `ps`) para o roteiro manual.
 
 ### Fora do escopo automatizado (hoje)
 
-- **Upgrade-sobre-o-anterior do MSI (Windows)**: a `main` ainda está na versão
-  0.4.9, e um major-upgrade real do WiX exige `ProductVersion` maior (bump de
-  versão). O `smoke-windows` já cobre instalar-limpo + self-test + desinstalar +
-  dado do usuário preservado; o upgrade-sobre-o-anterior volta ao CI quando a
-  versão subir. Em Linux (`dpkg -i`) e macOS (cópia do `.app`) o upgrade é
-  determinístico mesmo com versão igual e **é** testado.
-- **Inicialização pela GUI do desktop** (o app Tauri sobe, lança o sidecar, o
-  gateway responde `/api/health` e o sidecar morre ao fechar o app): depende de
-  sessão gráfica; nos runners headless é instável e não é rodado como gate.
 - **Pareamento real do WhatsApp**: exige um telefone e leitura de QR —
   intervenção externa. O `self-test` prova que a ponte **carrega**, não que
   pareia; os dois nunca são confundidos.
