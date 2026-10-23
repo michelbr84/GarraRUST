@@ -1456,6 +1456,14 @@ pub struct SelfTestReport {
 /// ([`apply_child_env`]): o filho nasce com a allowlist R3, nunca com os
 /// segredos deste processo. Falha (codigo != 0, dependencia que nao carrega,
 /// saida ilegivel) vira [`BridgeError::SelfTest`], com o detalhe ja redigido.
+///
+/// **Sem a contencao de processo do #1636** (Job Object / grupo de processos)
+/// de proposito, como o [`npm_ci`]: ao contrario da ponte longeva — que segura
+/// a sessao do WhatsApp indefinidamente e e o alvo de orfao persistente —, o
+/// `--self-test` importa as deps, imprime o veredito e sai sozinho (stdin e
+/// `null`, nao ha laco de stdin). O `kill_on_drop` e o `SELF_TEST_TIMEOUT`
+/// bastam: a janela de um orfao numa morte abrupta do pai aqui e de 1-2 s e se
+/// fecha sozinha.
 pub async fn self_test(node: &Path, dir: &Path) -> Result<SelfTestReport, BridgeError> {
     let mut cmd = Command::new(node);
     cmd.arg("bridge.mjs")

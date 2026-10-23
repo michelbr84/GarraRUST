@@ -1222,6 +1222,17 @@ jobs:
           name: Release ${{ steps.version.outputs.VERSION }}
           draft: false
           prerelease: ${{ contains(steps.version.outputs.VERSION, 'alpha') || contains(steps.version.outputs.VERSION, 'beta') || contains(steps.version.outputs.VERSION, 'rc') }}
+          # O `prerelease: true` acima ja exclui o RC de /releases/latest — o
+          # GitHub nunca aponta a "latest" para um prerelease. `make_latest` e
+          # um campo SEPARADO na API (o selo "Latest release"): aqui ele vira
+          # a garantia EXPLICITA, presa a mesma condicao, para o resultado nao
+          # depender so desse default implicito. Com os dois, um RC
+          # (-alpha/-beta/-rc) nao ganha o selo "Latest" nem e servido por
+          # /releases/latest, entao o `garra update` (RELEASES_API fixo em
+          # /releases/latest, crates/garraia-cli/src/update.rs:9) e o updater
+          # Tauri (releases/latest/download/latest.json) continuam na estavel
+          # anterior. Estavel: 'true' (o default do GitHub, agora explicito).
+          make_latest: ${{ (contains(steps.version.outputs.VERSION, 'alpha') || contains(steps.version.outputs.VERSION, 'beta') || contains(steps.version.outputs.VERSION, 'rc')) && 'false' || 'true' }}
           body_path: RELEASE_NOTES.md
           generate_release_notes: true
           # `softprops/action-gh-release` uses glob expansion on this list, so
