@@ -141,6 +141,12 @@ crates/
                         CHECK explícito · 014 `tus_uploads` (CHECK ≤ 5 GiB, índice
                         parcial `expires_in_progress_idx`). Handle PII-safe via
                         skip(config) + Debug redigido. ADRs 0003 e 0004.
+                        **Grants/ADP:** a `ALTER DEFAULT PRIVILEGES` da migration
+                        007 dá CRUD completo a `garraia_app` em TODA tabela criada
+                        depois dela; `GRANT` seletivo é aditivo e não restringe,
+                        então privilégio menor que CRUD exige `REVOKE` explícito na
+                        mesma migration (migration 036 revogou o excesso vazado em
+                        9 tabelas; o teste de grants em `migration_smoke.rs` é o gate).
   garraia-plugins/    — sandbox WASM inicial (wasmtime) — features adicionais na Fase 2.2
   garraia-voice/      — STT (Whisper) + TTS (Chatterbox/Hibiki/LM Studio
                         OpenAI-compativel). Adaptadores ElevenLabs e Kokoro
