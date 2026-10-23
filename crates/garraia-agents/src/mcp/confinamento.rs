@@ -59,8 +59,9 @@ pub const LIST_ALLOWED_DIRECTORIES: &str = "list_allowed_directories";
 /// chamada vem dele (e so dele), uma operacao fora de [`OPERACOES_COM_CAMINHO`]
 /// e recusada fail-closed em vez de passar: ver `e_servidor_filesystem` em
 /// [`confinar_argumentos`]. Repetido do `FILESYSTEM_PACKAGE` do gateway
-/// (crates diferentes, sem dependencia entre elas), como ja faz a nota de
-/// versao em `persistence.rs`.
+/// porque a dependencia so existe num sentido — `garraia-gateway` depende de
+/// `garraia-agents`, nunca o contrario —, como ja faz a nota de versao em
+/// `persistence.rs`.
 pub const PACOTE_FILESYSTEM: &str = "@modelcontextprotocol/server-filesystem";
 
 /// O desfecho de [`confinar_argumentos`].

@@ -2074,6 +2074,64 @@ mod tests {
         }
     }
 
+    /// #1482: `servidor_e_filesystem` reconhece o
+    /// `@modelcontextprotocol/server-filesystem` — e so ele — para o jail
+    /// fail-closed. Table-driven, roda no CI sem E2E (nao sobe servidor).
+    #[test]
+    fn servidor_e_filesystem_reconhece_o_pacote_e_so_ele() {
+        use super::servidor_e_filesystem;
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let fs = "@modelcontextprotocol/server-filesystem";
+
+        // npx + pacote, nas formas que o provisionamento e o usuario escrevem.
+        assert!(servidor_e_filesystem(
+            "npx",
+            &a(&["-y", &format!("{fs}@2.0.0"), "/r"])
+        ));
+        assert!(servidor_e_filesystem(
+            "npx",
+            &a(&["--yes", "-p", fs, "mcp-server-filesystem"])
+        ));
+        assert!(servidor_e_filesystem("npx.cmd", &a(&["-y", fs, "/r"])));
+        assert!(servidor_e_filesystem(
+            "/usr/local/bin/npx",
+            &a(&["-y", &format!("{fs}@2.0.0"), "/r"])
+        ));
+
+        // Binario global instalado pelo pacote, com e sem extensao, e com path.
+        assert!(servidor_e_filesystem("mcp-server-filesystem", &[]));
+        assert!(servidor_e_filesystem("mcp-server-filesystem.exe", &[]));
+        assert!(servidor_e_filesystem("/opt/bin/mcp-server-filesystem", &[]));
+
+        // Outro pacote npx, comando qualquer, ou nome parecido: NAO e o fs.
+        assert!(!servidor_e_filesystem(
+            "npx",
+            &a(&["-y", "@modelcontextprotocol/server-github"])
+        ));
+        assert!(!servidor_e_filesystem(
+            "python3",
+            &a(&["servidor.py", "/r"])
+        ));
+        assert!(!servidor_e_filesystem("node", &a(&["meu-server.js"])));
+        assert!(!servidor_e_filesystem(
+            "npx",
+            &a(&["-y", "@modelcontextprotocol/server-filesystem-x"])
+        ));
+    }
+
+    /// Conexao HTTP nunca e o servidor filesystem (ele e stdio): o jail nao
+    /// liga o fail-closed para ela.
+    #[cfg(feature = "mcp-http")]
+    #[test]
+    fn servidor_filesystem_via_http_e_sempre_false() {
+        use super::ConnectionParams;
+        let http = ConnectionParams::Http {
+            url: "https://exemplo.test/mcp".to_string(),
+            timeout_secs: 30,
+        };
+        assert!(!http.e_servidor_filesystem());
+    }
+
     use super::{RestartState, is_tool_allowed, validate_mcp_url};
 
     /// Review MCP-2/MCP-6: every HTTP connect updates the failure record —

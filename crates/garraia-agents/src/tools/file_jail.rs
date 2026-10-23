@@ -649,6 +649,26 @@ mod tests {
         );
     }
 
+    /// #1482: a tool de filesystem nao mapeada tem frase propria, distinta
+    /// das demais recusas, e — como todas — nao carrega caminho.
+    #[test]
+    fn ferramenta_filesystem_nao_mapeada_tem_frase_propria_sem_caminho() {
+        let msg = Denial::FerramentaFilesystemNaoMapeada.message();
+        assert_eq!(msg, UNMAPPED_FS_TOOL_MESSAGE);
+        assert!(msg.contains("filesystem"), "{msg}");
+        assert_ne!(msg, DENIAL_MESSAGE);
+        assert_ne!(msg, NO_ROOTS_MESSAGE);
+        // Nao vaza caminho: nem separador unix nem windows.
+        assert!(!msg.contains('/'), "{msg}");
+        assert!(!msg.contains('\\'), "{msg}");
+        // Display e From<Denial> batem com a mensagem.
+        assert_eq!(Denial::FerramentaFilesystemNaoMapeada.to_string(), msg);
+        assert_eq!(
+            garraia_common::Error::from(Denial::FerramentaFilesystemNaoMapeada).to_string(),
+            garraia_common::Error::Security(msg.to_string()).to_string()
+        );
+    }
+
     /// E ela nao carrega caminho nem raiz.
     #[test]
     fn a_mensagem_nao_vaza_caminho() {
