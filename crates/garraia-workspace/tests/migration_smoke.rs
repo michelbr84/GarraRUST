@@ -2659,5 +2659,130 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         "cenário 30f: canceled subscription -> 'free'"
     );
 
+    // ── Migration 036 — REVOKE do excesso de privilegio vazado pela ADP ────
+    //
+    // A ADP da migration 007 (linhas 76-77) concede SELECT/INSERT/UPDATE/DELETE
+    // a garraia_app em TODA tabela criada depois dela. Varias migrations
+    // declararam, no GRANT seletivo, um conjunto MENOR — mas GRANT e aditivo e
+    // nao restringe, entao o privilegio extra sobrevivia. A migration 036
+    // revoga o excesso. Este bloco prova no catalogo (has_table_privilege) que
+    // o excesso sumiu e que o minimo necessario (SELECT/INSERT + o privilegio
+    // de mutacao legitimo de cada tabela) permanece. Sem a 036 cada assert
+    // `!still_has` abaixo falha, porque a ADP tinha concedido o privilegio.
+
+    // (tabela, privilegios que DEVEM ter sumido para garraia_app)
+    let revoked: &[(&str, &[&str])] = &[
+        ("task_attachments", &["UPDATE"]),
+        ("message_attachments", &["UPDATE"]),
+        ("message_reactions", &["UPDATE"]),
+        ("message_mentions", &["UPDATE"]),
+        ("doc_pages", &["DELETE"]),
+        ("doc_page_versions", &["UPDATE", "DELETE"]),
+        ("doc_page_mentions", &["UPDATE"]),
+        ("user_email_change_requests", &["DELETE"]),
+        ("account_deletion_requests", &["UPDATE", "DELETE"]),
+    ];
+    for (table, privs) in revoked {
+        for priv_ in *privs {
+            let still_has: bool =
+                sqlx::query_scalar("SELECT has_table_privilege('garraia_app', $1, $2)")
+                    .bind(table)
+                    .bind(priv_)
+                    .fetch_one(workspace.pool())
+                    .await?;
+            assert!(
+                !still_has,
+                "migration 036: garraia_app NAO pode ter {priv_} em {table} (vazou pela ADP da 007)"
+            );
+        }
+        // SELECT e INSERT permanecem em todas as tabelas acima.
+        for keep in &["SELECT", "INSERT"] {
+            let granted: bool =
+                sqlx::query_scalar("SELECT has_table_privilege('garraia_app', $1, $2)")
+                    .bind(table)
+                    .bind(keep)
+                    .fetch_one(workspace.pool())
+                    .await?;
+            assert!(
+                granted,
+                "migration 036: garraia_app deve manter {keep} em {table}"
+            );
+        }
+    }
+
+    // O REVOKE e cirurgico: o privilegio de mutacao que o GRANT original de
+    // cada migration listou continua. (doc_page_versions e
+    // account_deletion_requests nao tem extra alem de SELECT/INSERT.)
+    let kept: &[(&str, &str)] = &[
+        ("task_attachments", "DELETE"),
+        ("message_attachments", "DELETE"),
+        ("message_reactions", "DELETE"),
+        ("message_mentions", "DELETE"),
+        ("doc_pages", "UPDATE"),
+        ("doc_page_mentions", "DELETE"),
+        ("user_email_change_requests", "UPDATE"),
+    ];
+    for (table, priv_) in kept {
+        let granted: bool = sqlx::query_scalar("SELECT has_table_privilege('garraia_app', $1, $2)")
+            .bind(table)
+            .bind(priv_)
+            .fetch_one(workspace.pool())
+            .await?;
+        assert!(
+            granted,
+            "migration 036: garraia_app deve manter {priv_} em {table} (grant seletivo original)"
+        );
+    }
+
+    // Prova de nivel DML no caso com peso de seguranca
+    // (account_deletion_requests): com a conta `user_id` tendo um pedido
+    // pendente, um handler no escopo do PROPRIO titular (RLS owner-only
+    // satisfeita) nao pode marcar 'completed' nem apagar o pedido pelo pool
+    // garraia_app. Antes da 036 o UPDATE passava (ADP concedia UPDATE e a RLS
+    // deixava a propria linha visivel) — exatamente o buraco fechado aqui: um
+    // pedido concluido SEM purge, ou cancelado fora do fluxo SECURITY DEFINER.
+    sqlx::query(
+        "INSERT INTO account_deletion_requests (user_id, purge_after) \
+         VALUES ($1, now() + interval '30 days')",
+    )
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await?;
+    {
+        let mut tx = rls_scope(workspace.pool(), None, Some(user_id)).await?;
+        let blocked = sqlx::query(
+            "UPDATE account_deletion_requests SET status = 'completed', completed_at = now() \
+             WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .expect_err("migration 036: garraia_app NAO pode UPDATE account_deletion_requests");
+        assert_eq!(
+            blocked
+                .as_database_error()
+                .and_then(|e| e.code().map(|c| c.into_owned())),
+            Some("42501".to_string()),
+            "esperava 42501 (insufficient_privilege) no UPDATE de account_deletion_requests por garraia_app"
+        );
+        tx.rollback().await?;
+    }
+    {
+        let mut tx = rls_scope(workspace.pool(), None, Some(user_id)).await?;
+        let blocked = sqlx::query("DELETE FROM account_deletion_requests WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .expect_err("migration 036: garraia_app NAO pode DELETE account_deletion_requests");
+        assert_eq!(
+            blocked
+                .as_database_error()
+                .and_then(|e| e.code().map(|c| c.into_owned())),
+            Some("42501".to_string()),
+            "esperava 42501 (insufficient_privilege) no DELETE de account_deletion_requests por garraia_app"
+        );
+        tx.rollback().await?;
+    }
+
     Ok(())
 }

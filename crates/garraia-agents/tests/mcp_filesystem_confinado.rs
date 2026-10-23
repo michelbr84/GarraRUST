@@ -16,7 +16,7 @@ use garraia_agents::McpManager;
 use garraia_agents::tools::{FileJail, FileJailDenial, Tool, ToolContext};
 
 /// A mesma versao que `garraia-gateway::mcp::persistence` fixa.
-const PACOTE: &str = "@modelcontextprotocol/server-filesystem@2026.8.31";
+const PACOTE: &str = "@modelcontextprotocol/server-filesystem@2.0.0";
 
 fn ctx(sessao: &str, working_dir: &std::path::Path) -> ToolContext {
     ToolContext {

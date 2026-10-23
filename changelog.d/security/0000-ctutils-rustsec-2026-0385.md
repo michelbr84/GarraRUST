@@ -1,0 +1,1 @@
+- Atualiza `ctutils` 0.4.2 -> 0.4.5 no `Cargo.lock` (RUSTSEC-2026-0385: geracao de mascara e comparacoes de `u128` sem tempo constante). Entra por `digest` 0.11, usado por `argon2`/`blake2` (hash de senha) e `hmac`. Sem mudanca de codigo.

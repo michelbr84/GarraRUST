@@ -72,7 +72,7 @@ mapeada ao seu estado atual com pointer de evidência. Quando o status é
 
 | # | Reivindicação §1 | Status hoje | Evidência |
 |---|---|---|---|
-| 1 | Sem Postgres (só SQLite) | ✅ **Done** | `crates/garraia-workspace/migrations/` tem 35 migrations, 42 tabelas (36 sob FORCE RLS), roles BYPASSRLS dedicados (`garraia_login` / `garraia_signup`) + role de app `garraia_app` sujeito a FORCE RLS. ADR 0003 Accepted 2026-04-13. |
+| 1 | Sem Postgres (só SQLite) | ✅ **Done** | `crates/garraia-workspace/migrations/` tem 36 migrations, 42 tabelas (36 sob FORCE RLS), roles BYPASSRLS dedicados (`garraia_login` / `garraia_signup`) + role de app `garraia_app` sujeito a FORCE RLS. ADR 0003 Accepted 2026-04-13. |
 | 2 | Sem object storage | ✅ **Done** | `crates/garraia-storage/{local_fs,s3_compat}.rs` (GAR-394) + tus 1.0 ledger em `tus_uploads` (migration 014, GAR-395 mergeado em `96f5c03`). ADR 0004 Accepted. |
 | 3 | Sem grupos/membros/RBAC | ✅ **Done** | Migrations 001 (users/groups), 002 (63 role_permissions + RBAC table-driven), 011-013, 018 (RLS FORCE em groups+members). Matriz de 81 cenários cross-tenant (GAR-392). |
 | 4 | Sem embeddings locais nem busca vetorial | ⚠️ **Parcial → scaffold em 2026-05-18** | Trait surface + types entregues hoje via PR #396 (GAR-372, plan 0145). `PgVectorStore` real sobre `sqlx` contra `memory_embeddings` (migration 005 já tem `vector(768)` + HNSW cosine) é o próximo slice. Modelo real (mxbai) também é slice futuro. |
