@@ -126,11 +126,15 @@ pub fn sanitizar_nome(nome: &str) -> String {
 /// substitui, so adianta o erro e padroniza o formato.
 pub fn normalizar_numero(input: &str) -> Result<String, String> {
     let digitos: String = input.chars().filter(|c| c.is_ascii_digit()).collect();
-    // E.164: no maximo 15 digitos; um numero com DDI real tem pelo menos ~8.
-    if digitos.len() < 8 || digitos.len() > 15 {
+    // MESMA faixa que o CLI `whatsapp allow` / o portao aceitam: 6 a 15 digitos
+    // (E.164; Niue e Tokelau tem 7 — ver `acesso.rs` e
+    // `whatsapp_linked_numero::normalizar_numero`). Usar um piso diferente aqui
+    // recusaria um numero que o CLI gravaria, ou mandaria ao CLI um que ele
+    // recusa — este passo so adianta o erro e padroniza, nunca diverge da regra.
+    if digitos.len() < 6 || digitos.len() > 15 {
         return Err(format!(
             "numero invalido: use o formato com codigo do pais, ex.: +55 11 99999-8888 \
-(tem de ter entre 8 e 15 digitos, veio com {})",
+(tem de ter entre 6 e 15 digitos, veio com {})",
             digitos.len()
         ));
     }
@@ -922,7 +926,10 @@ mod tests {
             normalizar_numero("(55) 11 98888 0000").unwrap(),
             "+5511988880000"
         );
-        // Curto demais, longo demais e vazio sao recusados.
+        // Piso de 6 digitos, igual ao CLI (Niue/Tokelau tem 7): 6 passa, 5 nao.
+        assert_eq!(normalizar_numero("683 1234").unwrap(), "+6831234");
+        assert_eq!(normalizar_numero("123456").unwrap(), "+123456");
+        // Curto demais (< 6), longo demais (> 15) e vazio sao recusados.
         for ruim in ["", "123", "12345", "0123456789012345678", "abc", "+"] {
             assert!(
                 normalizar_numero(ruim).is_err(),

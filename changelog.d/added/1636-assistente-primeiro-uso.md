@@ -19,7 +19,7 @@
   silencio. A persona (nome saneado, estilo, idioma pt-BR por padrao) vira
   `agent.system_prompt` pelo novo `ConfigLoader::set_agent_system_prompt`. O
   `concluido` so e gravado — e o gateway so reinicia — apos todos os passos
-  saírem com exit 0.
+  sairem com exit 0.
 - **Endurecimento da webview do desktop (#1636, fatia 3).** CSP restritiva no
   `tauri.conf.json` (`default-src 'self'; script-src 'self'; style-src 'self'
   'unsafe-inline'; ...`): todas as telas do desktop passaram a carregar o JS por

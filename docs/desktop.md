@@ -255,6 +255,16 @@ jobs irmãos.
    lá. Para trocar: escolha o modo, marque a confirmação (próprio) ou informe o
    número (dedicado) e clique **Aplicar modo** — o status mostra "o modo foi
    atualizado". "Refazer pareamento" reabre o wizard.
+8. **Telas antigas sob a CSP nova** (F3: scripts externos + `script-src 'self'`):
+   confirme que nada regrediu —
+   - **Alt+G** abre/fecha a barra do papagaio (overlay) e o input responde;
+   - o **menu da bandeja** funciona (ex.: alternar voz, abrir Settings/Chat Bar);
+   - **Ctrl+Space** abre a Chat Bar e uma pergunta recebe resposta;
+   - **Settings** mostra a versão e o botão **Check for Updates** responde.
+
+   Resultado esperado: tudo funciona como antes, **sem erro** no console da
+   webview (uma CSP mal configurada apareceria como script bloqueado / tela
+   morta). Se algo não responder, é sinal de CSP — reporte.
 
 Em nenhum passo foi preciso abrir terminal. Se quiser conferir o
 "sem-terminal" por fora: `onboarding-shown.marker` em `app_config_dir()`, a seção

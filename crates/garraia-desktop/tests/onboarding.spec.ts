@@ -39,9 +39,9 @@ async function instalarTauriFalso(page: Page) {
             return Promise.resolve({ primeiro_uso: true, modo: null, concluido: false });
           }
           if (cmd === 'onboarding_validar_numero') {
-            // Mimetiza o core: digitos (8..15) viram +digitos; senao rejeita.
+            // Mimetiza o core: digitos (6..15) viram +digitos; senao rejeita.
             const digits = String((args as { numero?: string })?.numero ?? '').replace(/\D/g, '');
-            return digits.length >= 8 && digits.length <= 15
+            return digits.length >= 6 && digits.length <= 15
               ? Promise.resolve('+' + digits)
               : Promise.reject('numero invalido');
           }
@@ -165,9 +165,9 @@ test('modo dedicado valida e autoriza o numero pessoal', async ({ page }) => {
 test('numero pessoal invalido e recusado antes de parear', async ({ page }) => {
   await page.getByTestId('btn-comecar').click();
   await page.getByTestId('btn-modo-dedicado').click();
-  // 7 digitos: passa o gate de comprimento da tela, mas o validador E.164
-  // (8..15 digitos) recusa — o erro aparece antes de qualquer pareamento.
-  await page.getByTestId('numero-pessoal').fill('1234567');
+  // 18 digitos: passa o gate de comprimento da tela, mas o validador E.164
+  // (6..15 digitos) recusa — o erro aparece antes de qualquer pareamento.
+  await page.getByTestId('numero-pessoal').fill('123456789012345678');
   await page.getByTestId('btn-modo-continuar').click();
 
   await expect(page.getByTestId('modo-erro')).toBeVisible();
