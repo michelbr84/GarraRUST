@@ -736,6 +736,61 @@ export function startedEvent() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Autoteste (#1636)
+// ---------------------------------------------------------------------------
+
+/**
+ * Dependencias de EXECUCAO que a ponte carrega. `sharp` e peer do Baileys e
+ * traz binario nativo por plataforma — e o que mais quebra numa arvore
+ * empacotada, entao entra no autoteste. Os peers opcionais (jimp,
+ * link-preview-js, audio-decode) ficam de fora: podem nao estar instalados.
+ */
+export const SELF_TEST_DEPS = ['@whiskeysockets/baileys', 'pino', 'sharp'];
+
+/**
+ * Versao de uma dependencia, lida direto do `node_modules` ao lado desta ponte.
+ *
+ * `fs.readFileSync` em vez de `require.resolve(`${name}/package.json`)` porque
+ * pacotes como o `sharp` restringem o subpath `./package.json` em `exports` —
+ * o `resolve` lanca, mas o arquivo esta la. Mesmo caminho do fallback de
+ * [`readBaileysVersion`]. `null` quando nao da para ler (nao falha o import).
+ */
+function depVersion(name) {
+  const bridgeDir = path.dirname(fileURLToPath(import.meta.url));
+  const file = path.join(bridgeDir, 'node_modules', ...name.split('/'), 'package.json');
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')).version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Importa cada dependencia de execucao (o que carrega o addon nativo do sharp)
+ * e devolve um veredito com a versao de cada uma. Nao abre socket, nao pareia e
+ * nao escreve no disco. Lanca no primeiro import que falhar.
+ */
+export async function selfTestResult() {
+  const deps = {};
+  for (const name of SELF_TEST_DEPS) {
+    await import(name); // prova que carrega neste Node e nesta plataforma
+    deps[name] = depVersion(name);
+  }
+  return { self_test: 'ok', node: process.version, deps };
+}
+
+/** Emite UMA linha JSON do autoteste e sai (0 em sucesso, != 0 em falha). */
+async function runSelfTest(emit, exit) {
+  try {
+    emit(await selfTestResult());
+    exit(EXIT_OK);
+  } catch (err) {
+    emit({ self_test: 'error', node: process.version, error: describeError(err) });
+    exit(EXIT_FATAL);
+  }
+}
+
 async function main(argv) {
   const emit = (ev) => {
     try {
@@ -751,6 +806,13 @@ async function main(argv) {
     setTimeout(() => process.exit(code), 500).unref();
     process.stdout.write('', () => process.exit(code));
   };
+
+  // #1636: o autoteste emite UMA linha JSON (`self_test`) e sai, sem o
+  // `started` nem nada depois — o Rust le exatamente essa linha.
+  if (argv.includes('--self-test')) {
+    await runSelfTest(emit, exit);
+    return;
+  }
 
   emit(startedEvent());
   if (argv.includes('--protocol-check')) {
