@@ -346,7 +346,7 @@ with per-claim evidence in `results/`:
 | Memory | SQLite + local vector search (sqlite-vec) + LLM fact extraction, auto-injected into context | Markdown files + SQLite FTS5/vector | sqlite/postgres/qdrant backends |
 | Config hot reload | file watch — most settings apply live (channels/providers wire at boot) | file watch (hybrid mode) | explicit reload endpoint only |
 | Scheduling | one-shot heartbeats (up to 30 days ahead) **and** cron recurrence with IANA timezones, delivered to the originating channel; retries failed runs with backoff | full cron + automations | cron + SOP engine |
-| Multi-tenant group workspace | in active development — Postgres 16 + pgvector, 42 tables across 35 migrations, 36 of them under FORCE Row-Level Security ([Phase 3](ROADMAP.md)) | explicit non-goal (single trusted operator) | no |
+| Multi-tenant group workspace | in active development — Postgres 16 + pgvector, 42 tables across 36 migrations, 36 of them under FORCE Row-Level Security ([Phase 3](ROADMAP.md)) | explicit non-goal (single trusted operator) | no |
 | Native PT-BR assistant persona | yes — first-class, default | no | no |
 | Prebuilt binaries + self-update | 6 targets (3 x86_64 required, 3 aarch64 best-effort), SHA-256-verified atomic self-update | npm package (needs Node runtime) | 10 targets, SLSA provenance |
 
@@ -653,7 +653,7 @@ crates/
 ├── garraia-agents/     # LLM providers, tools, MCP client, agent runtime
 ├── garraia-channels/   # 11 wired: Telegram, Discord, Slack, WhatsApp, iMessage, Google Chat, Teams, LINE, Matrix, IRC, Signal
 ├── garraia-auth/       # Auth v1: Argon2id, JWT HS256, RBAC, RLS-backed identity
-├── garraia-workspace/  # Postgres 16 + pgvector multi-tenant (42 tables / 35 migrations, 36 under FORCE RLS)
+├── garraia-workspace/  # Postgres 16 + pgvector multi-tenant (42 tables / 36 migrations, 36 under FORCE RLS)
 ├── garraia-security/   # Credential vault, allowlists, pairing, validation
 ├── garraia-db/         # SQLite memory, vector search, sessions
 ├── garraia-config/     # YAML/TOML config, hot reload, `config check`

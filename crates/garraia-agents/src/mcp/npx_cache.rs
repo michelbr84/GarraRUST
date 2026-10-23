@@ -620,7 +620,7 @@ mod tests {
         assert_eq!(
             package_from_args(&a(&[
                 "-y",
-                "@modelcontextprotocol/server-filesystem@2026.8.31",
+                "@modelcontextprotocol/server-filesystem@2.0.0",
                 "/r"
             ])),
             Some("@modelcontextprotocol/server-filesystem".into())
@@ -666,7 +666,7 @@ mod tests {
         std::fs::create_dir_all(entry.join("node_modules")).expect("mkdir");
         std::fs::write(
             entry.join("package.json"),
-            serde_json::json!({"dependencies": {pkg: "^2026.8.31"}}).to_string(),
+            serde_json::json!({"dependencies": {pkg: "^2.0.0"}}).to_string(),
         )
         .expect("write");
         entry
