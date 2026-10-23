@@ -6,11 +6,14 @@
  * (fatia 1) produz — inclusive um `qr` REAL gerado pelo motor da fatia 1
  * (`fixtures/qr-line.json`, 33x33). Prova:
  *   1. navegacao Boas-vindas -> Modo -> QR -> Personalidade -> Pronto
- *   2. o canvas do QR desenha a matriz (pixels escuros != 0)
- *   3. a escolha de modo e a persona chegam aos comandos (invoke gravado)
+ *   2. o canvas do QR desenha a matriz (pixels opacos escuros != 0)
+ *   3. modo "proprio" exige o aviso marcado; "dedicado" exige o numero pessoal,
+ *      validado antes de parear; ambos chegam aos comandos (invoke gravado)
  *   4. o caminho de erro (QR expirado) mostra mensagem acionavel + "gerar novo"
  *
- * Seletores sao `data-testid` estaveis (plan 0052). Nenhum gateway sobe.
+ * Seletores sao `data-testid` estaveis (plan 0052). Nenhum gateway sobe. O
+ * script e externo (CSP `script-src 'self'`); o file:// carrega `onboarding.js`
+ * do mesmo diretorio sem CSP (a CSP real vive no tauri.conf.json, so no app).
  */
 import { test, expect, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
@@ -22,12 +25,7 @@ const QR_LINE = readFileSync(
   'utf8',
 ).trim();
 
-/**
- * Instala o `window.__TAURI__` falso ANTES de a pagina carregar:
- *  - `core.invoke` grava cada chamada em `window.__invokes` e resolve;
- *  - `event.listen` registra o callback por evento;
- *  - `window.__emit(ev, payload)` empurra um evento aos listeners (NDJSON).
- */
+/** Fake `window.__TAURI__`, instalado ANTES de a pagina carregar. */
 async function instalarTauriFalso(page: Page) {
   await page.addInitScript(() => {
     const invokes: Array<{ cmd: string; args: unknown }> = [];
@@ -39,6 +37,13 @@ async function instalarTauriFalso(page: Page) {
           invokes.push({ cmd, args });
           if (cmd === 'onboarding_estado') {
             return Promise.resolve({ primeiro_uso: true, modo: null, concluido: false });
+          }
+          if (cmd === 'onboarding_validar_numero') {
+            // Mimetiza o core: digitos (8..15) viram +digitos; senao rejeita.
+            const digits = String((args as { numero?: string })?.numero ?? '').replace(/\D/g, '');
+            return digits.length >= 8 && digits.length <= 15
+              ? Promise.resolve('+' + digits)
+              : Promise.reject('numero invalido');
           }
           return Promise.resolve();
         },
@@ -82,65 +87,99 @@ async function pixelsEscurosDoCanvas(page: Page): Promise<number> {
   });
 }
 
-test.beforeEach(async ({ page }) => {
-  await instalarTauriFalso(page);
-  await page.goto(PAGE_URL);
-});
-
-test('fluxo feliz: boas-vindas -> modo -> QR desenhado -> personalidade -> pronto', async ({ page }) => {
-  // 1) Boas-vindas
-  await expect(page.getByTestId('tela-boas-vindas')).toBeVisible();
-  await page.getByTestId('btn-comecar').click();
-
-  // 2) Modo
-  await expect(page.getByTestId('tela-modo')).toBeVisible();
-  await expect(page.getByTestId('modo-aviso')).toContainText('qualquer pessoa');
-  await page.getByTestId('btn-modo-proprio').click();
-
-  // 3) QR: o pareamento foi iniciado
+/** Avanca da tela de QR ate "Pronto" com os eventos NDJSON gravados. */
+async function pareiaAtePronto(page: Page) {
   await expect(page.getByTestId('tela-qr')).toBeVisible();
   expect((await invokes(page)).some((i) => i.cmd === 'wa_iniciar_pareamento')).toBeTruthy();
 
-  // Status antes do QR
   await emitir(page, 'wa://ndjson', JSON.stringify({ schema: 1, event: 'status', status: 'connecting' }));
   await expect(page.getByTestId('qr-status')).toContainText('Preparando');
 
-  // O QR REAL da fatia 1: o canvas tem de ganhar pixels escuros
   expect(await pixelsEscurosDoCanvas(page)).toBe(0);
   await emitir(page, 'wa://ndjson', QR_LINE);
   await expect(page.getByTestId('qr-status')).toContainText('Aponte a câmera');
   expect(await pixelsEscurosDoCanvas(page)).toBeGreaterThan(100);
 
-  await emitir(page, 'wa://ndjson', JSON.stringify({ schema: 1, event: 'status', status: 'waiting_qr' }));
-  await expect(page.getByTestId('qr-status')).toContainText('Aguardando');
-
-  // 4) done -> Personalidade
   await emitir(page, 'wa://ndjson', JSON.stringify({ schema: 1, event: 'status', status: 'done' }));
   await expect(page.getByTestId('tela-personalidade')).toBeVisible();
 
-  // 5) persona -> Pronto
   await page.getByTestId('persona-nome').fill('Papa-Léguas');
   await page.getByTestId('persona-estilo').getByText('Profissional').click();
   await page.getByTestId('btn-persona-continuar').click();
   await expect(page.getByTestId('tela-pronto')).toBeVisible();
+}
+
+test.beforeEach(async ({ page }) => {
+  await instalarTauriFalso(page);
+  await page.goto(PAGE_URL);
+});
+
+test('modo proprio exige o aviso marcado e so entao abre a admissao', async ({ page }) => {
+  await expect(page.getByTestId('tela-boas-vindas')).toBeVisible();
+  await page.getByTestId('btn-comecar').click();
+  await expect(page.getByTestId('tela-modo')).toBeVisible();
+
+  // Escolher "proprio" revela o aviso; Continuar fica travado ate confirmar.
+  await page.getByTestId('btn-modo-proprio').click();
+  await expect(page.getByTestId('config-proprio')).toBeVisible();
+  await expect(page.getByTestId('btn-modo-continuar')).toBeDisabled();
+  await page.getByTestId('proprio-confirmo').check();
+  await expect(page.getByTestId('btn-modo-continuar')).toBeEnabled();
+  await page.getByTestId('btn-modo-continuar').click();
+
+  await pareiaAtePronto(page);
 
   const chamadas = await invokes(page);
-  const persona = chamadas.find((i) => i.cmd === 'onboarding_aplicar_persona');
-  expect(persona?.args).toMatchObject({ nome: 'Papa-Léguas', estilo: 'profissional', idioma: 'pt_br' });
-
-  // O modo escolhido chega ao comando que aplica a politica + reinicia.
-  const modo = chamadas.find((i) => i.cmd === 'onboarding_aplicar_modo');
-  expect(modo?.args).toMatchObject({ modo: 'proprio' });
+  expect(chamadas.find((i) => i.cmd === 'onboarding_aplicar_persona')?.args).toMatchObject({
+    nome: 'Papa-Léguas', estilo: 'profissional', idioma: 'pt_br',
+  });
+  // F3: proprio so aplica com confirmacao explicita.
+  expect(chamadas.find((i) => i.cmd === 'onboarding_aplicar_modo')?.args).toMatchObject({
+    modo: 'proprio', confirmoAberto: true,
+  });
   await expect(page.getByTestId('pronto-status')).toContainText('conectado');
 
-  // Abrir o Garra fecha o wizard.
   await page.getByTestId('btn-abrir-garra').click();
   expect((await invokes(page)).some((i) => i.cmd === 'onboarding_fechar')).toBeTruthy();
 });
 
-test('caminho de erro: QR expirado mostra mensagem acionavel e botao de novo', async ({ page }) => {
+test('modo dedicado valida e autoriza o numero pessoal', async ({ page }) => {
   await page.getByTestId('btn-comecar').click();
   await page.getByTestId('btn-modo-dedicado').click();
+  await expect(page.getByTestId('config-dedicado')).toBeVisible();
+
+  await page.getByTestId('numero-pessoal').fill('+55 11 99999-8888');
+  await page.getByTestId('btn-modo-continuar').click();
+
+  await pareiaAtePronto(page);
+
+  const chamadas = await invokes(page);
+  expect(chamadas.some((i) => i.cmd === 'onboarding_validar_numero')).toBeTruthy();
+  // F1: o numero normalizado chega ao comando que autoriza o dono.
+  expect(chamadas.find((i) => i.cmd === 'onboarding_aplicar_modo')?.args).toMatchObject({
+    modo: 'dedicado', numeroPessoal: '+5511999998888',
+  });
+  await expect(page.getByTestId('pronto-status')).toContainText('conectado');
+});
+
+test('numero pessoal invalido e recusado antes de parear', async ({ page }) => {
+  await page.getByTestId('btn-comecar').click();
+  await page.getByTestId('btn-modo-dedicado').click();
+  // 7 digitos: passa o gate de comprimento da tela, mas o validador E.164
+  // (8..15 digitos) recusa — o erro aparece antes de qualquer pareamento.
+  await page.getByTestId('numero-pessoal').fill('1234567');
+  await page.getByTestId('btn-modo-continuar').click();
+
+  await expect(page.getByTestId('modo-erro')).toBeVisible();
+  await expect(page.getByTestId('tela-qr')).toBeHidden();
+  expect((await invokes(page)).some((i) => i.cmd === 'wa_iniciar_pareamento')).toBeFalsy();
+});
+
+test('caminho de erro: QR expirado mostra mensagem acionavel e botao de novo', async ({ page }) => {
+  await page.getByTestId('btn-comecar').click();
+  await page.getByTestId('btn-modo-proprio').click();
+  await page.getByTestId('proprio-confirmo').check();
+  await page.getByTestId('btn-modo-continuar').click();
   await expect(page.getByTestId('tela-qr')).toBeVisible();
 
   await emitir(page, 'wa://ndjson', JSON.stringify({
@@ -152,7 +191,6 @@ test('caminho de erro: QR expirado mostra mensagem acionavel e botao de novo', a
   await expect(erro).toContainText('expirou');
   await expect(page.getByTestId('btn-tentar-novamente')).toBeVisible();
 
-  // "Gerar um QR novo" reinicia o pareamento e esconde o erro.
   await page.getByTestId('btn-tentar-novamente').click();
   await expect(erro).toBeHidden();
   const reinicios = (await invokes(page)).filter((i) => i.cmd === 'wa_iniciar_pareamento');

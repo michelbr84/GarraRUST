@@ -139,6 +139,12 @@
     .barra-botoes .btn-secundario { flex: 0 0 auto; }
     .barra-botoes .btn-primario { flex: 1; }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .cartao-modo[aria-pressed="true"] { border-color: var(--garra-gold); background: rgba(255,212,0,0.10); }
+    .hidden { display: none !important; }
+    .modo-config { display: flex; flex-direction: column; gap: 10px; }
+    .confirmo { display: flex; gap: 9px; align-items: flex-start; font-size: 13px; color: var(--garra-text); cursor: pointer; }
+    .confirmo input { margin-top: 3px; flex: 0 0 auto; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -163,27 +169,51 @@
     <!-- 2) Modo -->
     <section class="tela" id="tela-modo" data-testid="tela-modo" aria-labelledby="modo-h">
       <h1 id="modo-h" tabindex="-1">Como o Garra vai usar o WhatsApp?</h1>
-      <button class="cartao-modo" id="btn-modo-proprio" data-testid="btn-modo-proprio">
+      <button class="cartao-modo" id="btn-modo-proprio" data-testid="btn-modo-proprio" aria-pressed="false">
         <span class="emoji" aria-hidden="true">📱</span>
         <span>
           <span class="titulo">Meu próprio número</span>
           <span class="sub">O Garra responde quem mandar mensagem no seu WhatsApp pessoal.</span>
         </span>
       </button>
-      <button class="cartao-modo" id="btn-modo-dedicado" data-testid="btn-modo-dedicado">
+      <button class="cartao-modo" id="btn-modo-dedicado" data-testid="btn-modo-dedicado" aria-pressed="false">
         <span class="emoji" aria-hidden="true">💼</span>
         <span>
           <span class="titulo">Número dedicado</span>
-          <span class="sub">Um número só do Garra — só você conversa com ele (assistente pessoal).</span>
+          <span class="sub">Um número só do Garra (outro chip) — só você conversa com ele, pelo seu WhatsApp pessoal.</span>
         </span>
       </button>
-      <div class="aviso" id="modo-aviso" data-testid="modo-aviso" role="note">
-        No modo <b>Meu próprio número</b>, qualquer pessoa que mandar mensagem recebe
-        resposta do Garra. No <b>dedicado</b>, só você — é o ajuste mais seguro, e é
-        o padrão. Dá para trocar depois em Ajustes.
+
+      <!-- Confirmação do modo "próprio": a admissão só abre com o aviso marcado. -->
+      <div class="modo-config hidden" id="config-proprio" data-testid="config-proprio">
+        <div class="aviso" role="note">
+          No modo <b>Meu próprio número</b>, <b>qualquer pessoa</b> que mandar mensagem
+          recebe resposta do Garra. No <b>dedicado</b>, só você.
+        </div>
+        <label class="confirmo">
+          <input type="checkbox" id="proprio-confirmo" data-testid="proprio-confirmo" />
+          <span>Entendo que qualquer pessoa que me mandar mensagem vai receber resposta do Garra.</span>
+        </label>
       </div>
+
+      <!-- Número pessoal do modo "dedicado": autorizado via `whatsapp allow`. -->
+      <div class="modo-config hidden" id="config-dedicado" data-testid="config-dedicado">
+        <div class="aviso" role="note">
+          Você vai parear o <b>chip dedicado</b> do Garra no próximo passo. Para falar com
+          ele pelo seu WhatsApp pessoal, informe seu número — só ele será autorizado.
+        </div>
+        <label class="campo">Seu número pessoal (com DDI)
+          <input type="text" id="numero-pessoal" data-testid="numero-pessoal"
+                 inputmode="tel" autocomplete="off" placeholder="+55 11 99999-8888" />
+        </label>
+      </div>
+
+      <div class="erro" id="modo-erro" data-testid="modo-erro" role="alert"></div>
       <div class="spacer"></div>
-      <button class="btn-secundario" id="btn-modo-voltar" data-testid="btn-modo-voltar">Voltar</button>
+      <div class="barra-botoes">
+        <button class="btn-secundario" id="btn-modo-voltar" data-testid="btn-modo-voltar">Voltar</button>
+        <button class="btn-primario" id="btn-modo-continuar" data-testid="btn-modo-continuar" disabled>Continuar</button>
+      </div>
     </section>
 
     <!-- 3) QR -->
@@ -255,204 +285,6 @@
     </section>
   </div>
 
-  <script>
-    'use strict';
-    // Superficie Tauri com no-ops seguros: a UI nunca quebra fora da casca, e o
-    // teste Playwright injeta um __TAURI__ falso que emite NDJSON gravado.
-    const T = window.__TAURI__ || {};
-    const invoke = (cmd, args) => (T.core?.invoke ? T.core.invoke(cmd, args) : Promise.resolve());
-    const listen = (ev, cb) => (T.event?.listen ? T.event.listen(ev, cb) : Promise.resolve(() => {}));
-
-    const $ = (id) => document.getElementById(id);
-    const telas = ['tela-boas-vindas', 'tela-modo', 'tela-qr', 'tela-personalidade', 'tela-pronto'];
-    let modoEscolhido = null;   // "proprio" | "dedicado"
-    let pareado = false;        // o `done` chegou
-    let erroMostrado = false;   // um `error` ja apareceu nesta tentativa
-
-    function anunciar(texto) { $('live-region').textContent = texto; }
-
-    function mostrar(tela) {
-      for (const t of telas) $(t).classList.toggle('ativa', t === tela);
-      // Foco no titulo da tela (acessibilidade).
-      const h = document.querySelector('#' + tela + ' h1');
-      if (h) h.focus({ preventScroll: false });
-    }
-
-    // Marca que a tela de primeiro uso apareceu (roteiro manual / smoke CI).
-    invoke('onboarding_marcar_exibido');
-
-    // ── Boas-vindas ──────────────────────────────────────────────────────────
-    $('btn-comecar').addEventListener('click', () => mostrar('tela-modo'));
-    $('btn-modo-voltar').addEventListener('click', () => mostrar('tela-boas-vindas'));
-
-    // ── Modo ─────────────────────────────────────────────────────────────────
-    function escolherModo(modo) {
-      modoEscolhido = modo;
-      iniciarPareamento();
-      mostrar('tela-qr');
-    }
-    $('btn-modo-proprio').addEventListener('click', () => escolherModo('proprio'));
-    $('btn-modo-dedicado').addEventListener('click', () => escolherModo('dedicado'));
-
-    // ── QR ───────────────────────────────────────────────────────────────────
-    function iniciarPareamento() {
-      pareado = false;
-      erroMostrado = false;
-      esconderErro();
-      setStatus('Preparando a conexão…', true);
-      $('btn-tentar-novamente').style.display = 'none';
-      invoke('wa_iniciar_pareamento').catch((e) => mostrarErro(String(e)));
-    }
-
-    function setStatus(texto, pulsando) {
-      $('qr-status-texto').textContent = texto;
-      $('qr-status').querySelector('.pulso').style.visibility = pulsando ? 'visible' : 'hidden';
-      anunciar(texto);
-    }
-
-    function esconderErro() { const e = $('qr-erro'); e.classList.remove('ativo'); e.textContent = ''; }
-    function mostrarErro(msg) {
-      erroMostrado = true;
-      const e = $('qr-erro'); e.textContent = msg; e.classList.add('ativo');
-      setStatus('Não deu para conectar.', false);
-      $('btn-tentar-novamente').style.display = 'block';
-      anunciar(msg);
-    }
-
-    // Mensagem acionavel por codigo de erro (contrato da fatia 1).
-    function mensagemDeErro(code, message) {
-      switch (code) {
-        case 'qr_expired': return 'O QR code expirou antes de ser lido. Gere um novo e escaneie mais rápido.';
-        case 'session_dead': return 'Esta conexão não vale mais. Gere um QR novo para reconectar.';
-        case 'missing_node': return 'Faltou o Node.js, que acompanha o Garra. Reinstale pelo instalador oficial do site.';
-        case 'missing_dependencies': return 'A ponte do WhatsApp está incompleta. Reinstale o Garra pelo instalador oficial.';
-        case 'cancelled': return '';
-        default: return message || 'Algo deu errado ao conectar. Tente gerar um QR novo.';
-      }
-    }
-
-    // Desenha a matriz (linhas de "0"/"1", 1 = modulo escuro) num canvas, com
-    // zona de silencio de 4 modulos — o motor e o MESMO `qr::modules` da fatia 1.
-    function desenharQr(modules, width) {
-      const canvas = $('qr-canvas');
-      const ctx = canvas.getContext('2d');
-      const n = Array.isArray(modules) ? modules.length : 0;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      if (!n) return;
-      const quiet = 4;
-      const total = (width || n) + quiet * 2;
-      const cell = Math.floor(canvas.width / total);
-      const origem = Math.floor((canvas.width - cell * total) / 2) + quiet * cell;
-      ctx.fillStyle = '#000000';
-      for (let y = 0; y < n; y++) {
-        const linha = modules[y] || '';
-        for (let x = 0; x < linha.length; x++) {
-          if (linha[x] === '1') ctx.fillRect(origem + x * cell, origem + y * cell, cell, cell);
-        }
-      }
-    }
-
-    function aoConcluirPareamento() {
-      pareado = true;
-      setStatus('Conectado!', false);
-      mostrar('tela-personalidade');
-    }
-
-    // Trata cada linha NDJSON do sidecar (repassada pela casca).
-    function tratarNdjson(linha) {
-      let obj;
-      try { obj = JSON.parse(linha); } catch (_e) { return; }
-      switch (obj.event) {
-        case 'qr':
-          esconderErro();
-          $('btn-tentar-novamente').style.display = 'none';
-          desenharQr(obj.modules, obj.width);
-          setStatus('Aponte a câmera do WhatsApp para o código.', true);
-          break;
-        case 'status':
-          switch (obj.status) {
-            case 'done': aoConcluirPareamento(); break;
-            case 'authenticated':
-            case 'session_saved':
-            case 'channel_enabled':
-              setStatus('Conectando a sua conta…', true); break;
-            case 'waiting_qr':
-              setStatus('Aguardando a leitura do código…', true); break;
-            case 'connecting':
-            case 'detecting_node':
-            case 'installing_deps':
-            case 'deps_ready':
-            case 'starting_bridge':
-              setStatus('Preparando a conexão…', true); break;
-            default: break; // status desconhecido: nao mexe
-          }
-          break;
-        case 'error': {
-          const msg = mensagemDeErro(obj.code, obj.message);
-          if (msg) mostrarErro(msg);
-          break;
-        }
-        case 'log':
-        default:
-          break; // cosmetico / desconhecido
-      }
-    }
-
-    listen('wa://ndjson', (e) => tratarNdjson(typeof e.payload === 'string' ? e.payload : JSON.stringify(e.payload)));
-    listen('wa://fim', (e) => {
-      // O sidecar saiu. Se nao pareou e nenhum erro apareceu, foi queda silenciosa.
-      if (!pareado && !erroMostrado) {
-        mostrarErro('A conexão foi encerrada antes de concluir. Tente gerar um QR novo.');
-      }
-    });
-
-    $('btn-tentar-novamente').addEventListener('click', iniciarPareamento);
-    $('btn-qr-voltar').addEventListener('click', () => {
-      invoke('wa_cancelar_pareamento');
-      mostrar('tela-modo');
-    });
-
-    // ── Personalidade ──────────────────────────────────────────────────────────
-    $('btn-persona-continuar').addEventListener('click', async () => {
-      const btn = $('btn-persona-continuar');
-      const nome = $('persona-nome').value.trim();
-      const estilo = document.querySelector('input[name=estilo]:checked')?.value || 'amigavel';
-      const idioma = $('persona-idioma').value || 'pt_br';
-      btn.disabled = true;
-      $('persona-erro').classList.remove('ativo');
-      try {
-        await invoke('onboarding_aplicar_persona', { nome, estilo, idioma });
-        mostrar('tela-pronto');
-        finalizar();
-      } catch (e) {
-        const el = $('persona-erro');
-        el.textContent = 'Não deu para salvar a persona: ' + String(e);
-        el.classList.add('ativo');
-      } finally {
-        btn.disabled = false;
-      }
-    });
-
-    // ── Pronto ───────────────────────────────────────────────────────────────
-    async function finalizar() {
-      const txt = $('pronto-status-texto');
-      txt.textContent = 'Ligando o Garra…';
-      anunciar('Ligando o Garra.');
-      try {
-        await invoke('onboarding_aplicar_modo', { modo: modoEscolhido });
-        txt.textContent = 'Garra conectado';
-        $('pronto-status').style.color = 'var(--garra-ok)';
-        anunciar('Garra conectado e pronto para receber mensagens.');
-      } catch (e) {
-        txt.textContent = 'Conectado, mas houve um aviso';
-        const el = $('pronto-erro');
-        el.textContent = 'O canal foi vinculado, mas algo falhou ao ligar o Garra: ' + String(e) +
-          '. Abra os Ajustes e tente novamente.';
-        el.classList.add('ativo');
-      }
-    }
-    $('btn-abrir-garra').addEventListener('click', () => invoke('onboarding_fechar'));
-  </script>
+  <script src="onboarding.js"></script>
 </body>
 </html>

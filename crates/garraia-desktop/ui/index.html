@@ -23,14 +23,6 @@
   <script src="ws.js"></script>
   <script src="parrot.js"></script>
 
-  <script>
-    // Allow Rust (via Tauri event) to toggle input bar
-    // Tauri v2: listen for custom event emitted by the shortcut handler
-    if (window.__TAURI__?.event) {
-      window.__TAURI__.event.listen('garra-toggle-input', () => {
-        window.__garraToggleInput?.();
-      });
-    }
-  </script>
+  <script src="boot.js"></script>
 </body>
 </html>

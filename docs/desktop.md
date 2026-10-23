@@ -175,24 +175,44 @@ decisão vive em `garraia_desktop_core::onboarding` (puro, testado no CI — ADR
   o pareamento derruba a árvore Node (o `link` não aceita `--exit-with-parent`).
 - **Modo → config** (confirmado em `docs/whatsapp.md` §Comandos, ADR 0025): o
   pareamento é igual nos dois modos; a política de acesso entra **depois** do
-  `done`:
-  - **Meu próprio número** → `garraia whatsapp access open --yes`: o Garra responde
-    **qualquer** pessoa que mandar mensagem. A tela de Modo avisa isso em letras
-    grandes — `open` afrouxa a admissão, e nenhum default de segurança é afrouxado
-    em silêncio.
-  - **Número dedicado** → `garraia whatsapp access restricted`: só quem está
-    declarado/pareou fala com o Garra. É o **default fail-closed**; reaplicá-lo é
-    o que reverte um `open` anterior quando se troca de volta.
+  `done`, e o `concluido` só é gravado quando todos os passos saem com exit 0 —
+  a tela "Tudo pronto" não pode mentir:
+  - **Meu próprio número** → `garraia whatsapp access open --yes`: o Garra
+    responde **qualquer** pessoa que mandar mensagem (inclusive o próprio usuário,
+    por "Conversa com você mesmo" do WhatsApp). `open` afrouxa a admissão, então a
+    casca **só** aceita este modo quando a webview manda `confirmoAberto: true` —
+    o usuário marcou o aviso na tela. Um invoke silencioso nunca abre o portão.
+  - **Número dedicado** → `garraia whatsapp access restricted` **e**
+    `garraia whatsapp allow <número pessoal>`: o Garra fica num chip dedicado e o
+    usuário fala com ele pelo número **pessoal** — que precisa estar **autorizado**,
+    senão o portão fica com 0 autorizados e descartaria o próprio dono em silêncio
+    (`acesso.rs`: o número vinculado não se autoriza sozinho). O número é validado
+    e normalizado no core (`normalizar_numero`, E.164 8–15 dígitos) antes de ir ao
+    CLI. Não é `owner` de propósito: dono só existe em `isolated-pod`, e o desktop
+    roda em `standard`.
 - **Personalidade** → `agent.system_prompt`, montado por
-  `garraia_desktop_core::montar_system_prompt` (nome, estilo, idioma) e gravado por
+  `garraia_desktop_core::montar_system_prompt` (nome **saneado** sem controle/quebra
+  e com teto de 40 chars, estilo, idioma) e gravado por
   `ConfigLoader::set_agent_system_prompt` (o mesmo writer de config do projeto, com
   modo `0600` no Unix).
-- **Pronto** aplica a política do modo, persiste `onboarding.json`
-  (`concluido: true`, `modo`) em `app_config_dir()` e **reinicia o gateway** para o
-  canal recém-vinculado entrar no ar.
+- **Pronto** aplica a política do modo (+ autorização no dedicado), persiste
+  `onboarding.json` (`concluido: true`, `modo`) em `app_config_dir()` e **reinicia
+  o gateway** para o canal recém-vinculado entrar no ar.
 
 A escolha de modo **persiste e é configurável depois** em `ui/settings.html` →
-seção **WhatsApp** (trocar modo e "Refazer pareamento").
+seção **WhatsApp** (trocar modo — com a mesma confirmação/numero que o wizard — e
+"Refazer pareamento").
+
+**Segurança da webview (F3/F5).** A CSP do app vive no `tauri.conf.json`
+(`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; …`), e
+por isso **nenhuma** página do desktop usa `<script>` inline — o JS de cada tela
+(`onboarding.js`, `settings.js`, `chat-bar.js`, `boot.js`) é externo. A janela
+`onboarding` tem uma capability **própria e mínima** (`capabilities/onboarding.json`,
+só `core:default` para IPC + eventos), fora da `default` ampla que concede shell/
+dialog/notification/updater às outras janelas — o pareamento é lançado no Rust
+(`app.shell()`), nunca pela webview. Um grep no job `assert-ui-assets` barra um
+`<script>` inline novo e confere que os nove comandos, a janela e as capabilities
+seguem ligados.
 
 ### Validar o assistente (roteiro manual do dono)
 
@@ -207,21 +227,36 @@ jobs irmãos.
 2. **Boas-vindas**: a janela do assistente abre sozinha. Clique **Começar**.
    (Prova sem celular: o app grava `app_config_dir()/onboarding-shown.marker` ao
    exibir a tela.)
-3. **Modo**: escolha **Meu próprio número** (o Garra responde todo mundo) ou
-   **Número dedicado** (só você). Confira que o aviso amarelo explica a diferença.
+3. **Modo**:
+   - **Meu próprio número** (o Garra responde todo mundo): o aviso amarelo aparece
+     e o botão **Continuar** só habilita depois de você **marcar a confirmação**.
+     Para parear, você vai ler o QR no **seu próprio** aparelho.
+   - **Número dedicado** (só você): informe **seu número pessoal com DDI**
+     (ex.: `+55 11 99999-8888`) no campo que aparece. Um número inválido é recusado
+     na hora, antes do QR. Para parear, você vai ler o QR no **chip dedicado** do
+     Garra (outro aparelho/WhatsApp).
 4. **QR**: o código aparece no canvas com o status pulsante "Aponte a câmera…".
-   No celular: **WhatsApp → Aparelhos conectados → Conectar um aparelho** e aponte
+   No aparelho que vai hospedar o Garra (seu, no modo próprio; o chip dedicado, no
+   dedicado): **WhatsApp → Aparelhos conectados → Conectar um aparelho** e aponte
    para a tela. Se o QR expirar, use **Gerar um QR novo**. Esperado: o status passa
    por "Conectando a sua conta…" e some para a próxima tela.
 5. **Personalidade**: dê um nome, escolha o estilo e deixe **Português (Brasil)**.
    Clique **Continuar**.
-6. **Pronto**: o status deve virar **● Garra conectado**. Do celular, mande um
-   **"oi"** para o número vinculado e confirme que o Garra responde. Clique
-   **Abrir o Garra**.
+6. **Pronto**: o status deve virar **● Garra conectado** (só vira depois de a
+   admissão + a autorização do seu número terem dado certo). Teste a conversa:
+   - **dedicado**: do **seu celular pessoal**, mande um **"oi"** para o número do
+     chip do Garra e confirme que ele responde.
+   - **próprio**: peça para outra pessoa mandar "oi" para o seu número, **ou** use
+     a conversa **"Você"** ("Conversa com você mesmo") do WhatsApp — `open` admite
+     inclusive o próprio número.
+
+   Depois clique **Abrir o Garra**.
 7. **Settings**: abra Ajustes → **WhatsApp**, confirme que o modo escolhido está
-   lá, troque-o e veja o status "o modo foi atualizado". "Refazer pareamento"
-   reabre o wizard.
+   lá. Para trocar: escolha o modo, marque a confirmação (próprio) ou informe o
+   número (dedicado) e clique **Aplicar modo** — o status mostra "o modo foi
+   atualizado". "Refazer pareamento" reabre o wizard.
 
 Em nenhum passo foi preciso abrir terminal. Se quiser conferir o
-"sem-terminal" por fora: `onboarding-shown.marker` em `app_config_dir()` e a seção
-`channels.whatsapp_linked` no `config.yml` provam que o fluxo todo passou pela UI.
+"sem-terminal" por fora: `onboarding-shown.marker` em `app_config_dir()`, a seção
+`channels.whatsapp_linked` no `config.yml` (com o seu número em `allow` no modo
+dedicado) e `garraia whatsapp users` provam que o fluxo todo passou pela UI.

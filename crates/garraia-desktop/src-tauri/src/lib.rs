@@ -91,6 +91,7 @@ pub fn run() {
             onboarding::onboarding_marcar_exibido,
             onboarding::wa_iniciar_pareamento,
             onboarding::wa_cancelar_pareamento,
+            onboarding::onboarding_validar_numero,
             onboarding::onboarding_aplicar_persona,
             onboarding::onboarding_aplicar_modo,
             onboarding::onboarding_fechar,

@@ -60,8 +60,9 @@ pub use jobobject::KillOnCloseJob;
 pub use locate::{DESKTOP_BINARY, DesktopApp, EnvDirs, Locator, Platform, Source, install_dirs};
 pub use onboarding::{
     ARGS_PAREAMENTO, ARQUIVO_ONBOARDING, EstiloPersona, EventoNdjson, FaseQr, Idioma, Modo,
-    Onboarding, OnboardingPersistido, Personalidade, Tela, VERSAO_PERSISTIDA, args_aplicar_modo,
-    arquivo_onboarding, montar_system_prompt, primeiro_uso,
+    NOME_MAX_CHARS, Onboarding, OnboardingPersistido, Personalidade, Tela, VERSAO_PERSISTIDA,
+    args_aplicar_modo, args_autorizar_numero, arquivo_onboarding, montar_system_prompt,
+    normalizar_numero, primeiro_uso, sanitizar_nome,
 };
 pub use state::{Desired, ModuleId, ModuleState, Modules, Power, PowerEvent};
 pub use supervise::{

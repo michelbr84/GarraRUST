@@ -97,17 +97,82 @@ pub fn primeiro_uso(persistido: Option<&OnboardingPersistido>) -> bool {
     !persistido.map(|p| p.concluido).unwrap_or(false)
 }
 
+/// Tamanho maximo (em chars) do nome da persona. Um nome mais longo e cortado.
+pub const NOME_MAX_CHARS: usize = 40;
+
+/// Limpa o nome da persona que vem da webview: tira caracteres de controle e
+/// quebras de linha (que poluiriam o `system_prompt`) e corta em
+/// [`NOME_MAX_CHARS`]. Nao sobe privilegio nem injeta nada — e um campo de
+/// texto livre que vira prosa do prompt —, mas um nome com `\n` ou NUL deixaria
+/// o YAML/sistema feio e e facil de barrar aqui, no lugar testado.
+pub fn sanitizar_nome(nome: &str) -> String {
+    let limpo: String = nome.chars().filter(|c| !c.is_control()).collect();
+    limpo
+        .trim()
+        .chars()
+        .take(NOME_MAX_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Normaliza um numero de telefone pessoal para o formato que o
+/// `garraia whatsapp allow` aceita: `+<digitos>` em faixa E.164 (8 a 15
+/// digitos, com DDI). Ignora espacos, hifens, parenteses e um `+` inicial.
+///
+/// Puro e testado: o numero do usuario (modo dedicado) e validado AQUI antes de
+/// chegar ao CLI, para a tela recusar na hora um numero obviamente invalido em
+/// vez de descobrir no fim. O CLI ainda valida de novo (exit 65) — isto nao o
+/// substitui, so adianta o erro e padroniza o formato.
+pub fn normalizar_numero(input: &str) -> Result<String, String> {
+    let digitos: String = input.chars().filter(|c| c.is_ascii_digit()).collect();
+    // E.164: no maximo 15 digitos; um numero com DDI real tem pelo menos ~8.
+    if digitos.len() < 8 || digitos.len() > 15 {
+        return Err(format!(
+            "numero invalido: use o formato com codigo do pais, ex.: +55 11 99999-8888 \
+(tem de ter entre 8 e 15 digitos, veio com {})",
+            digitos.len()
+        ));
+    }
+    Ok(format!("+{digitos}"))
+}
+
+/// Argumentos do sidecar que autorizam um numero a falar com o Garra —
+/// `garraia whatsapp allow <numero> --yes`.
+///
+/// E o caminho oficial do CLI (ADR 0025, `docs/whatsapp.md` §Comandos) para
+/// "o dono fala com o proprio assistente": no modo **dedicado** o chip do Garra
+/// e pareado e o usuario fala dele pelo numero PESSOAL, que precisa estar
+/// autorizado — senao o portao fica com 0 autorizados e descarta o proprio
+/// usuario em silencio (`acesso.rs`: o numero vinculado nao se autoriza
+/// sozinho). Nao e `owner` de proposito: dono so existe em `isolated-pod`
+/// (`execution.profile`), e o desktop roda em `standard`. O `--yes` so importa
+/// para `--owner`, mas vai junto para blindar contra qualquer prompt sem TTY.
+pub fn args_autorizar_numero(numero_normalizado: &str) -> Vec<String> {
+    vec![
+        "whatsapp".to_string(),
+        "allow".to_string(),
+        numero_normalizado.to_string(),
+        "--yes".to_string(),
+    ]
+}
+
 /// Monta a persona (`agent.system_prompt`) a partir do que o usuario escolheu
 /// na tela de personalidade.
 ///
 /// Puro e deterministico: a casca so grava a string de volta no `config.yml`
 /// (via `ConfigLoader::set_agent_system_prompt`). O texto segue o idioma — o
-/// default do projeto e pt-BR — e o tom muda com o [`EstiloPersona`]. Nome
-/// vazio cai em "Garra". O prompt diz explicitamente para responder no idioma
-/// escolhido, que e o que o runtime do WhatsApp le.
+/// default do projeto e pt-BR — e o tom muda com o [`EstiloPersona`]. O nome
+/// passa por [`sanitizar_nome`]; vazio cai em "Garra". O prompt diz
+/// explicitamente para responder no idioma escolhido, que e o que o runtime do
+/// WhatsApp le.
 pub fn montar_system_prompt(persona: &Personalidade) -> String {
-    let nome = persona.nome.trim();
-    let nome = if nome.is_empty() { "Garra" } else { nome };
+    let nome_limpo = sanitizar_nome(&persona.nome);
+    let nome = if nome_limpo.is_empty() {
+        "Garra"
+    } else {
+        &nome_limpo
+    };
     match persona.idioma {
         Idioma::PtBr => {
             let tom = match persona.estilo {
@@ -822,6 +887,62 @@ mod tests {
             ..base
         });
         assert!(anon.contains("Garra"), "nome vazio cai em Garra: {anon}");
+    }
+
+    #[test]
+    fn o_nome_e_saneado_sem_controle_nem_newline_e_com_teto() {
+        // Controle e quebra de linha somem.
+        assert_eq!(sanitizar_nome("Ga\nrra\t\u{7}"), "Garra");
+        // Espacos nas pontas vao embora.
+        assert_eq!(sanitizar_nome("  Garra  "), "Garra");
+        // Teto de NOME_MAX_CHARS chars (conta chars, nao bytes).
+        let longo = "á".repeat(80);
+        assert_eq!(sanitizar_nome(&longo).chars().count(), NOME_MAX_CHARS);
+        // So controle vira vazio (montar_system_prompt entao cai em Garra).
+        assert_eq!(sanitizar_nome("\n\t\r"), "");
+        let prompt = montar_system_prompt(&Personalidade {
+            nome: "Garra\nINJETADO".into(),
+            estilo: EstiloPersona::Amigavel,
+            idioma: Idioma::PtBr,
+        });
+        assert!(
+            prompt.contains("GarraINJETADO"),
+            "a quebra de linha some e o resto fica colado: {prompt}"
+        );
+    }
+
+    #[test]
+    fn normalizar_numero_aceita_e164_e_recusa_o_resto() {
+        // Formato humano com DDI vira +digitos.
+        assert_eq!(
+            normalizar_numero("+55 11 99999-8888").unwrap(),
+            "+5511999998888"
+        );
+        assert_eq!(
+            normalizar_numero("(55) 11 98888 0000").unwrap(),
+            "+5511988880000"
+        );
+        // Curto demais, longo demais e vazio sao recusados.
+        for ruim in ["", "123", "12345", "0123456789012345678", "abc", "+"] {
+            assert!(
+                normalizar_numero(ruim).is_err(),
+                "{ruim:?} tinha de ser recusado"
+            );
+        }
+    }
+
+    #[test]
+    fn args_autorizar_numero_usa_allow_com_o_numero_normalizado() {
+        let n = normalizar_numero("+55 11 99999-8888").unwrap();
+        assert_eq!(
+            args_autorizar_numero(&n),
+            vec!["whatsapp", "allow", "+5511999998888", "--yes"]
+        );
+        // Nunca `--owner`: dono so existe em isolated-pod; o desktop e standard.
+        assert!(
+            !args_autorizar_numero(&n).iter().any(|a| a == "--owner"),
+            "autorizar o proprio usuario nunca e via owner no desktop"
+        );
     }
 
     /// Tabela de transicoes: de uma tela, uma acao leva a outra tela.

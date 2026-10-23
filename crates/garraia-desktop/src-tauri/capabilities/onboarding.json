@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "onboarding",
+  "description": "Assistente de Primeiro Uso (#1636, F5): capability minima e separada da `default` ampla. A webview do wizard so faz IPC dos comandos `onboarding_*`/`wa_*` (comandos da aplicacao, que o ACL do Tauri nao exige permissao para chamar) e ouve os eventos `wa://ndjson`/`wa://fim`. `core:default` cobre o IPC e o `event:listen`; NAO entram shell, dialog, notification, updater nem global-shortcut — o pareamento e lancado no Rust (`app.shell()`), nunca pela webview.",
+  "windows": [
+    "onboarding"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}

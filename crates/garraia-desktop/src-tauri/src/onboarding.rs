@@ -146,11 +146,9 @@ pub async fn onboarding_marcar_exibido(app: AppHandle) {
 
 /// Inicia o pareamento: lanca `garraia whatsapp link --machine` e transmite cada
 /// linha NDJSON do stdout como evento `wa://ndjson`. Idempotente: um pareamento
-/// anterior em andamento e cancelado antes.
+/// anterior e substituido e morto na troca.
 #[tauri::command]
 pub async fn wa_iniciar_pareamento(app: AppHandle) -> Result<(), String> {
-    cancelar_pareamento(&app);
-
     let (mut rx, child) = app
         .shell()
         .sidecar("garraia")
@@ -166,10 +164,16 @@ pub async fn wa_iniciar_pareamento(app: AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     crate::gateway::contain_in_kill_on_close_job(&child);
 
-    let st = app.state::<OnboardingState>();
-    *st.pareamento
-        .lock()
-        .map_err(|_| "estado de onboarding envenenado")? = Some(child);
+    // F2: guarda o novo child e mata o anterior NA TROCA, sob o lock — sem a
+    // janela do cancelar-depois-spawnar-depois-guardar. O `pid` identifica ESTE
+    // pareamento para o ramo `Terminated` limpar so a si mesmo.
+    let pid = child.pid();
+    if let Some(st) = app.try_state::<OnboardingState>()
+        && let Ok(mut guard) = st.pareamento.lock()
+        && let Some(antigo) = guard.replace(child)
+    {
+        let _ = antigo.kill();
+    }
 
     let app_ev = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -190,6 +194,14 @@ pub async fn wa_iniciar_pareamento(app: AppHandle) -> Result<(), String> {
                 }
                 CommandEvent::Terminated(payload) => {
                     let _ = app_ev.emit(EVENTO_FIM, payload.code);
+                    // F2: limpa o handle SE ele ainda for este pareamento — um
+                    // novo spawn pode te-lo substituido no meio tempo.
+                    if let Some(st) = app_ev.try_state::<OnboardingState>()
+                        && let Ok(mut guard) = st.pareamento.lock()
+                        && guard.as_ref().map(|c| c.pid()) == Some(pid)
+                    {
+                        *guard = None;
+                    }
                     break;
                 }
                 _ => {}
@@ -197,6 +209,39 @@ pub async fn wa_iniciar_pareamento(app: AppHandle) -> Result<(), String> {
         }
     });
     Ok(())
+}
+
+/// Roda o sidecar `garraia` com `args` ate o fim e falha se o exit nao for 0.
+async fn rodar_sidecar(app: &AppHandle, args: Vec<String>) -> Result<(), String> {
+    let descr = args.join(" ");
+    let (mut rx, _child) = app
+        .shell()
+        .sidecar("garraia")
+        .map_err(|e| format!("sidecar garraia ausente: {e}"))?
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("falha ao rodar `garraia {descr}`: {e}"))?;
+    let mut code = None;
+    while let Some(event) = rx.recv().await {
+        if let CommandEvent::Terminated(payload) = event {
+            code = payload.code;
+            break;
+        }
+    }
+    if code == Some(0) {
+        Ok(())
+    } else {
+        Err(format!(
+            "`garraia {descr}` terminou com codigo {code:?} (esperado 0)"
+        ))
+    }
+}
+
+/// Valida e normaliza o numero pessoal (modo dedicado) ANTES do pareamento,
+/// para a tela recusar um numero invalido na hora. Devolve `+<digitos>`.
+#[tauri::command]
+pub async fn onboarding_validar_numero(numero: String) -> Result<String, String> {
+    core::normalizar_numero(&numero)
 }
 
 /// Cancela o pareamento em andamento (botao voltar / fechar a janela do QR).
@@ -226,34 +271,56 @@ pub async fn onboarding_aplicar_persona(
     Ok(())
 }
 
-/// Aplica a politica de acesso do modo escolhido (`access open --yes` /
-/// `restricted`), persiste `onboarding.json` e reinicia o gateway para o canal
-/// recem-vinculado entrar no ar. Usado no fim do wizard e no botao de settings.
+/// Aplica a politica de acesso do modo escolhido, AUTORIZA o usuario quando for
+/// preciso, persiste `onboarding.json` e so entao reinicia o gateway. Usado no
+/// fim do wizard e no botao de settings.
+///
+/// - **proprio** → `access open --yes`, mas so com `confirmo_aberto == true`:
+///   `open` responde qualquer um, e um invoke silencioso nunca pode afrouxar a
+///   admissao (F3). O proprio usuario fala consigo por "Conversa com voce mesmo"
+///   do WhatsApp — `open` admite inclusive o proprio numero.
+/// - **dedicado** → `access restricted` (fecha a admissao) **e**
+///   `allow <numero_pessoal>` (F1): o Garra fica num chip dedicado e o usuario
+///   fala dele pelo numero pessoal, que PRECISA estar autorizado — senao o
+///   portao fica com 0 autorizados e descarta o proprio dono em silencio
+///   (`acesso.rs`: o numero vinculado nao se autoriza sozinho). O numero e
+///   validado no core ([`core::normalizar_numero`]) antes de ir ao CLI.
+///
+/// `concluido` so e gravado DEPOIS de todos os passos saírem com exit 0 — a tela
+/// "Tudo pronto" nao pode mentir.
 #[tauri::command]
-pub async fn onboarding_aplicar_modo(app: AppHandle, modo: Modo) -> Result<(), String> {
-    // 1) Politica de acesso: roda o sidecar e espera terminar.
-    let (mut rx, _child) = app
-        .shell()
-        .sidecar("garraia")
-        .map_err(|e| format!("sidecar garraia ausente: {e}"))?
-        .args(core::args_aplicar_modo(modo))
-        .spawn()
-        .map_err(|e| format!("falha ao aplicar o modo: {e}"))?;
-
-    let mut code = None;
-    while let Some(event) = rx.recv().await {
-        if let CommandEvent::Terminated(payload) = event {
-            code = payload.code;
-            break;
+pub async fn onboarding_aplicar_modo(
+    app: AppHandle,
+    modo: Modo,
+    numero_pessoal: Option<String>,
+    confirmo_aberto: bool,
+) -> Result<(), String> {
+    match modo {
+        Modo::Proprio => {
+            if !confirmo_aberto {
+                return Err("o modo \"meu proprio numero\" abre o Garra para qualquer \
+pessoa que mandar mensagem; marque a confirmacao na tela para continuar"
+                    .to_string());
+            }
+            rodar_sidecar(&app, to_owned_args(core::args_aplicar_modo(Modo::Proprio))).await?;
+        }
+        Modo::Dedicado => {
+            let numero = numero_pessoal
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    "informe seu numero pessoal (com codigo do pais) para o modo dedicado"
+                        .to_string()
+                })?;
+            let numero = core::normalizar_numero(numero)?;
+            // Fecha a admissao primeiro, autoriza o dono depois.
+            rodar_sidecar(&app, to_owned_args(core::args_aplicar_modo(Modo::Dedicado))).await?;
+            rodar_sidecar(&app, core::args_autorizar_numero(&numero)).await?;
         }
     }
-    if code != Some(0) {
-        return Err(format!(
-            "o comando de acesso terminou com codigo {code:?} (esperado 0)"
-        ));
-    }
 
-    // 2) Marca o onboarding como concluido com o modo escolhido.
+    // Concluido so apos a autorizacao ter dado certo.
     gravar_persistido(
         &app,
         &OnboardingPersistido {
@@ -263,8 +330,8 @@ pub async fn onboarding_aplicar_modo(app: AppHandle, modo: Modo) -> Result<(), S
         },
     )?;
 
-    // 3) Reinicia o gateway (em thread bloqueante: `restart` dorme 800ms antes
-    //    de respawnar — nunca no executor async).
+    // Reinicia o gateway (thread bloqueante: `restart` dorme 800ms antes de
+    // respawnar — nunca no executor async).
     let app_restart = app.clone();
     let gw = app
         .try_state::<crate::gateway::GatewayHandle>()
@@ -276,6 +343,11 @@ pub async fn onboarding_aplicar_modo(app: AppHandle, modo: Modo) -> Result<(), S
         .await;
     }
     Ok(())
+}
+
+/// `Vec<&str>` do core -> `Vec<String>` que [`rodar_sidecar`] consome.
+fn to_owned_args(args: Vec<&str>) -> Vec<String> {
+    args.into_iter().map(String::from).collect()
 }
 
 /// Fecha a janela do wizard (botao "Abrir o Garra" / fim).
