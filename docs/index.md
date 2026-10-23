@@ -8,6 +8,7 @@ Welcome to the GarraIA documentation. GarraIA is a secure, lightweight open-sour
 - [Architecture Overview](./architecture.md)
 - [Configuration Reference](./configuration.md)
 - [Channel Integrations](./channels.md)
+- [Garra Desktop — installer e runtime Node privado](./desktop.md) — o que o instalador traz, onde poe o Node, o que a desinstalacao remove (#1636)
 - [MCP Setup](./mcp.md) — GarraIA as MCP **client**
 - [`garra mcp-server`](./cli-mcp-server.md) — GarraIA as MCP **server** (stdio)
 - [`POST /mcp`](./gateway-mcp-http.md) — GarraIA as MCP **server** over HTTP, for external orchestrators

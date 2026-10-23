@@ -1004,6 +1004,10 @@ ignorada (com aviso), caindo no `npm ci` de sempre.
 > nao-gravaveis pelo usuario) — toda a garantia de confianca do Node privado
 > depende disso.
 
+> O lado do **instalador** (o que o pacote do Garra Desktop traz, onde o Tauri
+> v2 poe o `node/` e o `bridge-whatsapp/` em cada formato, o que a desinstalacao
+> remove e o que fica) esta em [desktop.md](./desktop.md).
+
 ### `garra whatsapp self-test [--json]`
 
 Resolve o Node pela ordem acima e roda `bridge.mjs --self-test`, que importa
