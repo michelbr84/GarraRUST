@@ -776,39 +776,127 @@ const KNOWN_PROVIDERS: &[(&str, &str, bool)] = &[
     ("ollama", "Ollama", false),
 ];
 
-/// GET /api/providers — list known provider types with activation status.
+/// Normalize a provider's advertised model catalog: drop blanks, sort,
+/// dedupe, and make sure the configured model is listed first. Shared by the
+/// type catalog and the per-instance list so both report models identically.
+async fn provider_model_info(
+    provider: &Arc<dyn garraia_agents::LlmProvider>,
+) -> (Option<String>, Vec<String>) {
+    let model = provider.configured_model().map(|m| m.to_string());
+    let mut models = match provider.available_models().await {
+        Ok(mut available) => {
+            available.retain(|m| !m.trim().is_empty());
+            available.sort();
+            available.dedup();
+            available
+        }
+        Err(err) => {
+            tracing::warn!(
+                "failed to list models for provider {}: {}",
+                provider.provider_id(),
+                err
+            );
+            Vec::new()
+        }
+    };
+    if let Some(selected) = model.as_ref()
+        && !models.iter().any(|m| m == selected)
+    {
+        models.insert(0, selected.clone());
+    }
+    (model, models)
+}
+
+/// GET /api/providers — list the real registered provider *instances* plus the
+/// catalog of known provider *types* that can still be configured.
+///
+/// #1540 fallout: the response used to carry only the fixed `KNOWN_PROVIDERS`
+/// catalog, keyed by provider type, and flagged each entry `active` by matching
+/// the type id against the registered provider ids. Since #1540 a provider is
+/// registered under its *config profile key* (`llm.<key>`), so an instance like
+/// `llm.ollama-qwen3.provider: openai` registers under id `ollama-qwen3` and
+/// matched no catalog type — the Web Console showed "OpenAI (Not Configured)"
+/// and "Ollama (Not Configured)" and never surfaced `ollama-qwen3` at all.
+///
+/// The fix is additive and backward compatible:
+///   * `providers` keeps the type catalog, but `active` is now **kind-aware**:
+///     a type counts as configured when any registered instance is of that
+///     kind, so a type backed by a custom-id instance is never mislabeled
+///     "Not Configured".
+///   * `instances` (new) lists the real registered providers by their own id,
+///     with the backing `kind`, selected `model`, whether each is the default
+///     and whether it sits in the fallback chain. `PATCH /api/providers/default`
+///     and `POST /api/providers/test` already resolve by this id.
+///
+/// Secret-free: never echoes an api_key, and (like before) never exposes
+/// `base_url` on this auth-free endpoint — the admin API carries that behind
+/// RBAC.
 async fn list_providers(
     axum::extract::State(state): axum::extract::State<SharedState>,
 ) -> axum::Json<serde_json::Value> {
-    let active_ids = state.agents.provider_ids();
     let default_id = state.agents.default_provider_id();
+    let fallback_ids = state.agents.fallback_providers();
 
+    // An instance id maps to its provider *kind* via its `llm.<id>` block,
+    // since #1540 registers providers under the config profile key. Runtime-
+    // added providers (POST /api/providers) register under the type itself and
+    // have no `llm:` block, so the id doubles as the kind.
+    let kind_of = |id: &str| -> String {
+        state
+            .config
+            .llm
+            .get(id)
+            .map(|block| block.provider.clone())
+            .unwrap_or_else(|| id.to_string())
+    };
+    let needs_key_for_kind = |kind: &str| -> bool {
+        KNOWN_PROVIDERS
+            .iter()
+            .find(|(id, _, _)| *id == kind)
+            .map(|(_, _, needs)| *needs)
+            .unwrap_or(true)
+    };
+
+    // --- Real registered instances ---
+    let mut instances: Vec<serde_json::Value> = Vec::new();
+    let mut instance_kinds: Vec<String> = Vec::new();
+    // Reused by the catalog loop so a provider's models are fetched once.
+    let mut model_info_by_id: std::collections::HashMap<String, (Option<String>, Vec<String>)> =
+        std::collections::HashMap::new();
+    for provider in state.agents.list_providers() {
+        let id = provider.provider_id().to_string();
+        let kind = kind_of(&id);
+        let (model, models) = provider_model_info(&provider).await;
+        model_info_by_id.insert(id.clone(), (model.clone(), models.clone()));
+        instances.push(serde_json::json!({
+            "id": id,
+            "kind": kind,
+            "display_name": id,
+            "active": true,
+            "is_default": default_id.as_deref() == Some(id.as_str()),
+            "in_fallback": fallback_ids.iter().any(|f| f == &id),
+            "needs_api_key": needs_key_for_kind(&kind),
+            "model": model,
+            "models": models,
+        }));
+        instance_kinds.push(kind);
+    }
+
+    // --- Catalog of known types (retained; `active` is now kind-aware) ---
     let mut providers: Vec<serde_json::Value> = Vec::with_capacity(KNOWN_PROVIDERS.len());
     for (id, display, needs_key) in KNOWN_PROVIDERS {
-        let active = active_ids.contains(&id.to_string());
-        let mut model = None;
-        let mut models = Vec::new();
-
-        if active && let Some(provider) = state.agents.get_provider(id) {
-            model = provider.configured_model().map(|m| m.to_string());
-            match provider.available_models().await {
-                Ok(mut available) => {
-                    available.retain(|m| !m.trim().is_empty());
-                    available.sort();
-                    available.dedup();
-                    models = available;
-                }
-                Err(err) => {
-                    tracing::warn!("failed to list models for provider {}: {}", id, err);
-                }
-            }
-        }
-
-        if let Some(selected) = model.as_ref()
-            && !models.iter().any(|m| m == selected)
-        {
-            models.insert(0, selected.clone());
-        }
+        // A type is configured when an instance registered under that exact id
+        // exists (classic case) OR when any registered instance is of that kind
+        // (custom profile key, e.g. `ollama-qwen3` of kind `openai`).
+        let active = model_info_by_id.contains_key(*id) || instance_kinds.iter().any(|k| k == id);
+        let (model, models) = if active {
+            model_info_by_id
+                .get(*id)
+                .cloned()
+                .unwrap_or((None, Vec::new()))
+        } else {
+            (None, Vec::new())
+        };
 
         providers.push(serde_json::json!({
             "id": id,
@@ -821,7 +909,7 @@ async fn list_providers(
         }));
     }
 
-    axum::Json(serde_json::json!({ "providers": providers }))
+    axum::Json(serde_json::json!({ "providers": providers, "instances": instances }))
 }
 
 #[derive(serde::Deserialize)]
@@ -1991,6 +2079,143 @@ mod tests {
         assert_eq!(
             configured_model_for(&AppConfig::default(), "openrouter"),
             None
+        );
+    }
+
+    // ─── #1540 fallout: instancias com id custom no seletor ────────────────
+
+    /// Provider minimo de teste: id proprio, sem rede. `available_models`
+    /// devolve vazio na hora, entao o teste nao depende de Ollama/OpenAI reais.
+    struct FakeProvider {
+        id: String,
+        model: Option<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl garraia_agents::LlmProvider for FakeProvider {
+        fn provider_id(&self) -> &str {
+            &self.id
+        }
+        async fn complete(
+            &self,
+            _request: &garraia_agents::LlmRequest,
+        ) -> garraia_common::Result<garraia_agents::LlmResponse> {
+            Ok(garraia_agents::LlmResponse {
+                content: Vec::new(),
+                model: self.model.clone().unwrap_or_default(),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+        fn configured_model(&self) -> Option<&str> {
+            self.model.as_deref()
+        }
+        async fn available_models(&self) -> garraia_common::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        async fn health_check(&self) -> garraia_common::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    fn llm_block(provider: &str, model: Option<&str>, base_url: Option<&str>) -> LlmProviderConfig {
+        LlmProviderConfig {
+            provider: provider.to_string(),
+            model: model.map(str::to_string),
+            api_key: None,
+            base_url: base_url.map(str::to_string),
+            extra: std::collections::HashMap::new(),
+        }
+    }
+
+    /// O bug da issue, escrito como teste: com `llm.ollama-qwen3.provider:
+    /// openai` (chave de perfil != tipo) o seletor mostrava "OpenAI (Not
+    /// Configured)" / "Ollama (Not Configured)" e nunca `ollama-qwen3`. Agora
+    /// `/api/providers` devolve a instancia real pelo seu id, e nenhum tipo com
+    /// instancia de respaldo cai em "Not Configured".
+    #[tokio::test]
+    async fn list_providers_expoe_instancias_com_id_custom() {
+        let runtime = AgentRuntime::new();
+        runtime.register_provider(Arc::new(FakeProvider {
+            id: "ollama-qwen3".to_string(),
+            model: Some("hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL".to_string()),
+        }));
+        runtime.register_provider(Arc::new(FakeProvider {
+            id: "openrouter".to_string(),
+            model: Some("openrouter/auto".to_string()),
+        }));
+        runtime.set_default_provider_id("openrouter");
+        runtime.set_fallback_providers(vec!["ollama-qwen3".to_string()]);
+
+        let mut config = AppConfig::default();
+        config.llm.insert(
+            "ollama-qwen3".to_string(),
+            llm_block(
+                "openai",
+                Some("hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL"),
+                Some("http://127.0.0.1:11434/v1"),
+            ),
+        );
+        config.llm.insert(
+            "openrouter".to_string(),
+            llm_block(
+                "openrouter",
+                Some("openrouter/auto"),
+                Some("https://openrouter.ai/api/v1"),
+            ),
+        );
+
+        let state: SharedState = Arc::new(AppState::new(
+            config,
+            Arc::new(runtime),
+            ChannelRegistry::new(),
+        ));
+
+        let axum::Json(body) = list_providers(axum::extract::State(state)).await;
+
+        // A instancia real aparece pelo seu proprio id, com tipo e papel.
+        let instances = body["instances"].as_array().expect("instances e um array");
+        let qwen = instances
+            .iter()
+            .find(|i| i["id"] == "ollama-qwen3")
+            .expect("a instancia ollama-qwen3 tem que aparecer no seletor");
+        assert_eq!(qwen["kind"], "openai", "o tipo vem de llm.<id>.provider");
+        assert_eq!(qwen["active"], true);
+        assert_eq!(qwen["is_default"], false);
+        assert_eq!(
+            qwen["in_fallback"], true,
+            "ollama-qwen3 esta em fallback_providers"
+        );
+
+        let openrouter = instances
+            .iter()
+            .find(|i| i["id"] == "openrouter")
+            .expect("a instancia openrouter tem que aparecer");
+        assert_eq!(openrouter["is_default"], true);
+
+        // Catalogo: um TIPO com instancia de respaldo nao e "Not Configured".
+        let providers = body["providers"].as_array().expect("providers e um array");
+        let active_of = |id: &str| {
+            providers
+                .iter()
+                .find(|p| p["id"] == id)
+                .unwrap_or_else(|| panic!("tipo {id} ausente do catalogo"))["active"]
+                .clone()
+        };
+        assert_eq!(
+            active_of("openai"),
+            true,
+            "openai tem instancia (ollama-qwen3, kind openai) — nao pode cair em Not Configured"
+        );
+        assert_eq!(
+            active_of("openrouter"),
+            true,
+            "openrouter tem instancia registrada"
+        );
+        assert_eq!(
+            active_of("ollama"),
+            false,
+            "nao ha instancia de kind ollama — este tipo segue nao configurado"
         );
     }
 
