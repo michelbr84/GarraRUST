@@ -1,0 +1,11 @@
+# A toolchain deste diretorio roda com `bash` no Windows (Git Bash), Linux e
+# macOS. Um .sh commitado com CRLF quebra o bash no Linux/macOS do CI ("bad
+# interpreter" / erros de \r). Forcar LF aqui torna isso impossivel, qualquer
+# que seja o core.autocrlf de quem edita no Windows. As chaves .asc tambem sao
+# normalizadas para LF (gpg aceita, e evita diff espurio entre plataformas).
+*.sh    text eol=lf
+*.mjs   text eol=lf
+*.txt   text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.asc   text eol=lf
