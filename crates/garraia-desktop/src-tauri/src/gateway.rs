@@ -33,6 +33,15 @@ fn contain_in_kill_on_close_job(child: &tauri_plugin_shell::process::CommandChil
             None
         }
     });
+    // PREMISSA DE SEGURANCA (assinatura por PID, nao por handle): assinar pelo
+    // PID so e seguro porque o `CommandChild` do tauri-plugin-shell segura, via
+    // `shared_child`, um HANDLE aberto do filho enquanto vive — e o Windows nao
+    // recicla um PID enquanto houver handle aberto para o processo. Logo, no
+    // intervalo entre o spawn e este `assign_pid`, `child.pid()` ainda aponta
+    // para ESTE filho, sem janela de reuso. Se o plugin deixar de segurar esse
+    // handle (ou colher o filho antes daqui), a janela de reuso reabre — nesse
+    // caso, migrar para `assign_handle` assim que o plugin expuser o handle do
+    // processo (o core ja tem `KillOnCloseJob::assign_handle`).
     if let Some(job) = job
         && let Err(e) = job.assign_pid(child.pid())
     {

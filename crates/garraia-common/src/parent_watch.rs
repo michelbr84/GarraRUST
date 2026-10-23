@@ -112,6 +112,11 @@ pub fn parent_gone(obs: &ParentObservation, initial_ppid: Option<u32>) -> bool {
 /// subsistemas sao encerrados pelo mesmo caminho do Ctrl+C/SIGTERM. Devolve
 /// `true` se sinalizou. Fora de Unix e no-op (devolve `false`): la o Job Object
 /// cobre o caso.
+///
+/// PREMISSA: depende do handler gracioso de SIGTERM do gateway. Sem ele, o
+/// SIGTERM default do Unix encerra o processo de forma dura — ainda SEM deixar
+/// orfao (o filho Node cai pelo `kill_on_drop`/PDEATHSIG/EOF de stdin), mas sem
+/// o flush final da sessao que o shutdown gracioso faz.
 pub fn request_self_shutdown() -> bool {
     #[cfg(unix)]
     {
