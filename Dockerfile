@@ -31,6 +31,13 @@ FROM chef AS planner
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+# O `[patch.crates-io]` do Cargo.toml da raiz aponta para forks vendorizados em
+# `third_party/` (#1662/#1668). Sem eles aqui e antes do `cook`, o cargo aborta
+# com "patch location `/build/third_party/...` does not contain packages" — foi
+# o que derrubou o Deploy do tag v0.4.10-rc1. O teste
+# `dockerfile_copies_every_patch_path_outside_crates` (garraia-channels) prende
+# a regra nos tres pontos: planner, antes do cook e no fonte completo.
+COPY third_party/ third_party/
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -40,6 +47,10 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 
 COPY --from=planner /build/recipe.json recipe.json
+# O patch tem de resolver ja no `cook`. Se o recipe trouxer os forks como
+# esqueleto, o `cook` sobrescreve estes arquivos com dummies e o COPY do fonte
+# completo, abaixo, devolve os reais.
+COPY third_party/ third_party/
 
 # Build dependencies only (cached layer) — scoped to the `garra` binary so
 # we don't warm up Tauri/glib for `garraia-desktop`, which is workspace-only
@@ -49,6 +60,7 @@ RUN cargo chef cook --release --recipe-path recipe.json --bin garra
 # Copy full source and build
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY third_party/ third_party/
 # `garraia-channels` embute o bridge WhatsApp em tempo de compilacao
 # (`include_str!("../../../../bridge/whatsapp/...")`, ADR 0023). Sem este COPY o
 # `cargo build` abaixo falha com "couldn't read .../bridge/whatsapp/bridge.mjs" —
