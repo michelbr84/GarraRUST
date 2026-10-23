@@ -1244,7 +1244,8 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // deploy.
     let boot = spawn_hardware_adapters(config, device_registry.clone());
     let device_config = Arc::new({
-        let mut cfg = DeviceToolsConfig::new(device_registry);
+        let mut cfg = DeviceToolsConfig::new(device_registry)
+            .com_adapters_configurados(boot.adapters_configurados);
         if let Some(state) = boot.state {
             cfg = cfg.com_estado(state);
         }
@@ -1720,6 +1721,11 @@ pub struct HardwareBoot {
     /// Os apelidos que os presets de skills declaram (#1250) — injetada no
     /// `DeviceToolsConfig` para o `device_list` mostrar `aliases: ...`.
     pub sinonimos: Option<Arc<dyn FonteDeSinonimos>>,
+    /// Ha secao `hardware.mqtt` ou `hardware.home_assistant` no config, subam
+    /// os adapters ou nao. Registry vazio SEM adapter e instalacao nova
+    /// (`not_configured`, neutro); registry vazio COM adapter e algo que nao
+    /// apareceu (`no_devices`, aviso) — configurado e quebrado nunca e neutro.
+    pub adapters_configurados: bool,
 }
 
 /// Sobe os adapters de hardware configurados (#1126 MQTT, #1127 Home
@@ -1777,6 +1783,7 @@ pub fn spawn_hardware_adapters(config: &AppConfig, registry: Arc<DeviceRegistry>
         return HardwareBoot {
             state: None,
             sinonimos: None,
+            adapters_configurados: false,
         };
     }
 
@@ -1795,6 +1802,7 @@ pub fn spawn_hardware_adapters(config: &AppConfig, registry: Arc<DeviceRegistry>
         return HardwareBoot {
             state: None,
             sinonimos: None,
+            adapters_configurados: true,
         };
     }
     let state = match DeviceStateStore::abrir_em(&state_path) {
@@ -1807,6 +1815,7 @@ pub fn spawn_hardware_adapters(config: &AppConfig, registry: Arc<DeviceRegistry>
             return HardwareBoot {
                 state: None,
                 sinonimos: None,
+                adapters_configurados: true,
             };
         }
     };
@@ -1834,6 +1843,7 @@ pub fn spawn_hardware_adapters(config: &AppConfig, registry: Arc<DeviceRegistry>
     HardwareBoot {
         state: algum_no_ar.then_some(state),
         sinonimos,
+        adapters_configurados: true,
     }
 }
 
