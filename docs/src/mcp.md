@@ -43,7 +43,7 @@ Exemplo:
 mcp:
   filesystem:
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem@2.0.0", "/tmp"]
     enabled: true
 
   github:
@@ -70,7 +70,7 @@ Formato:
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2.0.0", "/tmp"]
     },
     "github": {
       "command": "npx",
@@ -229,7 +229,7 @@ Permite ler e escrever arquivos em um diretório específico:
 mcp:
   filesystem:
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/documentos"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem@2.0.0", "/home/user/documentos"]
 ```
 
 ---

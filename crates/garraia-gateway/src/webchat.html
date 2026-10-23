@@ -2769,7 +2769,7 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
           <div class="metric-card reveal-card" style="--i: 1;">
             <div class="metric-label"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 5.5a.5.5 0 0 1 .5-.5h8a.5.5 0 0 1 0 1H4a.5.5 0 0 1-.5-.5zm0 2.5a.5.5 0 0 1 .5-.5h8a.5.5 0 0 1 0 1H4a.5.5 0 0 1-.5-.5z"/></svg></span> Gateway port</div>
             <div class="metric-value" id="dashboard-metric-port">—</div>
-            <div class="metric-trend muted">Listening on 0.0.0.0</div>
+            <div class="metric-trend muted" id="dashboard-metric-bind" data-testid="dashboard-metric-bind">Listening on —</div>
           </div>
           <div class="metric-card reveal-card" style="--i: 2;">
             <div class="metric-label"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4a2 2 0 1 1 .195 1.41L1.5 8.5l1.695 3.09a2 2 0 1 1-.71.412L.71 8.5 2.485 4.58A2 2 0 0 1 3 4z"/></svg></span> Providers configurados</div>
@@ -2810,7 +2810,6 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
               <li><span>Server</span><span class="value" id="dashboard-health-server">checking…</span></li>
               <li><span>Provider</span><span class="value" id="dashboard-health-provider">—</span></li>
               <li><span>Model</span><span class="value" id="dashboard-health-model">—</span></li>
-              <li><span>Config dir</span><span class="value" id="dashboard-health-config">—</span></li>
               <li><span>Secrets</span><span class="value" style="color: var(--garra-success);">masked</span></li>
             </ul>
           </div>
@@ -3012,7 +3011,7 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
     <div class="right-section">
       <h4>LLM Provider</h4>
       <div class="provider-select-wrap">
-        <select id="provider-select" title="LLM Provider"><option value="">Loading...</option></select>
+        <select id="provider-select" data-testid="provider-select" title="LLM Provider"><option value="">Loading...</option></select>
         <div class="provider-status-text" id="provider-status"></div>
         <input id="provider-model-input" list="provider-model-options" placeholder="Model (optional)" autocomplete="off" />
         <datalist id="provider-model-options"></datalist>
@@ -3407,7 +3406,12 @@ async function loadProvidersPage() {
       return;
     }
     const j = await r.json();
-    const items = Array.isArray(j.providers) ? j.providers : [];
+    // Real instances first (cards whose Test / Set default act on the real id),
+    // then catalog types with no backing instance so new ones can still be
+    // configured. See #1540 fallout in router.rs::list_providers.
+    const instances = Array.isArray(j.instances) ? j.instances : [];
+    const catalog = Array.isArray(j.providers) ? j.providers : [];
+    const items = instances.concat(catalog.filter(p => !p.active));
     if (items.length === 0) {
       grid.innerHTML = '<div style="color:var(--garra-muted);font-size:13px;">Nenhum provider registrado. Use o painel direito para adicionar.</div>';
       return;
@@ -3431,15 +3435,16 @@ function renderProviderCard(p, i) {
   const isDefault = !!p.is_default;
   const needsKey = !!p.needs_api_key;
   const pillCls = active ? 'success' : (needsKey ? 'warning' : 'danger');
-  const pillTxt = active ? (isDefault ? 'Default • Active' : 'Active') : (needsKey ? 'Needs API key' : 'Offline');
+  const pillTxt = active ? (isDefault ? 'Default • Active' : (p.in_fallback ? 'Fallback • Active' : 'Active')) : (needsKey ? 'Needs API key' : 'Offline');
+  const kindMeta = (p.kind && p.kind !== p.id) ? ' • tipo <code>' + escapeHtml(p.kind) + '</code>' : '';
   const models = (Array.isArray(p.models) ? p.models : []).slice(0, 24);
   return `
-    <div class="provider-card" style="--i:${i};" data-provider-id="${escapeHtml(p.id)}">
+    <div class="provider-card" style="--i:${i};" data-provider-id="${escapeHtml(p.id)}" data-testid="provider-card">
       <div class="provider-card-head">
         <strong>${escapeHtml(p.display_name || p.id)}</strong>
         <span class="pill ${pillCls}"><span class="status-dot ${active ? '' : (needsKey ? 'warning' : 'offline')}"></span> ${escapeHtml(pillTxt)}</span>
       </div>
-      <div class="provider-meta">id <code>${escapeHtml(p.id)}</code>${p.model ? ' • model <code>' + escapeHtml(p.model) + '</code>' : ''}</div>
+      <div class="provider-meta">id <code>${escapeHtml(p.id)}</code>${kindMeta}${p.model ? ' • model <code>' + escapeHtml(p.model) + '</code>' : ''}</div>
       ${models.length ? '<div class="provider-models">' + models.map(m => '<div>• ' + escapeHtml(m) + '</div>').join('') + '</div>' : ''}
       <div class="provider-test-result" data-provider-result="${escapeHtml(p.id)}"></div>
       <div class="provider-actions">
@@ -3971,7 +3976,12 @@ async function hydrateDashboard() {
       if (h.gateway_url) {
         try {
           const u = new URL(h.gateway_url);
-          set('dashboard-metric-port', u.port || (u.protocol === 'https:' ? '443' : '80'));
+          const port = u.port || (u.protocol === 'https:' ? '443' : '80');
+          set('dashboard-metric-port', port);
+          // The subtitle used to hardcode "Listening on 0.0.0.0"; show the real
+          // bind host:port from the backend so a 127.0.0.1 gateway stops
+          // reading as 0.0.0.0.
+          set('dashboard-metric-bind', 'Listening on ' + u.hostname + ':' + port);
         } catch (_e) { set('dashboard-metric-port', '—'); }
       }
       set('dashboard-metric-sessions', h.active_sessions !== undefined ? h.active_sessions : '—');
@@ -4416,12 +4426,25 @@ async function loadProviders() {
   try {
     const r = await fetch('/api/providers');
     const j = await r.json();
-    State.providers = j.providers || [];
+    // Real registered instances first (listed by their own id, e.g.
+    // `ollama-qwen3`), then catalog types that still have no instance so a new
+    // one can be configured. A type backed by an instance with another id is
+    // never shown as "Not Configured" (fix for the #1540 registration fallout).
+    const instances = Array.isArray(j.instances) ? j.instances : [];
+    const catalog = Array.isArray(j.providers) ? j.providers : [];
+    State.providers = instances.concat(catalog.filter(p => !p.active));
     providerSelect.innerHTML = '';
     State.providers.forEach(p => {
       const opt = document.createElement('option');
       opt.value = p.id;
-      opt.textContent = p.active ? p.display_name : p.display_name + ' (Not Configured)';
+      let label = p.display_name || p.id;
+      if (p.active) {
+        if (p.kind && p.kind !== p.id) label += ' · ' + p.kind;
+        if (p.is_default) label += ' ★';
+      } else {
+        label += ' (Not Configured)';
+      }
+      opt.textContent = label;
       providerSelect.appendChild(opt);
     });
     const def = State.providers.find(p => p.is_default);
@@ -4438,7 +4461,7 @@ function updateProviderUI() {
   const p = State.providers.find(x => x.id === id);
   if (!p) { providerStatus.textContent = ''; providerKeySection.style.display = 'none'; return; }
   if (p.active) {
-    providerStatus.innerHTML = '<span style="color:var(--success);">&#9679;</span> Active' + (p.is_default ? ' (Default)' : '');
+    providerStatus.innerHTML = '<span style="color:var(--success);">&#9679;</span> Active' + (p.is_default ? ' (Default)' : (p.in_fallback ? ' (Fallback)' : ''));
     providerKeySection.style.display = 'none';
   } else {
     providerStatus.innerHTML = '<span style="color:var(--error);">&#9679;</span> Not Configured';

@@ -1004,7 +1004,7 @@ crates/
 ├── garraia-skills/     # Parser de SKILL.md, scanner, instalador
 ├── garraia-common/     # Tipos compartilhados, erros, utilitários
 ├── garraia-telemetry/  # ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
-├── garraia-workspace/  # ✅ Postgres 16 + pgvector multi-tenant — Fase 3 (37 tabelas em 33 migrations, 32 sob FORCE RLS)
+├── garraia-workspace/  # ✅ Postgres 16 + pgvector multi-tenant — Fase 3 (42 tabelas em 36 migrations, 36 sob FORCE RLS)
 ├── garraia-embeddings/ # Traits EmbeddingProvider/VectorStore + DeterministicProvider (Fase 2.1)
 ├── garraia-learning/   # Garra Learning Agent — miner/generator/safety gate/versioning (Fase 1.4)
 ├── garraia-storage/    # ObjectStore: LocalFs + S3 (SSE-S3, HMAC integrity, presigned URLs)

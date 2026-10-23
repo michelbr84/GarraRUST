@@ -38,7 +38,7 @@ Você também **nunca assume que a descrição da issue está correta.** Issues 
 
 - Workspace de 22 crates; binário principal `garraia` (de `garraia-cli`); gateway HTTP/WS em `garraia-gateway` (Axum 0.8)
 - `AppState` é `Arc<AppState>` — import via `crate::state::AppState`
-- Acesso a DB: `SessionStore` (rusqlite, sync, sob `tokio::sync::Mutex`) no path SQLite; Postgres multi-tenant em `garraia-workspace` (32 tabelas sob FORCE RLS)
+- Acesso a DB: `SessionStore` (rusqlite, sync, sob `tokio::sync::Mutex`) no path SQLite; Postgres multi-tenant em `garraia-workspace` (36 tabelas sob FORCE RLS)
 - Migrations em `crates/garraia-workspace/migrations/` são **forward-only** e numeradas estritamente — nunca misture numeração entre repos
 - Flutter em `apps/garraia-mobile/` (Riverpod, go_router, Dio); desktop Tauri v2 em `garraia-desktop`
 - Histórico de decisões em `docs/adr/`; backlog em `TODO.md`; planejamento em `ROADMAP.md`

@@ -41,9 +41,14 @@ pub struct McpTool {
     timeout: Duration,
     /// `readOnlyHint`/`destructiveHint` declarados pelo servidor (#1385).
     anotacoes: (Option<bool>, Option<bool>),
+    /// `true` quando esta tool vem do servidor `@modelcontextprotocol/server-filesystem`.
+    /// So entao o confinamento recusa uma operacao fora do mapa em vez de
+    /// repassa-la (#1482): ver [`super::confinamento::confinar_argumentos`].
+    e_servidor_filesystem: bool,
 }
 
 impl McpTool {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         manager: Arc<McpManager>,
         nome_servidor: &str,
@@ -52,6 +57,7 @@ impl McpTool {
         schema_entrada: Value,
         timeout: Duration,
         anotacoes: (Option<bool>, Option<bool>),
+        e_servidor_filesystem: bool,
     ) -> Self {
         Self {
             anotacoes,
@@ -66,6 +72,7 @@ impl McpTool {
             nome_servidor: nome_servidor.to_string(),
             manager,
             timeout,
+            e_servidor_filesystem,
         }
     }
 }
@@ -128,6 +135,7 @@ impl Tool for McpTool {
                 argumentos,
                 &jail,
                 context.working_dir.as_deref(),
+                self.e_servidor_filesystem,
             ) {
                 Ok(Confinado::Passa(a)) => a,
                 Ok(Confinado::Reescrito(mapa)) => Some(mapa),

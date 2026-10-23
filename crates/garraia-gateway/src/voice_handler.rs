@@ -124,14 +124,17 @@ pub async fn synthesize(
         }
         Err(e) => {
             let elapsed = start.elapsed();
-            error!(
-                error = %e,
-                duration_ms = elapsed.as_millis() as u64,
-                "❌ TTS synthesis failed"
-            );
 
             if allow_fallback {
-                // Graceful degradation: return text instead of crashing
+                // Graceful degradation: return text instead of crashing. O
+                // motivo vai para o log ANTES do fallback para que uma voz que
+                // "falha em silencio" deixe rastro — warn porque a rota se
+                // recupera, nao quebra.
+                warn!(
+                    error = %e,
+                    duration_ms = elapsed.as_millis() as u64,
+                    "⚠️ TTS synthesis failed — falling back to text"
+                );
                 (
                     StatusCode::OK,
                     Json(TtsResponse {
@@ -143,6 +146,11 @@ pub async fn synthesize(
                 )
                     .into_response()
             } else {
+                error!(
+                    error = %e,
+                    duration_ms = elapsed.as_millis() as u64,
+                    "❌ TTS synthesis failed (no fallback)"
+                );
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
