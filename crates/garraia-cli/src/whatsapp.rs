@@ -1884,7 +1884,7 @@ fn self_test(ctx: &Context, json: bool) -> i32 {
                     "deps": report.deps,
                 }));
             } else {
-                println!("{} {origem} ({caminho})", t(ctx.lang, "Node:", "Node:"));
+                println!("Node: {origem} ({caminho})");
                 println!(
                     "{} {}",
                     t(ctx.lang, "Versão:", "Version:"),
@@ -1912,7 +1912,7 @@ fn self_test(ctx: &Context, json: bool) -> i32 {
                     "error": e.to_string(),
                 }));
             } else {
-                eprintln!("{} {origem} ({caminho})", t(ctx.lang, "Node:", "Node:"));
+                eprintln!("Node: {origem} ({caminho})");
                 eprintln!("{e}");
             }
             EX_UNAVAILABLE

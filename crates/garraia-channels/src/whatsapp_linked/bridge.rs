@@ -462,7 +462,11 @@ const PRIVATE_NODE_DIR: &str = "node";
 const PREBUILT_BRIDGE_DIR: &str = "bridge-whatsapp";
 
 /// Nome do produto desktop (Tauri `productName`): o `.deb`/`.rpm` poe os
-/// resources em `/usr/lib/<produto>/`. Ver [`private_node_candidates`].
+/// resources em `/usr/lib/<produto>/`. Ver [`install_roots`].
+///
+/// So e usado fora do Windows (a raiz `lib/<produto>` e do Linux); dai o
+/// `allow(dead_code)` no Windows, para a const nao parecer morta la.
+#[cfg_attr(windows, allow(dead_code))]
 const DESKTOP_PRODUCT: &str = "garraia-desktop";
 
 /// De onde o resolver tirou o `node` — para log e diagnostico.
@@ -551,53 +555,60 @@ fn resolve_node_from(
     Err(BridgeError::ToolMissing("node"))
 }
 
-/// Os caminhos onde o Node privado pode estar, relativos ao DIRETORIO do
-/// executavel em execucao. O primeiro que existir vence.
+/// As raizes de instalacao candidatas, relativas ao DIRETORIO do executavel em
+/// execucao. Dentro de uma raiz o Node privado (`node/`) e a ponte
+/// pre-construida (`bridge-whatsapp/`) sao SEMPRE irmaos — e por isso
+/// [`private_node_candidates`] e [`prebuilt_seed_candidates`] saem desta MESMA
+/// lista e nao podem divergir (o guardrail que o teste
+/// `node_e_seed_andam_em_par` trava).
 ///
 /// # Layout (contrato da fatia C), por plataforma
 ///
 /// O executavel em execucao e o app desktop (`garraia-desktop[.exe]`) ou a CLI
-/// (`garraia[.exe]`), que o app empacota como sidecar NO MESMO diretorio. Os
-/// caminhos cobrem onde o Tauri v2 poe `externalBin`/`bundle.resources`:
+/// (`garraia[.exe]`), que o app empacota como sidecar NO MESMO diretorio. As
+/// raizes cobrem onde o Tauri v2 poe `externalBin`/`bundle.resources`:
 ///
-/// - **Windows** (install dir plano): `<exe>\node\node.exe` — o zip oficial do
-///   Node poe `node.exe` na raiz da pasta.
-/// - **macOS** (`.app`, exe em `Contents/MacOS`):
-///   `<exe>/../Resources/node/bin/node`.
-/// - **Linux** (`.deb`/`.rpm`, exe em `/usr/bin`):
-///   `<exe>/../lib/garraia-desktop/node/bin/node` — resources vao para
-///   `/usr/lib/<produto>/`.
-/// - **AppImage / layout plano Unix**: `<exe>/node/bin/node`.
+/// - **Windows** (install dir plano): `<exe>` e `<exe>\..\Resources`.
+/// - **macOS** (`.app`, exe em `Contents/MacOS`): `<exe>` e `<exe>/../Resources`.
+/// - **Linux** (`.deb`/`.rpm`, exe em `/usr/bin`): `<exe>`, `<exe>/../Resources`
+///   e `<exe>/../lib/garraia-desktop` (resources vao para `/usr/lib/<produto>/`).
+///
+/// A raiz `lib/garraia-desktop` so existe fora do Windows, de proposito: la o
+/// `.deb`/`.rpm` poe os resources em `/usr/lib/<produto>/`; no Windows nao ha
+/// esse layout, entao nem o Node nem o seed procuram por ele.
 #[cfg(windows)]
-fn private_node_candidates(exe_dir: &Path) -> Vec<PathBuf> {
-    vec![
-        exe_dir.join(PRIVATE_NODE_DIR).join("node.exe"),
-        exe_dir
-            .join("..")
-            .join("Resources")
-            .join(PRIVATE_NODE_DIR)
-            .join("node.exe"),
-    ]
+fn install_roots(exe_dir: &Path) -> Vec<PathBuf> {
+    vec![exe_dir.to_path_buf(), exe_dir.join("..").join("Resources")]
 }
 
 #[cfg(not(windows))]
-fn private_node_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+fn install_roots(exe_dir: &Path) -> Vec<PathBuf> {
     vec![
-        exe_dir.join(PRIVATE_NODE_DIR).join("bin").join("node"),
-        exe_dir
-            .join("..")
-            .join("Resources")
-            .join(PRIVATE_NODE_DIR)
-            .join("bin")
-            .join("node"),
-        exe_dir
-            .join("..")
-            .join("lib")
-            .join(DESKTOP_PRODUCT)
-            .join(PRIVATE_NODE_DIR)
-            .join("bin")
-            .join("node"),
+        exe_dir.to_path_buf(),
+        exe_dir.join("..").join("Resources"),
+        exe_dir.join("..").join("lib").join(DESKTOP_PRODUCT),
     ]
+}
+
+/// O `node`/`node.exe` dentro de uma raiz de instalacao. Windows: `node\node.exe`
+/// (o zip oficial poe o binario na raiz da pasta); Unix: `node/bin/node`.
+#[cfg(windows)]
+fn node_in_root(root: &Path) -> PathBuf {
+    root.join(PRIVATE_NODE_DIR).join("node.exe")
+}
+
+#[cfg(not(windows))]
+fn node_in_root(root: &Path) -> PathBuf {
+    root.join(PRIVATE_NODE_DIR).join("bin").join("node")
+}
+
+/// Os caminhos onde o Node privado pode estar. O primeiro que existir vence.
+/// Ver [`install_roots`] para o layout por plataforma.
+fn private_node_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    install_roots(exe_dir)
+        .iter()
+        .map(|root| node_in_root(root))
+        .collect()
 }
 
 /// Nomes do executavel do `npm` ao lado do `node`, por plataforma.
@@ -634,21 +645,15 @@ pub fn prebuilt_seed() -> Option<PathBuf> {
     prebuilt_seed_near(exe.parent()?)
 }
 
-/// Candidatos de ponte pre-construida, espelhando [`private_node_candidates`]:
-/// o `bridge-whatsapp/` e sempre irmao do diretorio `node/`.
+/// Candidatos de ponte pre-construida, da MESMA [`install_roots`] do
+/// [`private_node_candidates`]: o `bridge-whatsapp/` e sempre o irmao do
+/// `node/` dentro de cada raiz. Andam em par por construcao — sem raiz
+/// `lib/garraia-desktop` no Windows nem aqui nem la.
 fn prebuilt_seed_candidates(exe_dir: &Path) -> Vec<PathBuf> {
-    vec![
-        exe_dir.join(PREBUILT_BRIDGE_DIR),
-        exe_dir
-            .join("..")
-            .join("Resources")
-            .join(PREBUILT_BRIDGE_DIR),
-        exe_dir
-            .join("..")
-            .join("lib")
-            .join(DESKTOP_PRODUCT)
-            .join(PREBUILT_BRIDGE_DIR),
-    ]
+    install_roots(exe_dir)
+        .into_iter()
+        .map(|root| root.join(PREBUILT_BRIDGE_DIR))
+        .collect()
 }
 
 fn prebuilt_seed_near(exe_dir: &Path) -> Option<PathBuf> {
@@ -1171,9 +1176,22 @@ pub fn prepare_with_seed(
 ///
 /// Devolve `Ok(true)` quando semeou, `Ok(false)` quando a arvore nao serve
 /// (ausente, ou nao bate com o lock — com aviso no log), `Err` so em falha de
-/// I/O da copia. Carimba [`DEPS_PENDING`] ANTES de tocar o `node_modules`: uma
-/// copia interrompida nunca deixa o destino parecendo atual. A troca e atomica
-/// (copia para um irmao temporario e so entao `rename` no lugar).
+/// I/O da copia.
+///
+/// # Nao e estritamente atomico — e fail-closed
+///
+/// A copia vai para um irmao temporario e so entao e trocada por `rename`, mas
+/// a troca em si NAO e atomica: ha a janela `remove_dir_all(dst)` -> `rename`
+/// em que o destino nao tem `node_modules`. O que torna isso seguro e o
+/// carimbo: [`DEPS_PENDING`] e gravado ANTES de qualquer mexida, entao um corte
+/// de energia entre o `remove` e o `rename` deixa o destino SEM arvore e com o
+/// carimbo `pending` — o proximo [`prepare`] responde `Install` e refaz, nunca
+/// adota um `node_modules` pela metade. O `rename` so e o ultimo passo porque a
+/// copia (milhares de arquivos do Baileys) e o demorado; quando ele roda, a
+/// arvore ja esta inteira no irmao temporario.
+///
+/// Em qualquer `Err` o irmao temporario e removido (best-effort) para nao
+/// deixar lixo de uma semeadura que nao concluiu.
 fn seed_node_modules(dir: &Path, seed: &Path, lock: &str) -> Result<bool, BridgeError> {
     let src_modules = seed.join("node_modules");
     if !src_modules.is_dir() {
@@ -1193,13 +1211,20 @@ fn seed_node_modules(dir: &Path, seed: &Path, lock: &str) -> Result<bool, Bridge
 
     let staging = dir.join(format!(".node_modules.seed.{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
-    copy_tree(&src_modules, &staging).map_err(|e| BridgeError::io(&staging, e))?;
-
     let dst_modules = dir.join("node_modules");
-    if dst_modules.exists() {
-        std::fs::remove_dir_all(&dst_modules).map_err(|e| BridgeError::io(&dst_modules, e))?;
+    // Em qualquer erro, o irmao temporario sai do disco — nada de lixo de uma
+    // semeadura que nao concluiu.
+    let resultado = (|| {
+        copy_tree(&src_modules, &staging).map_err(|e| BridgeError::io(&staging, e))?;
+        if dst_modules.exists() {
+            std::fs::remove_dir_all(&dst_modules).map_err(|e| BridgeError::io(&dst_modules, e))?;
+        }
+        std::fs::rename(&staging, &dst_modules).map_err(|e| BridgeError::io(&dst_modules, e))
+    })();
+    if resultado.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+        return resultado.map(|()| false);
     }
-    std::fs::rename(&staging, &dst_modules).map_err(|e| BridgeError::io(&dst_modules, e))?;
     tracing::info!(
         "whatsapp_linked: node_modules semeado da arvore pre-construida em {}",
         seed.display()
@@ -1454,8 +1479,32 @@ pub async fn self_test(node: &Path, dir: &Path) -> Result<SelfTestReport, Bridge
             source: e,
         })?;
 
-    // A ultima linha nao-vazia do stdout e o veredito JSON.
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    self_test_from_output(
+        output.status.success(),
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    )
+}
+
+/// A parte PURA do [`self_test`]: do resultado cru do processo ao veredito.
+/// Separada do `spawn` para ter teste sem Node e sem corrida — ela e quem
+/// decide ok/erro, le a ultima linha JSON do stdout, mapeia o exit code e
+/// redige o detalhe de falha.
+///
+/// Decisao de sucesso: o processo saiu 0 **e** a ultima linha nao-vazia do
+/// stdout e um JSON com `self_test == "ok"`. Qualquer outra coisa (saida != 0,
+/// `self_test: "error"`, lixo, stdout vazio) e falha. Na falha o detalhe vem do
+/// campo `error` do JSON (ja redigido pelo lado JS) ou, na falta dele, da cauda
+/// redigida do stderr — a MESMA [`redact_tail_line`] do resto do modulo, para
+/// um blob de credencial no stderr do Node nunca chegar cru a tela.
+fn self_test_from_output(
+    success: bool,
+    code: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<SelfTestReport, BridgeError> {
+    let stdout = String::from_utf8_lossy(stdout);
     let veredito: serde_json::Value = stdout
         .lines()
         .rev()
@@ -1463,7 +1512,7 @@ pub async fn self_test(node: &Path, dir: &Path) -> Result<SelfTestReport, Bridge
         .and_then(|l| serde_json::from_str(l.trim()).ok())
         .unwrap_or(serde_json::Value::Null);
 
-    let ok = output.status.success()
+    let ok = success
         && veredito
             .get("self_test")
             .and_then(serde_json::Value::as_str)
@@ -1483,15 +1532,12 @@ pub async fn self_test(node: &Path, dir: &Path) -> Result<SelfTestReport, Bridge
         });
     }
 
-    // Falha: o detalhe vem do campo `error` do JSON (ja redigido pelo lado JS)
-    // ou, na falta dele, da cauda redigida do stderr.
     let detail = veredito
         .get("error")
         .and_then(serde_json::Value::as_str)
         .map(redact_tail_line)
         .unwrap_or_else(|| {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            stderr
+            String::from_utf8_lossy(stderr)
                 .lines()
                 .rev()
                 .take(STDERR_TAIL_LINES)
@@ -1503,9 +1549,7 @@ pub async fn self_test(node: &Path, dir: &Path) -> Result<SelfTestReport, Bridge
                 .join("\n")
         });
     Err(BridgeError::SelfTest {
-        code: output
-            .status
-            .code()
+        code: code
             .map(|c| c.to_string())
             .unwrap_or_else(|| "sinal".into()),
         detail,
@@ -3502,5 +3546,221 @@ esta sendo aplicado: {intrusas:?}"
                 .deps,
             DepsPlan::Install
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Contrato de layout da fatia C: node e seed andam em par (#1636)
+    // -----------------------------------------------------------------------
+
+    /// Guardrail do contrato: os candidatos de Node e de ponte pre-construida
+    /// saem da MESMA [`install_roots`], item a item, e os sufixos sao os
+    /// documentados por plataforma. Se alguem mexer num sem o outro, ou trocar
+    /// um sufixo, isto quebra.
+    #[test]
+    fn node_e_seed_andam_em_par() {
+        let exe_dir = Path::new("/opt/app");
+        let roots = install_roots(exe_dir);
+        let nodes = private_node_candidates(exe_dir);
+        let seeds = prebuilt_seed_candidates(exe_dir);
+
+        assert_eq!(nodes.len(), roots.len(), "um Node por raiz");
+        assert_eq!(seeds.len(), roots.len(), "um seed por raiz");
+        for (i, root) in roots.iter().enumerate() {
+            assert!(
+                nodes[i].starts_with(root.join(PRIVATE_NODE_DIR)),
+                "node[{i}] {:?} nao esta sob o `node/` da raiz {}",
+                nodes[i],
+                root.display()
+            );
+            assert_eq!(
+                seeds[i],
+                root.join(PREBUILT_BRIDGE_DIR),
+                "seed[{i}] tem de ser o `bridge-whatsapp` irmao do `node/` da raiz {i}"
+            );
+        }
+
+        // Normaliza `\` -> `/` para asserir sufixo igual nas duas plataformas.
+        let sufs = |v: &[PathBuf]| -> Vec<String> {
+            v.iter()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .collect()
+        };
+        let n = sufs(&nodes);
+        let s = sufs(&seeds);
+
+        #[cfg(windows)]
+        {
+            assert_eq!(nodes.len(), 2, "Windows: install dir + ..\\Resources");
+            assert!(n[0].ends_with("/node/node.exe"), "{}", n[0]);
+            assert!(n[1].ends_with("/Resources/node/node.exe"), "{}", n[1]);
+            assert!(s[0].ends_with("/bridge-whatsapp"), "{}", s[0]);
+            assert!(s[1].ends_with("/Resources/bridge-whatsapp"), "{}", s[1]);
+            assert!(
+                !n.iter()
+                    .chain(&s)
+                    .any(|p| p.contains("lib/garraia-desktop")),
+                "a raiz lib/garraia-desktop e so do Linux: {n:?} {s:?}"
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(
+                nodes.len(),
+                3,
+                "Unix: plano + ../Resources + ../lib/<produto>"
+            );
+            assert!(n[0].ends_with("/node/bin/node"), "{}", n[0]);
+            assert!(n[1].ends_with("/Resources/node/bin/node"), "{}", n[1]);
+            assert!(
+                n[2].ends_with("/lib/garraia-desktop/node/bin/node"),
+                "{}",
+                n[2]
+            );
+            assert!(s[0].ends_with("/bridge-whatsapp"), "{}", s[0]);
+            assert!(s[1].ends_with("/Resources/bridge-whatsapp"), "{}", s[1]);
+            assert!(
+                s[2].ends_with("/lib/garraia-desktop/bridge-whatsapp"),
+                "{}",
+                s[2]
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // self_test: parse/decisao/exit/redacao (#1636)
+    // -----------------------------------------------------------------------
+
+    /// Uma corrida alfanumerica longa o bastante para a redacao cortar, sem
+    /// `/` nem `+` (para o teste nao depender do alfabeto). 60 caracteres.
+    const CRED_FALSA: &str = "c2VjcmV0Y3JlZGVudGlhbG5vaXNla2V5MDEyMzQ1Njc4OWFiY2RlZmdoaWpr";
+
+    /// A parte pura do `self_test`: decide ok/erro, le a ultima linha JSON,
+    /// mapeia o exit code e redige o detalhe de falha. Sem Node, sem processo.
+    #[test]
+    fn self_test_from_output_decide_ok_erro_e_redige() {
+        // a) ok + exit 0: devolve a versao do Node e as deps.
+        let ok = r#"{"self_test":"ok","node":"v24.19.0","deps":{"@whiskeysockets/baileys":"7.0.0-rc14","pino":"9.14.0","sharp":"0.35.5"}}"#;
+        let report = self_test_from_output(true, Some(0), format!("ruido\n{ok}\n").as_bytes(), b"")
+            .expect("ok");
+        assert_eq!(report.node_version, "v24.19.0");
+        assert_eq!(report.deps.len(), 3);
+        assert_eq!(
+            report.deps.get("sharp").and_then(serde_json::Value::as_str),
+            Some("0.35.5")
+        );
+
+        // a') ok na linha, mas exit != 0: o exit manda, e falha.
+        assert!(matches!(
+            self_test_from_output(false, Some(1), ok.as_bytes(), b""),
+            Err(BridgeError::SelfTest { .. })
+        ));
+
+        // b) error JSON + exit != 0: detalhe vem do campo `error`.
+        let err = r#"{"self_test":"error","node":"v24.19.0","error":"Error: Cannot find package 'sharp'"}"#;
+        match self_test_from_output(false, Some(1), err.as_bytes(), b"stderr ignorado") {
+            Err(BridgeError::SelfTest { code, detail }) => {
+                assert_eq!(code, "1");
+                assert!(detail.contains("Cannot find package"), "{detail}");
+                assert!(!detail.contains("stderr ignorado"), "o error do JSON vence");
+            }
+            outro => panic!("{outro:?}"),
+        }
+
+        // c) lixo no stdout + exit != 0: cai na cauda do stderr.
+        match self_test_from_output(false, Some(70), b"isto nao e json", b"npm ERR! deu ruim") {
+            Err(BridgeError::SelfTest { code, detail }) => {
+                assert_eq!(code, "70");
+                assert!(detail.contains("deu ruim"), "{detail}");
+            }
+            outro => panic!("{outro:?}"),
+        }
+
+        // c') sem code (morto por sinal): o codigo e "sinal".
+        match self_test_from_output(false, None, b"", b"") {
+            Err(BridgeError::SelfTest { code, .. }) => assert_eq!(code, "sinal"),
+            outro => panic!("{outro:?}"),
+        }
+
+        // d) credencial no stderr e redigida na cauda da falha.
+        let stderr = format!("Error: failed noiseKey={CRED_FALSA} at Object.<anonymous>");
+        match self_test_from_output(false, Some(1), b"", stderr.as_bytes()) {
+            Err(BridgeError::SelfTest { detail, .. }) => {
+                assert!(!detail.contains(CRED_FALSA), "a chave saiu crua: {detail}");
+                assert!(
+                    detail.contains("<redigido:"),
+                    "precisa dizer que cortou: {detail}"
+                );
+            }
+            outro => panic!("{outro:?}"),
+        }
+
+        // d') credencial redigida tambem quando vem no campo `error` do JSON.
+        let err_cred = format!(r#"{{"self_test":"error","error":"boom {CRED_FALSA}"}}"#);
+        match self_test_from_output(false, Some(1), err_cred.as_bytes(), b"") {
+            Err(BridgeError::SelfTest { detail, .. }) => {
+                assert!(!detail.contains(CRED_FALSA), "{detail}");
+            }
+            outro => panic!("{outro:?}"),
+        }
+    }
+
+    /// Um "node" de mentira: ignora os args, cospe uma linha no stdout (e,
+    /// opcional, uma no stderr) e sai com o codigo dado. Exercita o caminho
+    /// REAL de spawn/contencao/timeout de [`self_test`] sem Node.
+    #[cfg(unix)]
+    fn fake_node(dir: &Path, stdout_line: &str, stderr_line: &str, code: i32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("fakenode");
+        let mut script = String::from("#!/bin/sh\n");
+        script.push_str(&format!("printf '%s\\n' '{stdout_line}'\n"));
+        if !stderr_line.is_empty() {
+            script.push_str(&format!("printf '%s\\n' '{stderr_line}' >&2\n"));
+        }
+        script.push_str(&format!("exit {code}\n"));
+        std::fs::write(&path, script).expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        path
+    }
+
+    #[cfg(windows)]
+    fn fake_node(dir: &Path, stdout_line: &str, stderr_line: &str, code: i32) -> PathBuf {
+        let path = dir.join("fakenode.cmd");
+        let mut script = String::from("@echo off\r\n");
+        script.push_str(&format!("echo {stdout_line}\r\n"));
+        if !stderr_line.is_empty() {
+            script.push_str(&format!("echo {stderr_line} 1>&2\r\n"));
+        }
+        script.push_str(&format!("exit /b {code}\r\n"));
+        std::fs::write(&path, script).expect("write");
+        path
+    }
+
+    /// O caminho real: `self_test` sobe o "node" de mentira sob a contencao de
+    /// ambiente (`apply_child_env`) e le o veredito. Prova spawn + cwd + env +
+    /// leitura, nas duas plataformas (sh no Unix, `.cmd` no Windows).
+    #[tokio::test]
+    async fn self_test_sobe_o_node_de_mentira_e_le_o_veredito() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Sucesso.
+        let ok_line =
+            r#"{"self_test":"ok","node":"v99.0.0","deps":{"pino":"9.14.0","sharp":"0.35.5"}}"#;
+        let node = fake_node(dir.path(), ok_line, "", 0);
+        let report = self_test(&node, dir.path()).await.expect("ok");
+        assert_eq!(report.node_version, "v99.0.0");
+        assert_eq!(
+            report.deps.get("sharp").and_then(serde_json::Value::as_str),
+            Some("0.35.5")
+        );
+
+        // Falha com exit != 0 e credencial no stderr: redigida.
+        let node = fake_node(dir.path(), "nao e json", &format!("boom {CRED_FALSA}"), 1);
+        match self_test(&node, dir.path()).await {
+            Err(BridgeError::SelfTest { code, detail }) => {
+                assert_eq!(code, "1");
+                assert!(!detail.contains(CRED_FALSA), "a chave saiu crua: {detail}");
+            }
+            outro => panic!("{outro:?}"),
+        }
     }
 }

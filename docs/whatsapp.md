@@ -993,6 +993,17 @@ arvore para o diretorio da ponte em vez de rodar `npm ci` — nenhuma primeira
 execucao precisa baixar dependencia. Uma arvore que nao bate com o lock e
 ignorada (com aviso), caindo no `npm ci` de sempre.
 
+> **Invariante de empacotamento (fatia C).** O `node/` e o `bridge-whatsapp/`
+> ao lado do executavel **nunca** podem ser gravaveis por um principal de menor
+> privilegio que o proprio binario. O resolver confia neles por caminho (nao os
+> executa para provar identidade, mas o Node escolhido executa o que estiver em
+> `node/`, e o `node_modules` semeado roda no processo do usuario): se um
+> usuario comum puder escrever nesse `node/` ou nesse `node_modules`, ele troca
+> o binario que o GarraIA vai rodar. O instalador da fatia C deve instala-los
+> com os mesmos donos e modos do executavel (ex.: `root`/`Administrators`,
+> nao-gravaveis pelo usuario) — toda a garantia de confianca do Node privado
+> depende disso.
+
 ### `garra whatsapp self-test [--json]`
 
 Resolve o Node pela ordem acima e roda `bridge.mjs --self-test`, que importa
