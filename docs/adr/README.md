@@ -65,6 +65,7 @@ Rationale curta ("porque sim") é sinal de que a decisão não deveria ser ADR �
 | [0023](0023-whatsapp-dispositivo-vinculado.md) | WhatsApp pessoal por dispositivo vinculado (`garra whatsapp`) — bridge Node/Baileys por stdio + sessão cifrada | ✅ accepted | 2026-09-16 | [#1238](https://github.com/michelbr84/GarraRUST/issues/1238) |
 | [0024](0024-perfis-de-execucao-isolated-pod.md) | Perfis de execução `standard` e `isolated-pod` — poder total dentro do pod, nada implícito fora; dono do WhatsApp por identidade declarada; raiz do MCP `filesystem` no workspace | ✅ accepted | 2026-09-21 | [#1329](https://github.com/michelbr84/GarraRUST/issues/1329) |
 | [0025](0025-classes-de-capacidade-e-politica-de-acesso-v2.md) | Classes de capacidade, teto por principal e Access Policy v2 do WhatsApp | Accepted | 2026-09-26 |
+| [0026](0026-billing-schema-plan-subscription-invoice.md) | Schema de billing: plan / subscription / invoice no workspace (Garra Cloud; so schema) | ✅ accepted | 2026-10-22 | [#1652](https://github.com/michelbr84/GarraRUST/issues/1652) |
 
 Legenda: ✅ accepted · 📋 proposed (aguardando execução) · 🔒 blocked (issue Linear aguardando este ADR ser escrito).
 

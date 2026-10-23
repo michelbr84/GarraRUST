@@ -34,7 +34,7 @@
 //!
 //! ## Bypass-RLS / manutencao cross-tenant
 //!
-//! O titular pode ter dado em vários grupos, e 32 tabelas estao sob FORCE
+//! O titular pode ter dado em vários grupos, e 36 tabelas estao sob FORCE
 //! RLS com politica fail-closed — consulta direta no `garraia_app` sem GUC de
 //! tenant devolve zero linhas. Por isso o trabalho vive em quatro funcoes
 //! `SECURITY DEFINER` da migration 034 (mesmo desenho do
