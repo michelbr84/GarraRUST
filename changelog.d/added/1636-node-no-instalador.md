@@ -21,10 +21,14 @@
   `garraia whatsapp self-test --json`, exigindo `node_origin == privado`,
   `self_test == ok` e o carregamento de baileys + pino + sharp, alem de provar
   que o `node/` e o `bridge-whatsapp/node_modules` sao irmaos do sidecar no
-  layout do contrato. Sem `continue-on-error`. A inicializacao pela GUI do
-  desktop e o pareamento real do WhatsApp nao sao automatizados (dependem de
-  sessao grafica e de intervencao externa) e estao marcados como tal em
-  `docs/desktop.md`.
+  layout do contrato. Jobs irmaos cobrem ainda a inicializacao pelo desktop
+  (`desktop-launch-{linux,windows,macos}`: o app sobe, o sidecar responde
+  `GET /api/health` e morre junto com o app em <=15s), a atualizacao e a
+  desinstalacao (`update-{linux,macos,windows}`: v0.4.9 -> novo, a sessao em
+  `~/.garraia/whatsapp` sobrevive, e a desinstalacao tira o pacote e preserva o
+  dado do usuario). Sem `continue-on-error`. Fora de escopo automatizado ficam
+  so o pareamento real do WhatsApp (precisa de telefone + QR) e a
+  assinatura/notarizacao do app (decisao do dono); marcados em `docs/desktop.md`.
 - **Novo `docs/desktop.md` (#1636, fatia C).** Documenta o layout por formato, o
   que o instalador traz, o que a desinstalacao remove e o que fica
   (`~/.garraia/whatsapp/` preservado), como o bundle e montado e o que nao e
