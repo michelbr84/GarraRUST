@@ -5,7 +5,6 @@ Como cortar uma release `vX.Y.Z` do GarraIA. Tudo depois do tag é automático.
 ## 1. Preparar (via PR — o `main` é protegido)
 
 1. Bump da versão do workspace em `Cargo.toml` (`[workspace.package] version`).
-2. Rodar `cargo check` para o `Cargo.lock` acompanhar (nunca editar o lock à mão).
    **Junto com o bump:** `catalog_version` em
    `crates/garraia-gateway/assets/catalogo-funcionalidades.json` recebe a mesma
    versão — o teste `versao_do_catalogo_casa_com_a_versao_do_workspace` (#1670)
@@ -13,6 +12,7 @@ Como cortar uma release `vX.Y.Z` do GarraIA. Tudo depois do tag é automático.
    descreve o que a versão entrega (itens novos, pré-requisitos e limitações que
    mudaram): é dele que o Garra tira a resposta sobre as próprias
    funcionalidades.
+2. Rodar `cargo check` para o `Cargo.lock` acompanhar (nunca editar o lock à mão).
 3. Juntar os fragmentos de changelog acumulados desde a última versão:
 
    ```bash
@@ -164,7 +164,7 @@ Runbook (exemplo `v0.4.10-rc1`):
    quebraria o job do MSI e poderia derrubar o step fail-closed do
    `latest.json` (§1.5, item 1). `cargo check` para o `Cargo.lock` acompanhar,
    e o `catalog_version` do catalogo de funcionalidades sobe para o mesmo
-   `0.4.10` (§1 passo 2).
+   `0.4.10` (§1 passo 1).
 3. **NAO rode `assemble.py --write`.** Juntar os fragmentos no `[Unreleased]`
    e apaga-los e **passo da estavel** (§1 passo 3). No RC os fragmentos
    **ficam** em `changelog.d/` — eles entram de uma vez quando a estavel sair.

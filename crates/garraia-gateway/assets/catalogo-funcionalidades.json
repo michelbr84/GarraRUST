@@ -298,13 +298,13 @@
       "summary": "Canal de conversa pelo WhatsApp do próprio aparelho, via ponte local (Baileys).",
       "prerequisites": [
         "Node.js 20+ no host para a CLI (ou GARRAIA_NODE_BIN apontando um Node); o app desktop já traz um Node privado e as dependências da ponte, sem mexer no PATH",
-        "pareamento pelo Assistente de Primeiro Uso do desktop (QR na tela), por garraia whatsapp link ou via /pair; ou allowlist em channels.whatsapp_linked.settings.allow"
+        "pareamento pelo Assistente de Primeiro Uso do desktop (QR na tela), por garraia whatsapp link ou via /pair; ou allowlist em channels.whatsapp_linked.allow"
       ],
       "limitations": [
         "portão vazio (allowlist) descarta mensagens de quem não está na lista, sem resposta",
         "recusa subir com tool MCP registrada fora do piso somente leitura do canal",
         "pareamento pendente é memória do processo: restart do gateway o descarta",
-        "cadência entre turnos por chat: acima de channels.whatsapp_linked.settings.max_turnos_per_minute (padrão 20 em 60s) o turno é cortado como possível loop entre agentes, com backoff crescente",
+        "cadência entre turnos por chat: acima de channels.whatsapp_linked.max_turnos_per_minute (padrão 20 em 60s) o turno é cortado como possível loop entre agentes, com backoff crescente",
         "garraia whatsapp self-test prova que a ponte carrega (Node + Baileys), não que o aparelho está pareado"
       ],
       "availability": "configuravel",
