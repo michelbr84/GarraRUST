@@ -2115,5 +2115,333 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         "expected CHECK violation for size_bytes > 5 GiB"
     );
 
+    // ─── Migration 035 validation (#1652: billing plan/subscription/invoice) ─
+    //
+    // Three new entities. `plans` is a GLOBAL catalog (no group_id, no RLS —
+    // same class as roles/permissions). `subscriptions` and `invoices` are
+    // tenant-scoped under FORCE RLS with the migration 014 pattern (direct
+    // group_id, NULLIF fail-closed, WITH CHECK identical to USING). Reuses the
+    // group A / group B fixtures and the `rls_scope` helper from above.
+
+    // ── 035.1: tables exist ────────────────────────────────────────────────
+    for expected in &["plans", "subscriptions", "invoices"] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM information_schema.tables \
+                 WHERE table_schema = 'public' AND table_name = $1 \
+             )",
+        )
+        .bind(expected)
+        .fetch_one(workspace.pool())
+        .await?;
+        assert!(exists, "missing table from migration 035: {expected}");
+    }
+
+    // ── 035.2: RLS posture — plans OUT, subscriptions/invoices FORCE ───────
+    let billing_forced: Vec<(String, bool)> = sqlx::query_as(
+        "SELECT relname::text, relforcerowsecurity \
+         FROM pg_class \
+         WHERE relname IN ('plans', 'subscriptions', 'invoices') \
+         ORDER BY relname",
+    )
+    .fetch_all(workspace.pool())
+    .await?;
+    for (name, forced) in &billing_forced {
+        match name.as_str() {
+            "plans" => assert!(
+                !forced,
+                "plans must NOT have FORCE RLS (global catalog, like roles/permissions)"
+            ),
+            "subscriptions" | "invoices" => {
+                assert!(forced, "{name} must have FORCE RLS (tenant-scoped)")
+            }
+            other => panic!("unexpected billing table: {other}"),
+        }
+    }
+
+    // ── 035.3: seed — exactly one plan (free) with NO price fixed ──────────
+    let plans_count: i64 = sqlx::query_scalar("SELECT count(*) FROM plans")
+        .fetch_one(workspace.pool())
+        .await?;
+    assert_eq!(
+        plans_count, 1,
+        "migration 035 must seed exactly one plan (free); paid plans come with #1653"
+    );
+    let free_plan: (i32, Option<i64>, Option<String>, bool) = sqlx::query_as(
+        "SELECT tier, price_cents, currency, is_active FROM plans WHERE id = 'free'",
+    )
+    .fetch_one(workspace.pool())
+    .await?;
+    assert_eq!(free_plan.0, 0, "free plan tier must be 0");
+    assert!(
+        free_plan.1.is_none(),
+        "free plan price_cents must be NULL (no price fixed in this repo)"
+    );
+    assert!(
+        free_plan.2.is_none(),
+        "free plan currency must be NULL (travels with price_cents)"
+    );
+    assert!(free_plan.3, "free plan must be active");
+
+    // ── 035.4: policies have explicit WITH CHECK identical to USING ────────
+    let billing_policies: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT tablename::text, policyname::text, qual::text, with_check::text \
+             FROM pg_policies \
+             WHERE schemaname = 'public' \
+               AND tablename IN ('subscriptions', 'invoices') \
+             ORDER BY tablename, policyname",
+    )
+    .fetch_all(workspace.pool())
+    .await?;
+    assert_eq!(
+        billing_policies.len(),
+        2,
+        "expected exactly 2 policies (one per tenant billing table), got: {billing_policies:?}"
+    );
+    for (table, policy, qual, with_check) in &billing_policies {
+        assert!(
+            qual.is_some() && with_check.is_some(),
+            "migration 035 policy {policy} on {table} must have both USING and WITH CHECK"
+        );
+        assert_eq!(
+            qual, with_check,
+            "migration 035 policy {policy} on {table} must have identical USING/WITH CHECK"
+        );
+    }
+
+    // ── 035.5: grant hygiene (immutability + read-only catalog) ────────────
+    //
+    // `plans` is read-only to the app (seeded by migration). `subscriptions`
+    // is mutable within the tenant but never DELETE'd by the app. `invoices`
+    // is an append-only immutable ledger: SELECT/INSERT only. These prove the
+    // ADP from migration 007 does NOT silently widen grants on later-migration
+    // tables — if it did, these negative assertions would fire.
+    for (table, priv_, want) in &[
+        ("plans", "SELECT", true),
+        ("plans", "INSERT", false),
+        ("plans", "UPDATE", false),
+        ("plans", "DELETE", false),
+        ("subscriptions", "SELECT", true),
+        ("subscriptions", "INSERT", true),
+        ("subscriptions", "UPDATE", true),
+        ("subscriptions", "DELETE", false),
+        ("invoices", "SELECT", true),
+        ("invoices", "INSERT", true),
+        ("invoices", "UPDATE", false),
+        ("invoices", "DELETE", false),
+    ] {
+        let granted: bool = sqlx::query_scalar("SELECT has_table_privilege('garraia_app', $1, $2)")
+            .bind(table)
+            .bind(priv_)
+            .fetch_one(workspace.pool())
+            .await?;
+        assert_eq!(
+            granted, *want,
+            "garraia_app {priv_} on {table}: expected {want}, got {granted}"
+        );
+    }
+
+    // ── 035.5b: login/signup roles MUST NOT touch billing (regras 11/13) ───
+    for role in &["garraia_login", "garraia_signup"] {
+        for table in &["plans", "subscriptions", "invoices"] {
+            for priv_ in &["SELECT", "INSERT", "UPDATE", "DELETE"] {
+                let leaked: bool = sqlx::query_scalar("SELECT has_table_privilege($1, $2, $3)")
+                    .bind(role)
+                    .bind(table)
+                    .bind(priv_)
+                    .fetch_one(workspace.pool())
+                    .await?;
+                assert!(
+                    !leaked,
+                    "{role} MUST NOT have {priv_} on {table} (billing privilege leak)"
+                );
+            }
+        }
+    }
+
+    // ── 035.6: fixtures in group A and group B (bypass via superuser) ──────
+    let sub_a_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO subscriptions (group_id, plan_id, status) \
+         VALUES ($1, 'free', 'active') RETURNING id",
+    )
+    .bind(group_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let invoice_a_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO invoices (group_id, subscription_id, status, amount_cents, currency) \
+         VALUES ($1, $2, 'open', 0, 'USD') RETURNING id",
+    )
+    .bind(group_id)
+    .bind(sub_a_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let sub_b_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO subscriptions (group_id, plan_id, status) \
+         VALUES ($1, 'free', 'active') RETURNING id",
+    )
+    .bind(other_group_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let invoice_b_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO invoices (group_id, subscription_id, status, amount_cents, currency) \
+         VALUES ($1, $2, 'open', 1999, 'USD') RETURNING id",
+    )
+    .bind(other_group_id)
+    .bind(sub_b_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    // ── Cenário 20 — positive read (same group) ────────────────────────────
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+        let s: i64 = sqlx::query_scalar("SELECT count(*) FROM subscriptions WHERE id = $1")
+            .bind(sub_a_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(s, 1, "cenário 20: own subscription visible");
+        let iv: i64 = sqlx::query_scalar("SELECT count(*) FROM invoices WHERE id = $1")
+            .bind(invoice_a_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(iv, 1, "cenário 20: own invoice visible");
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 21 — cross-group read blocked ──────────────────────────────
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+        let s: i64 = sqlx::query_scalar("SELECT count(*) FROM subscriptions WHERE id = $1")
+            .bind(sub_b_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(s, 0, "cenário 21: cross-group subscription must not leak");
+        let iv: i64 = sqlx::query_scalar("SELECT count(*) FROM invoices WHERE id = $1")
+            .bind(invoice_b_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(iv, 0, "cenário 21: cross-group invoice must not leak");
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 22 — fail-closed when GUC unset ─────────────────────────────
+    {
+        let mut tx = rls_scope(workspace.pool(), None, None).await?;
+        for table in &["subscriptions", "invoices"] {
+            // AssertSqlSafe: `table` is a compile-time literal from the closed
+            // `&[&str]` on the line above — no user input. Same safety argument
+            // as cenário 3. Audited 2026-10-22.
+            let sql = format!("SELECT count(*) FROM {table}");
+            let count: i64 = sqlx::query_scalar(AssertSqlSafe(sql))
+                .fetch_one(&mut *tx)
+                .await?;
+            assert_eq!(
+                count, 0,
+                "cenário 22: unset GUC must yield 0 rows on `{table}` (fail-closed)"
+            );
+        }
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 23 — WITH CHECK blocks cross-group INSERT ───────────────────
+    //
+    // The row is deliberately `canceled` (with canceled_at) so it satisfies
+    // EVERY table constraint — the `one_live_per_group` partial unique index
+    // excludes canceled rows, so group B's existing live subscription cannot
+    // collide. The ONLY failing gate is the RLS WITH CHECK (group mismatch),
+    // guaranteeing SQLSTATE 42501 regardless of Postgres constraint ordering.
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+        let blocked_sub = sqlx::query(
+            "INSERT INTO subscriptions (group_id, plan_id, status, canceled_at) \
+             VALUES ($1, 'free', 'canceled', now())",
+        )
+        .bind(other_group_id) // claim group B while scope = group A
+        .execute(&mut *tx)
+        .await
+        .expect_err("migration 035: RLS WITH CHECK must block cross-group subscription INSERT");
+        assert_eq!(
+            blocked_sub
+                .as_database_error()
+                .and_then(|e| e.code().map(|c| c.into_owned())),
+            Some("42501".to_string()),
+            "expected SQLSTATE 42501 (RLS WITH CHECK refusal) for cross-group subscription INSERT"
+        );
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 24 — subscription status CHECK rejects invalid value ────────
+    let bad_status = sqlx::query(
+        "INSERT INTO subscriptions (group_id, plan_id, status) VALUES ($1, 'free', 'trialing')",
+    )
+    .bind(group_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err("migration 035: invalid subscription status must be rejected by CHECK");
+    assert_eq!(
+        bad_status
+            .as_database_error()
+            .and_then(|e| e.code().map(|c| c.into_owned())),
+        Some("23514".to_string()),
+        "expected SQLSTATE 23514 (check_violation) for invalid subscription status"
+    );
+
+    // ── Cenário 25 — invoice amount_cents must be non-negative ──────────────
+    let bad_amount = sqlx::query(
+        "INSERT INTO invoices (group_id, subscription_id, amount_cents, currency) \
+         VALUES ($1, $2, -1, 'USD')",
+    )
+    .bind(group_id)
+    .bind(sub_a_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err("migration 035: negative amount_cents must be rejected by CHECK");
+    assert_eq!(
+        bad_amount
+            .as_database_error()
+            .and_then(|e| e.code().map(|c| c.into_owned())),
+        Some("23514".to_string()),
+        "expected SQLSTATE 23514 (check_violation) for negative amount_cents"
+    );
+
+    // ── Cenário 26 — invoice compound FK blocks cross-group drift ───────────
+    // Claim group A but reference a subscription living in group B.
+    let drift_invoice = sqlx::query(
+        "INSERT INTO invoices (group_id, subscription_id, amount_cents, currency) \
+         VALUES ($1, $2, 100, 'USD')",
+    )
+    .bind(group_id) // group A
+    .bind(sub_b_id) // subscription lives in group B
+    .execute(workspace.pool())
+    .await
+    .expect_err("migration 035: compound FK must block cross-group invoice drift");
+    assert_eq!(
+        drift_invoice
+            .as_database_error()
+            .and_then(|e| e.code().map(|c| c.into_owned())),
+        Some("23503".to_string()),
+        "expected SQLSTATE 23503 (foreign_key_violation) for invoice cross-group drift"
+    );
+
+    // ── Cenário 27 — at most one live subscription per group ────────────────
+    // group A already has an active subscription (sub_a_id). A second
+    // non-canceled subscription must collide on the partial unique index.
+    let second_live = sqlx::query(
+        "INSERT INTO subscriptions (group_id, plan_id, status) VALUES ($1, 'free', 'active')",
+    )
+    .bind(group_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err("migration 035: a second live subscription per group must be rejected");
+    assert_eq!(
+        second_live
+            .as_database_error()
+            .and_then(|e| e.code().map(|c| c.into_owned())),
+        Some("23505".to_string()),
+        "expected SQLSTATE 23505 (unique_violation) for second live subscription per group"
+    );
+
     Ok(())
 }
