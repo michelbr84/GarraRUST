@@ -511,6 +511,18 @@ enum WhatsAppCommands {
     Logout,
     /// Traz de volta a sessao arquivada por um re-vinculo que nao terminou.
     Restore,
+    /// Autoteste da ponte (#1636): resolve o Node (GARRAIA_NODE_BIN > privado
+    /// empacotado > PATH) e roda `bridge.mjs --self-test`, que importa todas as
+    /// dependencias de execucao (Baileys, pino, sharp) sem abrir socket nem
+    /// parear. Imprime a origem do Node, o caminho, a versao e o resultado.
+    /// Para os smoke tests do app desktop em ambiente sem Node global.
+    /// Exit codes: 0 ok, 69 falta Node ou autoteste falhou, 70 erro interno.
+    #[command(name = "self-test")]
+    SelfTest {
+        /// Saida em JSON (uma linha), para script.
+        #[arg(long)]
+        json: bool,
+    },
     /// Autoriza um numero a falar com o GarraIA pelo WhatsApp pessoal (#1345).
     ///
     /// Funciona sem terminal. Acrescenta a `channels.whatsapp_linked.allow`
@@ -1752,6 +1764,10 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
                 | WhatsAppCommands::Cloud
                 | WhatsAppCommands::Logout
                 | WhatsAppCommands::Restore
+                // `self-test` lanca o `node` e conversa com ele (le o stdout do
+                // `--self-test`): morrer no meio por SIGPIPE deixaria o filho e
+                // a materializacao/semeadura pela metade.
+                | WhatsAppCommands::SelfTest { .. }
                 | WhatsAppCommands::Allow { .. }
                 | WhatsAppCommands::Remove { .. }
                 | WhatsAppCommands::Owner { .. }
@@ -2112,6 +2128,7 @@ fn main() -> Result<()> {
             Some(WhatsAppCommands::Status) => whatsapp::Action::Status,
             Some(WhatsAppCommands::Logout) => whatsapp::Action::Logout,
             Some(WhatsAppCommands::Restore) => whatsapp::Action::Restore,
+            Some(WhatsAppCommands::SelfTest { json }) => whatsapp::Action::SelfTest { json: *json },
             Some(WhatsAppCommands::Allow { numero, owner, yes }) => {
                 whatsapp::Action::Allow(whatsapp::Pedido {
                     numero: Some(numero.clone()),

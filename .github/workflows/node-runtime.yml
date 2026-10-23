@@ -1,0 +1,104 @@
+name: Node runtime bundle
+
+# Fatia B da issue #1636: produz e VALIDA, em cada plataforma suportada pelo
+# desktop, o runtime Node.js privado + o node_modules pre-construido da ponte do
+# WhatsApp. O bundle so sai do CI depois de:
+#   - artefato OFICIAL do Node verificado por GPG (procedencia) e SHA-256
+#     (integridade), com as chaves do release team vendorizadas no repo;
+#   - npm ci --omit=dev com o Node/npm do PROPRIO tarball (sem cross-install);
+#   - PROVA de que o bundle roda SOZINHO: com todo Node global escondido do
+#     runner e sem NODE_PATH, o node privado carrega baileys+pino+sharp.
+#
+# A fatia C (tauri.conf.json) pode reusar este workflow via `workflow_call`.
+#
+# Nota de manutencao: o resto do repo fixa as actions por TAG (actions/checkout@v7
+# etc.), nao por SHA; este workflow segue o mesmo padrao para nao divergir.
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/desktop/node-runtime/**'
+      - 'bridge/whatsapp/**'
+      - '.github/workflows/node-runtime.yml'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Bundle ${{ matrix.platform }} (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Espelha as plataformas do desktop (desktop.yml / release.yml):
+          # Windows x86_64, Linux x86_64 glibc (ubuntu-22.04, baseline glibc 2.35)
+          # e macOS arm64.
+          - platform: win-x64
+            runner: windows-latest
+          - platform: linux-x64
+            runner: ubuntu-22.04
+          - platform: darwin-arm64
+            runner: macos-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # gpg existe no Git Bash do runner Windows e no Ubuntu; no macOS pode
+      # faltar. curl/tar/unzip/shasum ja vem nos tres.
+      - name: Garantir gpg no macOS
+        if: runner.os == 'macOS'
+        run: command -v gpg >/dev/null 2>&1 || brew install gnupg
+
+      # OUT_DIR deliberadamente com ESPACO no caminho: o bundle e usado em
+      # "Program Files" e afins, entao a toolchain tem de aguentar espacos.
+      # Caminho RELATIVO ao workspace: forward-slash nos tres SOs (no Windows
+      # $RUNNER_TEMP viria com barra invertida, que quebra tanto o bash quanto o
+      # upload-artifact baseado em Node).
+      - name: Montar o bundle (download + GPG + SHA-256 + npm ci)
+        run: |
+          set -euo pipefail
+          out="node runtime bundle/${{ matrix.platform }}"
+          echo "OUT_DIR=$out" >> "$GITHUB_ENV"
+          bash scripts/desktop/node-runtime/build-node-runtime.sh \
+            --platform "${{ matrix.platform }}" \
+            --out "$out"
+
+      - name: Provar que o bundle roda sozinho (sem Node global, sem NODE_PATH)
+        run: |
+          set -euo pipefail
+          expect="$(tr -d ' \t\r\n' < scripts/desktop/node-runtime/node-version.txt)"
+          bash scripts/desktop/node-runtime/tests/prove-standalone.sh \
+            --out "$OUT_DIR" \
+            --expect-version "$expect"
+
+      - name: Publicar o bundle como artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: node-runtime-${{ matrix.platform }}
+          path: ${{ env.OUT_DIR }}
+          retention-days: 3
+          if-no-files-found: error
+
+  negative-test:
+    name: Teste negativo (procedencia + integridade recusam adulteracao)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Rodar o teste negativo
+        run: bash scripts/desktop/node-runtime/tests/negative-tamper.sh

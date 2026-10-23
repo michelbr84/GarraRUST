@@ -133,6 +133,7 @@ apaga nada: ele valida e responde `✓ Sessão encontrada e válida`.
 | `garraia doctor whatsapp [--json] [--strict]` | o caminho inteiro numa passada: vinculo, chave da sessao, gateway e ponte, acesso, perfil de execucao, workspace, MCP visivel no piso, provider — cada linha com o proximo passo, no vocabulario do `/api/diagnostics` (#1419) | 0 tudo verde · 2 aviso com `--strict` · 69 algo vermelho |
 | `garraia whatsapp logout` | apaga a sessao e desliga o canal | 0 · 1 cancelado |
 | `garraia whatsapp restore` | devolve o `session.enc.prev` ao lugar | 0 · 69 nao ha arquivada, ou ha sessao em uso · 70 erro interno |
+| `garraia whatsapp self-test [--json]` | resolve o Node e carrega as dependencias da ponte sem parear; imprime origem, caminho, versao do Node e das dependencias (ver §Node privado) | 0 ok · 69 falta Node ou autoteste falhou · 70 erro interno |
 | `garraia whatsapp allow <numero> [--owner] [--yes]` | autoriza um numero a falar com o GarraIA; funciona sem terminal | 0 · 1 cancelado · 64 `--owner` fora de `isolated-pod`, ou sem terminal e sem `--yes` · 65 numero invalido (inclusive `*`, ver abaixo) · 70 config ilegivel · 73 gravou mas o audit falhou |
 | `garraia whatsapp users [--json]` | lista quem esta autorizado: papel (`allow`/`owners`) e os quatro ultimos digitos de cada identidade | 0 · 70 config ilegivel |
 | `garraia whatsapp remove <numero> [--yes]` | revoga o acesso: tira a identidade de `allow` **e** de `owners`; dono exige confirmacao | 0 (inclusive quem nao estava na lista) · 1 cancelado · 64 dono sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel · 73 gravou mas o audit falhou |
@@ -957,9 +958,60 @@ problema por outro.
 
 ## O que precisa de Node
 
-Só o caminho do QR. `node` e `npm` sao procurados na `PATH`; faltando qualquer
-um, o comando sai 69 com o link de instalacao e lembra que a opcao 2 (Cloud API)
-nao precisa de Node.
+Só o caminho do QR. Faltando o `node`, o comando sai 69 com o link de
+instalacao e lembra que a opcao 2 (Cloud API) nao precisa de Node. O `npm` so
+e cobrado quando ha dependencias a instalar (ver abaixo): com a arvore pronta,
+o pareamento e o atendimento sobem sem `npm` nenhum.
+
+### Node privado e ordem de resolucao
+
+O `node` e resolvido por caminho explicito, nesta ordem (a origem — `env`,
+`privado` ou `path` — vai para o log do gateway e para o `self-test`):
+
+1. **`GARRAIA_NODE_BIN`** — caminho **absoluto** de um `node` existente. Vence
+   tudo. Setado e invalido e **erro** (sai 69), nunca um fallback silencioso
+   para a `PATH`: um caminho explicito errado e para corrigir.
+2. **Node privado empacotado** — um `node`/`node.exe` em locais fixos relativos
+   ao executavel em execucao (o app desktop ou a CLI que ele empacota como
+   sidecar). E o que faz o app desktop usar o Node que ele traz, sem o usuario
+   instalar nada. Layout, por plataforma:
+   - **Windows:** `<dir-do-exe>\node\node.exe`
+   - **macOS (`.app`):** `<dir-do-exe>/../Resources/node/bin/node`
+   - **Linux (`.deb`/`.rpm`):** `<dir-do-exe>/../lib/garraia-desktop/node/bin/node`
+   - **AppImage / layout plano Unix:** `<dir-do-exe>/node/bin/node`
+3. **`PATH`** — o `which node` de sempre.
+
+O resolver **nunca** muda o `PATH` do processo nem substitui uma instalacao
+existente: o `node` escolhido e sempre invocado pelo caminho absoluto. O `npm`
+e procurado ao lado do `node` resolvido (`node/bin/npm` no Unix, `node\npm.cmd`
+no Windows) e, na falta, na `PATH`.
+
+Quando ha um diretorio de ponte pre-construida ao lado do Node privado
+(`bridge-whatsapp/`, irmao do `node/`) e seu `node_modules` bate com o
+`package-lock.json` embutido no binario, o GarraIA **semeia** (copia) essa
+arvore para o diretorio da ponte em vez de rodar `npm ci` — nenhuma primeira
+execucao precisa baixar dependencia. Uma arvore que nao bate com o lock e
+ignorada (com aviso), caindo no `npm ci` de sempre.
+
+> **Invariante de empacotamento (fatia C).** O `node/` e o `bridge-whatsapp/`
+> ao lado do executavel **nunca** podem ser gravaveis por um principal de menor
+> privilegio que o proprio binario. O resolver confia neles por caminho (nao os
+> executa para provar identidade, mas o Node escolhido executa o que estiver em
+> `node/`, e o `node_modules` semeado roda no processo do usuario): se um
+> usuario comum puder escrever nesse `node/` ou nesse `node_modules`, ele troca
+> o binario que o GarraIA vai rodar. O instalador da fatia C deve instala-los
+> com os mesmos donos e modos do executavel (ex.: `root`/`Administrators`,
+> nao-gravaveis pelo usuario) — toda a garantia de confianca do Node privado
+> depende disso.
+
+### `garra whatsapp self-test [--json]`
+
+Resolve o Node pela ordem acima e roda `bridge.mjs --self-test`, que importa
+todas as dependencias de execucao (Baileys, pino, sharp) **sem** abrir socket
+nem parear, e imprime a origem do Node, o caminho, a versao do Node e a versao
+de cada dependencia. E o smoke que os instaladores usam num ambiente sem Node
+global. Exit codes (sysexits): 0 ok, 69 falta Node ou autoteste falhou, 70 erro
+interno. `--json` emite uma linha para script.
 
 Na primeira execucao o GarraIA materializa a ponte em
 `<data_dir>/whatsapp/bridge/` (0700) e roda `npm ci --no-fund --no-audit`.
@@ -999,9 +1051,12 @@ que adota a arvore no boot. A sessao vinculada nao e tocada. O
 Como o filho e contido:
 
 - `env_clear()` + a allowlist R3 (`PATH`, `HOME`, `LANG`, `LC_ALL`, `TERM`,
-  `USER`) mais `TMPDIR`/`TEMP`/`TMP`, `LANGUAGE` e as demais `LC_*`. **Nenhum
-  segredo deste processo chega ao Node** — nem chave de LLM, nem `GARRAIA_JWT_SECRET`,
-  nem a passphrase do cofre.
+  `USER`) mais `TMPDIR`/`TEMP`/`TMP`, `LANGUAGE` e as demais `LC_*`. No Windows
+  somam-se os essenciais de sistema (`SystemRoot`, `SystemDrive`, `windir`,
+  `COMSPEC`, `PATHEXT`, `USERPROFILE`, `APPDATA`, ...), os mesmos do transporte
+  MCP: sem `SystemRoot` o Node aborta no boot (`ncrypto::CSPRNG`) e a ponte nem
+  sobe. **Nenhum segredo deste processo chega ao Node** — nem chave de LLM, nem
+  `GARRAIA_JWT_SECRET`, nem a passphrase do cofre.
 - `kill_on_drop` e um `Drop` que mata o filho, inclusive no caminho de panic.
 - **Sem `RLIMIT_AS`**, ao contrario dos servidores MCP: o V8 reserva uma "cage"
   de varios GiB de memoria *virtual* no boot, entao esse teto mata o Node com

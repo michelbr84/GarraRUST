@@ -2010,7 +2010,20 @@ pub fn deve_supervisionar(
 pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
     let settings = settings_from_config(&state.config);
     let paths = LinkedPaths::from_config(&state.config).map_err(|_| NaoSubiu::SemSessao)?;
-    let node = bridge::find_executable("node");
+    // #1636: o Node vem do resolver por caminho explicito (GARRAIA_NODE_BIN >
+    // Node privado empacotado ao lado do executavel > PATH), nao mais so da
+    // PATH. Isso e o que faz o app desktop usar o Node que ele empacota, sem o
+    // usuario instalar nada nem mexer no PATH global. Um GARRAIA_NODE_BIN
+    // invalido nao cai em silencio para a PATH: o resolver devolve erro, e aqui
+    // ele vira aviso no log (o canal ainda nao sobe, como sem Node).
+    let node = match bridge::resolve_node() {
+        Ok(resolvido) => Some(resolvido),
+        Err(bridge::BridgeError::ToolMissing(_)) => None,
+        Err(e) => {
+            warn!("whatsapp_linked: {e}");
+            None
+        }
+    };
     // O perfil de execucao ja vem resolvido pelo loader (env > arquivo >
     // default); aqui ele so escolhe qual `default_mode` efetivo validar.
     let politica = politica_de_execucao(&state.config);
@@ -2041,6 +2054,14 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
     let Some(node) = node else {
         return Err(NaoSubiu::SemNode);
     };
+    info!(
+        "whatsapp_linked: node {} (origem: {})",
+        node.node.display(),
+        node.origin.rotulo()
+    );
+    // O `npm` que acompanha o Node resolvido (ao lado, no caso do privado),
+    // com fallback para a PATH. So pesa se os manifestos mudarem.
+    let npm = bridge::resolve_npm(&node.node);
 
     let key = match SessionKey::resolve(
         paths.store.dir(),
@@ -2056,10 +2077,12 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
     };
 
     let launcher: Arc<dyn bridge::BridgeLauncher> =
-        Arc::new(NodeLauncher::new(node, paths.bridge_dir.clone()));
+        Arc::new(NodeLauncher::new(node.node, paths.bridge_dir.clone()));
     // W1 (v0.4.5): a ponte que sobe e a que ESTE binario embute, e nao a que
     // o ultimo `whatsapp link` deixou no disco. Ver `preparar_ponte`.
-    let preparo = PreparoDaPonte::embutido(paths.bridge_dir.clone());
+    // #1636: o `npm` resolvido junto do Node (pode estar ao lado do privado).
+    let mut preparo = PreparoDaPonte::embutido(paths.bridge_dir.clone());
+    preparo.npm = npm;
 
     supervisionar(state, settings, paths.store.clone(), key, launcher, preparo);
     Ok(())
@@ -2221,18 +2244,25 @@ pub(crate) async fn preparar_ponte(
     }
     let dir = preparo.dir.clone();
     let assets = Arc::clone(&preparo.assets);
-    let preparacao = tokio::task::spawn_blocking(move || bridge::prepare(&dir, assets.as_ref()))
-        .await
-        .unwrap_or_else(|tarefa| {
-            // A tarefa so morre sem resultado se `prepare` entrar em panic (ou
-            // o runtime estiver desligando): a ponte nao sobe, como em
-            // qualquer falha de disco.
-            Err(bridge::BridgeError::Io {
-                path: preparo.dir.display().to_string(),
-                source: std::io::Error::other(tarefa.to_string()),
-            })
+    // #1636: se houver uma arvore pre-construida ao lado do Node privado que
+    // bata com o lock embutido, `prepare_with_seed` a copia em vez de deixar o
+    // `npm ci` para depois. Sem ela (ou sem Node privado), `prebuilt_seed` e
+    // `None` e o comportamento e o de sempre.
+    let seed = bridge::prebuilt_seed();
+    let preparacao = tokio::task::spawn_blocking(move || {
+        bridge::prepare_with_seed(&dir, assets.as_ref(), seed.as_deref())
+    })
+    .await
+    .unwrap_or_else(|tarefa| {
+        // A tarefa so morre sem resultado se `prepare` entrar em panic (ou
+        // o runtime estiver desligando): a ponte nao sobe, como em
+        // qualquer falha de disco.
+        Err(bridge::BridgeError::Io {
+            path: preparo.dir.display().to_string(),
+            source: std::io::Error::other(tarefa.to_string()),
         })
-        .map_err(PonteNaoPronta::Assets)?;
+    })
+    .map_err(PonteNaoPronta::Assets)?;
     if preparacao.assets == bridge::Materialized::Written {
         info!("whatsapp_linked: arquivos da ponte atualizados para os deste binario");
     }

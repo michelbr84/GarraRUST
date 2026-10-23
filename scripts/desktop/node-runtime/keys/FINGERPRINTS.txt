@@ -1,0 +1,39 @@
+# Node.js release signing keys — allowlist de fingerprints (fatia B, issue #1636)
+#
+# Esta e a lista FECHADA de chaves em que o bundle do runtime privado confia para
+# verificar a procedencia dos artefatos oficiais do Node.js. O
+# `build-node-runtime.sh` so aceita uma assinatura de SHASUMS256.txt se a chave
+# PRIMARIA que assinou estiver nesta lista, e so importa para o keyring isolado
+# os arquivos keys/<FINGERPRINT>.asc cujo nome aparece aqui.
+#
+# Procedencia (como revisar / atualizar):
+#   - Fonte: signatarios ATIVOS do "Release keys" do README oficial do Node.js
+#     (secao "### Release keys" de github.com/nodejs/node, bloco principal, nao
+#     o <details> "Other keys used to sign some previous releases").
+#   - Material das chaves: github.com/nodejs/release-keys, diretorio keys/,
+#     commit 481637f813e912c4aa3622d7964ab426c97b8e8d (2026-09-01).
+#   - Sincronizado em 2026-10-22 (America/New_York).
+#   - Cada keys/<FPR>.asc teve o fingerprint primario conferido contra o nome do
+#     arquivo e contra o README do Node antes do commit.
+#
+# COMO ATUALIZAR COM SEGURANCA (ver README.md deste diretorio):
+#   1. Abra a secao "Release keys" do README do Node.js na tag que voce vai
+#      empacotar e compare os fingerprints ativos com esta lista.
+#   2. Para cada chave nova, baixe keys/<FPR>.asc do repo nodejs/release-keys,
+#      confirme o fingerprint primario com `gpg --import-options show-only`, e so
+#      entao adicione .asc + a linha aqui. Um fingerprint sozinho nao basta: o
+#      .asc tem de existir no diretorio.
+#   3. Nunca remova uma chave que ainda assina uma linha LTS que o desktop
+#      empacota sem antes trocar a versao do Node.
+#
+# Formato: um fingerprint de 40 hex (maiusculo, sem espacos) por linha; texto
+# apos '#' e comentario. A ordem nao importa.
+
+5BE8A3F6C8A5C01D106C0AD820B1A390B168D356  # Antoine du Hamel  (assinou v24.22.1)
+DD792F5973C6DE52C432CBDAC77ABFA00DDBF2B7  # Juan Jose Arboleda
+CC68F5A3106FF448322E48ED27F5E38D5B0A215F  # Marco Ippolito
+890C08DB8579162FEE0DF9DB8BEAB4DFCF555EF4  # Rafael Gonzaga
+C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C  # Richard Lau
+108F52B48DB57BB0CC439B2997B01419BD92F80A  # Ruy Adorno
+655F3B5C1FB3FA8D1A0CA6BDE4A7D232B936D2FD  # Stewart X Addison
+A363A499291CBBC940DD62E41F10027AF002F8B0  # Ulises Gascon

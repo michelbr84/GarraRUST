@@ -91,7 +91,7 @@ inteiro. Restrinja ao(s) diretório(s) que o agente realmente precisa:
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/voce/projetos"],
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2.0.0", "/home/voce/projetos"],
       "memoryLimitMb": 512
     }
   }
@@ -105,7 +105,7 @@ E, se quiser só leitura, corte as tools de escrita na seção `mcp:` do
 mcp:
   filesystem:
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/voce/projetos"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem@2.0.0", "/home/voce/projetos"]
     memory_limit_mb: 512
     allowed_tools: ["read_file", "read_multiple_files", "list_directory", "search_files", "get_file_info", "directory_tree"]
 ```
