@@ -177,8 +177,9 @@ pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
                         }
                     }
                     Err(e) => {
-                        error!("TTS failed: {}", e);
-                        // Fallback to text if TTS fails
+                        // Motivo no log ANTES do fallback de texto; warn porque
+                        // o turno se recupera mandando texto, nao quebra.
+                        warn!(error = %e, "TTS failed — falling back to text");
                         let _ = bot
                             .send_message(teloxide::types::ChatId(chat_id), &response)
                             .await;
