@@ -27,6 +27,55 @@ ARCHIVE="node-v${VER}-${PLATFORM}.tar.xz"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+CHECK="${NR_DIR}/lib/check-gpg-status.sh"
+ALLOW="${NR_DIR}/keys/FINGERPRINTS.txt"
+# Um fingerprint que ESTA na allowlist (Antoine du Hamel, assinou v24.22.1).
+ALLOWED_FPR="5BE8A3F6C8A5C01D106C0AD820B1A390B168D356"
+
+# --- parte 1: teste unitario da decisao de procedencia (sem rede, sem chave) --
+# Prova, com status sinteticos do gpg, que a funcao de parse recusa chave
+# expirada/revogada/assinatura ruim e so aceita GOODSIG+VALIDSIG allowlistado.
+echo "==> unit: decisao de procedencia (lib/check-gpg-status.sh)"
+unit_case() {
+  local label="$1" statusfile="$2" want="$3" want_fpr="${4:-}"
+  local out rc
+  set +e
+  out="$(bash "$CHECK" "$statusfile" "$ALLOW" 2>/dev/null)"
+  rc=$?
+  set -e
+  if [ "$want" = pass ]; then
+    if [ "$rc" -ne 0 ]; then echo "FALHA unit ${label}: esperava pass, rc=${rc}"; exit 1; fi
+    if [ "$out" != "$want_fpr" ]; then echo "FALHA unit ${label}: fpr '${out}' != '${want_fpr}'"; exit 1; fi
+  else
+    if [ "$rc" -eq 0 ]; then echo "FALHA unit ${label}: esperava recusa, mas passou (out=${out})"; exit 1; fi
+  fi
+  echo "   OK unit ${label} (${want})"
+}
+
+VS="VALIDSIG ${ALLOWED_FPR} 2026-10-21 1792578925 0 4 0 22 8 00 ${ALLOWED_FPR}"
+NOT_ALLOWED="1111111111111111111111111111111111111111"
+
+printf '[GNUPG:] GOODSIG 20B1A390B168D356 Antoine du Hamel\n[GNUPG:] %s\n' "$VS" > "${WORK}/st-good.txt"
+unit_case good-allowlistado "${WORK}/st-good.txt" pass "$ALLOWED_FPR"
+
+printf '[GNUPG:] EXPKEYSIG 20B1A390B168D356 Antoine du Hamel\n[GNUPG:] %s\n' "$VS" > "${WORK}/st-exp.txt"
+unit_case chave-expirada "${WORK}/st-exp.txt" fail
+
+printf '[GNUPG:] REVKEYSIG 20B1A390B168D356 Antoine du Hamel\n[GNUPG:] %s\n' "$VS" > "${WORK}/st-rev.txt"
+unit_case chave-revogada "${WORK}/st-rev.txt" fail
+
+printf '[GNUPG:] BADSIG 20B1A390B168D356 Antoine du Hamel\n' > "${WORK}/st-bad.txt"
+unit_case assinatura-ruim "${WORK}/st-bad.txt" fail
+
+printf '[GNUPG:] GOODSIG 1111 Alguem\n[GNUPG:] VALIDSIG %s 2026-10-21 0 0 4 0 22 8 00 %s\n' "$NOT_ALLOWED" "$NOT_ALLOWED" > "${WORK}/st-notallow.txt"
+unit_case assinante-fora-da-allowlist "${WORK}/st-notallow.txt" fail
+
+printf '[GNUPG:] %s\n' "$VS" > "${WORK}/st-nogood.txt"
+unit_case sem-GOODSIG "${WORK}/st-nogood.txt" fail
+
+echo "   unit OK: a decisao de procedencia recusa expirada/revogada/ruim/fora-da-allowlist."
+
+# --- parte 2: fim-a-fim com mirror file:// (precisa de rede p/ SHASUMS+sig) ---
 echo "==> baixando SHASUMS256.txt + .sig genuinos de v${VER}"
 curl -fsSL --retry 3 --proto '=https' --tlsv1.2 \
   "https://nodejs.org/dist/v${VER}/SHASUMS256.txt" -o "${WORK}/SHASUMS256.txt"

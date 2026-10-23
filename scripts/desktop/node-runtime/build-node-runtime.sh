@@ -80,14 +80,37 @@ done
 [ -n "$PLATFORM" ] || { usage; die "--platform e obrigatorio"; }
 [ -n "$OUT_DIR" ] || { usage; die "--out e obrigatorio"; }
 
-# O bundle e montado do zero com `rm -rf "$OUT_DIR"`; recusa alvos obviamente
-# perigosos (raiz, cwd) para que um --out errado nunca apague algo serio.
+# O bundle e montado do zero com `rm -rf "$OUT_DIR"`; recusa alvos perigosos
+# (raiz, raiz de drive, HOME, diretorios de sistema) para que um --out errado
+# nunca apague algo serio. Guarda best-effort, defesa em profundidade.
+#
+# A deteccao de absoluto usa o valor CRU (antes de tirar a barra final): se
+# tirassemos a barra primeiro, "C:/" viraria "C:" e escaparia como relativo.
 case "$OUT_DIR" in
-  /|//|.|./|..|../) die "--out aponta para um caminho perigoso: '$OUT_DIR'" ;;
+  /*|[A-Za-z]:*) OUT_ABS="$OUT_DIR" ;;
+  *) OUT_ABS="${PWD%/}/$OUT_DIR" ;;
 esac
-case "$OUT_DIR" in
-  */) OUT_DIR="${OUT_DIR%/}" ;;
+OUT_ABS="${OUT_ABS//\\//}"   # normaliza barras invertidas do Windows
+OUT_NORM="${OUT_ABS%/}"      # "C:/" -> "C:"  ;  "/" -> ""
+guard_home=""; [ -n "${HOME:-}" ] && guard_home="${HOME%/}"
+guard_up=""
+if [ -n "${USERPROFILE:-}" ]; then up="${USERPROFILE//\\//}"; guard_up="${up%/}"; fi
+case "$OUT_NORM" in
+  ""|.|..|/|//) die "--out aponta para um caminho perigoso: '$OUT_DIR'" ;;
+  [A-Za-z]:) die "--out e a raiz de um drive: '$OUT_DIR'" ;;
+  /bin|/sbin|/lib|/lib64|/usr|/usr/*|/etc|/etc/*|/opt|/var|/boot|/dev|/proc|/sys|/root) \
+      die "--out e um diretorio de sistema: '$OUT_DIR'" ;;
+  /home|/Users|/mnt|/c|/d|/e|[A-Za-z]:/Windows|[A-Za-z]:/Users|[A-Za-z]:/Program*) \
+      die "--out e uma raiz de usuarios/sistema: '$OUT_DIR'" ;;
 esac
+if [ -n "$guard_home" ] && [ "$OUT_NORM" = "$guard_home" ]; then
+  die "--out e o seu HOME: '$OUT_DIR'"
+fi
+if [ -n "$guard_up" ] && [ "$OUT_NORM" = "$guard_up" ]; then
+  die "--out e o seu perfil de usuario: '$OUT_DIR'"
+fi
+# so agora (apos as guardas) normaliza o OUT_DIR usado adiante
+OUT_DIR="${OUT_DIR%/}"
 
 if [ -z "$NODE_VERSION" ]; then
   [ -f "$DEFAULT_VERSION_FILE" ] || die "node-version.txt nao encontrado em $DEFAULT_VERSION_FILE"
@@ -168,20 +191,30 @@ fetch "SHASUMS256.txt.sig" || die "falha ao baixar SHASUMS256.txt.sig"
 
 # --- (b) procedencia: assinatura por uma chave do release team --------------
 info "(b) verificando procedencia (GPG) com keyring isolado"
-# Normaliza a allowlist: primeiro token de cada linha nao-comentario, em maiusculo.
-ALLOWLIST="$(grep -vE '^\s*#' "${KEYS_DIR}/FINGERPRINTS.txt" \
+ALLOWLIST_FILE="${KEYS_DIR}/FINGERPRINTS.txt"
+# Normaliza a allowlist: primeiro token de 40 hex de cada linha nao-comentario.
+ALLOWLIST="$(grep -vE '^[[:space:]]*#' "$ALLOWLIST_FILE" \
   | tr '[:lower:]' '[:upper:]' \
   | grep -oE '[0-9A-F]{40}' || true)"
 [ -n "$ALLOWLIST" ] || die "FINGERPRINTS.txt nao tem nenhum fingerprint valido"
 
+# Importa SO as chaves allowlistadas (keys/<FPR>.asc) — casa com o que o
+# cabecalho de FINGERPRINTS.txt promete: um .asc nao allowlistado no diretorio
+# nunca entra no keyring.
 imported=0
-for asc in "${KEYS_DIR}"/*.asc; do
-  [ -e "$asc" ] || continue
-  gpg --homedir "$GNUPGHOME_DIR" --batch --quiet --import "$asc" >/dev/null 2>&1 \
-    && imported=$((imported+1)) || true
-done
-[ "$imported" -gt 0 ] || die "nenhuma chave .asc importada de $KEYS_DIR"
-info "    chaves importadas no keyring isolado: $imported"
+while IFS= read -r FPR; do
+  [ -n "$FPR" ] || continue
+  asc="${KEYS_DIR}/${FPR}.asc"
+  if [ ! -f "$asc" ]; then
+    echo "    aviso: fingerprint ${FPR} na allowlist sem keys/${FPR}.asc (ignorado)" >&2
+    continue
+  fi
+  if gpg --homedir "$GNUPGHOME_DIR" --batch --quiet --import "$asc" >/dev/null 2>&1; then
+    imported=$((imported+1))
+  fi
+done <<< "$ALLOWLIST"
+[ "$imported" -gt 0 ] || die "nenhuma chave allowlistada importada de $KEYS_DIR"
+info "    chaves allowlistadas importadas no keyring isolado: $imported"
 
 STATUS_FILE="${DL_DIR}/gpg-status.txt"
 set +e
@@ -190,15 +223,17 @@ gpg --homedir "$GNUPGHOME_DIR" --batch --status-fd=1 \
   >"$STATUS_FILE" 2>/dev/null
 gpg_rc=$?
 set -e
-[ "$gpg_rc" -eq 0 ] || { cat "$STATUS_FILE" >&2; die "gpg --verify falhou (rc=$gpg_rc)"; }
+# BADSIG/ERRSIG fazem o gpg sair != 0 (pega SHASUMS adulterado).
+[ "$gpg_rc" -eq 0 ] || { sed 's/^/    gpg: /' "$STATUS_FILE" >&2 2>/dev/null || true; die "gpg --verify falhou (rc=$gpg_rc)"; }
 
-VALIDSIG_LINE="$(grep '^\[GNUPG:\] VALIDSIG' "$STATUS_FILE" | head -1 || true)"
-[ -n "$VALIDSIG_LINE" ] || { cat "$STATUS_FILE" >&2; die "sem VALIDSIG — assinatura nao e valida"; }
-# A ultima coluna do VALIDSIG e o fingerprint da chave PRIMARIA.
-SIGNER_FPR="$(echo "$VALIDSIG_LINE" | awk '{print $NF}' | tr '[:lower:]' '[:upper:]')"
-echo "$ALLOWLIST" | grep -qx "$SIGNER_FPR" \
-  || die "assinante $SIGNER_FPR NAO esta na allowlist (keys/FINGERPRINTS.txt)"
-info "    assinatura valida pela chave primaria $SIGNER_FPR (na allowlist)"
+# Decisao autoritativa e testavel: exige GOODSIG, recusa
+# EXPKEYSIG/REVKEYSIG/EXPSIG/BADSIG/ERRSIG/NO_PUBKEY (chave expirada/revogada
+# emite VALIDSIG e sai 0!), e so entao confere o assinante contra a allowlist.
+if ! SIGNER_FPR="$(bash "${DEFAULT_LIB_DIR}/check-gpg-status.sh" "$STATUS_FILE" "$ALLOWLIST_FILE" 2>"${DL_DIR}/gpg-check.err")"; then
+  cat "${DL_DIR}/gpg-check.err" >&2 2>/dev/null || true
+  die "procedencia recusada pela verificacao de status do gpg"
+fi
+info "    assinatura BOA pela chave primaria $SIGNER_FPR (na allowlist)"
 
 # --- (c) integridade: sha256 do artefato ------------------------------------
 info "(c) verificando integridade (SHA-256)"
@@ -251,8 +286,12 @@ mkdir -p "$OUT_BRIDGE"
 cp -R "${BRIDGE_DIR}/." "$OUT_BRIDGE/"
 rm -rf "${OUT_BRIDGE}/node_modules"
 
-( cd "$OUT_BRIDGE" && "$TOOL_NODE" "$TOOL_NPM" ci --omit=dev --no-audit --no-fund \
-    --cache "$NPM_CACHE_DIR" --loglevel=warn ) \
+# --ignore-scripts: as deps da ponte nao precisam de install-scripts em runtime
+# (sharp 0.34 usa binarios pre-compilados @img/sharp-* como deps opcionais, nao
+# compila libvips no install), entao nenhum script arbitrario de dependencia
+# roda no build do bundle — endurecimento de supply chain.
+( cd "$OUT_BRIDGE" && "$TOOL_NODE" "$TOOL_NPM" ci --omit=dev --ignore-scripts \
+    --no-audit --no-fund --cache "$NPM_CACHE_DIR" --loglevel=warn ) \
   || die "npm ci falhou"
 
 [ -d "${OUT_BRIDGE}/node_modules" ] || die "node_modules nao foi criado"

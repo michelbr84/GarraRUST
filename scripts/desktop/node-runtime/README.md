@@ -18,10 +18,10 @@ ponte depende de `sharp` (binarios nativos por plataforma). O bundle carrega
 | passo | garantia |
 |---|---|
 | a | baixa o artefato **oficial** de `https://nodejs.org/dist/v<versao>/` |
-| b | **procedencia**: `gpg --verify` do `SHASUMS256.txt.sig` num keyring isolado (GNUPGHOME temporario) montado so com as chaves vendorizadas em `keys/`, e exige que a chave **primaria** que assinou esteja na allowlist `keys/FINGERPRINTS.txt` |
+| b | **procedencia**: `gpg --verify` do `SHASUMS256.txt.sig` num keyring isolado (GNUPGHOME temporario) montado **so com as chaves allowlistadas** (`keys/<FPR>.asc`), exigindo `GOODSIG` e **recusando** chave expirada/revogada ou assinatura ruim (`EXPKEYSIG`/`REVKEYSIG`/`EXPSIG`/`BADSIG`/`ERRSIG`/`NO_PUBKEY` — expirada/revogada emitem `VALIDSIG` e saem 0!), e so entao conferindo a chave **primaria** contra `keys/FINGERPRINTS.txt`. A decisao vive em `lib/check-gpg-status.sh` (testavel sem chave privada). |
 | c | **integridade**: SHA-256 do artefato contra a linha exata do `SHASUMS256.txt` (match de nome inteiro, nao regex) |
 | d | extrai so o runtime: binario `node`/`node.exe` + `LICENSE` |
-| e | copia `bridge/whatsapp` (sem `node_modules`) e roda `npm ci --omit=dev --no-audit --no-fund` com o **Node e o npm do mesmo tarball oficial** (nunca o do runner) |
+| e | copia `bridge/whatsapp` (sem `node_modules`) e roda `npm ci --omit=dev --ignore-scripts --no-audit --no-fund` com o **Node e o npm do mesmo tarball oficial** (nunca o do runner). `--ignore-scripts` endurece a supply chain: nenhum install-script de dependencia roda — o `sharp` 0.34 usa binarios pre-compilados `@img/sharp-*` (deps opcionais), entao a ponte carrega normalmente mesmo assim (provado no CI por `prove-standalone.sh`). |
 | f | gera `THIRD_PARTY_NOTICES.txt` (licenca do Node + de todos os pacotes de `node_modules`); **falha** se algum pacote nao tiver licenca identificavel |
 | g | grava `manifest.json` (versao, plataforma, sha256, fingerprint do assinante, estado do lock) |
 
@@ -117,7 +117,10 @@ cabecalho de `keys/FINGERPRINTS.txt`.
   esconde o Node global do runner, prova que o bundle roda sozinho, e publica
   `node-runtime-<plataforma>` como artifact (retencao curta). Um job Linux roda
   o teste negativo. Sem `continue-on-error`.
-- `tests/negative-tamper.sh` — prova que o build **recusa** adulteracao: artefato
+- `tests/negative-tamper.sh` — (1) teste unitario de `lib/check-gpg-status.sh`
+  com status sinteticos do gpg (aceita GOODSIG+VALIDSIG allowlistado; recusa
+  expirada/revogada/ruim/fora-da-allowlist/sem-GOODSIG), sem rede nem chave; e
+  (2) fim-a-fim com mirror `file://`, provando que o build **recusa** artefato
   trocado (sha256 nao bate) e `SHASUMS256.txt` alterado (assinatura invalida).
 - `tests/prove-standalone.sh` — prova que o bundle roda sem nenhum Node global
   e sem `NODE_PATH` (hoje carrega baileys+pino+sharp; vira `bridge.mjs
