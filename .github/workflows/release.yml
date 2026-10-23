@@ -1222,6 +1222,14 @@ jobs:
           name: Release ${{ steps.version.outputs.VERSION }}
           draft: false
           prerelease: ${{ contains(steps.version.outputs.VERSION, 'alpha') || contains(steps.version.outputs.VERSION, 'beta') || contains(steps.version.outputs.VERSION, 'rc') }}
+          # make_latest explicito: um prerelease (-alpha/-beta/-rc) NUNCA vira
+          # "Latest release" e nao e servido por /releases/latest, para que o
+          # `garra update` (RELEASES_API fixo em /releases/latest,
+          # crates/garraia-cli/src/update.rs:9) e o updater Tauri
+          # (releases/latest/download/latest.json) continuem na estavel
+          # anterior. Estavel: 'true' (o mesmo default do GitHub, agora
+          # explicito). A condicao e identica a de `prerelease` acima.
+          make_latest: ${{ (contains(steps.version.outputs.VERSION, 'alpha') || contains(steps.version.outputs.VERSION, 'beta') || contains(steps.version.outputs.VERSION, 'rc')) && 'false' || 'true' }}
           body_path: RELEASE_NOTES.md
           generate_release_notes: true
           # `softprops/action-gh-release` uses glob expansion on this list, so
