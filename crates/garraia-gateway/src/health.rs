@@ -36,9 +36,9 @@ pub struct HealthStatus {
 ///
 /// Plan 0118 / PR-5 extends the original `{status, checks}` shape with the
 /// fields the web-console Dashboard consumes (`version`, `gateway_url`,
-/// `config_dir`, `uptime_secs`, `active_sessions`, `provider`, `model`,
-/// `channels`, `warnings`). `checks` is retained for back-compat with any
-/// operator scripts that already parsed it.
+/// `uptime_secs`, `active_sessions`, `provider`, `model`, `channels`,
+/// `warnings`). `checks` is retained for back-compat with any operator
+/// scripts that already parsed it.
 ///
 /// Secret-free by construction: nothing in the response derives from
 /// `state.config.gateway.api_key` or any provider API key.
@@ -50,10 +50,6 @@ pub struct HealthResponse {
     pub version: &'static str,
     /// Effective listener URL (`http(s)://host:port`).
     pub gateway_url: String,
-    /// Effective config directory (`ConfigLoader::default_config_dir()`), the
-    /// same value `GET /api/diagnostics` already surfaces in its `config.dir`
-    /// check. A filesystem path, never a secret.
-    pub config_dir: String,
     /// Seconds since process boot.
     pub uptime_secs: u64,
     /// Number of in-memory sessions (DashMap entry count).
@@ -481,7 +477,6 @@ fn extras_from_state(state: &SharedState) -> (Vec<String>, Option<String>, Optio
 ///   "status": "degraded",
 ///   "version": "0.2.1",
 ///   "gateway_url": "http://127.0.0.1:3888",
-///   "config_dir": "/home/op/.config/garraia",
 ///   "uptime_secs": 1234,
 ///   "active_sessions": 2,
 ///   "provider": "openrouter",
@@ -541,9 +536,6 @@ pub async fn health_handler(State(state): State<SharedState>) -> Json<HealthResp
         status: status.to_string(),
         version: env!("CARGO_PKG_VERSION"),
         gateway_url: gateway_url_from_config(&state.config),
-        config_dir: garraia_config::ConfigLoader::default_config_dir()
-            .display()
-            .to_string(),
         uptime_secs: state.boot_time.elapsed().as_secs(),
         active_sessions: state.sessions.len(),
         provider,

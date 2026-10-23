@@ -149,6 +149,9 @@ enum SttBootLog {
     /// estourou o `timeouts.health` (`None`) — `warn!` "not reachable".
     Unreachable,
     /// O probe em si falhou com erro (`Err`) — `warn!` com o texto do erro.
+    /// Hoje e um ramo DEFENSIVO: `WhisperClient::health_check()` converte erro
+    /// de rede em `Ok(false)` (nunca devolve `Err`), entao este caso so dispara
+    /// se essa implementacao passar a propagar erro — nao se perde o sinal.
     ProbeError(String),
 }
 

@@ -2810,7 +2810,6 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
               <li><span>Server</span><span class="value" id="dashboard-health-server">checking…</span></li>
               <li><span>Provider</span><span class="value" id="dashboard-health-provider">—</span></li>
               <li><span>Model</span><span class="value" id="dashboard-health-model">—</span></li>
-              <li><span>Config dir</span><span class="value" id="dashboard-health-config" data-testid="dashboard-health-config">—</span></li>
               <li><span>Secrets</span><span class="value" style="color: var(--garra-success);">masked</span></li>
             </ul>
           </div>
@@ -3984,9 +3983,6 @@ async function hydrateDashboard() {
       set('dashboard-health-server', h.status || 'ok');
       set('dashboard-health-provider', h.provider || '—');
       set('dashboard-health-model', h.model || '—');
-      // Config dir was always "—" (no JS ever set it). Fill it from the
-      // backend's effective config dir — the same path /api/diagnostics shows.
-      set('dashboard-health-config', h.config_dir || '—');
     }
     if (capsRes && capsRes.ok) {
       const c = await capsRes.json();
