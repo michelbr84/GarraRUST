@@ -3589,6 +3589,7 @@ name = "garraia-desktop"
 version = "0.4.9"
 dependencies = [
  "garraia-config",
+ "garraia-desktop-core",
  "serde",
  "serde_json",
  "tauri",
