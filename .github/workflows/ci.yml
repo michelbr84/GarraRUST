@@ -889,6 +889,78 @@ jobs:
         run: cargo check -p garraia-agents --features mcp --all-targets
         shell: bash
 
+  # Guardas de processo orfao (#1636). O job `test` acima roda os testes de
+  # verdade SO no Linux (`--no-run` em windows/macos), entao os testes que
+  # provam que nenhum descendente sobrevive a morte do pai NAO rodariam onde o
+  # mecanismo e especifico de plataforma: o Job Object (KILL_ON_JOB_CLOSE) no
+  # Windows e o grupo de processos no Unix. Este job os EXECUTA nos tres SOs.
+  #
+  # Cada comando roda nos tres SOs; os testes que nao sao da plataforma viram
+  # binarios vazios (0 testes) pelo `#[cfg]`, entao a lista e a mesma em todo
+  # lugar:
+  #   - desktop-core `orphan_process`: no Windows, mata o PAI de verdade com
+  #     TerminateProcess e afirma que filho e neto morrem pelo Job Object.
+  #   - desktop-core/channels `jobobject` (lib): o Job Object fecha e mata a
+  #     subarvore (Windows).
+  #   - channels `orphan_unix`: grupo de processos + kill(-pgid) varrem a
+  #     subarvore no teardown (Linux/macOS).
+  # O EOF de stdin da ponte Node (macOS sem PDEATHSIG) e provado pelo
+  # `node --test` do job `whatsapp-bridge`.
+  orphan-processes:
+    name: Orphan-process guards (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-orphan-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-orphan-
+            ${{ runner.os }}-cargo-
+
+      # O codigo cfg(windows) do Job Object do desktop-core nao e lintado pelo
+      # job `clippy` (ubuntu). Aqui ele e, e so no Windows. O garraia-channels
+      # nao entra porque tem dead_code cfg(unix) pre-existente que so aparece no
+      # `--all-targets` do Windows — fora do escopo deste PR.
+      - name: Clippy (desktop-core Job Object, Windows)
+        if: runner.os == 'Windows'
+        run: cargo clippy -p garraia-desktop-core --all-targets -- -D warnings
+        shell: bash
+
+      - name: Run orphan-process tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p garraia-desktop-core --test orphan_process -- --nocapture
+          cargo test -p garraia-desktop-core --lib jobobject -- --nocapture
+          cargo test -p garraia-channels --features whatsapp-linked --test orphan_unix -- --nocapture
+          cargo test -p garraia-channels --features whatsapp-linked --lib jobobject -- --nocapture
+          # Vigia do pai (`garra start --exit-with-parent`): o sidecar nao fica
+          # orfao no Linux/macOS numa morte abrupta do app. Logica pura + o
+          # teste de ponta a ponta (mata o PID vigiado, afirma que a vigia sai).
+          cargo test -p garraia-common --lib parent_watch -- --nocapture
+          cargo test -p garraia-common --test parent_watch -- --nocapture
+
   # Integração garraia-auth com test-support (plan 0354).
   #
   # Os 15 binários de teste de integração do garraia-auth (extractor, matriz

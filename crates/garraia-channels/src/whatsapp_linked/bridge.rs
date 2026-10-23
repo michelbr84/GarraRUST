@@ -1687,6 +1687,55 @@ fn apply_parent_death_signal(cmd: &mut Command) {
     }
 }
 
+/// Poe o filho no proprio grupo de processos (`setpgid(0, 0)`), para que o
+/// teardown possa varrer a subarvore inteira com um unico `kill(-pgid)` — nao
+/// so o filho direto. No Linux soma-se ao PDEATHSIG; no macOS, onde ele nao
+/// existe, e o que garante que um neto da ponte nao fique para tras no
+/// encerramento normal. Morte ABRUPTA do pai no macOS continua coberta pelo
+/// watch de stdin do lado do bridge (EOF -> saida), do `bridge.mjs`.
+///
+/// Nao muda o tratamento de `Ctrl+C`: a CLI captura o sinal no proprio laco e
+/// chama `kill`/`shutdown` — o filho em grupo proprio apenas deixa de receber
+/// o SIGINT do terminal direto, que a CLI ja reemite fechando o stdin.
+#[cfg(unix)]
+fn apply_process_group(cmd: &mut Command) {
+    // SAFETY: `setpgid` e async-signal-safe e so afeta o proprio filho (pid 0,
+    // no contexto do pre_exec, e este processo apos o fork e antes do exec).
+    unsafe {
+        cmd.pre_exec(|| {
+            // Falha aqui e rara (pid/pgid ja em uso) e nao e fatal: o filho
+            // fica no grupo herdado e o teardown ainda tem o `start_kill`
+            // direto. Mesmo tratamento do `prctl` do PDEATHSIG acima.
+            libc::setpgid(0, 0);
+            Ok(())
+        });
+    }
+}
+
+/// Cria um Job Object `KILL_ON_JOB_CLOSE` e assina o filho recem-lancado.
+///
+/// Falha em qualquer etapa nao derruba o spawn: devolve `None`, loga e segue —
+/// as outras camadas (`kill_on_drop`, o `Drop` do [`BridgeConnection`])
+/// continuam valendo. O job devolvido tem de ser guardado pela conexao; e o
+/// `Drop` dele (fechar o handle) que arma a morte da subarvore.
+#[cfg(windows)]
+fn assign_bridge_to_kill_on_close_job(child: &Child) -> Option<super::jobobject::KillOnCloseJob> {
+    let handle = child.raw_handle()?;
+    let job = match super::jobobject::KillOnCloseJob::new() {
+        Ok(job) => job,
+        Err(e) => {
+            tracing::warn!(erro = %e, "nao criou Job Object para a ponte; seguindo sem ele");
+            return None;
+        }
+    };
+    // `RawHandle` e `*mut c_void`; o job recebe o valor como `isize`.
+    if let Err(e) = job.assign_handle(handle as isize) {
+        tracing::warn!(erro = %e, "nao assinou a ponte ao Job Object; seguindo sem ele");
+        return None;
+    }
+    Some(job)
+}
+
 /// Conexao viva com o bridge.
 pub struct BridgeConnection {
     child: Child,
@@ -1700,6 +1749,14 @@ pub struct BridgeConnection {
     stderr_tail: mpsc::UnboundedReceiver<String>,
     tail: VecDeque<String>,
     dir: PathBuf,
+    /// Job Object do Windows que mata o filho se ESTE processo for encerrado
+    /// de forma abrupta (crash, Gerenciador de Tarefas), caso em que nenhum
+    /// `Drop` roda. Existe so pelo efeito do proprio `Drop` (fecha o handle →
+    /// `KILL_ON_JOB_CLOSE`); por isso o campo nunca e lido. No Unix o papel e
+    /// do PDEATHSIG + `kill_on_drop`, e este campo nao existe.
+    #[cfg(windows)]
+    #[allow(dead_code)]
+    job: Option<super::jobobject::KillOnCloseJob>,
 }
 
 impl BridgeConnection {
@@ -1715,6 +1772,8 @@ impl BridgeConnection {
         apply_child_env(&mut cmd);
         #[cfg(any(target_os = "linux", target_os = "android"))]
         apply_parent_death_signal(&mut cmd);
+        #[cfg(unix)]
+        apply_process_group(&mut cmd);
 
         let mut child = cmd.spawn().map_err(|e| BridgeError::Spawn {
             program: launcher.describe(),
@@ -1747,6 +1806,14 @@ impl BridgeConnection {
             }
         });
 
+        // Windows: poe o filho num Job Object com `KILL_ON_JOB_CLOSE`. Se esta
+        // CLI/gateway morrer de forma abrupta (crash, `TerminateProcess` do
+        // Gerenciador de Tarefas), o SO fecha o handle do job e o `node` — e
+        // qualquer neto que ele tenha lancado — morre junto. E o caso que
+        // `kill_on_drop`/`Drop` nao cobrem, e que no Unix o PDEATHSIG cobre.
+        #[cfg(windows)]
+        let job = assign_bridge_to_kill_on_close_job(&child);
+
         Ok(Self {
             child,
             stdin: Some(stdin),
@@ -1754,6 +1821,8 @@ impl BridgeConnection {
             stderr_tail: rx,
             tail: VecDeque::with_capacity(STDERR_TAIL_LINES),
             dir: launcher.dir(),
+            #[cfg(windows)]
+            job,
         })
     }
 
@@ -1897,15 +1966,38 @@ impl BridgeConnection {
     /// Mata o filho. Idempotente.
     pub async fn kill(&mut self) {
         self.close_stdin();
+        #[cfg(unix)]
+        self.kill_process_group();
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
+    }
+
+    /// Varre o grupo de processos do filho com `SIGKILL` (`kill(-pgid)`),
+    /// pegando netos que a ponte tenha lancado. [`apply_process_group`] fez o
+    /// filho lider do proprio grupo, entao o pgid e o pid do filho. No-op
+    /// seguro quando o pid ja nao existe (ESRCH) ou quando o `setpgid` falhou
+    /// (o grupo de pgid == pid do filho simplesmente nao tem membros).
+    #[cfg(unix)]
+    fn kill_process_group(&self) {
+        if let Some(pid) = self.child.id() {
+            // `id()` nunca devolve 0; o negativo mira o GRUPO, nao o processo.
+            // SAFETY: `kill` com um pgid derivado do pid do proprio filho; um
+            // grupo inexistente devolve ESRCH, sem efeito colateral.
+            unsafe {
+                libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+            }
+        }
     }
 }
 
 impl Drop for BridgeConnection {
     fn drop(&mut self) {
         // Rede de seguranca sobre o `kill_on_drop`: um filho que sobrevive a
-        // esta CLI continua segurando a sessao do WhatsApp aberta.
+        // esta CLI continua segurando a sessao do WhatsApp aberta. No Unix,
+        // varre tambem o grupo (netos); no Windows o `KILL_ON_JOB_CLOSE` do
+        // campo `job` cuida da subarvore ao fechar o handle.
+        #[cfg(unix)]
+        self.kill_process_group();
         let _ = self.child.start_kill();
     }
 }

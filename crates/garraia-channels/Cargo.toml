@@ -121,6 +121,20 @@ whatsapp-linked = [
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+# Job Object do filho `node` (`whatsapp_linked::jobobject`): `KILL_ON_JOB_CLOSE`
+# mata a ponte quando o pai morre de forma abrupta (crash, Gerenciador de
+# Tarefas), onde nenhum `Drop` roda — o Windows nao tem PDEATHSIG. Mesmo padrao
+# do `libc` cfg(unix) acima: sem feature gate, porque contencao atras de gate e
+# contencao que alguem esquece de ligar. A versao 0.61 ja esta no Cargo.lock
+# (tokio, entre outros), entao nao acrescenta crate nova a arvore.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # `ServiceExt::oneshot` para exercitar os handlers de webhook como rota de
 # verdade (status + corpo), sem subir servidor.
@@ -132,3 +146,11 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # `#[cfg(test)]` e vale para `google_chat` e `teams`, que nao ligam `line`.
 base64 = { workspace = true }
 tempfile = "3"
+
+# `Win32_System_Diagnostics_ToolHelp` so e usada pelo teste do Job Object
+# (descobrir o PID do neto pela snapshot de processos), nunca pelo codigo de
+# producao de `jobobject.rs`. Como dev-dependency, a feature e unificada com a
+# `windows-sys` normal apenas no build de teste; o binario de release nao a
+# carrega. Mesma versao da dep normal acima.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Diagnostics_ToolHelp"] }

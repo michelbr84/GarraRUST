@@ -1061,11 +1061,64 @@ Como o filho e contido:
   MCP: sem `SystemRoot` o Node aborta no boot (`ncrypto::CSPRNG`) e a ponte nem
   sobe. **Nenhum segredo deste processo chega ao Node** — nem chave de LLM, nem
   `GARRAIA_JWT_SECRET`, nem a passphrase do cofre.
-- `PDEATHSIG` no Linux/Android: gateway morto de `SIGKILL` nao deixa Node orfao.
 - `kill_on_drop` e um `Drop` que mata o filho, inclusive no caminho de panic.
 - **Sem `RLIMIT_AS`**, ao contrario dos servidores MCP: o V8 reserva uma "cage"
   de varios GiB de memoria *virtual* no boot, entao esse teto mata o Node com
   `SIGABRT` antes de ele fazer qualquer coisa. Medir memoria real exigiria cgroup.
+
+### Sem processos orfaos quando o pai morre (#1636)
+
+`kill_on_drop` e o `Drop` cobrem a saida normal e ate o panic, mas **nao** a
+morte ABRUPTA do pai — um crash, um `SIGKILL`, ou "Finalizar tarefa" no
+Gerenciador de Tarefas —, em que nenhum codigo de limpeza roda. Cada plataforma
+tem um mecanismo proprio para que o Node (e qualquer neto que ele lance) nao
+sobreviva orfao:
+
+- **Linux/Android:** `PDEATHSIG` — gateway morto de `SIGKILL` manda `SIGTERM`
+  ao filho na hora.
+- **Windows:** um **Job Object** com `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+  (`garraia-channels::whatsapp_linked::jobobject`). O filho entra no job no
+  spawn; quando o processo pai morre, o SO fecha o handle do job e a arvore
+  inteira (filho e netos, que herdam o job) e encerrada. E o equivalente do
+  PDEATHSIG no Windows, que nao tem PDEATHSIG. `ERROR_ACCESS_DENIED` (jobs
+  aninhados em Windows < 8) vira aviso, sem derrubar nada.
+- **macOS e todo Unix:** o filho nasce no **proprio grupo de processos**
+  (`setpgid`), e o teardown normal varre o grupo com `kill(-pgid)` — pegando
+  netos, nao so o filho direto. O macOS nao tem PDEATHSIG, entao para a morte
+  ABRUPTA do pai vale a rede de seguranca cross-plataforma do proprio protocolo:
+  a ponte fala NDJSON por stdio, e **quando o pai morre o stdin dela fecha
+  (EOF) e ela sai** (`bridge.mjs`). Isso cobre as tres plataformas de graca.
+
+**No app desktop**, a cadeia e app (Tauri) -> sidecar `garraia start` (gateway)
+-> ponte Node, e o par app->sidecar precisa da mesma garantia. O
+`RunEvent::Exit` ja mata o sidecar na saida normal; para a morte ABRUPTA do
+desktop cada plataforma tem o seu mecanismo:
+
+- **Windows:** a casca poe o sidecar num Job Object `KILL_ON_JOB_CLOSE` (por
+  PID, reusando a logica testada de `garraia-desktop-core::jobobject`). Quando
+  o app morre, o SO fecha o handle e a arvore do sidecar cai.
+- **Linux/macOS:** a casca lanca o sidecar com `garra start --exit-with-parent
+  <pid-do-app>`. O gateway vigia esse PID numa task de ~1 s
+  (`garraia_common::parent_watch`: `getppid()` mudou — a prova a prova de reuso
+  de PID — ou o PID sumiu) e, quando o app some, pede o encerramento gracioso
+  pelo caminho do SIGTERM — a ponte Node cai pelo caminho normal. **Flag e nao
+  env**, para o PID nao vazar para processos filhos; so vale em primeiro plano
+  (nunca com `-d`, que destaca do pai de proposito). No Windows a `garra`
+  ignora a flag (o Job Object cobre).
+
+Decisao #1636: a logica do Job Object e da vigia vivem em crates sem Tauri
+(`garraia-desktop-core`, `garraia-common`), cobertas pelos gates de CI; a casca
+so as aplica, em vez de migrar o lancamento do sidecar para o `supervise` do
+core — a casca Tauri esta fora dos gates de CI e a resolucao do sidecar pelo
+plugin shell do Tauri ja e robusta.
+
+Provas automatizadas (job `orphan-processes` do CI, em ubuntu/windows/macos,
+porque o job `test` padrao so executa testes no Linux): no Windows um teste
+sobe uma arvore pai->filho->neto, mata o pai com `TerminateProcess` e afirma
+que nenhum descendente sobrevive; no Unix um teste poe a arvore num grupo e
+confirma que o teardown a varre; a vigia do pai tem um teste que mata o PID
+observado e afirma que o sidecar sai; e um `node --test` prova a saida da ponte
+em EOF do stdin.
 
 ## Troubleshooting
 
