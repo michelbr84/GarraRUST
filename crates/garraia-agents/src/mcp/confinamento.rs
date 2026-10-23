@@ -17,8 +17,15 @@
 //! Casa pelo nome da **operacao** (`read_file`, `write_file`…) em qualquer
 //! servidor, pela mesma razao que a `allowed` do `search` libera `*/read_file`
 //! em qualquer servidor: a operacao e que e de filesystem. Operacao
-//! desconhecida passa intocada — o portao de nomes continua sendo quem decide
-//! se ela roda.
+//! desconhecida num servidor QUALQUER passa intocada — o portao de nomes
+//! continua sendo quem decide se ela roda.
+//!
+//! Com uma excecao fail-closed: quando a chamada vem do proprio servidor
+//! [`PACOTE_FILESYSTEM`], uma operacao fora do mapa e **recusada**. Toda tool
+//! dele toca arquivo; uma que o jail nao conhece (uma versao nova do pacote
+//! que renomeia ou adiciona uma tool de caminho) escaparia do confinamento se
+//! passasse. Mapear a tool nova (em [`OPERACOES_COM_CAMINHO`]) e o que a
+//! libera — uma revisao humana, nao um repasse silencioso.
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +55,15 @@ pub const OPERACOES_COM_CAMINHO: &[(&str, &[&str])] = &[
 /// A operacao que responde as raizes: sai daqui, nunca do servidor.
 pub const LIST_ALLOWED_DIRECTORIES: &str = "list_allowed_directories";
 
+/// O pacote npm do servidor cujas tools sao TODAS de filesystem. Quando a
+/// chamada vem dele (e so dele), uma operacao fora de [`OPERACOES_COM_CAMINHO`]
+/// e recusada fail-closed em vez de passar: ver `e_servidor_filesystem` em
+/// [`confinar_argumentos`]. Repetido do `FILESYSTEM_PACKAGE` do gateway
+/// porque a dependencia so existe num sentido — `garraia-gateway` depende de
+/// `garraia-agents`, nunca o contrario —, como ja faz a nota de versao em
+/// `persistence.rs`.
+pub const PACOTE_FILESYSTEM: &str = "@modelcontextprotocol/server-filesystem";
+
 /// O desfecho de [`confinar_argumentos`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Confinado {
@@ -65,11 +81,20 @@ pub enum Confinado {
 /// Fail-closed: um unico caminho fora (ou irresoluvel, ou relativo sem
 /// diretorio de sessao) recusa a chamada inteira com a [`Denial`] das tools
 /// nativas — e a mesma frase unica para o modelo.
+///
+/// `e_servidor_filesystem` e `true` so quando a chamada vem do servidor
+/// [`PACOTE_FILESYSTEM`]. Nesse servidor TODA tool toca arquivo, entao uma
+/// operacao fora de [`OPERACOES_COM_CAMINHO`] (tool nova de uma versao nova,
+/// tool renomeada) e recusada em vez de repassada: um argumento de caminho
+/// nao mapeado escaparia do jail. Em qualquer OUTRO servidor a operacao
+/// desconhecida nao e de filesystem e segue intocada — quem decide se ela
+/// roda e o portao de nomes.
 pub fn confinar_argumentos(
     operacao: &str,
     argumentos: Option<Map<String, Value>>,
     jail: &FileJail,
     session_dir: Option<&str>,
+    e_servidor_filesystem: bool,
 ) -> Result<Confinado, Denial> {
     if operacao == LIST_ALLOWED_DIRECTORIES {
         let raizes = jail.effective_roots(session_dir);
@@ -88,6 +113,13 @@ pub fn confinar_argumentos(
         .find(|(op, _)| *op == operacao)
         .map(|(_, chaves)| *chaves)
     else {
+        // Fora do mapa. No servidor filesystem isso e fail-closed: a tool
+        // pode carregar um caminho que o jail nao sabe reescrever, e repassa-la
+        // seria o buraco da #1482 de volta. Em outro servidor a operacao nao e
+        // de filesystem — passa.
+        if e_servidor_filesystem {
+            return Err(Denial::FerramentaFilesystemNaoMapeada);
+        }
         return Ok(Confinado::Passa(argumentos));
     };
     // Operacao de filesystem sem argumento de caminho e um pedido malformado:
@@ -170,6 +202,19 @@ mod tests {
             .into_owned()
     }
 
+    /// Atalho dos testes: confina como se a chamada viesse do proprio servidor
+    /// `filesystem` (`e_servidor_filesystem = true`). E o caso que o jail
+    /// protege; os testes de outro servidor chamam [`confinar_argumentos`] com
+    /// `false` direto.
+    fn confinar_fs(
+        operacao: &str,
+        argumentos: Option<Map<String, Value>>,
+        jail: &FileJail,
+        session_dir: Option<&str>,
+    ) -> Result<Confinado, Denial> {
+        confinar_argumentos(operacao, argumentos, jail, session_dir, true)
+    }
+
     /// **O achado.** A sessao A pede o arquivo da sessao B pelo caminho
     /// absoluto (que `list_allowed_directories` do servidor entregaria): fora.
     #[test]
@@ -184,7 +229,7 @@ mod tests {
             "search_files",
             "get_file_info",
         ] {
-            let r = confinar_argumentos(
+            let r = confinar_fs(
                 op,
                 Some(args(&[(
                     "path",
@@ -197,7 +242,7 @@ mod tests {
         }
         // Nem o pai de todas as sessoes.
         let pai = b.parent().expect("pai").to_string_lossy().into_owned();
-        let r = confinar_argumentos(
+        let r = confinar_fs(
             "list_directory",
             Some(args(&[("path", Value::String(pai))])),
             &jail_so_sessao(),
@@ -212,7 +257,7 @@ mod tests {
     fn dentro_da_sessao_o_caminho_e_reescrito_pelo_resolvido() {
         let (_tmp, a, _b) = sessao();
         let a_str = a.to_string_lossy().into_owned();
-        let r = confinar_argumentos(
+        let r = confinar_fs(
             "read_text_file",
             Some(args(&[
                 (
@@ -238,7 +283,7 @@ mod tests {
     fn relativo_resolve_contra_o_diretorio_da_sessao_e_sem_sessao_nao_resolve() {
         let (_tmp, a, _b) = sessao();
         let a_str = a.to_string_lossy().into_owned();
-        let r = confinar_argumentos(
+        let r = confinar_fs(
             "read_file",
             Some(args(&[("path", Value::String("meu.txt".into()))])),
             &jail_so_sessao(),
@@ -250,7 +295,7 @@ mod tests {
         };
         assert_eq!(m["path"], Value::String(canon(&a.join("meu.txt"))));
 
-        let r = confinar_argumentos(
+        let r = confinar_fs(
             "read_file",
             Some(args(&[("path", Value::String("meu.txt".into()))])),
             &jail_so_sessao(),
@@ -264,7 +309,7 @@ mod tests {
     fn ponto_ponto_e_recusado() {
         let (_tmp, a, _b) = sessao();
         let a_str = a.to_string_lossy().into_owned();
-        let r = confinar_argumentos(
+        let r = confinar_fs(
             "read_file",
             Some(args(&[(
                 "path",
@@ -283,7 +328,7 @@ mod tests {
         let a_str = a.to_string_lossy().into_owned();
         let dentro = a.join("meu.txt").to_string_lossy().into_owned();
         let fora = b.join("segredo.txt").to_string_lossy().into_owned();
-        let r = confinar_argumentos(
+        let r = confinar_fs(
             "read_multiple_files",
             Some(args(&[(
                 "paths",
@@ -293,7 +338,7 @@ mod tests {
             Some(&a_str),
         );
         assert!(matches!(r, Err(Denial::Outside)), "{r:?}");
-        let r = confinar_argumentos(
+        let r = confinar_fs(
             "read_multiple_files",
             Some(args(&[(
                 "paths",
@@ -317,7 +362,7 @@ mod tests {
     fn mover_para_fora_e_recusado() {
         let (_tmp, a, b) = sessao();
         let a_str = a.to_string_lossy().into_owned();
-        let r = confinar_argumentos(
+        let r = confinar_fs(
             "move_file",
             Some(args(&[
                 (
@@ -341,7 +386,7 @@ mod tests {
     fn list_allowed_directories_responde_as_raizes_da_sessao() {
         let (_tmp, a, b) = sessao();
         let a_str = a.to_string_lossy().into_owned();
-        let r = confinar_argumentos(
+        let r = confinar_fs(
             LIST_ALLOWED_DIRECTORIES,
             None,
             &jail_so_sessao(),
@@ -360,14 +405,15 @@ mod tests {
             "o pai vazou: {texto}"
         );
         // Sem raiz nenhuma: a frase e a de "sem raiz", nao uma lista vazia.
-        let r = confinar_argumentos(LIST_ALLOWED_DIRECTORIES, None, &jail_so_sessao(), None);
+        let r = confinar_fs(LIST_ALLOWED_DIRECTORIES, None, &jail_so_sessao(), None);
         assert!(matches!(r, Err(Denial::NoRoots)), "{r:?}");
     }
 
-    /// Operacao desconhecida (ou de outro servidor) passa intocada: quem
-    /// decide se ela roda e o portao de nomes.
+    /// Operacao desconhecida de OUTRO servidor (`e_servidor_filesystem = false`)
+    /// passa intocada: nao e de filesystem, quem decide se ela roda e o portao
+    /// de nomes.
     #[test]
-    fn operacao_desconhecida_passa_intocada() {
+    fn operacao_desconhecida_de_outro_servidor_passa_intocada() {
         let (_tmp, a, _b) = sessao();
         let a_str = a.to_string_lossy().into_owned();
         let entrada = args(&[("query", Value::String("x".into()))]);
@@ -376,11 +422,46 @@ mod tests {
             Some(entrada.clone()),
             &jail_so_sessao(),
             Some(&a_str),
+            false,
         )
         .expect("passa");
         assert_eq!(r, Confinado::Passa(Some(entrada)));
-        let r = confinar_argumentos("ping", None, &jail_so_sessao(), None).expect("passa");
+        let r = confinar_argumentos("ping", None, &jail_so_sessao(), None, false).expect("passa");
         assert_eq!(r, Confinado::Passa(None));
+    }
+
+    /// **Fail-closed (#1482).** A MESMA operacao desconhecida, mas vinda do
+    /// servidor filesystem (`e_servidor_filesystem = true`), e RECUSADA — nao
+    /// repassada. E a defesa contra uma versao nova do pacote que adicione ou
+    /// renomeie uma tool de caminho: enquanto ela nao estiver em
+    /// `OPERACOES_COM_CAMINHO`, nao chega ao servidor. Tire o fail-closed de
+    /// `confinar_argumentos` e este teste fica vermelho.
+    #[test]
+    fn operacao_desconhecida_no_filesystem_e_fail_closed() {
+        let (_tmp, a, b) = sessao();
+        let a_str = a.to_string_lossy().into_owned();
+        // Uma "tool nova" hipotetica que carrega um caminho para fora da sessao.
+        let entrada = args(&[(
+            "target",
+            Value::String(b.join("segredo.txt").to_string_lossy().into_owned()),
+        )]);
+        let r = confinar_argumentos(
+            "copy_file_v2",
+            Some(entrada.clone()),
+            &jail_so_sessao(),
+            Some(&a_str),
+            true,
+        );
+        assert!(
+            matches!(r, Err(Denial::FerramentaFilesystemNaoMapeada)),
+            "tool desconhecida do filesystem tem de ser recusada: {r:?}"
+        );
+        // Sem argumento nenhum tambem recusa — nao ha repasse silencioso.
+        let r = confinar_argumentos("copy_file_v2", None, &jail_so_sessao(), Some(&a_str), true);
+        assert!(
+            matches!(r, Err(Denial::FerramentaFilesystemNaoMapeada)),
+            "{r:?}"
+        );
     }
 
     /// Raiz declarada (`agent.file_roots`) vale para o MCP como para as
@@ -392,7 +473,7 @@ mod tests {
         std::fs::create_dir_all(&projeto).expect("mkdir");
         std::fs::write(projeto.join("README.md"), "x").expect("write");
         let jail = FileJail::from_roots([&projeto]);
-        let r = confinar_argumentos(
+        let r = confinar_fs(
             "read_file",
             Some(args(&[(
                 "path",
@@ -403,7 +484,7 @@ mod tests {
         )
         .expect("dentro da declarada");
         assert!(matches!(r, Confinado::Reescrito(_)), "{r:?}");
-        let r = confinar_argumentos(
+        let r = confinar_fs(
             "read_file",
             Some(args(&[(
                 "path",
@@ -441,14 +522,14 @@ mod tests {
     fn caminho_ausente_ou_nao_string_e_recusado() {
         let (_tmp, a, _b) = sessao();
         let a_str = a.to_string_lossy().into_owned();
-        let r = confinar_argumentos(
+        let r = confinar_fs(
             "read_file",
             Some(args(&[("path", Value::from(7))])),
             &jail_so_sessao(),
             Some(&a_str),
         );
         assert!(matches!(r, Err(Denial::Unresolvable)), "{r:?}");
-        let r = confinar_argumentos("read_file", None, &jail_so_sessao(), Some(&a_str));
+        let r = confinar_fs("read_file", None, &jail_so_sessao(), Some(&a_str));
         assert!(matches!(r, Err(Denial::Unresolvable)), "{r:?}");
     }
 }
