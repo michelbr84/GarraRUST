@@ -7,14 +7,14 @@
 -- Ordem de merge / numeracao (CLAUDE.md regra 18)
 -- ============================================================================
 --
--- O slot 035 esta RESERVADO pela branch `feat/billing-schema-1652` (ainda nao
--- mergeada no momento desta migration). Esta migration usa 036 e assume que a
--- 035 entra ANTES dela — o merge sera rodado nessa ordem. A dependencia e de
--- NUMERACAO (manter a serie estritamente crescente e linear, regra 18), nao de
--- schema: todo REVOKE abaixo toca apenas tabelas criadas em migrations <= 034,
--- logo 036 nao le nem altera nada que a 035 cria. Se a 035 criar tabelas novas
--- com privilegio menor que CRUD, e responsabilidade DELA revogar o proprio
--- excesso (mesmo padrao documentado abaixo).
+-- O slot 035 e da branch `feat/billing-schema-1652` (billing plan/subscription/
+-- invoice), ja mergeada no main (PR #1681) ANTES desta 036. Esta 036 usa o
+-- proximo numero para manter a serie estritamente crescente e linear (regra 18).
+-- A relacao com a 035 e so de NUMERACAO, nao de schema: todo REVOKE abaixo toca
+-- apenas tabelas criadas em migrations <= 034, logo 036 nao le nem altera nada
+-- que a 035 cria. As tabelas de billing (plans/subscriptions/invoices) ja trazem
+-- os proprios grants corretos (plans read-only, subscriptions sem DELETE,
+-- invoices ledger imutavel) e NAO sao tocadas aqui.
 --
 -- Forward-only (regra 9): so REVOKE de privilegio, nenhum DROP, nenhum ALTER
 -- destrutivo de schema. REVOKE de um privilegio ausente e no-op no Postgres,

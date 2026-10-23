@@ -346,7 +346,7 @@ with per-claim evidence in `results/`:
 | Memory | SQLite + local vector search (sqlite-vec) + LLM fact extraction, auto-injected into context | Markdown files + SQLite FTS5/vector | sqlite/postgres/qdrant backends |
 | Config hot reload | file watch — most settings apply live (channels/providers wire at boot) | file watch (hybrid mode) | explicit reload endpoint only |
 | Scheduling | one-shot heartbeats (up to 30 days ahead) **and** cron recurrence with IANA timezones, delivered to the originating channel; retries failed runs with backoff | full cron + automations | cron + SOP engine |
-| Multi-tenant group workspace | in active development — Postgres 16 + pgvector, 37 tables across 33 migrations, 32 of them under FORCE Row-Level Security ([Phase 3](ROADMAP.md)) | explicit non-goal (single trusted operator) | no |
+| Multi-tenant group workspace | in active development — Postgres 16 + pgvector, 42 tables across 36 migrations, 36 of them under FORCE Row-Level Security ([Phase 3](ROADMAP.md)) | explicit non-goal (single trusted operator) | no |
 | Native PT-BR assistant persona | yes — first-class, default | no | no |
 | Prebuilt binaries + self-update | 6 targets (3 x86_64 required, 3 aarch64 best-effort), SHA-256-verified atomic self-update | npm package (needs Node runtime) | 10 targets, SLSA provenance |
 
@@ -653,7 +653,7 @@ crates/
 ├── garraia-agents/     # LLM providers, tools, MCP client, agent runtime
 ├── garraia-channels/   # 11 wired: Telegram, Discord, Slack, WhatsApp, iMessage, Google Chat, Teams, LINE, Matrix, IRC, Signal
 ├── garraia-auth/       # Auth v1: Argon2id, JWT HS256, RBAC, RLS-backed identity
-├── garraia-workspace/  # Postgres 16 + pgvector multi-tenant (37 tables / 33 migrations, 32 under FORCE RLS)
+├── garraia-workspace/  # Postgres 16 + pgvector multi-tenant (42 tables / 36 migrations, 36 under FORCE RLS)
 ├── garraia-security/   # Credential vault, allowlists, pairing, validation
 ├── garraia-db/         # SQLite memory, vector search, sessions
 ├── garraia-config/     # YAML/TOML config, hot reload, `config check`
@@ -686,13 +686,19 @@ Learning agent, this benchmark harness, and the v0.3.x distribution wave
 native Windows ARM64, `garra agents setup` with the Anthropic-compatible
 `/v1/messages` shim, and Garra Desktop for Linux with the Chat Bar.
 
-**v0.3.9** (Sep 2026) closed 48 issues and PRs across three tracks: the
-terminal stopped being a black box (per-tool activity lines, Markdown
-rendered without stalling the stream, `/status` `/tools` `/logs`, and a
-`garra logs` command), memory became inspectable (`garra memory` with
-`add`, `reindex`, `backup`, `pin`, `ttl`), and execution modes started
-being enforced in the executor rather than merely requested in the prompt.
-See [What's New in v0.3.9](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.3.9).
+**v0.4.9** (Oct 2026) landed two big fronts and a security sweep. Data-subject
+rights went live: `GET /v1/me/export` now returns a user's personal content
+across every group they belong to (messages, mentions, files, memories,
+tasks) and declares what it left out, `PATCH /v1/me` changes an email through
+a safe out-of-band flow instead of blindly, and `DELETE /v1/me` queues a
+30-day-grace erasure run by a dedicated-credential worker. The gateway also
+became an MCP server over HTTP with task delegation — `garra_ask`,
+`garra_agent`, external orchestrators with their own identity, policy, and
+per-orchestrator audit, and operator-defined regex redaction — all off by
+default and fail-closed. Alongside: 24 RUSTSEC advisories closed in one pass,
+verifiable provenance attestation on every release asset, and the request path
+now rejects `unwrap()`/`expect()`.
+See [What's New in v0.4.9](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.4.9).
 
 ## Contributing
 

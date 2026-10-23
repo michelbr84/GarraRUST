@@ -129,8 +129,8 @@ crates/
                         Boot gate (#1247, `boot_gate`): o mesmo `run_check` roda em todo `start`/`restart`/`start -d`; so `Error` da allowlist fechada `BLOQUEIA_O_BOOT` (hoje: TLS pela metade) recusa (exit 78; escotilha `GARRAIA_ALLOW_INVALID_CONFIG=1`, exatamente `1`).
   garraia-telemetry/  — OpenTelemetry + Prometheus baseline — feature-gated
   garraia-workspace/  — Postgres 16 + pgvector multi-tenant (Fase 3 schema completo).
-                        37 tabelas em 33 migrations; 32 sob FORCE RLS e 5 fora (users,
-                        roles, permissions, role_permissions, group_invites). Marcos:
+                        42 tabelas em 36 migrations; 36 sob FORCE RLS e 6 fora (users,
+                        roles, permissions, role_permissions, group_invites, plans). Marcos:
                         001 tenant roots (users/groups/identities/sessions/api_keys/
                         invites) · 002 RBAC + audit_events · 003 folders/files/
                         file_versions (compound FK, object_key UNIQUE, HMAC integrity)
@@ -139,8 +139,13 @@ crates/
                         wrap-up com NULLIF fail-closed · 008 role `garraia_login`
                         NOLOGIN BYPASSRLS · 010 role `garraia_signup` · 013 audit WITH
                         CHECK explícito · 014 `tus_uploads` (CHECK ≤ 5 GiB, índice
-                        parcial `expires_in_progress_idx`). Handle PII-safe via
-                        skip(config) + Debug redigido. ADRs 0003 e 0004.
+                        parcial `expires_in_progress_idx`) · 034 direitos do titular
+                        (email change + account deletion, SECURITY DEFINER purge) ·
+                        035 billing `plans` (catalogo global, sem RLS) +
+                        `subscriptions`/`invoices` (FORCE RLS, fatura imutavel, valor
+                        em centavos + ISO 4217, so schema — #1652/ADR 0026) · 036
+                        REVOKE do excesso de ADP (so grants, sem tabela nova). Handle
+                        PII-safe via skip(config) + Debug redigido. ADRs 0003, 0004 e 0026.
                         **Grants/ADP:** a `ALTER DEFAULT PRIVILEGES` da migration
                         007 dá CRUD completo a `garraia_app` em TODA tabela criada
                         depois dela; `GRANT` seletivo é aditivo e não restringe,
@@ -325,7 +330,7 @@ benches/
    parameter (nome de tabela/coluna, `ORDER BY` dinâmico, DDL). Nesses casos usar
    `sqlx::AssertSqlSafe` (note: `sqlx::AssertSqlSafe`, **não** `sqlx::sql_str::AssertSqlSafe`, que
    não é público) **com comentário de auditoria nomeando a origem fechada do valor**. Não é
-   permitido em `crates/*/src/` — só em alvos de teste; hoje há exatamente 3 usos, todos em
+   permitido em `crates/*/src/` — só em alvos de teste; hoje há exatamente 4 usos, todos em
    `tests/`. Valor de dado continua **sempre** por `.bind()`. Para GUC de RLS, use
    `SELECT set_config('app.current_group_id', $1, true)` com bind — nunca `SET LOCAL` interpolado.
 6. **NUNCA** expor secrets/PII em logs (`GARRAIA_JWT_SECRET`, `GARRAIA_REFRESH_HMAC_SECRET`, `GARRAIA_METRICS_TOKEN`, `ANTHROPIC_API_KEY`, etc.)
