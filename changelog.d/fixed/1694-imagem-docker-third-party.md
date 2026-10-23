@@ -7,6 +7,6 @@
   planner e nos dois lados do `cook`; o teste
   `dockerfile_copies_every_patch_path_outside_crates` prende a regra em todo
   PR, e o novo workflow `docker-build.yml` constroi a imagem (sem push) e
-  responde `/ping` quando muda o Dockerfile, o `Cargo.toml` da raiz ou
+  responde `/ping` quando muda o Dockerfile, o `Cargo.toml`/`Cargo.lock` da raiz ou
   `third_party/`. O smoke Windows do desktop ganhou tetos internos que cabem no
   teto do job, para um travamento deixar log em vez de virar cancelamento mudo.

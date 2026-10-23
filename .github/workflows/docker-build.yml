@@ -16,6 +16,10 @@ on:
       - 'Dockerfile'
       - '.dockerignore'
       - 'Cargo.toml'
+      # Bump de dependencia muda o grafo sem tocar o Cargo.toml — e um
+      # `rust-version` acima do `rust:*-slim` da imagem ja derrubou o Deploy
+      # do tag v0.3.0.
+      - 'Cargo.lock'
       - 'third_party/**'
       - '.github/workflows/docker-build.yml'
   workflow_dispatch:
