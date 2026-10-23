@@ -323,7 +323,7 @@ benches/
    parameter (nome de tabela/coluna, `ORDER BY` dinâmico, DDL). Nesses casos usar
    `sqlx::AssertSqlSafe` (note: `sqlx::AssertSqlSafe`, **não** `sqlx::sql_str::AssertSqlSafe`, que
    não é público) **com comentário de auditoria nomeando a origem fechada do valor**. Não é
-   permitido em `crates/*/src/` — só em alvos de teste; hoje há exatamente 3 usos, todos em
+   permitido em `crates/*/src/` — só em alvos de teste; hoje há exatamente 4 usos, todos em
    `tests/`. Valor de dado continua **sempre** por `.bind()`. Para GUC de RLS, use
    `SELECT set_config('app.current_group_id', $1, true)` com bind — nunca `SET LOCAL` interpolado.
 6. **NUNCA** expor secrets/PII em logs (`GARRAIA_JWT_SECRET`, `GARRAIA_REFRESH_HMAC_SECRET`, `GARRAIA_METRICS_TOKEN`, `ANTHROPIC_API_KEY`, etc.)
