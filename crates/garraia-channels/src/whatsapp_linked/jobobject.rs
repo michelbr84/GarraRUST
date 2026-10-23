@@ -171,27 +171,31 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, WAIT_TIMEOUT};
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::System::Threading::{
-        PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
+        GetExitCodeProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
+    /// `GetExitCodeProcess` devolve 259 (STILL_ACTIVE) enquanto o processo
+    /// roda. Usado em vez de `WaitForSingleObject` porque este exige o direito
+    /// `SYNCHRONIZE`, que `PROCESS_QUERY_LIMITED_INFORMATION` nao concede — sem
+    /// ele o wait falha e todo processo parece morto. cmd/ping nunca saem com
+    /// 259, entao a ambiguidade de STILL_ACTIVE nao morde aqui.
+    const STILL_ACTIVE_U32: u32 = 259;
+
     /// `true` enquanto o processo de `pid` existe e nao terminou.
-    ///
-    /// `OpenProcess` falha quando o processo ja saiu; se abre, o objeto fica
-    /// sinalizado assim que ele termina, entao `WaitForSingleObject(0)` so
-    /// devolve `WAIT_TIMEOUT` enquanto ele roda de fato.
     fn esta_vivo(pid: u32) -> bool {
         // SAFETY: abre com o direito minimo de consulta; NULL = ja nao existe.
         let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if h.is_null() {
             return false;
         }
-        // SAFETY: `h` e um handle valido recem-aberto.
-        let rodando = unsafe { WaitForSingleObject(h, 0) } == WAIT_TIMEOUT;
+        let mut code: u32 = 0;
+        // SAFETY: `h` e um handle valido recem-aberto; `code` e um u32 vivo.
+        let ok = unsafe { GetExitCodeProcess(h, &mut code) };
         // SAFETY: fecha o handle de consulta, uma unica vez.
         unsafe { CloseHandle(h) };
-        rodando
+        ok != 0 && code == STILL_ACTIVE_U32
     }
 
     fn morreu_ate(pid: u32, prazo: Duration) -> bool {
@@ -227,6 +231,19 @@ mod tests {
         // Da tempo de o `cmd` lancar o `ping` e de ele herdar o job.
         std::thread::sleep(Duration::from_millis(400));
         let neto_pid = neto_ping_pid(filho_pid);
+
+        // O teste so prova algo se a arvore estava viva ANTES do fechamento do
+        // job — senao `morreu_ate` passaria vacuamente.
+        assert!(
+            esta_vivo(filho_pid),
+            "o filho {filho_pid} deveria estar vivo antes do drop"
+        );
+        if let Some(neto) = neto_pid {
+            assert!(
+                esta_vivo(neto),
+                "o neto {neto} deveria estar vivo antes do drop"
+            );
+        }
 
         // Fechar o handle do job e identico ao que o SO faz com o handle quando
         // o processo que o segura e morto por `TerminateProcess` (Gerenciador

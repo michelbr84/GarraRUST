@@ -3608,8 +3608,10 @@ version = "0.4.9"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -114,6 +114,15 @@ pub trait ProcessHandle: Send {
 
     /// `None` se ainda está rodando. Não bloqueia.
     fn try_wait(&mut self) -> Result<Option<ExitStatus>, SuperviseError>;
+
+    /// Handle OS do processo no Windows (como `isize`), para assinar num Job
+    /// Object. `None` quando o backend não expõe um (os dublês de teste). O
+    /// default `None` mantém impls externas compatíveis — é o valor em toda
+    /// plataforma que não seja Windows, e o [`CommandSpawner`] real o sobrepõe
+    /// só lá.
+    fn raw_process_handle(&self) -> Option<isize> {
+        None
+    }
 }
 
 /// Quem sabe criar processos.
@@ -174,6 +183,15 @@ impl ProcessHandle for ChildHandle {
             Ok(None) => Ok(None),
             Err(e) => Err(SuperviseError::Wait(e)),
         }
+    }
+
+    #[cfg(windows)]
+    fn raw_process_handle(&self) -> Option<isize> {
+        use std::os::windows::io::AsRawHandle;
+        if self.reaped {
+            return None;
+        }
+        Some(self.child.as_raw_handle() as isize)
     }
 }
 
@@ -243,6 +261,15 @@ pub struct Supervisor {
     policy: RestartPolicy,
     state: ModuleState,
     child: Mutex<Option<Box<dyn ProcessHandle>>>,
+    /// Job Object do Windows ao qual cada filho e assinado. Fechar o handle
+    /// (no `Drop`, ou quando ESTE processo morre de forma abrupta) mata a
+    /// arvore inteira via `KILL_ON_JOB_CLOSE` — a garantia que o kill no
+    /// `Drop`/`stop` nao da quando o pai e morto por `TerminateProcess`. So
+    /// existe no Windows; `None` quando a criacao falhou (as outras camadas
+    /// continuam). Guardado so pelo efeito do proprio `Drop`.
+    #[cfg(windows)]
+    #[allow(dead_code)]
+    job: Option<crate::jobobject::KillOnCloseJob>,
 }
 
 impl Supervisor {
@@ -253,6 +280,14 @@ impl Supervisor {
             policy: RestartPolicy::default(),
             state,
             child: Mutex::new(None),
+            #[cfg(windows)]
+            job: match crate::jobobject::KillOnCloseJob::new() {
+                Ok(job) => Some(job),
+                Err(e) => {
+                    tracing::warn!(erro = %e, "nao criou Job Object do supervisor; seguindo sem ele");
+                    None
+                }
+            },
         }
     }
 
@@ -315,6 +350,12 @@ impl Supervisor {
         match self.spawner.spawn(&self.spec) {
             Ok(handle) => {
                 tracing::info!(comando = %self.spec.display(), "processo supervisionado iniciado");
+                // No Windows, assina o filho ao Job Object ANTES de qualquer
+                // coisa poder dar errado: lido do handle enquanto ele ainda e
+                // nosso. Falha aqui nao derruba o start — o kill no `Drop`/
+                // `stop` continua.
+                #[cfg(windows)]
+                let raw = handle.raw_process_handle();
                 // Aqui, diferente dos outros pontos de trava, `handle` ainda
                 // não está guardado em lugar nenhum: se o lock estiver
                 // envenenado, não dá para recuperar o guard e seguir como se
@@ -332,6 +373,12 @@ impl Supervisor {
                     }
                 };
                 *guard = Some(handle);
+                #[cfg(windows)]
+                if let (Some(job), Some(raw)) = (self.job.as_ref(), raw)
+                    && let Err(e) = job.assign_handle(raw)
+                {
+                    tracing::warn!(erro = %e, "nao assinou o processo ao Job Object; seguindo sem ele");
+                }
                 self.state.observe(PowerEvent::Started);
                 Ok(())
             }

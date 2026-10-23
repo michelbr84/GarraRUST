@@ -44,12 +44,19 @@
 //! [`docs/adr/0021-garraia-desktop-control-center.md`]: https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0021-garraia-desktop-control-center.md
 
 pub mod detect;
+/// Job Object do Windows para conter o processo supervisionado (e sua arvore)
+/// em morte abrupta do pai. So existe no Windows; no Unix o papel seria do
+/// PDEATHSIG. Usado por [`supervise`].
+#[cfg(windows)]
+pub mod jobobject;
 pub mod locate;
 pub mod onboarding;
 pub mod state;
 pub mod supervise;
 
 pub use detect::{AgentKind, Confidence, DetectedAgent, Detector, Evidence, Filesystem, RealFs};
+#[cfg(windows)]
+pub use jobobject::KillOnCloseJob;
 pub use locate::{DESKTOP_BINARY, DesktopApp, EnvDirs, Locator, Platform, Source, install_dirs};
 pub use onboarding::{
     EstiloPersona, EventoNdjson, FaseQr, Idioma, Modo, Onboarding, OnboardingPersistido,
