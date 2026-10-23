@@ -74,10 +74,10 @@ fn morreu_ate(pid: u32, prazo: Duration) -> bool {
 async fn esperar_pid_no_arquivo(path: &std::path::Path, prazo: Duration) -> Option<u32> {
     let fim = Instant::now() + prazo;
     while Instant::now() < fim {
-        if let Ok(texto) = std::fs::read_to_string(path) {
-            if let Ok(pid) = texto.trim().parse::<u32>() {
-                return Some(pid);
-            }
+        if let Ok(texto) = std::fs::read_to_string(path)
+            && let Ok(pid) = texto.trim().parse::<u32>()
+        {
+            return Some(pid);
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
