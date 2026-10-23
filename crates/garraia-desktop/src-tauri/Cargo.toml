@@ -36,3 +36,9 @@ garraia-config = { workspace = true }
 # já é o do Tauri (tauri::async_runtime), esta dep só dá acesso à API.
 tokio = { workspace = true }
 
+# Job Object do sidecar (gateway.rs) no Windows: a logica do KILL_ON_JOB_CLOSE
+# vive no core sem Tauri (ADR 0021, testada no CI) e a casca so a aplica por
+# PID. So no Windows — e la que o Job Object existe.
+[target.'cfg(windows)'.dependencies]
+garraia-desktop-core = { workspace = true }
+
