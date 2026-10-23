@@ -1,0 +1,125 @@
+name: Dogfood Linux (clean install)
+
+# Prova, num runner Linux de CI, o gate D1/D3a/D9 de docs/releasing.md §1.5:
+# que o PACOTE .deb instala e funciona numa maquina limpa, nao so que o codigo
+# compila. Roda scripts/dogfood/linux-clean-install.sh --source local, que
+# empacota o checkout com o mesmo packaging/nfpm.yaml da release, instala num
+# `ubuntu:24.04` cru, roda os doctors, sobe o gateway com o Ollama local como
+# provedor (sem chave paga), exige uma resposta real do modelo por REST,
+# reinicia provando persistencia e encerra com `garraia stop`.
+#
+# Dispatch-only por desenho: nao e gate de PR nem corre em push. O dono o
+# dispara contra o candidato (tag `vX.Y.Z-rcN` ou a branch de release) antes
+# do tag. O resumo PASSOU/FALHOU por passo vira artifact.
+#
+# Nota de disponibilidade do GitHub: um workflow_dispatch so aparece para
+# disparo depois que o arquivo existe na default branch. Enquanto esta no PR,
+# dispara-lo pela API devolve 404 ate o merge em main.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Candidato a testar: tag (vX.Y.Z-rcN) ou branch (release/vX.Y.Z)'
+        required: true
+        type: string
+
+# Checkout + build local; nada de escrita no repo nem de publicacao.
+permissions:
+  contents: read
+
+env:
+  # Ollama pinado por VERSAO + SHA-256, no mesmo espirito do nfpm/appimagetool
+  # do release.yml e do proprio dogfood script.
+  #
+  # Avaliacao do `curl -fsSL https://ollama.com/install.sh | sh`: e a via
+  # oficial, mas canaliza codigo remoto NAO pinado (quebra o habito de
+  # pinar+checksum do projeto) e instala um servico systemd que este job nao
+  # precisa. O Ollama publica `sha256sum.txt` em cada release, entao baixar o
+  # tarball da versao pinada e verifica-lo contra o SHA-256 abaixo e viavel e
+  # deterministico — e o que se faz aqui. Para atualizar o Ollama, troque
+  # OLLAMA_VERSION e OLLAMA_SHA256 JUNTOS (o checksum vem do sha256sum.txt do
+  # release: linha `ollama-linux-amd64.tar.zst`).
+  OLLAMA_VERSION: "0.40.9"
+  OLLAMA_SHA256: "01f0d0ae50cad3295a79a165033a65cf324f8ae5f7be64679464d29ecf28d67c"
+  # Exatamente o default DOGFOOD_MODEL de scripts/dogfood/linux-clean-install.sh.
+  # Mudou la, muda aqui — o script recusa no passo P0 se o modelo nao estiver
+  # no Ollama.
+  DOGFOOD_MODEL: "qwen3.5:0.8b"
+
+jobs:
+  dogfood:
+    name: Dogfood Linux (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout candidate ref
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Rust
+        # `--source local` empacota o checkout: `cargo build --release
+        # --package garraia --bin garra` (openssl vendored, sem apt extra, o
+        # mesmo do job build-linux-x86_64 do release.yml).
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Ollama (pinned binary + SHA-256)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # zstd: o tarball moderno do Ollama e .tar.zst; jq: o dogfood usa.
+          sudo apt-get install -y zstd jq
+          tgz="${RUNNER_TEMP}/ollama-linux-amd64.tar.zst"
+          curl -fsSL --retry 5 --retry-delay 2 -o "$tgz" \
+            "https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-linux-amd64.tar.zst"
+          echo "${OLLAMA_SHA256}  ${tgz}" | sha256sum -c -
+          # Layout do tarball: bin/ollama + lib/ollama (rpath $ORIGIN/../lib);
+          # extraido em /usr/local vira /usr/local/bin/ollama, ja no PATH.
+          sudo tar --zstd -C /usr/local -xf "$tgz"
+          ollama --version
+
+      - name: Start Ollama and pull the model
+        run: |
+          set -euo pipefail
+          # Servidor em background, sem systemd. Default bind 127.0.0.1:11434 —
+          # o mesmo loopback que o container do dogfood (--network host) enxerga.
+          ollama serve > "${RUNNER_TEMP}/ollama-serve.log" 2>&1 &
+          echo "OLLAMA_PID=$!" >> "$GITHUB_ENV"
+          ready=0
+          for _ in $(seq 1 60); do
+            if curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error ::Ollama nao respondeu em /api/tags; ver ollama-serve.log"
+            cat "${RUNNER_TEMP}/ollama-serve.log" || true
+            exit 1
+          fi
+          ollama pull "${DOGFOOD_MODEL}"
+          ollama list
+
+      - name: Run clean-install dogfood (--source local)
+        # O script sai != 0 quando qualquer passo nao-PASSOU (o `resumo.txt`
+        # final diz FALHOU). Captura-se o codigo, imprime-se o resumo SEMPRE e
+        # repassa-se a falha: o job fica vermelho se o dogfood falhou. Sem
+        # continue-on-error (proibido pelo CLAUDE.md).
+        run: |
+          set -euo pipefail
+          rc=0
+          scripts/dogfood/linux-clean-install.sh --source local || rc=$?
+          echo "--- resumo.txt ---"
+          cat dogfood/linux/*/resumo.txt 2>/dev/null || echo "(sem resumo: o dogfood falhou antes de gera-lo)"
+          exit "$rc"
+
+      - name: Upload dogfood evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dogfood-linux
+          path: dogfood/linux/**
+          if-no-files-found: warn
