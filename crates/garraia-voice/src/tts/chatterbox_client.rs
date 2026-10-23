@@ -422,7 +422,7 @@ impl ChatterboxClient {
         // Primeiro como array (`[{...}]`), depois como objeto solto (`{...}`).
         let from_array = serde_json::from_str::<Vec<Value>>(data)
             .ok()
-            .and_then(|arr| arr.first().and_then(&from_obj));
+            .and_then(|arr| arr.first().and_then(from_obj));
         from_array.or_else(|| {
             serde_json::from_str::<Value>(data)
                 .ok()
