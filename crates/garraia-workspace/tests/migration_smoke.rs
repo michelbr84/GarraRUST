@@ -2259,6 +2259,68 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         }
     }
 
+    // ── 035.5c: garraia_effective_plan_id — existencia, grants, UPGRADE ────
+    //
+    // Prova do criterio de aceite "tenant novo nasce com plano Free sem
+    // intervir ninguem" E do "upgrade da 0.4.9": group_id e other_group_id
+    // foram criados la atras (blocos das migrations 001/002/004), ANTES de
+    // qualquer dado de billing, e AINDA nao tem assinatura neste ponto do
+    // fluxo (as fixtures 035.6 abaixo e que inserem). Sao, portanto, grupos
+    // pre-billing identicos ao que um upgrade de 0.4.9 produz (a 035 nao faz
+    // backfill) — e devem resolver para 'free'.
+    //
+    // Nota sobre o criterio (2): o migration_smoke aplica TODAS as migrations
+    // de uma vez no connect (migrate_on_start), entao nao ha API para "aplicar
+    // ate a 034, inserir, aplicar a 035". O equivalente verificavel e este: um
+    // grupo sem linha em subscriptions (o estado de todo grupo pos-upgrade,
+    // porque a 035 nao backfilla) resolve para 'free'. O caso "do zero" e o
+    // proprio smoke completo: schema vazio -> 035 aplicada -> consultas abaixo.
+    let eff_fn_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'garraia_effective_plan_id')",
+    )
+    .fetch_one(workspace.pool())
+    .await?;
+    assert!(
+        eff_fn_exists,
+        "migration 035 must create garraia_effective_plan_id"
+    );
+
+    // EXECUTE granted to garraia_app, revoked from PUBLIC (login/signup, which
+    // would otherwise inherit PUBLIC's default EXECUTE, must have none).
+    let app_can_exec: bool = sqlx::query_scalar(
+        "SELECT has_function_privilege('garraia_app', 'garraia_effective_plan_id(uuid)', 'EXECUTE')",
+    )
+    .fetch_one(workspace.pool())
+    .await?;
+    assert!(
+        app_can_exec,
+        "garraia_app must have EXECUTE on garraia_effective_plan_id"
+    );
+    for role in &["garraia_login", "garraia_signup"] {
+        let leaked: bool = sqlx::query_scalar(
+            "SELECT has_function_privilege($1, 'garraia_effective_plan_id(uuid)', 'EXECUTE')",
+        )
+        .bind(role)
+        .fetch_one(workspace.pool())
+        .await?;
+        assert!(
+            !leaked,
+            "{role} MUST NOT have EXECUTE on garraia_effective_plan_id (REVOKE FROM PUBLIC leak)"
+        );
+    }
+
+    // UPGRADE invariant: pre-billing groups (no subscription yet) -> 'free'.
+    for (gid, label) in &[(group_id, "group A"), (other_group_id, "group B")] {
+        let eff: String = sqlx::query_scalar("SELECT garraia_effective_plan_id($1)")
+            .bind(gid)
+            .fetch_one(workspace.pool())
+            .await?;
+        assert_eq!(
+            eff, "free",
+            "035.5c: pre-billing {label} (no subscription) must resolve to 'free'"
+        );
+    }
+
     // ── 035.6: fixtures in group A and group B (bypass via superuser) ──────
     let sub_a_id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO subscriptions (group_id, plan_id, status) \
@@ -2480,6 +2542,121 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
             .and_then(|e| e.code().map(|c| c.into_owned())),
         Some("23514".to_string()),
         "expected SQLSTATE 23514 (check_violation) for provider id without provider on invoices"
+    );
+
+    // ── Cenário 30 — garraia_effective_plan_id: matriz de estados + no-leak ─
+    //
+    // Dedicated groups + a test-only plan inserted here as superuser (NOT
+    // seeded — the plano Free e o unico seed; nomes de tiers pagos vivem no
+    // repo privado). Covers: sem assinatura -> 'free'; active -> esse plano;
+    // past_due -> esse plano; canceled -> 'free'; e sob RLS com GUC de outro
+    // grupo -> 'free' (a assinatura alheia nao vaza).
+    let eff_group_new: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO groups (name, type, created_by) VALUES ('Eff New', 'team', $1) RETURNING id",
+    )
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let eff_group_pro: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO groups (name, type, created_by) VALUES ('Eff Pro', 'team', $1) RETURNING id",
+    )
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    // Test-only paid plan (superuser, no seed).
+    sqlx::query(
+        "INSERT INTO plans (id, display_name, description, tier) \
+         VALUES ('eff-test-pro', 'Eff Test Pro', 'test-only plan for effective-plan matrix', 10)",
+    )
+    .execute(workspace.pool())
+    .await?;
+
+    // (a) group with no subscription -> 'free' (superuser read).
+    let eff_new: String = sqlx::query_scalar("SELECT garraia_effective_plan_id($1)")
+        .bind(eff_group_new)
+        .fetch_one(workspace.pool())
+        .await?;
+    assert_eq!(
+        eff_new, "free",
+        "cenário 30a: group with no subscription -> 'free'"
+    );
+
+    // (b) same, but called under RLS as garraia_app scoped to that group.
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(eff_group_new), Some(user_id)).await?;
+        let eff: String = sqlx::query_scalar("SELECT garraia_effective_plan_id($1)")
+            .bind(eff_group_new)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(
+            eff, "free",
+            "cenário 30b: no-subscription group -> 'free' under RLS too"
+        );
+        tx.rollback().await?;
+    }
+
+    // Active subscription on the test plan for eff_group_pro.
+    let eff_sub_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO subscriptions (group_id, plan_id, status) \
+         VALUES ($1, 'eff-test-pro', 'active') RETURNING id",
+    )
+    .bind(eff_group_pro)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    // (c) active -> that plan.
+    let eff_active: String = sqlx::query_scalar("SELECT garraia_effective_plan_id($1)")
+        .bind(eff_group_pro)
+        .fetch_one(workspace.pool())
+        .await?;
+    assert_eq!(
+        eff_active, "eff-test-pro",
+        "cenário 30c: active subscription -> its plan"
+    );
+
+    // (d) NO-LEAK: scope = eff_group_new (no sub), ask for eff_group_pro's plan
+    // while eff_group_pro HAS a live non-free subscription. RLS hides it -> 'free'.
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(eff_group_new), Some(user_id)).await?;
+        let eff: String = sqlx::query_scalar("SELECT garraia_effective_plan_id($1)")
+            .bind(eff_group_pro)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(
+            eff, "free",
+            "cenário 30d: cross-group effective plan must NOT leak — RLS hides the subscription, falls back to 'free'"
+        );
+        tx.rollback().await?;
+    }
+
+    // (e) past_due -> still that plan (não-cancelada).
+    sqlx::query("UPDATE subscriptions SET status = 'past_due' WHERE id = $1")
+        .bind(eff_sub_id)
+        .execute(workspace.pool())
+        .await?;
+    let eff_past_due: String = sqlx::query_scalar("SELECT garraia_effective_plan_id($1)")
+        .bind(eff_group_pro)
+        .fetch_one(workspace.pool())
+        .await?;
+    assert_eq!(
+        eff_past_due, "eff-test-pro",
+        "cenário 30e: past_due -> its plan"
+    );
+
+    // (f) canceled -> 'free' (assinatura não-viva).
+    sqlx::query("UPDATE subscriptions SET status = 'canceled', canceled_at = now() WHERE id = $1")
+        .bind(eff_sub_id)
+        .execute(workspace.pool())
+        .await?;
+    let eff_canceled: String = sqlx::query_scalar("SELECT garraia_effective_plan_id($1)")
+        .bind(eff_group_pro)
+        .fetch_one(workspace.pool())
+        .await?;
+    assert_eq!(
+        eff_canceled, "free",
+        "cenário 30f: canceled subscription -> 'free'"
     );
 
     Ok(())

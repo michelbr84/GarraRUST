@@ -8,12 +8,15 @@
 -- nenhum DROP, nenhum ALTER destrutivo.
 --
 -- Escopo (decisao do dono 2026-10-22): SO a fundacao de schema das tres
--- entidades plan/subscription/invoice, com o plano Free sem preco, RLS e
--- testes. Fora de escopo e DELIBERADAMENTE ausente daqui:
+-- entidades plan/subscription/invoice, com o plano Free sem preco, RLS, a
+-- funcao `garraia_effective_plan_id` (ausencia de assinatura = Free, sem
+-- trigger nem backfill) e testes. Fora de escopo e DELIBERADAMENTE ausente:
 --   * webhook Stripe/Pix e transicoes de pagamento (#1653);
 --   * entitlements por plano (#1654);
 --   * usage_ledger de metering (#1655);
---   * pagina de signup e criacao automatica da assinatura Free (#1656).
+--   * pagina de signup e criacao explicita da assinatura paga (#1656);
+--   * planos pagos no seed — os nomes dos tiers vivem no repo privado e so
+--     chegam com os valores em #1653.
 -- O schema abaixo e desenhado para NAO fechar portas a esses quatro — ver
 -- o ADR 0026 §"Consequencias" para onde cada um encaixa.
 --
@@ -278,3 +281,47 @@ COMMENT ON POLICY invoices_group_isolation ON invoices IS
 -- transicao de pagamento.
 GRANT SELECT, INSERT ON invoices TO garraia_app;
 REVOKE UPDATE, DELETE ON invoices FROM garraia_app;
+
+-- ─── 035.4 garraia_effective_plan_id — plano efetivo (ausencia = Free) ─────
+--
+-- Todo grupo tem um plano EFETIVO mesmo sem linha em subscriptions: a ausencia
+-- de assinatura viva significa Free. Isto evita trigger e backfill e mantem a
+-- regra "a linha de subscription so nasce com pagamento" (#1653) — um grupo
+-- novo, e todo grupo que ja existia antes do billing (upgrade da 0.4.9),
+-- resolve para 'free' sem ninguem intervir.
+--
+-- SECURITY INVOKER (default do Postgres, explicito aqui por ser load-bearing):
+-- a funcao roda com o privilegio e o contexto RLS do CHAMADOR. Sob `garraia_app`
+-- com a GUC app.current_group_id setada, a consulta interna a `subscriptions`
+-- respeita a policy group_isolation — logo chamar a funcao com o id de OUTRO
+-- grupo devolve 'free' (sem visibilidade, cai no default), nunca vaza o plano
+-- alheio. SECURITY DEFINER aqui seria um vazamento: rodaria como o dono e
+-- furaria a RLS.
+--
+-- STABLE: so le, sem efeito colateral; resultado estavel dentro da query.
+-- Ha no maximo uma assinatura nao-cancelada por grupo (indice parcial), entao
+-- o LIMIT 1 e cinto-e-suspensorio.
+CREATE FUNCTION garraia_effective_plan_id(p_group_id uuid)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = public, pg_temp
+AS $$
+    SELECT COALESCE(
+        (SELECT s.plan_id
+         FROM subscriptions s
+         WHERE s.group_id = p_group_id
+           AND s.status <> 'canceled'
+         LIMIT 1),
+        'free'
+    );
+$$;
+
+COMMENT ON FUNCTION garraia_effective_plan_id(uuid) IS
+    'Plano efetivo do grupo: plan_id da assinatura nao-cancelada, ou ''free'' na ausencia. SECURITY INVOKER (respeita a RLS da sessao): chamar com o id de outro grupo devolve ''free'' porque a RLS esconde a assinatura alheia. STABLE, read-only. Ausencia de assinatura = Free e por desenho (ADR 0026): a linha de subscription so nasce com pagamento (#1653), sem trigger nem backfill.';
+
+-- EXECUTE so ao garraia_app (Postgres concede a PUBLIC por default — o REVOKE
+-- e obrigatorio). Mesma higiene das funcoes da migration 034.
+REVOKE EXECUTE ON FUNCTION garraia_effective_plan_id(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION garraia_effective_plan_id(uuid) TO garraia_app;

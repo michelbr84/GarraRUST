@@ -6,6 +6,9 @@
   (isolamento por `group_id`, fail-closed via NULLIF, WITH CHECK identico ao
   USING). Dinheiro e sempre inteiro de centavos + ISO 4217; ids de provedor de
   pagamento sao opcionais e UNIQUE por provedor; nunca ha PII de cartao. A
-  fatura e ledger imutavel (garraia_app so SELECT/INSERT). So o schema: webhook
+  fatura e ledger imutavel (garraia_app so SELECT/INSERT). Todo grupo sem
+  assinatura viva resolve para o plano Free pela funcao
+  `garraia_effective_plan_id` (sem trigger nem backfill; respeita RLS), entao
+  um tenant novo nasce Free sem intervir ninguem. So o schema: webhook
   Stripe/Pix (#1653), entitlements (#1654), metering (#1655) e a pagina de
   signup (#1656) ficam para as proximas issues. ADR 0026.

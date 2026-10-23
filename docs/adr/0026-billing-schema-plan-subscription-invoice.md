@@ -106,6 +106,18 @@ Migration 035 cria tres entidades. Datas narrativas em America/New_York; toda co
 - **RLS:** igual `subscriptions`.
 - **Grants:** `SELECT, INSERT` ao `garraia_app`, com `REVOKE UPDATE, DELETE` (a ADP da 007 ja concedeu os quatro — ver §4; ledger imutavel; #1653 adiciona o caminho controlado de transicao de pagamento).
 
+### Plano efetivo: ausencia de assinatura = Free
+
+Criterio de aceite da #1652: "tenant novo nasce com plano Free sem intervir ninguem". Em vez de trigger ou backfill (que precisariam de `SECURITY DEFINER` e/ou bypass de RLS), o Free e o **plano efetivo de todo grupo sem assinatura viva**. A linha de `subscriptions` so nasce com pagamento (#1653); ate la, e tambem para todo grupo que ja existia antes do billing (upgrade da 0.4.9, sem backfill), o plano efetivo e `free`.
+
+A migration 035 cria `garraia_effective_plan_id(p_group_id uuid) RETURNS text`:
+
+- `LANGUAGE sql`, `STABLE`, **`SECURITY INVOKER`** — roda com o privilegio e o contexto RLS do chamador. Sob `garraia_app` com `app.current_group_id` setado, a consulta interna a `subscriptions` respeita a policy `group_isolation`; chamar com o id de **outro** grupo devolve `free` (sem visibilidade, cai no default) e **nunca vaza** o plano alheio. `SECURITY DEFINER` seria um vazamento (rodaria como o dono e furaria a RLS) — por isso o `INVOKER` e explicito e load-bearing.
+- Corpo: `COALESCE((SELECT plan_id FROM subscriptions WHERE group_id = p AND status <> 'canceled' LIMIT 1), 'free')`. Ha no maximo uma assinatura nao-cancelada por grupo (indice parcial), entao `canceled` cai para `free` e `active`/`past_due` resolvem para o plano.
+- `REVOKE EXECUTE ... FROM PUBLIC` + `GRANT EXECUTE ... TO garraia_app` (Postgres concede a PUBLIC por default — o REVOKE e obrigatorio; mesma higiene das funcoes da 034).
+
+Consumidores (entitlements #1654, signup #1656) resolvem o plano por esta funcao em vez de assumir que existe linha em `subscriptions`.
+
 ### Como se liga a `groups` como tenant
 
 Todo dado de billing scoped-por-tenant ancora em `group_id -> groups(id) ON DELETE CASCADE`, exatamente como messages/tasks/files. A isolacao e por `app.current_group_id` (contrato da migration 007): o chamador (gateway) seta `SET LOCAL`/`set_config` no inicio da transacao; sem isso, zero linhas (fail-closed). O catalogo `plans` e global e nao participa desse contrato.
@@ -139,12 +151,12 @@ O `purge_account_data` da migration 034 **nao toca** `subscriptions` nem `invoic
 
 ## O que fica para #1653-#1656 (portas deixadas abertas)
 
-- **#1653 (webhook Stripe/Pix):** colunas `payment_provider`/`provider_*_id` com UNIQUE por provedor ja existem (idempotencia). O dominio de `invoices.status` ja cobre `paid/void/uncollectible`. Falta o endpoint de webhook (via `garraia_common::ssrf` para qualquer saida HTTP), o caminho controlado de UPDATE em `invoices` e o seed dos planos pagos com seus valores.
+- **#1653 (webhook Stripe/Pix):** colunas `payment_provider`/`provider_*_id` com UNIQUE por provedor ja existem (idempotencia, fechada pelo CHECK de coerencia). O dominio de `invoices.status` ja cobre `paid/void/uncollectible`. Falta o endpoint de webhook (via `garraia_common::ssrf` para qualquer saida HTTP), o caminho controlado de UPDATE em `invoices`, e o **seed dos planos pagos com seus valores** — os nomes dos tiers (ex.: `pro`, `team`) vivem no repo privado `GarraIA/GarraIA` (`commercial/`) e so entram aqui com #1653; por isso esta migration **nao** semeia placeholders.
 - **#1654 (entitlements):** encaixa como catalogo `plan_entitlements` (global, por `plan_id`) + override por `subscription` se necessario. `plans` e `subscriptions` ja existem como ancora; nenhuma mudanca destrutiva aqui.
 - **#1655 (metering / usage_ledger):** encaixa como tabela tenant-scoped sob FORCE RLS (mesmo padrao de 014/035) referenciando `group_id` e, se preciso, `subscription_id`. Desenhada aqui apenas como ponto de extensao — NAO criada nesta issue (decisao do dono: metering fica esperando).
-- **#1656 (signup/billing page):** a assinatura Free de todo tenant novo sera inserida pelo `garraia_app` na transacao de criacao do grupo (que ja seta `app.current_group_id`), passando pela policy `WITH CHECK`. `garraia_app` ja tem `INSERT` em `subscriptions`. Falta so o wiring no fluxo de criacao de grupo/signup.
+- **#1656 (signup/billing page):** um tenant novo **nao precisa** de linha em `subscriptions` — resolve para `free` via `garraia_effective_plan_id` (criterio "nasce Free sem intervir ninguem", atendido por desenho). A primeira linha de `subscriptions` nasce so quando o grupo assina um plano pago (#1653), inserida pelo `garraia_app` na transacao com `app.current_group_id` setado (passa pela policy `WITH CHECK`; `garraia_app` ja tem `INSERT`). Falta so o wiring da pagina/fluxo.
 
-## Open questions (para o dono)
+## Decisoes registradas (antes "open questions")
 
-1. **Placeholders de planos pagos no seed:** o corpo da #1652 menciona "placeholders dos planos pagos (sem preco)"; a decisao do dono de 2026-10-22 fala so em "um plano Free sem preco" e deixa "os valores dos planos" esperando. Este ADR semeia **apenas** `free`. Quer linhas placeholder (ex.: `pro`, `team`) sem preco agora, ou elas entram com #1653? (Adicionar e migration trivial.)
-2. **`usage_ledger` nesta issue:** o corpo da #1652 diz "desenhar aqui, popular depois"; a decisao do dono lista metering (#1655) como "esperando". Este ADR **nao cria** `usage_ledger`, so documenta onde ele encaixa. Confirma que fica para #1655?
+1. **Sem placeholders de planos pagos no seed (decisao do dono, via coordinator):** o seed traz **apenas** `free`. Os nomes dos tiers pagos vivem no repo privado e entram com os valores em #1653 — placeholders vazios agora so seriam ruido passavel por catalogo real.
+2. **`usage_ledger` fica para #1655:** o corpo da #1652 diz "desenhar aqui, popular depois"; a decisao do dono lista metering como "esperando". Este ADR **nao cria** `usage_ledger`, so documenta onde encaixa (tabela tenant-scoped sob FORCE RLS, padrao 014/035).
