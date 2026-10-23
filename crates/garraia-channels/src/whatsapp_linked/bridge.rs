@@ -1129,8 +1129,8 @@ fn apply_process_group(cmd: &mut Command) {
         cmd.pre_exec(|| {
             // Falha aqui e rara (pid/pgid ja em uso) e nao e fatal: o filho
             // fica no grupo herdado e o teardown ainda tem o `start_kill`
-            // direto. Por isso o resultado e ignorado.
-            let _ = libc::setpgid(0, 0);
+            // direto. Mesmo tratamento do `prctl` do PDEATHSIG acima.
+            libc::setpgid(0, 0);
             Ok(())
         });
     }
