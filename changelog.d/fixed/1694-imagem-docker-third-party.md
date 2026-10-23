@@ -1,4 +1,4 @@
-- **A imagem Docker volta a compilar com os forks de `third_party/` (#1693).** O
+- **A imagem Docker volta a compilar com os forks de `third_party/` (#1694).** O
   `[patch.crates-io]` que aponta `tauri-plugin-updater` e `utoipa-swagger-ui`
   para forks vendorizados (#1668) entrou depois da v0.4.9, e o Dockerfile nunca
   copiava `third_party/`: o `cargo chef cook` abortava com "patch location
