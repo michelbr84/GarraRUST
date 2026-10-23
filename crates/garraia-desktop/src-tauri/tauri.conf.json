@@ -27,9 +27,13 @@
     "externalBin": [
       "binaries/garraia"
     ],
-    "resources": [
-      "resources/config.default.yml"
-    ],
+    "resources": {
+      "resources/config.default.yml": "resources/config.default.yml",
+      "node-runtime/node": "node",
+      "node-runtime/bridge-whatsapp": "bridge-whatsapp",
+      "node-runtime/THIRD_PARTY_NOTICES.txt": "THIRD_PARTY_NOTICES.txt",
+      "node-runtime/manifest.json": "manifest.json"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

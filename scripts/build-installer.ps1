@@ -27,11 +27,11 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-Write-Host "==> [1/4] Compilando gateway (release)..." -ForegroundColor Cyan
+Write-Host "==> [1/5] Compilando gateway (release)..." -ForegroundColor Cyan
 cargo build -p garraia --release
 if ($LASTEXITCODE -ne 0) { throw "cargo build falhou" }
 
-Write-Host "==> [2/4] Copiando sidecar para binaries/..." -ForegroundColor Cyan
+Write-Host "==> [2/5] Copiando sidecar para binaries/..." -ForegroundColor Cyan
 $arch = "x86_64-pc-windows-msvc"
 $binDir = "crates\garraia-desktop\src-tauri\binaries"
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
@@ -43,14 +43,26 @@ New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 Copy-Item "target\release\garra.exe" "$binDir\garraia-$arch.exe" -Force
 Write-Host "    Copiado: $binDir\garraia-$arch.exe"
 
-Write-Host "==> [3/4] Gerando bundles com cargo tauri build..." -ForegroundColor Cyan
+# #1636 (fatia C): monta o runtime Node privado + a ponte pre-construida ANTES
+# do `cargo tauri build`. O build.rs do tauri-build copia os resources no
+# compile do crate desktop, entao `node-runtime/` precisa ja existir aqui. O
+# script roda em bash (Git Bash no runner Windows) e e a MESMA fonte unica da
+# fatia B; a saida vai para src-tauri/node-runtime/, que o tauri.conf.json mapeia
+# para node/ e bridge-whatsapp/ no diretorio de resources (= dir do exe no
+# Windows), exatamente onde o resolver da fatia A procura relativo ao sidecar.
+Write-Host "==> [3/5] Montando runtime Node privado (download + GPG + SHA-256 + npm ci)..." -ForegroundColor Cyan
+$nodeRuntimeOut = "crates/garraia-desktop/src-tauri/node-runtime"
+bash scripts/desktop/node-runtime/build-node-runtime.sh --platform win-x64 --out "$nodeRuntimeOut"
+if ($LASTEXITCODE -ne 0) { throw "build-node-runtime.sh falhou (runtime Node privado nao montado)" }
+
+Write-Host "==> [4/5] Gerando bundles com cargo tauri build..." -ForegroundColor Cyan
 Push-Location "crates\garraia-desktop\src-tauri"
 cargo tauri build
 $buildExit = $LASTEXITCODE
 Pop-Location
 if ($buildExit -ne 0) { throw "cargo tauri build falhou" }
 
-Write-Host "==> [4/4] Localizando bundles..." -ForegroundColor Cyan
+Write-Host "==> [5/5] Localizando bundles..." -ForegroundColor Cyan
 # Falha alto de proposito. A versao anterior usava -ErrorAction SilentlyContinue
 # e so imprimia quando encontrava: um `cargo tauri build` que saisse 0 sem
 # emitir bundle deixava o script verde e o CI publicava uma release sem

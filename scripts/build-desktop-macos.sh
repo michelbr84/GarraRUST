@@ -27,22 +27,47 @@ cd "$root"
 host_triple="$(rustc -vV | sed -n 's/^host: //p')"
 arch="${host_triple%%-*}"
 
-echo "==> [1/4] Compilando gateway (release)..."
+# #1636 (fatia C): o runtime Node privado hoje so e montado para arm64 no macOS
+# (fatia B so vendoriza o alvo darwin-arm64; os runners de desktop sao
+# macos-latest = Apple Silicon). Falha alto num host diferente em vez de
+# empacotar um app sem a ponte.
+case "$arch" in
+  arm64|aarch64) node_platform="darwin-arm64" ;;
+  *) echo "ERRO: bundle do Node privado (#1636) so suporta arm64 no macOS hoje; host=$arch" >&2; exit 1 ;;
+esac
+
+# gpg e exigido por build-node-runtime.sh (verificacao de procedencia do Node) e
+# pode faltar no macOS; instala sob demanda, como o node-runtime.yml.
+command -v gpg >/dev/null 2>&1 || brew install gnupg
+
+echo "==> [1/5] Compilando gateway (release)..."
 cargo build -p garraia --release
 
-echo "==> [2/4] Copiando sidecar para binaries/..."
+echo "==> [2/5] Copiando sidecar para binaries/..."
 bin_dir="crates/garraia-desktop/src-tauri/binaries"
 mkdir -p "$bin_dir"
 # Tauri externalBin = "binaries/garraia" espera "binaries/garraia-<triple>".
 cp "target/release/garra" "$bin_dir/garraia-$host_triple"
 
-echo "==> [3/4] Gerando bundles com cargo tauri build (app + dmg)..."
+# #1636 (fatia C): monta o runtime Node privado + a ponte pre-construida ANTES
+# do `cargo tauri build` — o build.rs do tauri-build copia os resources no
+# compile do crate desktop. Mesma fonte unica da fatia B. A saida vai para
+# src-tauri/node-runtime/, que o tauri.conf.json mapeia para node/ e
+# bridge-whatsapp/ no diretorio de resources (no .app: Contents/Resources/),
+# exatamente onde o resolver da fatia A procura relativo ao sidecar garraia
+# (Contents/MacOS/garraia -> ../Resources/node/bin/node).
+echo "==> [3/5] Montando runtime Node privado (download + GPG + SHA-256 + npm ci)..."
+bash scripts/desktop/node-runtime/build-node-runtime.sh \
+  --platform "$node_platform" \
+  --out crates/garraia-desktop/src-tauri/node-runtime
+
+echo "==> [4/5] Gerando bundles com cargo tauri build (app + dmg)..."
 (
   cd crates/garraia-desktop/src-tauri
   cargo tauri build --bundles app dmg
 )
 
-echo "==> [4/4] Localizando bundles..."
+echo "==> [5/5] Localizando bundles..."
 # Falha alto de proposito, como os irmaos: sem .dmg o job ficaria verde com
 # release sem pacote macOS.
 shopt -s nullglob
