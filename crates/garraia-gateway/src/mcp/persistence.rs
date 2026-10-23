@@ -125,14 +125,20 @@ impl McpPersistenceService {
     /// `npx -y` num cache frio ainda pega a versao mais nova que casar. Subir
     /// a versao e um PR comum, depois de um handshake `initialize` +
     /// `tools/list` em node 20 e 22.
-    pub const FILESYSTEM_PACKAGE_VERSION: &'static str = "2026.8.31";
+    ///
+    /// 2026-10: o upstream marcou a serie por data (`2026.8.31`) como
+    /// deprecada e voltou ao semver, retomando em `1.0.0`; o `latest` passou a
+    /// `2.0.0` (2026-10-19). O diff `initialize` + `tools/list` entre
+    /// `2026.8.31` e `2.0.0` nao mudou nenhuma tool (mesmas 14, mesmos
+    /// argumentos de caminho), entao o jail da #1482 continua cobrindo todas.
+    pub const FILESYSTEM_PACKAGE_VERSION: &'static str = "2.0.0";
 
     /// `<pacote>@<versao>` — o argumento que a provisao, o template do admin e
     /// o marketplace escrevem. So instalacoes NOVAS recebem: um `mcp.json`
     /// existente nunca e reescrito, e o diagnostico `mcp.filesystem_pinned`
     /// avisa quem ficou sem versao.
     pub const FILESYSTEM_PACKAGE_SPEC: &'static str =
-        "@modelcontextprotocol/server-filesystem@2026.8.31";
+        "@modelcontextprotocol/server-filesystem@2.0.0";
 
     /// Seed `mcp.json` with a Filesystem MCP entry when the file does not exist yet.
     ///
@@ -1211,7 +1217,7 @@ mod tests {
 
         let cru = std::fs::read_to_string(&path).expect("read back");
         assert!(
-            cru.contains("\"@modelcontextprotocol/server-filesystem@2026.8.31\""),
+            cru.contains("\"@modelcontextprotocol/server-filesystem@2.0.0\""),
             "a provisao tem de fixar a versao: {cru}"
         );
         assert_eq!(
@@ -1226,7 +1232,7 @@ mod tests {
         assert_eq!(raizes_do_filesystem_persistido(&loaded), Some(vec![raiz]));
         assert_eq!(
             versao_do_filesystem_efetivo(&HashMap::new(), &loaded),
-            VersaoDoFilesystem::Fixada("2026.8.31".into())
+            VersaoDoFilesystem::Fixada("2.0.0".into())
         );
     }
 
