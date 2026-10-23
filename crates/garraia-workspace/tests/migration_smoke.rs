@@ -2443,5 +2443,44 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         "expected SQLSTATE 23505 (unique_violation) for second live subscription per group"
     );
 
+    // ── Cenário 28 — provider id requires provider (hermetic idempotency) ───
+    // A provider subscription id without a payment_provider would let the
+    // partial unique idempotency index admit duplicates — the CHECK forbids it.
+    let sub_orphan_provider = sqlx::query(
+        "INSERT INTO subscriptions (group_id, plan_id, provider_subscription_id) \
+         VALUES ($1, 'free', 'sub_orphan')",
+    )
+    .bind(group_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err(
+        "migration 035: provider_subscription_id without payment_provider must be rejected",
+    );
+    assert_eq!(
+        sub_orphan_provider
+            .as_database_error()
+            .and_then(|e| e.code().map(|c| c.into_owned())),
+        Some("23514".to_string()),
+        "expected SQLSTATE 23514 (check_violation) for provider id without provider on subscriptions"
+    );
+
+    // ── Cenário 29 — same hermetic-idempotency CHECK on invoices ────────────
+    let invoice_orphan_provider = sqlx::query(
+        "INSERT INTO invoices (group_id, subscription_id, amount_cents, currency, provider_invoice_id) \
+         VALUES ($1, $2, 500, 'USD', 'in_orphan')",
+    )
+    .bind(group_id)
+    .bind(sub_a_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err("migration 035: provider_invoice_id without payment_provider must be rejected");
+    assert_eq!(
+        invoice_orphan_provider
+            .as_database_error()
+            .and_then(|e| e.code().map(|c| c.into_owned())),
+        Some("23514".to_string()),
+        "expected SQLSTATE 23514 (check_violation) for provider id without provider on invoices"
+    );
+
     Ok(())
 }

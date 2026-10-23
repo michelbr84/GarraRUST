@@ -58,9 +58,9 @@ O multi-tenancy real ja entrega o *locus* onde o billing mora: por `group_id`, s
 
 ### 4. Imutabilidade da fatura
 
-- **(escolhida) ledger append-only no grant layer.** `garraia_app` recebe so `SELECT, INSERT` em `invoices` (sem UPDATE/DELETE) — mesmo padrao de `account_deletion_requests` (migration 034). Uma fatura emitida nunca muda pelo pool do app. As transicoes de pagamento (`open -> paid/void`) chegam em #1653 por caminho controlado (funcao `SECURITY DEFINER` ou role dedicada), com os campos financeiros congelados.
-- (rejeitada) trigger `BEFORE UPDATE/DELETE`. Um trigger que bloqueia DELETE quebraria o `ON DELETE CASCADE` de `groups` (delete de grupo / purge LGPD precisa levar as faturas junto). O grant layer e mais simples e nao colide com o cascade (acoes referenciais nao passam pelo check de privilegio de tabela).
-- (rejeitada) confiar na ADP da migration 007. A `ALTER DEFAULT PRIVILEGES ... TO garraia_app` da 007 **nao cobre** tabelas de migrations posteriores neste repo (documentado em 017/020/026); portanto os grants seletivos sao o conjunto real de privilegios — o teste de migration prova isso com `has_table_privilege`.
+- **(escolhida) ledger append-only no grant layer, via REVOKE explicito.** `garraia_app` fica so com `SELECT, INSERT` em `invoices`. **Atencao a ADP:** a `ALTER DEFAULT PRIVILEGES ... TO garraia_app` da migration 007 **concede** SELECT/INSERT/UPDATE/DELETE a toda tabela criada depois dela pelo mesmo role, e as migrations rodam todas como o mesmo role (documentado na propria 006:31-33: "ALTER DEFAULT PRIVILEGES still applies going forward for tables created by any migration > 007"). Portanto `invoices` nasce com os quatro privilegios, e a imutabilidade so existe por causa do `REVOKE UPDATE, DELETE ON invoices FROM garraia_app` na migration 035. O teste de migration (035.5) prova o estado final com `has_table_privilege`. Uma fatura emitida nunca muda pelo pool do app; as transicoes de pagamento (`open -> paid/void`) chegam em #1653 por caminho controlado (funcao `SECURITY DEFINER` ou role dedicada), com os campos financeiros congelados.
+- (rejeitada) trigger `BEFORE UPDATE/DELETE`. Um trigger que bloqueia DELETE quebraria o `ON DELETE CASCADE` de `groups` (delete de grupo precisa levar as faturas junto). O grant layer e mais simples e nao colide com o cascade (acoes referenciais nao passam pelo check de privilegio de tabela).
+- (rejeitada) confiar que os GRANTs seletivos bastam sem REVOKE. Seria falso: a ADP acima ja concedeu tudo, entao um `GRANT SELECT, INSERT` sozinho e um no-op aditivo que nao remove UPDATE/DELETE. O mesmo vale para `plans` (REVOKE INSERT/UPDATE/DELETE — catalogo read-only) e `subscriptions` (REVOKE DELETE). `garraia_login`/`garraia_signup`/`garraia_purge` nao sao alvo de nenhuma ADP, entao continuam sem privilegio de billing sem precisar de REVOKE (verificado; teste 035.5b).
 
 ### 5. Historico de assinatura: uma linha mutavel vs. multiplas linhas
 
@@ -81,7 +81,7 @@ Migration 035 cria tres entidades. Datas narrativas em America/New_York; toda co
 - `price_cents bigint NULL` (>= 0 quando setado), `currency text NULL` (ISO 4217), CHECK de coerencia `(price_cents IS NULL) = (currency IS NULL)`.
 - `is_active boolean` (aposentar sem apagar), `created_at`, `updated_at`.
 - **Seed:** apenas `('free', tier 0, price/currency NULL)`. Planos pagos entram com #1653 (seus valores vivem no repo privado). Seria migration forward-only trivial adiciona-los.
-- **Grants:** `SELECT` ao `garraia_app`. Sem INSERT/UPDATE/DELETE (catalogo semeado por migration). Sem grant a `garraia_login`/`garraia_signup`.
+- **Grants:** `SELECT` ao `garraia_app`, com `REVOKE INSERT, UPDATE, DELETE` (a ADP da 007 ja concedeu os quatro — ver §4; catalogo read-only, semeado por migration). Sem grant a `garraia_login`/`garraia_signup`.
 
 ### `subscriptions` — assinatura por tenant (FORCE RLS)
 
@@ -90,9 +90,10 @@ Migration 035 cria tres entidades. Datas narrativas em America/New_York; toda co
 - `current_period_start/end` (`end >= start` quando ambos setados), `canceled_at` com CHECK de coerencia `(status='canceled') = (canceled_at IS NOT NULL)`.
 - Ids de provedor (`payment_provider`, `provider_customer_id`, `provider_subscription_id`), `NULL` no Free.
 - `UNIQUE (id, group_id)` para a FK composta de `invoices`.
+- CHECK de coerencia: um id de provedor (`provider_customer_id`/`provider_subscription_id`) so existe se `payment_provider IS NOT NULL` — fecha o indice parcial de idempotencia.
 - Indices: parcial `UNIQUE (group_id) WHERE status <> 'canceled'`; `(group_id, status)`; `(plan_id)`; parcial `UNIQUE (payment_provider, provider_subscription_id)`; parcial `(payment_provider, provider_customer_id)`.
 - **RLS:** `ENABLE`+`FORCE`, policy direta por `group_id` com `NULLIF(current_setting('app.current_group_id', true), '')::uuid`, `USING` e `WITH CHECK` identicos (padrao 013/014).
-- **Grants:** `SELECT, INSERT, UPDATE` ao `garraia_app` (sem DELETE — cancelar e mudar status; so o cascade de group delete remove).
+- **Grants:** `SELECT, INSERT, UPDATE` ao `garraia_app`, com `REVOKE DELETE` (a ADP da 007 ja concedeu os quatro — ver §4; cancelar e mudar status, so o cascade de group delete remove).
 
 ### `invoices` — fatura imutavel por tenant (FORCE RLS)
 
@@ -100,13 +101,22 @@ Migration 035 cria tres entidades. Datas narrativas em America/New_York; toda co
 - FK composta `(subscription_id, group_id) -> subscriptions(id, group_id) ON DELETE CASCADE` — fail-closed contra drift cross-group (padrao `tasks -> task_lists` da 006).
 - `status text` CHECK `IN ('open','paid','void','uncollectible')` (dominio completo para #1653 nao ampliar depois), `amount_cents bigint NOT NULL >= 0`, `currency text NOT NULL` ISO 4217.
 - `issued_at timestamptz NOT NULL` (marco do "imutavel apos emitida"), `paid_at`, ids de provedor, `created_at`. Sem `updated_at` (append-only).
+- CHECK de coerencia: `provider_invoice_id` so existe se `payment_provider IS NOT NULL` (idempotencia hermetica do webhook).
 - Indices: `(group_id, issued_at DESC)`; `(subscription_id)`; `(group_id, status)`; parcial `UNIQUE (payment_provider, provider_invoice_id)` (idempotencia de webhook).
 - **RLS:** igual `subscriptions`.
-- **Grants:** `SELECT, INSERT` ao `garraia_app` (sem UPDATE/DELETE — ledger imutavel; #1653 adiciona o caminho controlado de transicao de pagamento).
+- **Grants:** `SELECT, INSERT` ao `garraia_app`, com `REVOKE UPDATE, DELETE` (a ADP da 007 ja concedeu os quatro — ver §4; ledger imutavel; #1653 adiciona o caminho controlado de transicao de pagamento).
 
 ### Como se liga a `groups` como tenant
 
 Todo dado de billing scoped-por-tenant ancora em `group_id -> groups(id) ON DELETE CASCADE`, exatamente como messages/tasks/files. A isolacao e por `app.current_group_id` (contrato da migration 007): o chamador (gateway) seta `SET LOCAL`/`set_config` no inicio da transacao; sem isso, zero linhas (fail-closed). O catalogo `plans` e global e nao participa desse contrato.
+
+### Relacao com o apagamento de titular (LGPD/GDPR, migration 034)
+
+O `purge_account_data` da migration 034 **nao toca** `subscriptions` nem `invoices`, e isso e por desenho, nao por esquecimento: billing e **group-scoped**, nao user-scoped — nenhuma das tres tabelas tem FK para `users`, logo nao ha identificador pessoal do titular aqui para redigir. Uma assinatura/fatura pertence ao **grupo** (tenant), nao a uma pessoa. Consequencias:
+
+- A fatura e retida como **registro financeiro/fiscal** enquanto o grupo existir — o apagamento de um titular individual nao a remove (coerente com a retencao por obrigacao legal ja aplicada a `audit_events` na 034).
+- Quando o **grupo** e apagado, `subscriptions` e `invoices` caem junto pelo `ON DELETE CASCADE` de `group_id -> groups`.
+- Quando #1653 introduzir ids de provedor reais, eles continuam sendo identificadores do **grupo/conta de cobranca**, nunca PII de cartao; se um futuro requisito exigir apagar esses ids no purge de grupo, isso sera tratado na issue que os popular, nao aqui.
 
 ## Consequences
 

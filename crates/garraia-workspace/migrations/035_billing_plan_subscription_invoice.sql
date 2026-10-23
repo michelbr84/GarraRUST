@@ -96,7 +96,15 @@ INSERT INTO plans (id, display_name, description, tier, price_cents, currency) V
     ('free', 'Free', 'Plano gratuito do Garra Cloud: BYOK obrigatorio, limites duros e auto-sleep. Preco nao se aplica (sem preco fixado neste repositorio).', 0, NULL, NULL);
 
 -- Catalogo e read-only para o app: semeado por migration, igual roles/permissions.
+-- ATENCAO (ADP): a `ALTER DEFAULT PRIVILEGES ... TO garraia_app` da migration
+-- 007 concede SELECT/INSERT/UPDATE/DELETE a TODA tabela criada depois dela pelo
+-- mesmo role — e as migrations rodam todas como o mesmo role (documentado em
+-- 006:31-33: "ALTER DEFAULT PRIVILEGES still applies going forward for tables
+-- created by any migration > 007"). Logo `plans` ja nasce com os quatro
+-- privilegios para `garraia_app`. O REVOKE abaixo e OBRIGATORIO: sem ele o pool
+-- do app poderia escrever no catalogo, que e semeado so por migration.
 GRANT SELECT ON plans TO garraia_app;
+REVOKE INSERT, UPDATE, DELETE ON plans FROM garraia_app;
 
 -- ─── 035.2 subscriptions — assinatura por tenant (FORCE RLS) ──────────────
 
@@ -126,6 +134,13 @@ CREATE TABLE subscriptions (
         CHECK (current_period_end IS NULL
             OR current_period_start IS NULL
             OR current_period_end >= current_period_start),
+    -- Idempotencia hermetica: um id de provedor so existe acompanhado do
+    -- provedor. Sem isto, o indice parcial UNIQUE (payment_provider, <id>)
+    -- aceitaria linhas com provider NULL e id duplicado, furando a chave de
+    -- idempotencia do webhook de #1653.
+    CONSTRAINT subscriptions_provider_ids_require_provider
+        CHECK ((provider_customer_id IS NULL OR payment_provider IS NOT NULL)
+            AND (provider_subscription_id IS NULL OR payment_provider IS NOT NULL)),
     -- Permite FK composta (subscription_id, group_id) de invoices — mesmo
     -- padrao de task_lists/tasks (migration 006) contra drift cross-group.
     CONSTRAINT subscriptions_id_group_unique UNIQUE (id, group_id)
@@ -175,10 +190,12 @@ COMMENT ON POLICY subscriptions_group_isolation ON subscriptions IS
     'Class: direct. Context: app.current_group_id. Fail-closed via NULLIF (GUC vazia -> NULL -> zero linhas). USING e WITH CHECK identicos (padrao da migration 013): uma conversao futura para AS RESTRICTIVE tem de tocar os dois lados de proposito.';
 
 -- Assinatura muda de plano/estado dentro do tenant: SELECT/INSERT/UPDATE.
--- Sem DELETE: cancelamento e mudanca de status, nao remocao de linha; so o
--- cascade de group delete remove. (ADP da migration 007 NAO cobre tabelas de
--- migrations posteriores — grant explicito e obrigatorio, como 017/020/026.)
+-- A ADP da migration 007 ja concedeu os quatro privilegios (006:31-33), entao
+-- e o REVOKE DELETE abaixo que de fato tira o DELETE do app: cancelamento e
+-- mudanca de status, nao remocao de linha; so o cascade de group delete remove
+-- (acoes referenciais nao passam pelo check de privilegio de tabela).
 GRANT SELECT, INSERT, UPDATE ON subscriptions TO garraia_app;
+REVOKE DELETE ON subscriptions FROM garraia_app;
 
 -- ─── 035.3 invoices — fatura imutavel por tenant (FORCE RLS) ──────────────
 
@@ -201,6 +218,10 @@ CREATE TABLE invoices (
     payment_provider    text        CHECK (payment_provider IN ('stripe', 'pix')),
     provider_invoice_id text        CHECK (provider_invoice_id IS NULL OR length(provider_invoice_id) BETWEEN 1 AND 255),
     created_at          timestamptz NOT NULL DEFAULT now(),
+    -- Idempotencia hermetica: o id da fatura do provedor so existe acompanhado
+    -- do provedor (mesma razao do CHECK em subscriptions).
+    CONSTRAINT invoices_provider_id_requires_provider
+        CHECK (provider_invoice_id IS NULL OR payment_provider IS NOT NULL),
     -- FK composta (subscription_id, group_id) -> subscriptions(id, group_id):
     -- fail-closed contra drift cross-group (uma fatura nao pode reivindicar o
     -- grupo A apontando para assinatura do grupo B). Mesmo padrao de tasks ->
@@ -227,7 +248,7 @@ CREATE UNIQUE INDEX invoices_provider_invoice_idx
     WHERE provider_invoice_id IS NOT NULL;
 
 COMMENT ON TABLE invoices IS
-    'Fatura por tenant (group_id), historico IMUTAVEL. FORCE RLS direto por group_id. Imutabilidade e enforced no grant layer: garraia_app so tem SELECT/INSERT (sem UPDATE/DELETE), igual account_deletion_requests (migration 034). As transicoes de pagamento (open->paid/void) chegam em #1653 por caminho controlado (funcao SECURITY DEFINER ou role dedicada), com os campos financeiros congelados.';
+    'Fatura por tenant (group_id), historico IMUTAVEL. FORCE RLS direto por group_id. Imutabilidade e enforced no grant layer via REVOKE: a ADP da migration 007 concede os quatro privilegios, e os REVOKE UPDATE/DELETE desta migration deixam garraia_app so com SELECT/INSERT. As transicoes de pagamento (open->paid/void) chegam em #1653 por caminho controlado (funcao SECURITY DEFINER ou role dedicada), com os campos financeiros congelados.';
 COMMENT ON COLUMN invoices.amount_cents IS
     'Valor em centavos (menor unidade da moeda). NOT NULL, nao-negativo, nunca float. Congelado apos emissao.';
 COMMENT ON COLUMN invoices.issued_at IS
@@ -248,10 +269,12 @@ CREATE POLICY invoices_group_isolation ON invoices
 COMMENT ON POLICY invoices_group_isolation ON invoices IS
     'Class: direct. Context: app.current_group_id. Fail-closed via NULLIF. USING e WITH CHECK identicos (padrao da migration 013).';
 
--- Fatura e ledger imutavel: garraia_app so SELECT/INSERT. Sem UPDATE/DELETE —
--- uma fatura emitida nunca muda pelo pool do app. O cascade de group delete
--- (FK ON DELETE CASCADE) remove faturas independentemente deste grant (acoes
--- referenciais nao passam pelo check de privilegio de tabela). #1653 adiciona
--- o caminho controlado de transicao de pagamento. Mesmo padrao de
--- account_deletion_requests (migration 034). ADP da 007 NAO cobre esta tabela.
+-- Fatura e ledger imutavel: garraia_app fica so com SELECT/INSERT. A ADP da
+-- migration 007 ja concedeu os quatro privilegios (006:31-33), entao sao os
+-- REVOKE UPDATE/DELETE abaixo que impoem a imutabilidade: uma fatura emitida
+-- nunca muda pelo pool do app. O cascade de group delete (FK ON DELETE CASCADE)
+-- remove faturas independentemente deste grant (acoes referenciais nao passam
+-- pelo check de privilegio de tabela). #1653 adiciona o caminho controlado de
+-- transicao de pagamento.
 GRANT SELECT, INSERT ON invoices TO garraia_app;
+REVOKE UPDATE, DELETE ON invoices FROM garraia_app;
