@@ -302,6 +302,7 @@ jobs:
     name: Smoke Windows (MSI, caminho com espaco, sem Node global)
     needs: build-installer
     runs-on: windows-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -320,12 +321,15 @@ jobs:
 
           # Roda um processo com TETO de tempo: nada de hang de 1h. Em timeout,
           # mata e falha, despejando o log verboso para diagnostico.
-          function Invoke-Bounded($file, $args, $timeoutSec, $log) {
-            $p = Start-Process -FilePath $file -ArgumentList $args -PassThru -NoNewWindow
+          # NOTA: o parametro NAO pode se chamar $args — e variavel automatica do
+          # PowerShell; usa-la como parametro faz o -ArgumentList nao receber o
+          # array (o /qn some e o msiexec abre em modo interativo, travando).
+          function Invoke-Bounded($file, $procArgs, $timeoutSec, $log) {
+            $p = Start-Process -FilePath $file -ArgumentList $procArgs -PassThru -NoNewWindow
             if (-not $p.WaitForExit($timeoutSec * 1000)) {
               try { $p.Kill($true) } catch {}
               if ($log -and (Test-Path $log)) { Write-Host "---- log (tail) ----"; Get-Content $log -Tail 60 }
-              throw "TIMEOUT ($timeoutSec s) em: $file $($args -join ' ')"
+              throw "TIMEOUT ($timeoutSec s) em: $file $($procArgs -join ' ')"
             }
             return $p.ExitCode
           }
@@ -338,7 +342,7 @@ jobs:
           # Instalacao REAL silenciosa: o default do MSI e C:\Program Files\...
           # (caminho COM ESPACO). `/i /qn`, log verboso, com teto de tempo.
           $instLog = "install.log"
-          $rc = Invoke-Bounded "msiexec.exe" @('/i', $msi, '/qn', '/norestart', '/l*v', $instLog) 600 $instLog
+          $rc = Invoke-Bounded "msiexec.exe" @('/i', $msi, '/qn', '/norestart', '/l*v', $instLog) 900 $instLog
           if ($rc -ne 0) {
             if (Test-Path $instLog) { Write-Host "---- install.log (tail) ----"; Get-Content $instLog -Tail 60 }
             throw "msiexec /i falhou (exit $rc)"
@@ -384,7 +388,7 @@ jobs:
           Write-Host "SELF-TEST OK: origin=privado, self_test=ok, node $($o.node_version), deps baileys/pino/sharp"
 
           # Desinstalacao: o pacote some; o dado do usuario fica.
-          $rc = Invoke-Bounded "msiexec.exe" @('/x', $msi, '/qn', '/norestart', '/l*v', 'uninstall.log') 600 'uninstall.log'
+          $rc = Invoke-Bounded "msiexec.exe" @('/x', $msi, '/qn', '/norestart', '/l*v', 'uninstall.log') 900 'uninstall.log'
           if ($rc -ne 0) { throw "msiexec /x falhou (exit $rc)" }
           if (Test-Path "$dir\node\node.exe") { throw "node\node.exe ainda presente apos desinstalar" }
           if (Test-Path "$dir\bridge-whatsapp") { throw "bridge-whatsapp ainda presente apos desinstalar" }
@@ -896,9 +900,12 @@ jobs:
           $old = "$env:RUNNER_TEMP\old-v049.msi"
           Invoke-WebRequest -UseBasicParsing "https://github.com/michelbr84/GarraRUST/releases/download/v0.4.9/garraia-desktop-windows-x86_64.msi" -OutFile $old
 
-          function Inst($args,$log) {
-            $p = Start-Process msiexec.exe -ArgumentList $args -PassThru -NoNewWindow
-            if (-not $p.WaitForExit(600000)) { try { $p.Kill($true) } catch {}; if (Test-Path $log) { Get-Content $log -Tail 60 }; throw "TIMEOUT: msiexec $($args -join ' ')" }
+          # $args e variavel automatica do PowerShell: usar como parametro faz o
+          # -ArgumentList nao receber o array (o /qn some e o msiexec trava). Por
+          # isso o parametro se chama $msiArgs.
+          function Inst($msiArgs,$log) {
+            $p = Start-Process msiexec.exe -ArgumentList $msiArgs -PassThru -NoNewWindow
+            if (-not $p.WaitForExit(900000)) { try { $p.Kill($true) } catch {}; if (Test-Path $log) { Get-Content $log -Tail 60 }; throw "TIMEOUT: msiexec $($msiArgs -join ' ')" }
             return $p.ExitCode
           }
 
