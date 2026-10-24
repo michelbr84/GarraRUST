@@ -229,6 +229,15 @@ A raiz efetiva e logada no provisionamento e aparece no check
 autoprovisionamento nao acontece (um `warn!` diz qual raiz faltou) e nada e
 criado em lugar dela, nunca um diretorio mais largo.
 
+**Sem Node.js, nao provisiona.** O servidor roda `npx`; se o `npx` nao esta
+no `PATH` (a CLI num Linux limpo, ou o desktop num Windows sem Node global —
+o Node privado do instalador e so da ponte do WhatsApp e nao traz `npx`), o
+boot nao grava nada, nem cria o workspace, e loga o motivo. A linha
+`mcp.servers` do `/api/diagnostics` fica `skipped`, dizendo que falta o
+`npx` e como ligar o `filesystem`; as file tools nativas (`file_read`,
+`file_write`, `list_dir`) seguem disponiveis. Instalado o Node.js 20+, o
+proximo boot provisiona sozinho.
+
 **Instalacao anterior a v0.4.4.** O `mcp.json` ja gravado **nunca e
 reescrito** (a unica porta do autoprovisionamento e "arquivo ausente"), entao
 o `$HOME` fica la. Em `standard`, o diagnostico avisa (`mcp.filesystem_root`

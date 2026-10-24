@@ -1129,12 +1129,30 @@ fn mcp_server_next_step(
 /// `None` (sem manager) ou lista vazia => `skipped`; algum `failed` (restarts
 /// esgotados) => `error` com um passo por servidor; algum ainda tentando =>
 /// `warning`; todos conectados => `ok`. Puro.
+///
+/// `npx_ausente` (a mesma busca que decide a provisao, em
+/// `mcp::persistence::npx_no_path`): sem servidor nenhum E sem `npx`, a linha
+/// continua `skipped` — ninguem pediu o servidor, e uma instalacao nova nao
+/// acende amarelo por isso — mas diz POR QUE nao ha `filesystem` e como
+/// liga-lo, em vez de esconder a dependencia ausente.
 fn mcp_servers_check(
     statuses: Option<&[garraia_agents::McpServerStatus]>,
     bin: &str,
+    npx_ausente: bool,
 ) -> DiagnosticCheck {
     use garraia_agents::McpServerState;
     let (status, detail, next_step) = match statuses {
+        None | Some([]) if npx_ausente => (
+            CheckStatus::Skipped,
+            "nenhum servidor MCP configurado: o `filesystem` padrao nao e provisionado porque \
+             `npx` (Node.js 20+) nao esta no PATH; as file tools nativas (`file_read`, \
+             `file_write`, `list_dir`) seguem disponiveis"
+                .to_string(),
+            Some(format!(
+                "para ter o MCP `filesystem`, instale o Node.js 20+ e reinicie o gateway \
+                 (`{bin} restart`): o boot provisiona o `mcp.json` sozinho."
+            )),
+        ),
         None | Some([]) => (
             CheckStatus::Skipped,
             "nenhum servidor MCP configurado".to_string(),
@@ -1364,7 +1382,11 @@ pub(crate) async fn relatorio(state: &SharedState) -> DiagnosticsReport {
         Some(mgr) => Some(mgr.server_statuses().await),
         None => None,
     };
-    checks.push(mcp_servers_check(mcp_statuses.as_deref(), &bin));
+    checks.push(mcp_servers_check(
+        mcp_statuses.as_deref(),
+        &bin,
+        crate::mcp::persistence::npx_no_path().is_none(),
+    ));
     checks.push(mcp_filesystem_pinned_check(
         &crate::mcp::persistence::versao_do_filesystem_efetivo(
             &state.config.mcp,
@@ -3390,11 +3412,11 @@ mod tests_mcp_1346 {
     #[test]
     fn sem_servidores_e_skipped() {
         assert!(matches!(
-            mcp_servers_check(None, "garraia").status,
+            mcp_servers_check(None, "garraia", false).status,
             CheckStatus::Skipped
         ));
         assert!(matches!(
-            mcp_servers_check(Some(&[]), "garraia").status,
+            mcp_servers_check(Some(&[]), "garraia", false).status,
             CheckStatus::Skipped
         ));
     }
@@ -3404,6 +3426,7 @@ mod tests_mcp_1346 {
         let c = mcp_servers_check(
             Some(&[st("filesystem", McpServerState::Connected, None)]),
             "garraia",
+            false,
         );
         assert!(matches!(c.status, CheckStatus::Ok));
         assert!(c.next_step.is_none());
@@ -3425,6 +3448,7 @@ mod tests_mcp_1346 {
                 ),
             ]),
             "garraia",
+            false,
         );
         assert!(matches!(c.status, CheckStatus::Error), "{c:?}");
         let passo = c.next_step.expect("next_step");
@@ -3451,6 +3475,7 @@ mod tests_mcp_1346 {
                 Some(McpFailureCause::DiskFull),
             )]),
             "garra",
+            false,
         );
         assert!(matches!(c.status, CheckStatus::Error));
         let passo = c.next_step.expect("next_step");
@@ -3473,9 +3498,56 @@ mod tests_mcp_1346 {
                 Some(McpFailureCause::Other),
             )]),
             "garraia",
+            false,
         );
         assert!(matches!(c.status, CheckStatus::Warning));
         assert!(c.next_step.expect("passo").contains("/api/mcp/health"));
+    }
+
+    /// Achado do v0.4.10-rc1: sem servidor e sem `npx`, a linha fica
+    /// `skipped` (uma instalacao nova sem Node nao acende amarelo) mas nomeia
+    /// a dependencia ausente e o caminho para ligar o `filesystem`.
+    #[test]
+    fn sem_servidor_e_sem_npx_e_skipped_dizendo_por_que() {
+        for statuses in [None, Some(&[][..])] {
+            let c = mcp_servers_check(statuses, "garra", true);
+            assert!(matches!(c.status, CheckStatus::Skipped), "{c:?}");
+            assert!(c.detail.contains("`npx`"), "{}", c.detail);
+            assert!(c.detail.contains("Node.js 20+"), "{}", c.detail);
+            assert!(c.detail.contains("file_read"), "{}", c.detail);
+            let passo = c.next_step.expect("diz como ligar o filesystem");
+            assert!(passo.contains("`garra restart`"), "{passo}");
+        }
+        // Com `npx` presente, o texto de sempre e nenhum passo.
+        let c = mcp_servers_check(None, "garra", false);
+        assert_eq!(c.detail, "nenhum servidor MCP configurado");
+        assert!(c.next_step.is_none());
+    }
+
+    /// Servidor configurado e quebrado segue acusando (#1437): a falta de
+    /// `npx` nao rebaixa um `mcp.json` existente para `skipped`.
+    #[test]
+    fn servidor_configurado_sem_npx_continua_acusando() {
+        let c = mcp_servers_check(
+            Some(&[st(
+                "filesystem",
+                McpServerState::Retrying,
+                Some(McpFailureCause::Other),
+            )]),
+            "garraia",
+            true,
+        );
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        let c = mcp_servers_check(
+            Some(&[st(
+                "filesystem",
+                McpServerState::Failed,
+                Some(McpFailureCause::Other),
+            )]),
+            "garraia",
+            true,
+        );
+        assert!(matches!(c.status, CheckStatus::Error), "{c:?}");
     }
 
     #[test]
