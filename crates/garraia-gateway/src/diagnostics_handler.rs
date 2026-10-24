@@ -664,11 +664,31 @@ const FORA_DO_DATA_DIR: &str = "<fora do data_dir>";
 /// linha `files.workspace` ja aplica a raiz declarada (I-4 da #1449). O
 /// operador nao precisa reler o caminho pela rota — ele o escreveu no
 /// `mcp.json`/`config.yml`, e o log de boot o anuncia.
+///
+/// Os dois lados vao para a mesma [`forma_comparavel`] do [`dentro_de`]
+/// antes do `strip_prefix`. O `data_dir` chega canonico (a linha
+/// `files.workspace` compara contra raizes que o `FileJail` canonicalizou), e
+/// as raizes do `mcp.json` chegam como foram gravadas: comparar canonico com
+/// cru errava em silencio. No Windows isso acontecia em TODA instalacao — o
+/// `canonicalize` devolve `\\?\C:\...` e o `mcp.json` tem `C:\...` —, e o
+/// workspace de dentro do `data_dir` saia como "1 fora do data_dir" (achado
+/// da validacao do v0.4.10-rc1). Um symlink dentro do `data_dir` que aponta
+/// para fora sai como fora, que e o que ele e. O relativo sai sempre com `/`.
 fn exibir_raiz(raiz: &std::path::Path, data_dir: &std::path::Path) -> String {
-    match raiz.strip_prefix(data_dir) {
-        Ok(rel) if rel.as_os_str().is_empty() => "<data_dir>".to_string(),
-        Ok(rel) => format!("<data_dir>/{}", rel.display()),
-        Err(_) => FORA_DO_DATA_DIR.to_string(),
+    let relativo = match (forma_comparavel(raiz), forma_comparavel(data_dir)) {
+        (Some(r), Some(d)) => r.strip_prefix(&d).ok().map(std::path::Path::to_path_buf),
+        _ => None,
+    };
+    match relativo {
+        Some(rel) if rel.as_os_str().is_empty() => "<data_dir>".to_string(),
+        Some(rel) => {
+            let partes: Vec<String> = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            format!("<data_dir>/{}", partes.join("/"))
+        }
+        None => FORA_DO_DATA_DIR.to_string(),
     }
 }
 
@@ -2724,6 +2744,66 @@ mod tests {
         std::fs::create_dir_all(&ws).expect("mkdir");
         assert!(dentro_de(&ws.join("ainda-nao").join("existe"), &ws));
         assert!(!dentro_de(&ws.join("..").join("fora"), &ws));
+    }
+
+    /// Achado do v0.4.10-rc1 no Windows: o `data_dir` chega canonico
+    /// (`\\?\C:\...`) e a raiz do `mcp.json` chega crua (`C:\...`). O
+    /// workspace, que esta DENTRO, saia "fora do data_dir". Aqui com a forma
+    /// verbatim de verdade; o relativo sai com `/`, inclusive aninhado, e
+    /// vale tambem para uma raiz que ainda nao foi criada.
+    #[test]
+    #[cfg(windows)]
+    fn exibir_raiz_casa_data_dir_verbatim_com_raiz_crua_no_windows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let canonico = dir.path().canonicalize().expect("canonicalize");
+        assert!(
+            canonico.to_string_lossy().starts_with(r"\\?\"),
+            "precondicao: o canonico do Windows e verbatim: {}",
+            canonico.display()
+        );
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(ws.join("sessao")).expect("mkdir");
+        assert_eq!(exibir_raiz(&ws, &canonico), "<data_dir>/workspace");
+        assert_eq!(
+            exibir_raiz(&ws.join("sessao"), &canonico),
+            "<data_dir>/workspace/sessao"
+        );
+        assert_eq!(
+            exibir_raiz(&dir.path().join("ainda-nao-existe"), &canonico),
+            "<data_dir>/ainda-nao-existe"
+        );
+        assert_eq!(
+            lista_de_caminhos(std::slice::from_ref(&ws), &canonico),
+            "<data_dir>/workspace"
+        );
+    }
+
+    /// O mesmo descasamento canonico x cru no Unix, onde o CI executa: o
+    /// `data_dir` canonico e a raiz gravada pelo caminho com symlink (o
+    /// `/var -> /private/var` do macOS). E um symlink DENTRO do `data_dir`
+    /// apontando para fora sai como fora — que e o que ele e (#1465).
+    #[test]
+    #[cfg(unix)]
+    fn exibir_raiz_casa_data_dir_canonico_com_raiz_por_symlink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("data-real");
+        std::fs::create_dir_all(real.join("workspace")).expect("mkdir");
+        let link = dir.path().join("data-link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let canonico = real.canonicalize().expect("canonicalize");
+
+        assert_eq!(
+            exibir_raiz(&link.join("workspace"), &canonico),
+            "<data_dir>/workspace"
+        );
+
+        let fora = dir.path().join("fora");
+        std::fs::create_dir_all(&fora).expect("mkdir");
+        std::os::unix::fs::symlink(&fora, real.join("atalho")).expect("symlink");
+        assert_eq!(
+            exibir_raiz(&real.join("atalho"), &canonico),
+            "<fora do data_dir>"
+        );
     }
 
     /// F-1: caminhos de politica saem relativos a `<data_dir>` quando estao
