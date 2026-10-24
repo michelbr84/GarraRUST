@@ -295,10 +295,26 @@ async fn probe_voice_endpoint(endpoint: &str) -> VoiceProbe {
         Err(e) => VoiceProbe::Unreachable(if e.is_connect() {
             "nothing listening (connection refused)"
         } else if e.is_timeout() {
-            "no answer within 1.5s"
+            motivo_de_timeout(
+                !vetted.addrs.is_empty() && vetted.addrs.iter().all(|a| a.ip().is_loopback()),
+                cfg!(windows),
+            )
         } else {
             "request failed"
         }),
+    }
+}
+
+/// Texto do estouro de prazo. No Windows, um `connect` para porta fechada no
+/// loopback nao e recusado na hora: a pilha TCP retransmite o SYN (~2s em
+/// `127.0.0.1`, ~4s em `localhost`) antes de devolver `WSAECONNREFUSED`, mais
+/// que o budget de 1.5s. Ali o timeout num host de loopback e indistinguivel
+/// de "nada escutando", entao o texto nao pode afirmar so "sem resposta".
+fn motivo_de_timeout(loopback: bool, windows: bool) -> &'static str {
+    if loopback && windows {
+        "nothing listening or no answer within 1.5s"
+    } else {
+        "no answer within 1.5s"
     }
 }
 
@@ -3063,10 +3079,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         drop(listener); // porta livre de novo: nada escutando nela.
         let probe = probe_voice_endpoint(&format!("http://{addr}")).await;
-        assert_eq!(
-            probe,
-            VoiceProbe::Unreachable("nothing listening (connection refused)"),
-        );
+        assert_eq!(probe, VoiceProbe::Unreachable(motivo_de_porta_morta()),);
     }
 
     /// Servidor HTTP de mentira num socket cru. LÊ o request antes de
@@ -3194,7 +3207,31 @@ mod tests {
         });
         let probe = probe_voice_endpoint(&format!("http://{addr}")).await;
         t.join().unwrap();
-        assert_eq!(probe, VoiceProbe::Unreachable("no answer within 1.5s"));
+        assert_eq!(
+            probe,
+            VoiceProbe::Unreachable(motivo_de_timeout(true, cfg!(windows)))
+        );
+    }
+
+    /// Motivo esperado ao discar uma porta de loopback fechada. Linux/macOS
+    /// recusam na hora; o Windows retransmite o SYN e estoura o budget antes.
+    fn motivo_de_porta_morta() -> &'static str {
+        if cfg!(windows) {
+            "nothing listening or no answer within 1.5s"
+        } else {
+            "nothing listening (connection refused)"
+        }
+    }
+
+    #[test]
+    fn motivo_de_timeout_so_muda_no_loopback_do_windows() {
+        assert_eq!(
+            motivo_de_timeout(true, true),
+            "nothing listening or no answer within 1.5s"
+        );
+        assert_eq!(motivo_de_timeout(true, false), "no answer within 1.5s");
+        assert_eq!(motivo_de_timeout(false, true), "no answer within 1.5s");
+        assert_eq!(motivo_de_timeout(false, false), "no answer within 1.5s");
     }
 
     /// FIX C, parte 2: dentro do TTL a segunda chamada nao reproba nenhum
@@ -3273,7 +3310,7 @@ mod tests {
         let probe = probe_voice_endpoint(&format!("http://fulano:senha@{addr}")).await;
         assert_eq!(
             probe,
-            VoiceProbe::Unreachable("nothing listening (connection refused)"),
+            VoiceProbe::Unreachable(motivo_de_porta_morta()),
             "loopback com userinfo passa do veto e morre no dial, com motivo estatico"
         );
     }
