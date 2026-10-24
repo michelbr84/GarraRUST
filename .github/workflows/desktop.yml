@@ -404,10 +404,19 @@ jobs:
           name: garraia-desktop-windows-pr
           path: bundles
 
+      # Orcamento de tempo: os tetos internos (instalar 480 s + self-test 180 s +
+      # desinstalar 480 s = 19 min) cabem no teto do passo (25 min), que cabe
+      # no do job (30 min). Antes os tetos somavam 33 min, acima do job: um
+      # travamento virava "exceeded the maximum execution time" sem log
+      # nenhum (aconteceu no #1690 e no tag v0.4.10-rc1, e o rerun passou nos
+      # dois). Agora quem estoura primeiro e um teto nosso, que despeja o log
+      # do msiexec, ou o do passo, que deixa o log do job.
       - name: Instala o MSI (silencioso, em Program Files = caminho com espaco) + self-test sem Node global + desinstala
         shell: pwsh
+        timeout-minutes: 25
         run: |
           $ErrorActionPreference = "Stop"
+          function Fase($nome) { Write-Host "[$((Get-Date).ToUniversalTime().ToString('HH:mm:ss'))Z] FASE: $nome" }
           $msi = (Resolve-Path "bundles/garraia-desktop-windows-x86_64.msi").Path
           Write-Host "TAMANHO MSI (depois): $((Get-Item $msi).Length) bytes"
 
@@ -434,19 +443,27 @@ jobs:
           # Instalacao REAL silenciosa: o default do MSI e C:\Program Files\...
           # (caminho COM ESPACO). `/i /qn`, log verboso, com teto de tempo.
           $instLog = "install.log"
-          $rc = Invoke-Bounded "msiexec.exe" @('/i', $msi, '/qn', '/norestart', '/l*v', $instLog) 900 $instLog
+          Fase "instalar (msiexec /i, teto 480 s)"
+          $rc = Invoke-Bounded "msiexec.exe" @('/i', $msi, '/qn', '/norestart', '/l*v', $instLog) 480 $instLog
           if ($rc -ne 0) {
             if (Test-Path $instLog) { Write-Host "---- install.log (tail) ----"; Get-Content $instLog -Tail 60 }
             throw "msiexec /i falhou (exit $rc)"
           }
 
           # Acha o sidecar garraia.exe instalado (sob Program Files). O layout do
-          # contrato (fatia A) poe node/ e bridge-whatsapp/ irmaos do exe.
+          # contrato (fatia A) poe node/ e bridge-whatsapp/ irmaos do exe. Sem
+          # varrer `C:\Program Files` inteiro (no runner sao centenas de milhares
+          # de arquivos, sem teto): se nao estiver no lugar do contrato, falha ja,
+          # mostrando o que o MSI registrou.
+          Fase "localizar o sidecar instalado"
           $exe = Get-ChildItem "C:\Program Files\garraia-desktop" -Recurse -Filter garraia.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $exe) {
-            $exe = Get-ChildItem "C:\Program Files" -Recurse -Filter garraia.exe -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.DirectoryName 'node\node.exe') } | Select-Object -First 1
+            Get-ChildItem "C:\Program Files" -Directory | Where-Object { $_.Name -like '*garra*' } | ForEach-Object { Write-Host "Program Files: $($_.FullName)" }
+            Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+              Where-Object { $_.DisplayName -like '*garra*' } |
+              ForEach-Object { Write-Host "registro: $($_.DisplayName) $($_.DisplayVersion) InstallLocation=$($_.InstallLocation)" }
+            throw "sidecar garraia.exe nao encontrado em C:\Program Files\garraia-desktop apos a instalacao"
           }
-          if (-not $exe) { throw "sidecar garraia.exe nao encontrado apos a instalacao" }
           $dir = $exe.DirectoryName
           Write-Host "sidecar instalado: $($exe.FullName)"
           if ($dir -notmatch ' ') { Write-Host "::warning ::diretorio de instalacao sem espaco: $dir" } else { Write-Host "caminho com espaco: $dir" }
@@ -465,6 +482,7 @@ jobs:
           Write-Host "where node: vazio (ambiente sem Node global)"
 
           # self-test com teto de tempo; stdout para arquivo.
+          Fase "whatsapp self-test (teto 180 s)"
           $outFile = "selftest.json"
           $p = Start-Process -FilePath $exe.FullName -ArgumentList @('whatsapp','self-test','--json') -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError "selftest.err"
           if (-not $p.WaitForExit(180000)) { try { $p.Kill($true) } catch {}; throw "TIMEOUT no self-test" }
@@ -481,7 +499,8 @@ jobs:
           Write-Host "SELF-TEST OK: origin=privado, self_test=ok, node $($o.node_version), deps baileys/pino/sharp"
 
           # Desinstalacao: o pacote some; o dado do usuario fica.
-          $rc = Invoke-Bounded "msiexec.exe" @('/x', $msi, '/qn', '/norestart', '/l*v', 'uninstall.log') 900 'uninstall.log'
+          Fase "desinstalar (msiexec /x, teto 480 s)"
+          $rc = Invoke-Bounded "msiexec.exe" @('/x', $msi, '/qn', '/norestart', '/l*v', 'uninstall.log') 480 'uninstall.log'
           if ($rc -ne 0) { throw "msiexec /x falhou (exit $rc)" }
           if (Test-Path "$dir\node\node.exe") { throw "node\node.exe ainda presente apos desinstalar" }
           if (Test-Path "$dir\bridge-whatsapp") { throw "bridge-whatsapp ainda presente apos desinstalar" }
