@@ -234,7 +234,8 @@ no `PATH` (a CLI num Linux limpo, ou o desktop num Windows sem Node global —
 o Node privado do instalador e so da ponte do WhatsApp e nao traz `npx`), o
 boot nao grava nada, nem cria o workspace, e loga o motivo. A linha
 `mcp.servers` do `/api/diagnostics` fica `skipped`, dizendo que falta o
-`npx` e como ligar o `filesystem`; as file tools nativas (`file_read`,
+`npx` e como ligar o `filesystem`, e o `garra doctor mcp` e a tool
+`garra_diagnostics` do agente dao o mesmo motivo; as file tools nativas (`file_read`,
 `file_write`, `list_dir`) seguem disponiveis. Instalado o Node.js 20+, o
 proximo boot provisiona sozinho.
 

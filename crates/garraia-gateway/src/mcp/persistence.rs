@@ -23,10 +23,49 @@ const VAULT_REF_PREFIX: &str = "vault:";
 
 /// O `npx` que o `filesystem` autoprovisionado roda, procurado na `PATH` do
 /// processo (com `.cmd`/`.exe` no Windows). `None` = sem Node.js na maquina,
-/// e o boot nao provisiona; o `/api/diagnostics` usa o mesmo teste para dizer
-/// por que nao ha servidor MCP.
-pub(crate) fn npx_no_path() -> Option<PathBuf> {
+/// e o boot nao provisiona.
+pub fn npx_no_path() -> Option<PathBuf> {
     garraia_channels::whatsapp_linked::bridge::find_executable("npx")
+}
+
+/// `GARRAIA_DISABLE_MCP_AUTOPROVISION` ligado (qualquer valor que nao seja
+/// vazio nem `0`). Ver [`McpPersistenceService::DISABLE_AUTOPROVISION_ENV`].
+pub fn autoprovisao_desligada() -> bool {
+    std::env::var_os(McpPersistenceService::DISABLE_AUTOPROVISION_ENV)
+        .is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// O que um boot faria com o `filesystem` padrao se o `mcp.json` ainda nao
+/// existisse. Existe para o `/api/diagnostics` e o `garra doctor mcp`
+/// explicarem a AUSENCIA do servidor com o mesmo motivo que a provisao usa,
+/// sem prometer um provisionamento que nao vai acontecer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProvisaoDoFilesystem {
+    /// Opt-out desligado e `npx` no `PATH`: o boot provisiona.
+    Provisiona,
+    /// `npx` (Node.js 20+) fora do `PATH`: o boot nao provisiona.
+    SemNpx,
+    /// `GARRAIA_DISABLE_MCP_AUTOPROVISION` ligado. Vence o `npx`, na mesma
+    /// ordem da provisao.
+    Desligada,
+}
+
+impl ProvisaoDoFilesystem {
+    /// O estado deste processo: env do opt-out e `PATH`.
+    pub fn atual() -> Self {
+        Self::de(autoprovisao_desligada(), npx_no_path().is_some())
+    }
+
+    /// Puro: os dois fatos na ordem em que a provisao os consulta.
+    pub fn de(opt_out: bool, npx_presente: bool) -> Self {
+        if opt_out {
+            Self::Desligada
+        } else if !npx_presente {
+            Self::SemNpx
+        } else {
+            Self::Provisiona
+        }
+    }
 }
 
 /// Returns the vault key used to store `env_key` for `server_name`.
@@ -225,9 +264,7 @@ impl McpPersistenceService {
         raizes: &RaizesDoMcpFilesystem,
         npx: &dyn Fn() -> Option<PathBuf>,
     ) {
-        if std::env::var_os(Self::DISABLE_AUTOPROVISION_ENV)
-            .is_some_and(|v| !v.is_empty() && v != "0")
-        {
+        if autoprovisao_desligada() {
             debug!(
                 "mcp: auto-provisionamento desligado por {}",
                 Self::DISABLE_AUTOPROVISION_ENV
@@ -1406,6 +1443,17 @@ mod tests {
             Some(vec![raiz]),
             "com Node instalado o boot seguinte provisiona"
         );
+    }
+
+    /// A tabela que o diagnostico e o `doctor mcp` usam para explicar a
+    /// ausencia: mesma ordem da provisao (opt-out antes do `npx`).
+    #[test]
+    fn provisao_do_filesystem_segue_a_ordem_da_provisao() {
+        use ProvisaoDoFilesystem::*;
+        assert_eq!(ProvisaoDoFilesystem::de(false, true), Provisiona);
+        assert_eq!(ProvisaoDoFilesystem::de(false, false), SemNpx);
+        assert_eq!(ProvisaoDoFilesystem::de(true, true), Desligada);
+        assert_eq!(ProvisaoDoFilesystem::de(true, false), Desligada);
     }
 
     /// O opt-out vence antes da busca: com ele ligado a busca nem roda (um

@@ -1130,27 +1130,33 @@ fn mcp_server_next_step(
 /// esgotados) => `error` com um passo por servidor; algum ainda tentando =>
 /// `warning`; todos conectados => `ok`. Puro.
 ///
-/// `npx_ausente` (a mesma busca que decide a provisao, em
-/// `mcp::persistence::npx_no_path`): sem servidor nenhum E sem `npx`, a linha
-/// continua `skipped` — ninguem pediu o servidor, e uma instalacao nova nao
-/// acende amarelo por isso — mas diz POR QUE nao ha `filesystem` e como
-/// liga-lo, em vez de esconder a dependencia ausente.
+/// `provisao` (os mesmos fatos que a provisao consulta, em
+/// `mcp::persistence::ProvisaoDoFilesystem`): sem servidor nenhum E sem
+/// `npx`, a linha continua `skipped` — ninguem pediu o servidor, e uma
+/// instalacao nova nao acende amarelo por isso — mas diz POR QUE nao ha
+/// `filesystem` e como liga-lo, em vez de esconder a dependencia ausente. Com
+/// o opt-out ligado nada muda: quem desligou o autoprovisionamento sabe.
 fn mcp_servers_check(
     statuses: Option<&[garraia_agents::McpServerStatus]>,
     bin: &str,
-    npx_ausente: bool,
+    provisao: crate::mcp::persistence::ProvisaoDoFilesystem,
 ) -> DiagnosticCheck {
+    use crate::mcp::persistence::ProvisaoDoFilesystem;
     use garraia_agents::McpServerState;
     let (status, detail, next_step) = match statuses {
-        None | Some([]) if npx_ausente => (
+        None | Some([]) if provisao == ProvisaoDoFilesystem::SemNpx => (
             CheckStatus::Skipped,
             "nenhum servidor MCP configurado: o `filesystem` padrao nao e provisionado porque \
              `npx` (Node.js 20+) nao esta no PATH; as file tools nativas (`file_read`, \
              `file_write`, `list_dir`) seguem disponiveis"
                 .to_string(),
+            // Sem prometer demais: o boot so provisiona quando o `mcp.json`
+            // ainda nao existe (a porta e "arquivo ausente").
             Some(format!(
                 "para ter o MCP `filesystem`, instale o Node.js 20+ e reinicie o gateway \
-                 (`{bin} restart`): o boot provisiona o `mcp.json` sozinho."
+                 (`{bin} restart`): sem `mcp.json` o boot provisiona o `filesystem` sozinho; \
+                 se ja existe um `mcp.json`, adicione o servidor pelo admin (MCP Servers > \
+                 + Add MCP) ou no proprio arquivo."
             )),
         ),
         None | Some([]) => (
@@ -1385,7 +1391,7 @@ pub(crate) async fn relatorio(state: &SharedState) -> DiagnosticsReport {
     checks.push(mcp_servers_check(
         mcp_statuses.as_deref(),
         &bin,
-        crate::mcp::persistence::npx_no_path().is_none(),
+        crate::mcp::persistence::ProvisaoDoFilesystem::atual(),
     ));
     checks.push(mcp_filesystem_pinned_check(
         &crate::mcp::persistence::versao_do_filesystem_efetivo(
@@ -3412,11 +3418,21 @@ mod tests_mcp_1346 {
     #[test]
     fn sem_servidores_e_skipped() {
         assert!(matches!(
-            mcp_servers_check(None, "garraia", false).status,
+            mcp_servers_check(
+                None,
+                "garraia",
+                crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona
+            )
+            .status,
             CheckStatus::Skipped
         ));
         assert!(matches!(
-            mcp_servers_check(Some(&[]), "garraia", false).status,
+            mcp_servers_check(
+                Some(&[]),
+                "garraia",
+                crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona
+            )
+            .status,
             CheckStatus::Skipped
         ));
     }
@@ -3426,7 +3442,7 @@ mod tests_mcp_1346 {
         let c = mcp_servers_check(
             Some(&[st("filesystem", McpServerState::Connected, None)]),
             "garraia",
-            false,
+            crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona,
         );
         assert!(matches!(c.status, CheckStatus::Ok));
         assert!(c.next_step.is_none());
@@ -3448,7 +3464,7 @@ mod tests_mcp_1346 {
                 ),
             ]),
             "garraia",
-            false,
+            crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona,
         );
         assert!(matches!(c.status, CheckStatus::Error), "{c:?}");
         let passo = c.next_step.expect("next_step");
@@ -3475,7 +3491,7 @@ mod tests_mcp_1346 {
                 Some(McpFailureCause::DiskFull),
             )]),
             "garra",
-            false,
+            crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona,
         );
         assert!(matches!(c.status, CheckStatus::Error));
         let passo = c.next_step.expect("next_step");
@@ -3498,7 +3514,7 @@ mod tests_mcp_1346 {
                 Some(McpFailureCause::Other),
             )]),
             "garraia",
-            false,
+            crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona,
         );
         assert!(matches!(c.status, CheckStatus::Warning));
         assert!(c.next_step.expect("passo").contains("/api/mcp/health"));
@@ -3510,18 +3526,34 @@ mod tests_mcp_1346 {
     #[test]
     fn sem_servidor_e_sem_npx_e_skipped_dizendo_por_que() {
         for statuses in [None, Some(&[][..])] {
-            let c = mcp_servers_check(statuses, "garra", true);
+            let c = mcp_servers_check(
+                statuses,
+                "garra",
+                crate::mcp::persistence::ProvisaoDoFilesystem::SemNpx,
+            );
             assert!(matches!(c.status, CheckStatus::Skipped), "{c:?}");
             assert!(c.detail.contains("`npx`"), "{}", c.detail);
             assert!(c.detail.contains("Node.js 20+"), "{}", c.detail);
             assert!(c.detail.contains("file_read"), "{}", c.detail);
             let passo = c.next_step.expect("diz como ligar o filesystem");
             assert!(passo.contains("`garra restart`"), "{passo}");
+            // A porta da provisao e "arquivo ausente": o passo nao pode
+            // prometer provisao a quem ja tem um `mcp.json`.
+            assert!(passo.contains("sem `mcp.json`"), "{passo}");
+            assert!(passo.contains("+ Add MCP"), "{passo}");
         }
-        // Com `npx` presente, o texto de sempre e nenhum passo.
-        let c = mcp_servers_check(None, "garra", false);
-        assert_eq!(c.detail, "nenhum servidor MCP configurado");
-        assert!(c.next_step.is_none());
+        // Com `npx` presente, ou com o autoprovisionamento desligado por
+        // opt-out (quem desligou sabe), o texto de sempre e nenhum passo —
+        // nada de "o boot provisiona sozinho" onde ele nao vai provisionar.
+        for provisao in [
+            crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona,
+            crate::mcp::persistence::ProvisaoDoFilesystem::Desligada,
+        ] {
+            let c = mcp_servers_check(None, "garra", provisao);
+            assert!(matches!(c.status, CheckStatus::Skipped), "{c:?}");
+            assert_eq!(c.detail, "nenhum servidor MCP configurado");
+            assert!(c.next_step.is_none(), "{provisao:?}: {c:?}");
+        }
     }
 
     /// Servidor configurado e quebrado segue acusando (#1437): a falta de
@@ -3535,7 +3567,7 @@ mod tests_mcp_1346 {
                 Some(McpFailureCause::Other),
             )]),
             "garraia",
-            true,
+            crate::mcp::persistence::ProvisaoDoFilesystem::SemNpx,
         );
         assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
         let c = mcp_servers_check(
@@ -3545,7 +3577,7 @@ mod tests_mcp_1346 {
                 Some(McpFailureCause::Other),
             )]),
             "garraia",
-            true,
+            crate::mcp::persistence::ProvisaoDoFilesystem::SemNpx,
         );
         assert!(matches!(c.status, CheckStatus::Error), "{c:?}");
     }
