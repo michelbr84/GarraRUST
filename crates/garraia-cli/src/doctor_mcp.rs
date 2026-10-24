@@ -24,7 +24,9 @@ use std::collections::HashMap;
 use anyhow::Result;
 use garraia_config::{AppConfig, ConfigLoader, McpServerConfig};
 use garraia_gateway::bootstrap::build_mcp_tools;
-use garraia_gateway::mcp::persistence::{McpPersistenceService, VersaoDoFilesystem};
+use garraia_gateway::mcp::persistence::{
+    McpPersistenceService, ProvisaoDoFilesystem, VersaoDoFilesystem,
+};
 use serde::Serialize;
 
 /// Ordem determinística: `config.mcp` e o `mcp.json` são mapas, e a saída
@@ -134,11 +136,19 @@ pub fn linha_humana(s: &ServidorReport) -> String {
 ///
 /// `Fixada` é o estado testado (#1346); `SemVersao` é o warning (cada cache
 /// frio do npx baixa o build mais novo do registry); `ForaDoNpx` é escolha
-/// do operador (binário local) e `Ausente` é o default de instalação limpa.
-pub fn versao_filesystem_report(v: &VersaoDoFilesystem) -> (String, bool) {
+/// do operador (binário local) e `Ausente` é o default de instalação limpa —
+/// e aí `provisao` diz se o boot vai mesmo provisionar (sem `npx` ou com o
+/// opt-out, não vai; o texto não pode prometer).
+pub fn versao_filesystem_report(
+    v: &VersaoDoFilesystem,
+    provisao: ProvisaoDoFilesystem,
+) -> (String, bool) {
     match v {
         VersaoDoFilesystem::Ausente => (
-            "nenhuma entrada `filesystem` (o gateway provisiona no primeiro boot)".to_string(),
+            format!(
+                "nenhuma entrada `filesystem` ({})",
+                motivo_sem_filesystem(provisao)
+            ),
             false,
         ),
         VersaoDoFilesystem::ForaDoNpx => (
@@ -154,6 +164,22 @@ pub fn versao_filesystem_report(v: &VersaoDoFilesystem) -> (String, bool) {
                 .to_string(),
             true,
         ),
+    }
+}
+
+/// Por que não há `filesystem` e o que o próximo boot faz — o mesmo motivo que
+/// a provisão do gateway usa (`ProvisaoDoFilesystem`), e o mesmo que o
+/// `/api/diagnostics` mostra. Puro.
+pub fn motivo_sem_filesystem(provisao: ProvisaoDoFilesystem) -> &'static str {
+    match provisao {
+        ProvisaoDoFilesystem::Provisiona => "o gateway provisiona no primeiro boot",
+        ProvisaoDoFilesystem::SemNpx => {
+            "o gateway só provisiona com `npx` (Node.js 20+) no PATH, e ele não está; \
+             instale o Node.js e o próximo boot provisiona"
+        }
+        ProvisaoDoFilesystem::Desligada => {
+            "autoprovisionamento desligado por GARRAIA_DISABLE_MCP_AUTOPROVISION"
+        }
     }
 }
 
@@ -189,7 +215,8 @@ pub fn run(json: bool, strict: bool) -> Result<i32> {
         .unwrap_or_default();
     let versao =
         garraia_gateway::mcp::persistence::versao_do_filesystem_efetivo(&config.mcp, &mcp_json);
-    let (versao_texto, versao_warn) = versao_filesystem_report(&versao);
+    let provisao = ProvisaoDoFilesystem::atual();
+    let (versao_texto, versao_warn) = versao_filesystem_report(&versao, provisao);
 
     // Nenhum servidor declarado em NENHUMA das duas fontes: instalação limpa
     // antes do primeiro boot do gateway — não há o que spawnar, e isso não é
@@ -204,14 +231,17 @@ pub fn run(json: bool, strict: bool) -> Result<i32> {
                     "report": {
                         "servers": [],
                         "filesystem_version": versao_texto,
-                        "note": "nenhum servidor MCP configurado — o gateway provisiona o `filesystem` no primeiro boot",
+                        "note": format!(
+                            "nenhum servidor MCP configurado — {}",
+                            motivo_sem_filesystem(provisao)
+                        ),
                     },
                 }))?
             );
         } else {
             println!("🩺 GarraIA doctor mcp v{}", env!("CARGO_PKG_VERSION"));
-            println!("        nenhum servidor MCP configurado — o gateway provisiona o");
-            println!("        `filesystem` no primeiro boot (`garraia start`).");
+            println!("        nenhum servidor MCP configurado —");
+            println!("        {}.", motivo_sem_filesystem(provisao));
         }
         return Ok(0);
     }
@@ -300,6 +330,7 @@ pub fn resumo_config(loader: &ConfigLoader, config: &AppConfig) -> ResumoMcp {
     let merged = merged_declarados(loader, config);
     let (versao_texto, versao_warn) = versao_filesystem_report(
         &garraia_gateway::mcp::persistence::versao_do_filesystem_efetivo(&config.mcp, &mcp_json),
+        ProvisaoDoFilesystem::atual(),
     );
     ResumoMcp {
         servidores: merged.len(),
@@ -421,17 +452,47 @@ mod tests {
 
     #[test]
     fn versao_filesystem_fixada_nao_warna_e_sem_versao_warna() {
-        let (t, warn) = versao_filesystem_report(&VersaoDoFilesystem::Fixada("1.2.3".into()));
+        let (t, warn) = versao_filesystem_report(
+            &VersaoDoFilesystem::Fixada("1.2.3".into()),
+            ProvisaoDoFilesystem::Provisiona,
+        );
         assert!(!warn, "{t}");
         assert!(t.contains("@1.2.3"), "{t}");
 
-        let (t, warn) = versao_filesystem_report(&VersaoDoFilesystem::SemVersao {
-            args_sugeridos: vec![],
-        });
+        let (t, warn) = versao_filesystem_report(
+            &VersaoDoFilesystem::SemVersao {
+                args_sugeridos: vec![],
+            },
+            ProvisaoDoFilesystem::Provisiona,
+        );
         assert!(warn, "{t}");
 
-        let (_, warn) = versao_filesystem_report(&VersaoDoFilesystem::Ausente);
+        let (_, warn) = versao_filesystem_report(
+            &VersaoDoFilesystem::Ausente,
+            ProvisaoDoFilesystem::Provisiona,
+        );
         assert!(!warn);
+    }
+
+    /// Achado do v0.4.10-rc1: sem `npx` (ou com o opt-out) o `doctor mcp`
+    /// nao pode prometer que "o gateway provisiona no primeiro boot" — o
+    /// mesmo motivo que a provisao e o `/api/diagnostics` usam. Ausencia do
+    /// `filesystem` nunca vira warning: e o default de uma instalacao limpa.
+    #[test]
+    fn sem_filesystem_explica_o_motivo_real_da_provisao() {
+        let texto = |p| versao_filesystem_report(&VersaoDoFilesystem::Ausente, p);
+        let (t, warn) = texto(ProvisaoDoFilesystem::Provisiona);
+        assert!(!warn && t.contains("provisiona no primeiro boot"), "{t}");
+        let (t, warn) = texto(ProvisaoDoFilesystem::SemNpx);
+        assert!(!warn, "{t}");
+        assert!(t.contains("`npx`") && t.contains("Node.js 20+"), "{t}");
+        assert!(!t.contains("primeiro boot"), "nao promete provisao: {t}");
+        let (t, warn) = texto(ProvisaoDoFilesystem::Desligada);
+        assert!(
+            !warn && t.contains("GARRAIA_DISABLE_MCP_AUTOPROVISION"),
+            "{t}"
+        );
+        assert!(!t.contains("primeiro boot"), "nao promete provisao: {t}");
     }
 
     #[test]

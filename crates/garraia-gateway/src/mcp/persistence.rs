@@ -21,6 +21,53 @@ use crate::bootstrap::RaizesDoMcpFilesystem;
 /// Sentinel prefix for vault-referenced env values in `mcp.json`.
 const VAULT_REF_PREFIX: &str = "vault:";
 
+/// O `npx` que o `filesystem` autoprovisionado roda, procurado na `PATH` do
+/// processo (com `.cmd`/`.exe` no Windows). `None` = sem Node.js na maquina,
+/// e o boot nao provisiona.
+pub fn npx_no_path() -> Option<PathBuf> {
+    garraia_channels::whatsapp_linked::bridge::find_executable("npx")
+}
+
+/// `GARRAIA_DISABLE_MCP_AUTOPROVISION` ligado (qualquer valor que nao seja
+/// vazio nem `0`). Ver [`McpPersistenceService::DISABLE_AUTOPROVISION_ENV`].
+pub fn autoprovisao_desligada() -> bool {
+    std::env::var_os(McpPersistenceService::DISABLE_AUTOPROVISION_ENV)
+        .is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// O que um boot faria com o `filesystem` padrao se o `mcp.json` ainda nao
+/// existisse. Existe para o `/api/diagnostics` e o `garra doctor mcp`
+/// explicarem a AUSENCIA do servidor com o mesmo motivo que a provisao usa,
+/// sem prometer um provisionamento que nao vai acontecer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProvisaoDoFilesystem {
+    /// Opt-out desligado e `npx` no `PATH`: o boot provisiona.
+    Provisiona,
+    /// `npx` (Node.js 20+) fora do `PATH`: o boot nao provisiona.
+    SemNpx,
+    /// `GARRAIA_DISABLE_MCP_AUTOPROVISION` ligado. Vence o `npx`, na mesma
+    /// ordem da provisao.
+    Desligada,
+}
+
+impl ProvisaoDoFilesystem {
+    /// O estado deste processo: env do opt-out e `PATH`.
+    pub fn atual() -> Self {
+        Self::de(autoprovisao_desligada(), npx_no_path().is_some())
+    }
+
+    /// Puro: os dois fatos na ordem em que a provisao os consulta.
+    pub fn de(opt_out: bool, npx_presente: bool) -> Self {
+        if opt_out {
+            Self::Desligada
+        } else if !npx_presente {
+            Self::SemNpx
+        } else {
+            Self::Provisiona
+        }
+    }
+}
+
 /// Returns the vault key used to store `env_key` for `server_name`.
 fn vault_key(server_name: &str, env_key: &str) -> String {
     format!("mcp.{server_name}.{env_key}")
@@ -190,10 +237,34 @@ impl McpPersistenceService {
     /// quem sobe o gateway sabendo que não vai exercitar MCP declara isso e o
     /// boot deixa de depender da rede. Não muda nada para o usuário final — o
     /// default segue provisionando.
+    ///
+    /// # Sem `npx` na PATH, nao provisiona
+    ///
+    /// A entrada roda `npx`, e numa maquina sem Node.js (o `.deb`/`curl | sh`
+    /// da CLI num Linux limpo, o desktop num Windows sem Node global — o Node
+    /// privado do instalador e so da ponte do WhatsApp) ela nunca sobe: o
+    /// spawn falha com `No such file or directory`, o supervisor gasta os
+    /// restarts e o `/api/diagnostics` de uma instalacao nova ficava amarelo
+    /// com `causa: other` por um servidor que ninguem pediu (achado da
+    /// validacao do v0.4.10-rc1). Sem `npx` o boot nao grava nada e loga o
+    /// porque; como a porta e "arquivo ausente", o proximo boot depois de
+    /// instalar o Node provisiona sozinho. As file tools nativas (`file_read`,
+    /// `file_write`, `list_dir`) nao dependem disto. Um `mcp.json` que JA
+    /// existe com `npx` continua intocado — servidor configurado e quebrado
+    /// segue acusando (#1437).
     pub fn provision_filesystem_if_missing(&self, raizes: &RaizesDoMcpFilesystem) {
-        if std::env::var_os(Self::DISABLE_AUTOPROVISION_ENV)
-            .is_some_and(|v| !v.is_empty() && v != "0")
-        {
+        self.provision_filesystem_if_missing_com(raizes, &npx_no_path)
+    }
+
+    /// O miolo de [`provision_filesystem_if_missing`](Self::provision_filesystem_if_missing),
+    /// com a busca na `PATH` injetada para teste (o resultado nao pode
+    /// depender de a maquina que roda o teste ter Node).
+    pub(crate) fn provision_filesystem_if_missing_com(
+        &self,
+        raizes: &RaizesDoMcpFilesystem,
+        npx: &dyn Fn() -> Option<PathBuf>,
+    ) {
+        if autoprovisao_desligada() {
             debug!(
                 "mcp: auto-provisionamento desligado por {}",
                 Self::DISABLE_AUTOPROVISION_ENV
@@ -202,6 +273,17 @@ impl McpPersistenceService {
         }
 
         if self.path.exists() {
+            return;
+        }
+
+        // Antes de qualquer efeito colateral (o workspace abaixo e criado):
+        // sem `npx` nao ha o que provisionar.
+        if npx().is_none() {
+            info!(
+                "mcp: nao provisionou o servidor filesystem padrao — `npx` (Node.js 20+) nao \
+                 esta no PATH. As file tools nativas seguem disponiveis; instale o Node.js e \
+                 reinicie o gateway para o boot provisionar o `mcp.json`"
+            );
             return;
         }
 
@@ -667,6 +749,19 @@ mod tests {
         McpConfig { mcp_servers }
     }
 
+    /// Busca de `npx` que sempre acha — os testes de provisao nao podem
+    /// depender de a maquina que roda o teste ter Node. A AUSENCIA real (PATH
+    /// sem `npx`, pela busca de verdade) e provada em
+    /// `tests/mcp_filesystem_sem_npx.rs`, num processo proprio.
+    fn com_npx() -> Option<PathBuf> {
+        Some(PathBuf::from("/opt/node/bin/npx"))
+    }
+
+    /// Busca de `npx` que nunca acha.
+    fn sem_npx() -> Option<PathBuf> {
+        None
+    }
+
     #[test]
     fn load_parses_valid_mcp_json() {
         let json = r#"{"mcpServers":{"gradio":{"command":"npx","args":["mcp-remote"]}}}"#;
@@ -845,8 +940,10 @@ mod tests {
             std::env::set_var("USERPROFILE", SENTINELA);
         }
 
-        McpPersistenceService::new(&path)
-            .provision_filesystem_if_missing(&RaizesDoMcpFilesystem::Workspace(raiz.clone()));
+        McpPersistenceService::new(&path).provision_filesystem_if_missing_com(
+            &RaizesDoMcpFilesystem::Workspace(raiz.clone()),
+            &com_npx,
+        );
 
         // SAFETY: idem — restaura antes de qualquer asserção.
         unsafe {
@@ -899,8 +996,9 @@ mod tests {
         // SAFETY: teste serializado.
         unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
 
-        McpPersistenceService::new(&path).provision_filesystem_if_missing(
+        McpPersistenceService::new(&path).provision_filesystem_if_missing_com(
             &RaizesDoMcpFilesystem::Declaradas(vec![a.clone(), b.clone()]),
+            &com_npx,
         );
 
         let loaded = McpPersistenceService::new(&path).load().expect("load");
@@ -924,8 +1022,9 @@ mod tests {
         // SAFETY: teste serializado.
         unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
 
-        McpPersistenceService::new(&path).provision_filesystem_if_missing(
+        McpPersistenceService::new(&path).provision_filesystem_if_missing_com(
             &RaizesDoMcpFilesystem::Declaradas(vec![existe, nao_existe.clone()]),
+            &com_npx,
         );
 
         assert!(
@@ -948,8 +1047,10 @@ mod tests {
         // SAFETY: teste serializado.
         unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
 
-        McpPersistenceService::new(&path)
-            .provision_filesystem_if_missing(&RaizesDoMcpFilesystem::Declaradas(vec![]));
+        McpPersistenceService::new(&path).provision_filesystem_if_missing_com(
+            &RaizesDoMcpFilesystem::Declaradas(vec![]),
+            &com_npx,
+        );
 
         assert!(
             !path.exists(),
@@ -970,8 +1071,10 @@ mod tests {
         // SAFETY: teste serializado.
         unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
 
-        McpPersistenceService::new(&path)
-            .provision_filesystem_if_missing(&RaizesDoMcpFilesystem::Workspace(raiz_impossivel));
+        McpPersistenceService::new(&path).provision_filesystem_if_missing_com(
+            &RaizesDoMcpFilesystem::Workspace(raiz_impossivel),
+            &com_npx,
+        );
 
         assert!(!path.exists(), "workspace impossivel => nao provisiona");
     }
@@ -985,8 +1088,9 @@ mod tests {
         // SAFETY: teste serializado.
         unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
 
-        McpPersistenceService::new(&path).provision_filesystem_if_missing(
+        McpPersistenceService::new(&path).provision_filesystem_if_missing_com(
             &RaizesDoMcpFilesystem::Workspace(raiz_de_teste(&dir)),
+            &com_npx,
         );
 
         let cru = std::fs::read_to_string(&path).expect("read back");
@@ -1157,8 +1261,9 @@ mod tests {
         // SAFETY: teste serializado; ninguém mais lê esta var em paralelo.
         unsafe { std::env::set_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV, "1") };
 
-        McpPersistenceService::new(&path).provision_filesystem_if_missing(
+        McpPersistenceService::new(&path).provision_filesystem_if_missing_com(
             &RaizesDoMcpFilesystem::Workspace(raiz_de_teste(&dir)),
+            &com_npx,
         );
 
         assert!(
@@ -1185,8 +1290,9 @@ mod tests {
             // SAFETY: teste serializado.
             unsafe { std::env::set_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV, value) };
 
-            McpPersistenceService::new(&path).provision_filesystem_if_missing(
+            McpPersistenceService::new(&path).provision_filesystem_if_missing_com(
                 &RaizesDoMcpFilesystem::Workspace(raiz_de_teste(&dir)),
+                &com_npx,
             );
 
             assert!(
@@ -1211,8 +1317,9 @@ mod tests {
         // SAFETY: teste serializado.
         unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
 
-        McpPersistenceService::new(&path).provision_filesystem_if_missing(
+        McpPersistenceService::new(&path).provision_filesystem_if_missing_com(
             &RaizesDoMcpFilesystem::Declaradas(vec![raiz.clone()]),
+            &com_npx,
         );
 
         let cru = std::fs::read_to_string(&path).expect("read back");
@@ -1251,12 +1358,128 @@ mod tests {
         // SAFETY: teste serializado.
         unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
 
-        McpPersistenceService::new(&path).provision_filesystem_if_missing(
+        McpPersistenceService::new(&path).provision_filesystem_if_missing_com(
             &RaizesDoMcpFilesystem::Workspace(raiz_de_teste(&dir)),
+            &com_npx,
         );
 
         let cru = std::fs::read(&path).expect("read back");
         assert_eq!(cru, json.as_bytes(), "mcp.json existente e intocavel");
+    }
+
+    /// Achado do v0.4.10-rc1: sem `npx`, a provisao nao grava um servidor
+    /// que nunca vai subir — e nao tem efeito colateral nenhum: nem
+    /// `mcp.json`, nem o workspace default (que a provisao com `npx` cria).
+    #[test]
+    #[serial_test::serial]
+    fn provision_sem_npx_nao_grava_nem_cria_o_workspace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        // SAFETY: teste serializado.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+
+        McpPersistenceService::new(&path).provision_filesystem_if_missing_com(
+            &RaizesDoMcpFilesystem::Workspace(raiz_de_teste(&dir)),
+            &sem_npx,
+        );
+
+        assert!(!path.exists(), "sem npx => nenhum mcp.json");
+        assert!(
+            !raiz_de_teste(&dir).exists(),
+            "sem npx nem o workspace default e criado"
+        );
+    }
+
+    /// Raiz declarada que existe nao muda nada: sem `npx`, nada gravado, e
+    /// a raiz do operador fica como estava (vazia).
+    #[test]
+    #[serial_test::serial]
+    fn provision_sem_npx_ignora_ate_raiz_declarada_valida() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        let raiz = dir.path().join("declarada");
+        std::fs::create_dir_all(&raiz).expect("mkdir");
+        // SAFETY: teste serializado.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+
+        McpPersistenceService::new(&path).provision_filesystem_if_missing_com(
+            &RaizesDoMcpFilesystem::Declaradas(vec![raiz.clone()]),
+            &sem_npx,
+        );
+
+        assert!(!path.exists(), "sem npx => nenhum mcp.json");
+        assert_eq!(
+            std::fs::read_dir(&raiz).expect("ls").count(),
+            0,
+            "a raiz declarada nao ganha nada"
+        );
+    }
+
+    /// A porta e "arquivo ausente": o boot sem Node nao grava nada, entao o
+    /// primeiro boot DEPOIS de instalar o Node provisiona sozinho.
+    #[test]
+    #[serial_test::serial]
+    fn provision_sem_npx_tenta_de_novo_no_boot_seguinte() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        let raiz = raiz_de_teste(&dir);
+        // SAFETY: teste serializado.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+        let svc = McpPersistenceService::new(&path);
+
+        svc.provision_filesystem_if_missing_com(
+            &RaizesDoMcpFilesystem::Workspace(raiz.clone()),
+            &sem_npx,
+        );
+        assert!(!path.exists());
+
+        svc.provision_filesystem_if_missing_com(
+            &RaizesDoMcpFilesystem::Workspace(raiz.clone()),
+            &com_npx,
+        );
+        let loaded = svc.load().expect("load");
+        assert_eq!(
+            raizes_do_filesystem_persistido(&loaded),
+            Some(vec![raiz]),
+            "com Node instalado o boot seguinte provisiona"
+        );
+    }
+
+    /// A tabela que o diagnostico e o `doctor mcp` usam para explicar a
+    /// ausencia: mesma ordem da provisao (opt-out antes do `npx`).
+    #[test]
+    fn provisao_do_filesystem_segue_a_ordem_da_provisao() {
+        use ProvisaoDoFilesystem::*;
+        assert_eq!(ProvisaoDoFilesystem::de(false, true), Provisiona);
+        assert_eq!(ProvisaoDoFilesystem::de(false, false), SemNpx);
+        assert_eq!(ProvisaoDoFilesystem::de(true, true), Desligada);
+        assert_eq!(ProvisaoDoFilesystem::de(true, false), Desligada);
+    }
+
+    /// O opt-out vence antes da busca: com ele ligado a busca nem roda (um
+    /// boot de CI sem rede nao depende da PATH).
+    #[test]
+    #[serial_test::serial]
+    fn opt_out_vence_antes_da_busca_do_npx() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        // SAFETY: teste serializado.
+        unsafe { std::env::set_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV, "1") };
+        let chamou = std::cell::Cell::new(false);
+        let espiao = || {
+            chamou.set(true);
+            Some(PathBuf::from("/opt/node/bin/npx"))
+        };
+
+        McpPersistenceService::new(&path).provision_filesystem_if_missing_com(
+            &RaizesDoMcpFilesystem::Workspace(raiz_de_teste(&dir)),
+            &espiao,
+        );
+
+        // SAFETY: idem — restaura antes das asserções.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+        assert!(!path.exists());
+        assert!(!chamou.get(), "com opt-out a PATH nao e consultada");
     }
 
     /// Tabela do diagnostico `mcp.filesystem_pinned`.

@@ -119,6 +119,18 @@ check of `GET /api/diagnostics`. On first boot only the default
 skipped with a `warn!` naming the missing root, and nothing wider is created
 in its place.
 
+**No Node.js, no provisioning.** The server runs `npx`. When `npx` is not on
+the gateway's `PATH` (the CLI on a clean Linux box, or the desktop app on a
+Windows machine without a global Node — the installer's private Node only
+serves the WhatsApp bridge and ships no `npx`), the boot writes nothing,
+creates no workspace and logs why. The `mcp.servers` check of
+`GET /api/diagnostics` stays `skipped` and names the missing `npx` and how to
+enable `filesystem`, and `garra doctor mcp` and the agent's `garra_diagnostics`
+tool give the same reason; the native file tools (`file_read`, `file_write`,
+`list_dir`) are unaffected. Once Node.js 20+ is installed, the next boot
+provisions on its own. An existing `mcp.json` is never touched, so a
+configured server that cannot start keeps reporting as a warning or error.
+
 **Per-session confinement (#1482).** The autoprovisioned `filesystem` root is
 `<data_dir>/workspace` in `standard`, which is the *parent* of every
 per-session workspace (#1449). So the gateway runs every MCP filesystem call

@@ -91,6 +91,11 @@ pub struct DeviceToolsConfig {
     pub registry: Arc<DeviceRegistry>,
     pub state: Option<Arc<DeviceStateStore>>,
     pub sinonimos: Option<Arc<dyn FonteDeSinonimos>>,
+    /// O operador declarou algum adapter (`hardware.mqtt` /
+    /// `hardware.home_assistant`). Separa "nada configurado" (o estado de uma
+    /// instalacao nova, neutro) de "configurado e sem dispositivo" (algo
+    /// deixou de aparecer, merece aviso).
+    pub adapters_configurados: bool,
 }
 
 impl DeviceToolsConfig {
@@ -101,6 +106,42 @@ impl DeviceToolsConfig {
             registry,
             state: None,
             sinonimos: None,
+            adapters_configurados: false,
+        }
+    }
+
+    /// Com o operador tendo declarado (ou nao) algum adapter de hardware.
+    pub fn com_adapters_configurados(mut self, sim: bool) -> Self {
+        self.adapters_configurados = sim;
+        self
+    }
+
+    /// #1425: sem dispositivo registrado, `device_read`/`device_execute` nao
+    /// tem alvo — ficam fora da lista do modelo, com o motivo; `device_list`
+    /// continua, porque e ela que explica isso. Sem adapter declarado e
+    /// `not_configured` (instalacao nova: nada a corrigir); com adapter
+    /// declarado e registry vazio e `no_devices` (a descoberta nao trouxe
+    /// nada).
+    fn disponibilidade_das_acoes(&self) -> crate::tools::Disponibilidade {
+        if !self.registry.is_empty() {
+            return crate::tools::Disponibilidade::Disponivel;
+        }
+        let remediacao = Some(
+            "Configure um adapter (`docs/hardware-skills.md`) e reinicie; `device_list` mostra o que existe."
+                .to_string(),
+        );
+        if self.adapters_configurados {
+            crate::tools::Disponibilidade::indisponivel(
+                "no_devices",
+                "nenhum dispositivo registrado: o adapter de hardware configurado nao trouxe nenhum dispositivo.",
+                remediacao,
+            )
+        } else {
+            crate::tools::Disponibilidade::indisponivel(
+                "not_configured",
+                "nenhum adapter de hardware configurado (`hardware.mqtt` ou `hardware.home_assistant`), entao nao ha dispositivo.",
+                remediacao,
+            )
         }
     }
 
@@ -221,22 +262,9 @@ impl DeviceReadTool {
 
 #[async_trait]
 impl Tool for DeviceReadTool {
-    /// #1425: sem dispositivo registrado a acao nao tem alvo — fica fora da
-    /// lista do modelo, com o motivo; `device_list` continua, porque e ela
-    /// que explica isso.
+    /// #1425: ver [`DeviceToolsConfig::disponibilidade_das_acoes`].
     fn disponibilidade(&self) -> crate::tools::Disponibilidade {
-        if self.config.registry.is_empty() {
-            crate::tools::Disponibilidade::indisponivel(
-                "no_devices",
-                "nenhum dispositivo registrado: adapters de hardware registram dispositivos no boot.",
-                Some(
-                    "Configure um adapter (`docs/hardware-skills.md`) e reinicie; `device_list` mostra o que existe."
-                        .to_string(),
-                ),
-            )
-        } else {
-            crate::tools::Disponibilidade::Disponivel
-        }
+        self.config.disponibilidade_das_acoes()
     }
 
     fn name(&self) -> &str {
@@ -368,22 +396,9 @@ impl DeviceExecuteTool {
 
 #[async_trait]
 impl Tool for DeviceExecuteTool {
-    /// #1425: sem dispositivo registrado a acao nao tem alvo — fica fora da
-    /// lista do modelo, com o motivo; `device_list` continua, porque e ela
-    /// que explica isso.
+    /// #1425: ver [`DeviceToolsConfig::disponibilidade_das_acoes`].
     fn disponibilidade(&self) -> crate::tools::Disponibilidade {
-        if self.config.registry.is_empty() {
-            crate::tools::Disponibilidade::indisponivel(
-                "no_devices",
-                "nenhum dispositivo registrado: adapters de hardware registram dispositivos no boot.",
-                Some(
-                    "Configure um adapter (`docs/hardware-skills.md`) e reinicie; `device_list` mostra o que existe."
-                        .to_string(),
-                ),
-            )
-        } else {
-            crate::tools::Disponibilidade::Disponivel
-        }
+        self.config.disponibilidade_das_acoes()
     }
 
     fn name(&self) -> &str {
@@ -563,32 +578,66 @@ impl Tool for DeviceExecuteTool {
 
 #[cfg(test)]
 mod tests {
-    /// #1425: registry vazio = `device_read`/`device_execute` indisponiveis
-    /// (`no_devices`), `device_list` disponivel — e ela que explica.
+    /// #1425: registry vazio = `device_read`/`device_execute` indisponiveis,
+    /// `device_list` disponivel — e ela que explica. O codigo separa as duas
+    /// causas: sem adapter declarado e `not_configured` (instalacao nova, o
+    /// `/api/diagnostics` nao acende amarelo); com adapter declarado e
+    /// `no_devices` (a descoberta nao trouxe nada, aviso legitimo).
     #[test]
     fn sem_dispositivo_read_e_execute_sao_indisponiveis_e_list_fica() {
         use crate::tools::Disponibilidade;
-        let config = std::sync::Arc::new(DeviceToolsConfig::new(std::sync::Arc::new(
-            garraia_hardware::DeviceRegistry::new(),
-        )));
-        let read = DeviceReadTool::new(std::sync::Arc::clone(&config));
-        let exec = DeviceExecuteTool::new(std::sync::Arc::clone(&config));
-        let list = DeviceListTool::new(std::sync::Arc::clone(&config));
-        assert!(list.disponibilidade().e_disponivel());
-        for d in [read.disponibilidade(), exec.disponibilidade()] {
-            match d {
-                Disponibilidade::Indisponivel {
-                    codigo,
-                    motivo,
-                    remediacao,
-                } => {
-                    assert_eq!(codigo, "no_devices");
-                    assert!(motivo.contains("nenhum dispositivo"), "{motivo}");
-                    assert!(remediacao.is_some());
+        for (adapters, codigo_esperado, trecho) in [
+            (false, "not_configured", "nenhum adapter"),
+            (true, "no_devices", "nenhum dispositivo"),
+        ] {
+            let config = std::sync::Arc::new(
+                DeviceToolsConfig::new(
+                    std::sync::Arc::new(garraia_hardware::DeviceRegistry::new()),
+                )
+                .com_adapters_configurados(adapters),
+            );
+            let read = DeviceReadTool::new(std::sync::Arc::clone(&config));
+            let exec = DeviceExecuteTool::new(std::sync::Arc::clone(&config));
+            let list = DeviceListTool::new(std::sync::Arc::clone(&config));
+            assert!(list.disponibilidade().e_disponivel());
+            for d in [read.disponibilidade(), exec.disponibilidade()] {
+                match d {
+                    Disponibilidade::Indisponivel {
+                        codigo,
+                        motivo,
+                        remediacao,
+                    } => {
+                        assert_eq!(codigo, codigo_esperado, "adapters={adapters}");
+                        assert!(motivo.contains(trecho), "{motivo}");
+                        assert!(remediacao.is_some());
+                    }
+                    Disponibilidade::Disponivel => {
+                        panic!("sem dispositivo nao pode estar disponivel")
+                    }
                 }
-                Disponibilidade::Disponivel => panic!("sem dispositivo nao pode estar disponivel"),
             }
         }
+    }
+
+    /// Com dispositivo registrado, as acoes ficam disponiveis com ou sem a
+    /// marca de adapter (o MockDevice e registrado direto, sem adapter).
+    #[test]
+    fn com_dispositivo_read_e_execute_ficam_disponiveis() {
+        let registry = std::sync::Arc::new(garraia_hardware::DeviceRegistry::new());
+        registry.register(std::sync::Arc::new(
+            garraia_hardware::MockDevice::sensor_temperatura(),
+        ));
+        let config = std::sync::Arc::new(DeviceToolsConfig::new(registry));
+        assert!(
+            DeviceReadTool::new(std::sync::Arc::clone(&config))
+                .disponibilidade()
+                .e_disponivel()
+        );
+        assert!(
+            DeviceExecuteTool::new(config)
+                .disponibilidade()
+                .e_disponivel()
+        );
     }
 
     use super::*;

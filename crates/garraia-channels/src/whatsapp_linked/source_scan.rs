@@ -1972,3 +1972,182 @@ fn dockerfile_copies_every_dir_that_include_str_escapes_to() {
         );
     }
 }
+
+/// Diretorios de topo fora de `crates/` que o `Cargo.toml` da raiz referencia
+/// por `path = "..."` (hoje: os forks do `[patch.crates-io]` em `third_party/`).
+fn root_manifest_dirs_outside_crates(cargo_toml: &str) -> Vec<String> {
+    let mut dirs: Vec<String> = Vec::new();
+    for line in cargo_toml.lines() {
+        let line = line.split('#').next().unwrap_or("");
+        let mut resto = line;
+        while let Some(i) = resto.find("path") {
+            let depois = resto[i + "path".len()..].trim_start();
+            resto = &resto[i + "path".len()..];
+            let Some(valor) = depois.strip_prefix('=') else {
+                continue;
+            };
+            let Some(valor) = valor.trim_start().strip_prefix('"') else {
+                continue;
+            };
+            let literal = valor.split('"').next().unwrap_or("");
+            let topo = literal
+                .trim_start_matches("./")
+                .split('/')
+                .next()
+                .unwrap_or("");
+            if !topo.is_empty() && topo != "crates" && !dirs.iter().any(|d| d == topo) {
+                dirs.push(topo.to_string());
+            }
+        }
+    }
+    dirs.sort();
+    dirs
+}
+
+/// O que falta no Dockerfile para `dir/` chegar aos tres pontos em que o cargo
+/// precisa dele: o planner (`cargo chef prepare`), o builder **antes** do
+/// `cargo chef cook` (o `[patch]` tem de resolver ja ali) e o builder **depois**
+/// do `cook` (devolve o fonte real se o recipe trouxe o fork como esqueleto).
+fn dockerfile_gaps_for(dockerfile: &str, dir: &str) -> Vec<String> {
+    let copia = format!("COPY {dir}/ {dir}/");
+    let mut estagio = String::new();
+    let mut planner = false;
+    let mut builder_antes = false;
+    let mut builder_depois = false;
+    let mut cook_visto = false;
+    for line in dockerfile.lines() {
+        let l = line.trim();
+        if l.to_ascii_uppercase().starts_with("FROM ") {
+            estagio = l
+                .rsplit_once(|c: char| c.is_whitespace())
+                .map(|(_, nome)| nome.to_ascii_lowercase())
+                .unwrap_or_default();
+            cook_visto = false;
+            continue;
+        }
+        if l.starts_with("RUN") && l.contains("cargo chef cook") {
+            cook_visto = true;
+        }
+        if l == copia {
+            match (estagio.as_str(), cook_visto) {
+                ("planner", _) => planner = true,
+                ("builder", false) => builder_antes = true,
+                ("builder", true) => builder_depois = true,
+                _ => {}
+            }
+        }
+    }
+    let mut faltas = Vec::new();
+    if !planner {
+        faltas.push(format!(
+            "`{copia}` no estagio planner (antes do `cargo chef prepare`)"
+        ));
+    }
+    if !builder_antes {
+        faltas.push(format!(
+            "`{copia}` no estagio builder antes do `cargo chef cook`"
+        ));
+    }
+    if !builder_depois {
+        faltas.push(format!(
+            "`{copia}` no estagio builder depois do `cargo chef cook`"
+        ));
+    }
+    faltas
+}
+
+/// Todo diretorio fora de `crates/` que o `Cargo.toml` da raiz referencia por
+/// `path` (os forks do `[patch.crates-io]` em `third_party/`, #1662/#1668) tem
+/// de entrar na imagem no planner e nos dois lados do `cook` — senao o cargo
+/// aborta com "patch location `/build/third_party/...` does not contain
+/// packages", como o Deploy do tag v0.4.10-rc1 abortou. Mesma razao do teste
+/// acima: o CI de PR nao constroi a imagem a cada mudanca, entao a regra
+/// estrutural vive aqui, onde roda em todo PR.
+#[test]
+fn dockerfile_copies_every_patch_path_outside_crates() {
+    use std::path::Path;
+
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let cargo_toml = std::fs::read_to_string(repo.join("Cargo.toml")).expect("Cargo.toml na raiz");
+    let dirs = root_manifest_dirs_outside_crates(&cargo_toml);
+    assert!(
+        dirs.contains(&"third_party".to_string()),
+        "os forks de `third_party/` sao o caso conhecido; se sumiram, este teste perdeu o alvo: {dirs:?}"
+    );
+
+    let dockerfile = std::fs::read_to_string(repo.join("Dockerfile")).expect("Dockerfile na raiz");
+    let dockerignore = std::fs::read_to_string(repo.join(".dockerignore")).unwrap_or_default();
+    for dir in &dirs {
+        let faltas = dockerfile_gaps_for(&dockerfile, dir);
+        assert!(
+            faltas.is_empty(),
+            "o Cargo.toml da raiz referencia `{dir}/` por `path`, mas falta no Dockerfile: {faltas:?}"
+        );
+        assert!(
+            !dockerignore
+                .lines()
+                .map(str::trim)
+                .any(|l| l == format!("{dir}/") || l == dir.as_str() || l == format!("/{dir}/")),
+            "`.dockerignore` exclui `{dir}/`, que o Dockerfile precisa copiar"
+        );
+    }
+}
+
+/// A regra acima reprova o Dockerfile do v0.4.10-rc1 (sem `third_party/`) e
+/// cada um dos tres pontos isoladamente, e nao confunde `path` de dentro de
+/// `crates/` nem comentario com dependencia.
+#[test]
+fn the_patch_path_rule_rejects_the_rc1_dockerfile() {
+    let cargo = "[workspace.dependencies]\n\
+                 garraia-common = { path = \"crates/garraia-common\" }\n\
+                 # antigo = { path = \"vendor/antigo\" }\n\
+                 [patch.crates-io]\n\
+                 tauri-plugin-updater = { path = \"third_party/tauri-plugin-updater\" }\n\
+                 utoipa-swagger-ui = { path = \"third_party/utoipa-swagger-ui\" }\n";
+    assert_eq!(
+        root_manifest_dirs_outside_crates(cargo),
+        vec!["third_party".to_string()]
+    );
+
+    let rc1 = "FROM rust:1.99-slim AS chef\n\
+               FROM chef AS planner\n\
+               COPY Cargo.toml Cargo.lock ./\n\
+               COPY crates/ crates/\n\
+               RUN cargo chef prepare --recipe-path recipe.json\n\
+               FROM chef AS builder\n\
+               COPY --from=planner /build/recipe.json recipe.json\n\
+               RUN cargo chef cook --release --recipe-path recipe.json --bin garra\n\
+               COPY crates/ crates/\n\
+               COPY bridge/ bridge/\n";
+    assert_eq!(dockerfile_gaps_for(rc1, "third_party").len(), 3);
+
+    let completo = "FROM chef AS planner\n\
+                    COPY third_party/ third_party/\n\
+                    FROM chef AS builder\n\
+                    COPY third_party/ third_party/\n\
+                    RUN cargo chef cook --release --recipe-path recipe.json --bin garra\n\
+                    COPY third_party/ third_party/\n";
+    assert!(dockerfile_gaps_for(completo, "third_party").is_empty());
+
+    // Cada ponto, isoladamente, faz falta.
+    let linhas: Vec<&str> = completo.lines().collect();
+    for (i, linha) in linhas.iter().enumerate() {
+        if linha.starts_with("COPY third_party/") {
+            let sem: String = linhas
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, l)| format!("{l}\n"))
+                .collect();
+            assert_eq!(
+                dockerfile_gaps_for(&sem, "third_party").len(),
+                1,
+                "remover a linha {i} deveria deixar exatamente uma falta"
+            );
+        }
+    }
+
+    // O COPY no estagio errado (runtime) nao conta.
+    let errado = "FROM debian:bookworm-slim AS runtime\nCOPY third_party/ third_party/\n";
+    assert_eq!(dockerfile_gaps_for(errado, "third_party").len(), 3);
+}

@@ -664,11 +664,31 @@ const FORA_DO_DATA_DIR: &str = "<fora do data_dir>";
 /// linha `files.workspace` ja aplica a raiz declarada (I-4 da #1449). O
 /// operador nao precisa reler o caminho pela rota — ele o escreveu no
 /// `mcp.json`/`config.yml`, e o log de boot o anuncia.
+///
+/// Os dois lados vao para a mesma [`forma_comparavel`] do [`dentro_de`]
+/// antes do `strip_prefix`. O `data_dir` chega canonico (a linha
+/// `files.workspace` compara contra raizes que o `FileJail` canonicalizou), e
+/// as raizes do `mcp.json` chegam como foram gravadas: comparar canonico com
+/// cru errava em silencio. No Windows isso acontecia em TODA instalacao — o
+/// `canonicalize` devolve `\\?\C:\...` e o `mcp.json` tem `C:\...` —, e o
+/// workspace de dentro do `data_dir` saia como "1 fora do data_dir" (achado
+/// da validacao do v0.4.10-rc1). Um symlink dentro do `data_dir` que aponta
+/// para fora sai como fora, que e o que ele e. O relativo sai sempre com `/`.
 fn exibir_raiz(raiz: &std::path::Path, data_dir: &std::path::Path) -> String {
-    match raiz.strip_prefix(data_dir) {
-        Ok(rel) if rel.as_os_str().is_empty() => "<data_dir>".to_string(),
-        Ok(rel) => format!("<data_dir>/{}", rel.display()),
-        Err(_) => FORA_DO_DATA_DIR.to_string(),
+    let relativo = match (forma_comparavel(raiz), forma_comparavel(data_dir)) {
+        (Some(r), Some(d)) => r.strip_prefix(&d).ok().map(std::path::Path::to_path_buf),
+        _ => None,
+    };
+    match relativo {
+        Some(rel) if rel.as_os_str().is_empty() => "<data_dir>".to_string(),
+        Some(rel) => {
+            let partes: Vec<String> = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            format!("<data_dir>/{}", partes.join("/"))
+        }
+        None => FORA_DO_DATA_DIR.to_string(),
     }
 }
 
@@ -1129,12 +1149,36 @@ fn mcp_server_next_step(
 /// `None` (sem manager) ou lista vazia => `skipped`; algum `failed` (restarts
 /// esgotados) => `error` com um passo por servidor; algum ainda tentando =>
 /// `warning`; todos conectados => `ok`. Puro.
+///
+/// `provisao` (os mesmos fatos que a provisao consulta, em
+/// `mcp::persistence::ProvisaoDoFilesystem`): sem servidor nenhum E sem
+/// `npx`, a linha continua `skipped` — ninguem pediu o servidor, e uma
+/// instalacao nova nao acende amarelo por isso — mas diz POR QUE nao ha
+/// `filesystem` e como liga-lo, em vez de esconder a dependencia ausente. Com
+/// o opt-out ligado nada muda: quem desligou o autoprovisionamento sabe.
 fn mcp_servers_check(
     statuses: Option<&[garraia_agents::McpServerStatus]>,
     bin: &str,
+    provisao: crate::mcp::persistence::ProvisaoDoFilesystem,
 ) -> DiagnosticCheck {
+    use crate::mcp::persistence::ProvisaoDoFilesystem;
     use garraia_agents::McpServerState;
     let (status, detail, next_step) = match statuses {
+        None | Some([]) if provisao == ProvisaoDoFilesystem::SemNpx => (
+            CheckStatus::Skipped,
+            "nenhum servidor MCP configurado: o `filesystem` padrao nao e provisionado porque \
+             `npx` (Node.js 20+) nao esta no PATH; as file tools nativas (`file_read`, \
+             `file_write`, `list_dir`) seguem disponiveis"
+                .to_string(),
+            // Sem prometer demais: o boot so provisiona quando o `mcp.json`
+            // ainda nao existe (a porta e "arquivo ausente").
+            Some(format!(
+                "para ter o MCP `filesystem`, instale o Node.js 20+ e reinicie o gateway \
+                 (`{bin} restart`): sem `mcp.json` o boot provisiona o `filesystem` sozinho; \
+                 se ja existe um `mcp.json`, adicione o servidor pelo admin (MCP Servers > \
+                 + Add MCP) ou no proprio arquivo."
+            )),
+        ),
         None | Some([]) => (
             CheckStatus::Skipped,
             "nenhum servidor MCP configurado".to_string(),
@@ -1364,7 +1408,11 @@ pub(crate) async fn relatorio(state: &SharedState) -> DiagnosticsReport {
         Some(mgr) => Some(mgr.server_statuses().await),
         None => None,
     };
-    checks.push(mcp_servers_check(mcp_statuses.as_deref(), &bin));
+    checks.push(mcp_servers_check(
+        mcp_statuses.as_deref(),
+        &bin,
+        crate::mcp::persistence::ProvisaoDoFilesystem::atual(),
+    ));
     checks.push(mcp_filesystem_pinned_check(
         &crate::mcp::persistence::versao_do_filesystem_efetivo(
             &state.config.mcp,
@@ -1735,6 +1783,86 @@ mod tests {
                 .unwrap_or_default()
                 .contains("max_restarts"),
             "{c:?}"
+        );
+    }
+
+    /// D9 do gate de release: numa instalacao nova o `/api/diagnostics` nao
+    /// acende amarelo por ferramenta que so depende de algo que o operador
+    /// ainda nao ligou. No v0.4.10-rc1 (Windows e Linux limpos) a linha saia
+    /// `warning` por `device_read`/`device_execute` (sem adapter de hardware)
+    /// e `telegram_send_voice` (modo voz desligado). Os motivos aqui sao os
+    /// que as proprias tools devolvem nesse estado, passados pelo registro de
+    /// verdade; o `no_devices` com adapter declarado continua acendendo.
+    #[test]
+    fn tools_capabilities_fica_ok_numa_instalacao_nova() {
+        use crate::capacidades_registro::{ContextoDaSessao, Entradas, registro};
+        use garraia_agents::runtime::ToolInventoryEntry;
+        use garraia_agents::tools::Disponibilidade;
+        let inv = |name: &str| ToolInventoryEntry {
+            name: name.to_string(),
+            description: String::new(),
+            source: "native".to_string(),
+            server: None,
+            capacidades: vec![],
+        };
+        let inventario = vec![
+            inv("file_read"),
+            inv("device_list"),
+            inv("device_read"),
+            inv("device_execute"),
+            inv("telegram_send"),
+            inv("telegram_send_voice"),
+        ];
+        let permite = |_: &str| true;
+        let instalacao_nova = |nome: &str| match nome {
+            "device_read" | "device_execute" | "telegram_send" => {
+                Disponibilidade::indisponivel("not_configured", "nao configurado.", None)
+            }
+            "telegram_send_voice" => {
+                Disponibilidade::indisponivel("tts_unconfigured", "modo voz desligado.", None)
+            }
+            _ => Disponibilidade::Disponivel,
+        };
+        let linhas = registro(&Entradas {
+            inventario: &inventario,
+            permite: &permite,
+            disponibilidade: &instalacao_nova,
+            mcp: &[],
+            bash_desligado: Some(("sem sandbox".into(), "ligue o sandbox".into())),
+            restrito: false,
+            contexto: ContextoDaSessao::DESCONHECIDO,
+        });
+        let c = tools_capabilities_check(&linhas);
+        assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
+        assert!(c.next_step.is_none(), "{c:?}");
+        assert!(
+            c.detail.contains("telegram_send_voice (tts_unconfigured)"),
+            "o motivo de origem continua visivel: {}",
+            c.detail
+        );
+
+        // Adapter declarado e nenhum dispositivo: configurado e quebrado.
+        let adapter_sem_dispositivo = |nome: &str| match nome {
+            "device_read" | "device_execute" => {
+                Disponibilidade::indisponivel("no_devices", "nada descoberto.", None)
+            }
+            outro => instalacao_nova(outro),
+        };
+        let linhas = registro(&Entradas {
+            inventario: &inventario,
+            permite: &permite,
+            disponibilidade: &adapter_sem_dispositivo,
+            mcp: &[],
+            bash_desligado: None,
+            restrito: false,
+            contexto: ContextoDaSessao::DESCONHECIDO,
+        });
+        let c = tools_capabilities_check(&linhas);
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(
+            c.detail.contains("device_read (no_devices)"),
+            "{}",
+            c.detail
         );
     }
 
@@ -2618,6 +2746,66 @@ mod tests {
         assert!(!dentro_de(&ws.join("..").join("fora"), &ws));
     }
 
+    /// Achado do v0.4.10-rc1 no Windows: o `data_dir` chega canonico
+    /// (`\\?\C:\...`) e a raiz do `mcp.json` chega crua (`C:\...`). O
+    /// workspace, que esta DENTRO, saia "fora do data_dir". Aqui com a forma
+    /// verbatim de verdade; o relativo sai com `/`, inclusive aninhado, e
+    /// vale tambem para uma raiz que ainda nao foi criada.
+    #[test]
+    #[cfg(windows)]
+    fn exibir_raiz_casa_data_dir_verbatim_com_raiz_crua_no_windows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let canonico = dir.path().canonicalize().expect("canonicalize");
+        assert!(
+            canonico.to_string_lossy().starts_with(r"\\?\"),
+            "precondicao: o canonico do Windows e verbatim: {}",
+            canonico.display()
+        );
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(ws.join("sessao")).expect("mkdir");
+        assert_eq!(exibir_raiz(&ws, &canonico), "<data_dir>/workspace");
+        assert_eq!(
+            exibir_raiz(&ws.join("sessao"), &canonico),
+            "<data_dir>/workspace/sessao"
+        );
+        assert_eq!(
+            exibir_raiz(&dir.path().join("ainda-nao-existe"), &canonico),
+            "<data_dir>/ainda-nao-existe"
+        );
+        assert_eq!(
+            lista_de_caminhos(std::slice::from_ref(&ws), &canonico),
+            "<data_dir>/workspace"
+        );
+    }
+
+    /// O mesmo descasamento canonico x cru no Unix, onde o CI executa: o
+    /// `data_dir` canonico e a raiz gravada pelo caminho com symlink (o
+    /// `/var -> /private/var` do macOS). E um symlink DENTRO do `data_dir`
+    /// apontando para fora sai como fora — que e o que ele e (#1465).
+    #[test]
+    #[cfg(unix)]
+    fn exibir_raiz_casa_data_dir_canonico_com_raiz_por_symlink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("data-real");
+        std::fs::create_dir_all(real.join("workspace")).expect("mkdir");
+        let link = dir.path().join("data-link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let canonico = real.canonicalize().expect("canonicalize");
+
+        assert_eq!(
+            exibir_raiz(&link.join("workspace"), &canonico),
+            "<data_dir>/workspace"
+        );
+
+        let fora = dir.path().join("fora");
+        std::fs::create_dir_all(&fora).expect("mkdir");
+        std::os::unix::fs::symlink(&fora, real.join("atalho")).expect("symlink");
+        assert_eq!(
+            exibir_raiz(&real.join("atalho"), &canonico),
+            "<fora do data_dir>"
+        );
+    }
+
     /// F-1: caminhos de politica saem relativos a `<data_dir>` quando estao
     /// dentro dele; fora dele saem como estao.
     #[test]
@@ -3310,11 +3498,21 @@ mod tests_mcp_1346 {
     #[test]
     fn sem_servidores_e_skipped() {
         assert!(matches!(
-            mcp_servers_check(None, "garraia").status,
+            mcp_servers_check(
+                None,
+                "garraia",
+                crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona
+            )
+            .status,
             CheckStatus::Skipped
         ));
         assert!(matches!(
-            mcp_servers_check(Some(&[]), "garraia").status,
+            mcp_servers_check(
+                Some(&[]),
+                "garraia",
+                crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona
+            )
+            .status,
             CheckStatus::Skipped
         ));
     }
@@ -3324,6 +3522,7 @@ mod tests_mcp_1346 {
         let c = mcp_servers_check(
             Some(&[st("filesystem", McpServerState::Connected, None)]),
             "garraia",
+            crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona,
         );
         assert!(matches!(c.status, CheckStatus::Ok));
         assert!(c.next_step.is_none());
@@ -3345,6 +3544,7 @@ mod tests_mcp_1346 {
                 ),
             ]),
             "garraia",
+            crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona,
         );
         assert!(matches!(c.status, CheckStatus::Error), "{c:?}");
         let passo = c.next_step.expect("next_step");
@@ -3371,6 +3571,7 @@ mod tests_mcp_1346 {
                 Some(McpFailureCause::DiskFull),
             )]),
             "garra",
+            crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona,
         );
         assert!(matches!(c.status, CheckStatus::Error));
         let passo = c.next_step.expect("next_step");
@@ -3393,9 +3594,72 @@ mod tests_mcp_1346 {
                 Some(McpFailureCause::Other),
             )]),
             "garraia",
+            crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona,
         );
         assert!(matches!(c.status, CheckStatus::Warning));
         assert!(c.next_step.expect("passo").contains("/api/mcp/health"));
+    }
+
+    /// Achado do v0.4.10-rc1: sem servidor e sem `npx`, a linha fica
+    /// `skipped` (uma instalacao nova sem Node nao acende amarelo) mas nomeia
+    /// a dependencia ausente e o caminho para ligar o `filesystem`.
+    #[test]
+    fn sem_servidor_e_sem_npx_e_skipped_dizendo_por_que() {
+        for statuses in [None, Some(&[][..])] {
+            let c = mcp_servers_check(
+                statuses,
+                "garra",
+                crate::mcp::persistence::ProvisaoDoFilesystem::SemNpx,
+            );
+            assert!(matches!(c.status, CheckStatus::Skipped), "{c:?}");
+            assert!(c.detail.contains("`npx`"), "{}", c.detail);
+            assert!(c.detail.contains("Node.js 20+"), "{}", c.detail);
+            assert!(c.detail.contains("file_read"), "{}", c.detail);
+            let passo = c.next_step.expect("diz como ligar o filesystem");
+            assert!(passo.contains("`garra restart`"), "{passo}");
+            // A porta da provisao e "arquivo ausente": o passo nao pode
+            // prometer provisao a quem ja tem um `mcp.json`.
+            assert!(passo.contains("sem `mcp.json`"), "{passo}");
+            assert!(passo.contains("+ Add MCP"), "{passo}");
+        }
+        // Com `npx` presente, ou com o autoprovisionamento desligado por
+        // opt-out (quem desligou sabe), o texto de sempre e nenhum passo —
+        // nada de "o boot provisiona sozinho" onde ele nao vai provisionar.
+        for provisao in [
+            crate::mcp::persistence::ProvisaoDoFilesystem::Provisiona,
+            crate::mcp::persistence::ProvisaoDoFilesystem::Desligada,
+        ] {
+            let c = mcp_servers_check(None, "garra", provisao);
+            assert!(matches!(c.status, CheckStatus::Skipped), "{c:?}");
+            assert_eq!(c.detail, "nenhum servidor MCP configurado");
+            assert!(c.next_step.is_none(), "{provisao:?}: {c:?}");
+        }
+    }
+
+    /// Servidor configurado e quebrado segue acusando (#1437): a falta de
+    /// `npx` nao rebaixa um `mcp.json` existente para `skipped`.
+    #[test]
+    fn servidor_configurado_sem_npx_continua_acusando() {
+        let c = mcp_servers_check(
+            Some(&[st(
+                "filesystem",
+                McpServerState::Retrying,
+                Some(McpFailureCause::Other),
+            )]),
+            "garraia",
+            crate::mcp::persistence::ProvisaoDoFilesystem::SemNpx,
+        );
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        let c = mcp_servers_check(
+            Some(&[st(
+                "filesystem",
+                McpServerState::Failed,
+                Some(McpFailureCause::Other),
+            )]),
+            "garraia",
+            crate::mcp::persistence::ProvisaoDoFilesystem::SemNpx,
+        );
+        assert!(matches!(c.status, CheckStatus::Error), "{c:?}");
     }
 
     #[test]
