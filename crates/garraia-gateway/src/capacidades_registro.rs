@@ -206,6 +206,23 @@ fn estado_do_servidor<'a>(mcp: &'a [McpServerStatus], nome: &str) -> Option<&'a 
     mcp.iter().find(|s| s.name == nome)
 }
 
+/// Codigos de indisponibilidade que querem dizer "o operador nao ligou
+/// isto" — o estado de uma instalacao nova, nao um defeito. Viram
+/// `NotConfigured`, neutro no `/api/diagnostics` (#1471: instalacao
+/// exatamente como o projeto manda nao acende amarelo).
+///
+/// - `not_configured`: canal, bash ou adapter de hardware nao declarados.
+/// - `tts_unconfigured`: so acontece com o modo voz desligado. Ligado, o
+///   cliente de TTS sempre existe, e um servidor de voz fora do ar aparece na
+///   linha `voice.tts`, nao aqui.
+///
+/// Os demais (`channel_offline`, `gateway_down`, `no_devices` com adapter
+/// declarado, falta de contexto da conversa) sao algo configurado que nao
+/// responde e continuam `Unavailable`: configurado e quebrado nunca e neutro
+/// (#1437). Lista fechada: um codigo novo entra como `Unavailable` ate alguem
+/// decidir aqui.
+pub(crate) const CODIGOS_DE_NAO_CONFIGURADO: &[&str] = &["not_configured", "tts_unconfigured"];
+
 /// O registro deste turno, na ordem: inventario (por nome), depois as
 /// linhas sinteticas. Puro.
 pub fn registro(e: &Entradas<'_>) -> Vec<Capacidade> {
@@ -242,7 +259,7 @@ pub fn registro(e: &Entradas<'_>) -> Vec<Capacidade> {
                     motivo,
                     remediacao,
                 } => (
-                    if codigo == "not_configured" {
+                    if CODIGOS_DE_NAO_CONFIGURADO.contains(&codigo) {
                         Estado::NotConfigured
                     } else {
                         Estado::Unavailable
@@ -523,6 +540,39 @@ mod tests {
             !linhas.iter().any(|l| l.name == "bash"),
             "sem motivo conhecido, bash nao e inventado"
         );
+    }
+
+    /// A lista fechada de [`CODIGOS_DE_NAO_CONFIGURADO`]: ausencia de
+    /// configuracao vira `NotConfigured` (neutro); algo configurado que nao
+    /// responde continua `Unavailable` — inclusive `no_devices`, que as tools
+    /// de hardware so devolvem com adapter declarado. O codigo de origem
+    /// sobrevive intacto em `reason_code`.
+    #[test]
+    fn so_ausencia_de_configuracao_vira_not_configured() {
+        for (codigo, esperado) in [
+            ("not_configured", Estado::NotConfigured),
+            ("tts_unconfigured", Estado::NotConfigured),
+            ("no_devices", Estado::Unavailable),
+            ("channel_offline", Estado::Unavailable),
+            ("gateway_down", Estado::Unavailable),
+            ("codigo_novo_qualquer", Estado::Unavailable),
+        ] {
+            let inventario = vec![entrada("alguma_tool", "native", None, &[])];
+            let permite = |_: &str| true;
+            let disponibilidade =
+                move |_: &str| Disponibilidade::indisponivel(codigo, "motivo.", None);
+            let linhas = registro(&Entradas {
+                inventario: &inventario,
+                permite: &permite,
+                disponibilidade: &disponibilidade,
+                mcp: &[],
+                bash_desligado: None,
+                restrito: false,
+                contexto: ContextoDaSessao::DESCONHECIDO,
+            });
+            assert_eq!(linhas[0].state, esperado, "{codigo}");
+            assert_eq!(linhas[0].reason_code, codigo);
+        }
     }
 
     /// Turno restrito: o nome de um servidor MCP caido e retido (`mcp/*`),

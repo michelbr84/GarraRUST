@@ -1738,6 +1738,86 @@ mod tests {
         );
     }
 
+    /// D9 do gate de release: numa instalacao nova o `/api/diagnostics` nao
+    /// acende amarelo por ferramenta que so depende de algo que o operador
+    /// ainda nao ligou. No v0.4.10-rc1 (Windows e Linux limpos) a linha saia
+    /// `warning` por `device_read`/`device_execute` (sem adapter de hardware)
+    /// e `telegram_send_voice` (modo voz desligado). Os motivos aqui sao os
+    /// que as proprias tools devolvem nesse estado, passados pelo registro de
+    /// verdade; o `no_devices` com adapter declarado continua acendendo.
+    #[test]
+    fn tools_capabilities_fica_ok_numa_instalacao_nova() {
+        use crate::capacidades_registro::{ContextoDaSessao, Entradas, registro};
+        use garraia_agents::runtime::ToolInventoryEntry;
+        use garraia_agents::tools::Disponibilidade;
+        let inv = |name: &str| ToolInventoryEntry {
+            name: name.to_string(),
+            description: String::new(),
+            source: "native".to_string(),
+            server: None,
+            capacidades: vec![],
+        };
+        let inventario = vec![
+            inv("file_read"),
+            inv("device_list"),
+            inv("device_read"),
+            inv("device_execute"),
+            inv("telegram_send"),
+            inv("telegram_send_voice"),
+        ];
+        let permite = |_: &str| true;
+        let instalacao_nova = |nome: &str| match nome {
+            "device_read" | "device_execute" | "telegram_send" => {
+                Disponibilidade::indisponivel("not_configured", "nao configurado.", None)
+            }
+            "telegram_send_voice" => {
+                Disponibilidade::indisponivel("tts_unconfigured", "modo voz desligado.", None)
+            }
+            _ => Disponibilidade::Disponivel,
+        };
+        let linhas = registro(&Entradas {
+            inventario: &inventario,
+            permite: &permite,
+            disponibilidade: &instalacao_nova,
+            mcp: &[],
+            bash_desligado: Some(("sem sandbox".into(), "ligue o sandbox".into())),
+            restrito: false,
+            contexto: ContextoDaSessao::DESCONHECIDO,
+        });
+        let c = tools_capabilities_check(&linhas);
+        assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
+        assert!(c.next_step.is_none(), "{c:?}");
+        assert!(
+            c.detail.contains("telegram_send_voice (tts_unconfigured)"),
+            "o motivo de origem continua visivel: {}",
+            c.detail
+        );
+
+        // Adapter declarado e nenhum dispositivo: configurado e quebrado.
+        let adapter_sem_dispositivo = |nome: &str| match nome {
+            "device_read" | "device_execute" => {
+                Disponibilidade::indisponivel("no_devices", "nada descoberto.", None)
+            }
+            outro => instalacao_nova(outro),
+        };
+        let linhas = registro(&Entradas {
+            inventario: &inventario,
+            permite: &permite,
+            disponibilidade: &adapter_sem_dispositivo,
+            mcp: &[],
+            bash_desligado: None,
+            restrito: false,
+            contexto: ContextoDaSessao::DESCONHECIDO,
+        });
+        let c = tools_capabilities_check(&linhas);
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(
+            c.detail.contains("device_read (no_devices)"),
+            "{}",
+            c.detail
+        );
+    }
+
     // ─── #1272: tools.bash ─────────────────────────────────────────────────
 
     /// #1471: `agent.sandbox.mode = off` e o DEFAULT documentado do perfil

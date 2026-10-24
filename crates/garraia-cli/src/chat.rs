@@ -303,7 +303,8 @@ fn register_cli_tools(
     let device_registry = Arc::new(DeviceRegistry::new());
     let boot = spawn_hardware_adapters(config, device_registry.clone());
     let device_config = Arc::new({
-        let mut cfg = DeviceToolsConfig::new(device_registry);
+        let mut cfg = DeviceToolsConfig::new(device_registry)
+            .com_adapters_configurados(boot.adapters_configurados);
         if let Some(state) = boot.state {
             cfg = cfg.com_estado(state);
         }
