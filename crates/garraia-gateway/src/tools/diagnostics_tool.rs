@@ -436,17 +436,40 @@ pub(crate) fn estado_do_mcp(estado: garraia_agents::McpServerState) -> EstadoDia
     }
 }
 
+/// Sem servidor MCP: `nao_configurado`, e — quando o motivo e a falta de
+/// `npx` — o modelo recebe esse motivo (so o fato, sem caminho), para nao
+/// responder "nao tenho filesystem" sem saber por que nem como ligar.
+/// Mesmo motivo do `/api/diagnostics` e da provisao. Puro.
+pub(crate) fn verificacao_sem_servidor_mcp(
+    provisao: crate::mcp::persistence::ProvisaoDoFilesystem,
+) -> Verificacao {
+    use crate::mcp::persistence::ProvisaoDoFilesystem;
+    if provisao == ProvisaoDoFilesystem::SemNpx {
+        Verificacao::nova(
+            "mcp.servidores",
+            EstadoDiag::NaoConfigurado,
+            serde_json::json!({ "servidores": [], "motivo": "npx_ausente" }),
+            "nenhum servidor MCP configurado: o `filesystem` padrao precisa de `npx` \
+             (Node.js 20+), que nao esta no PATH; as file tools nativas seguem disponiveis",
+        )
+    } else {
+        Verificacao::nova(
+            "mcp.servidores",
+            EstadoDiag::NaoConfigurado,
+            serde_json::json!({ "servidores": [] }),
+            "nenhum servidor MCP configurado",
+        )
+    }
+}
+
 async fn verificacoes_mcp(state: &AppState) -> Vec<Verificacao> {
     let statuses = match &state.mcp_manager_arc {
         Some(mgr) => mgr.server_statuses().await,
         None => Vec::new(),
     };
     if statuses.is_empty() {
-        return vec![Verificacao::nova(
-            "mcp.servidores",
-            EstadoDiag::NaoConfigurado,
-            serde_json::json!({ "servidores": [] }),
-            "nenhum servidor MCP configurado",
+        return vec![verificacao_sem_servidor_mcp(
+            crate::mcp::persistence::ProvisaoDoFilesystem::atual(),
         )];
     }
     statuses
@@ -1617,5 +1640,28 @@ mod tests {
         assert!(nota.contains("garra_diagnostics"), "{nota}");
         assert!(nota.contains("operator-only"), "{nota}");
         assert!(nota.contains("refusal"), "{nota}");
+    }
+
+    /// Achado do v0.4.10-rc1: sem servidor MCP por falta de `npx`, o modelo
+    /// recebe o motivo (so o fato, nenhum caminho); nos outros casos, o
+    /// texto de sempre. Nunca vira `degradado`: ninguem pediu o servidor.
+    #[test]
+    fn sem_servidor_mcp_diz_ao_modelo_que_falta_o_npx() {
+        use crate::mcp::persistence::ProvisaoDoFilesystem;
+        let v = verificacao_sem_servidor_mcp(ProvisaoDoFilesystem::SemNpx);
+        assert_eq!(v.id, "mcp.servidores");
+        assert!(matches!(v.estado, EstadoDiag::NaoConfigurado), "{v:?}");
+        assert_eq!(v.evidencia["motivo"], "npx_ausente");
+        assert!(v.detalhe.contains("`npx`"), "{}", v.detalhe);
+        assert!(v.detalhe.contains("file tools nativas"), "{}", v.detalhe);
+        for p in [
+            ProvisaoDoFilesystem::Provisiona,
+            ProvisaoDoFilesystem::Desligada,
+        ] {
+            let v = verificacao_sem_servidor_mcp(p);
+            assert!(matches!(v.estado, EstadoDiag::NaoConfigurado), "{v:?}");
+            assert_eq!(v.detalhe, "nenhum servidor MCP configurado");
+            assert!(v.evidencia.get("motivo").is_none(), "{v:?}");
+        }
     }
 }
