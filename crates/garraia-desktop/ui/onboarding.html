@@ -108,6 +108,13 @@
       font-size: 13.5px; line-height: 1.45;
     }
     .erro.ativo { display: block; }
+    .aviso {
+      display: none; color: var(--garra-muted); background: rgba(255,212,0,0.07);
+      border: 1px solid rgba(255,212,0,0.35); border-radius: 8px; padding: 11px 13px;
+      font-size: 13.5px; line-height: 1.5;
+    }
+    .aviso.ativo { display: block; }
+    .aviso code { background: rgba(255,255,255,0.08); border-radius: 4px; padding: 1px 5px; font-size: 12.5px; }
     label.campo { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--garra-muted); }
     input[type=text], select {
       font: inherit; color: var(--garra-text); background: var(--garra-surface);
@@ -279,6 +286,7 @@
         <div class="bolha eu">oi</div>
         <div class="bolha garra">Oi! Eu sou o seu Garra. Em que posso ajudar? 😊</div>
       </div>
+      <div class="aviso" id="pronto-aviso" data-testid="pronto-aviso" role="status"></div>
       <div class="erro" id="pronto-erro" data-testid="pronto-erro" role="alert"></div>
       <div class="spacer"></div>
       <button class="btn-primario" id="btn-abrir-garra" data-testid="btn-abrir-garra">Abrir o Garra</button>
