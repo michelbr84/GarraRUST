@@ -6,6 +6,312 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-10-25
+
+### Added
+- **Workflow `dogfood-linux.yml`: o gate de dogfood D1/D3a/D9 roda no CI.** Novo `workflow_dispatch` (input `ref`, runner `ubuntu-latest`, `permissions: contents: read`) que instala o Ollama pinado por versao + SHA-256 verificado, sobe o servidor e puxa o modelo, e roda `scripts/dogfood/linux-clean-install.sh --source local` contra o candidato. O job falha se o `resumo.txt` disser FALHOU e publica `dogfood/linux/**` como artifact. Sem `continue-on-error`.
+- **Assistente de Primeiro Uso no app desktop (#1636, fatia 3).** Na primeira
+  execucao, o Garra Desktop abre um wizard de cinco telas em pt-BR — Boas-vindas
+  -> Modo -> QR -> Personalidade -> Pronto — para um usuario nao-dev instalar o
+  `.msi`, abrir o app, escanear o QR e conversar com o Garra pelo WhatsApp **sem
+  abrir terminal nenhuma vez**. O QR e rasterizado num canvas a partir da matriz
+  que o sidecar `garraia whatsapp link --machine` (fatia 1) emite em NDJSON — o
+  payload cru (credencial) nunca chega a webview. A escolha "proprio" vs
+  "dedicado" persiste em `onboarding.json` (em `app_config_dir()`) e e
+  configuravel depois em Ajustes -> WhatsApp (trocar modo e refazer pareamento).
+- **Mapeamento de modo e persona para a config (#1636, fatia 3).** "Meu proprio
+  numero" aplica `whatsapp access open --yes` — o Garra responde qualquer um, e
+  por isso a casca so aceita esse modo com a confirmacao explicita do usuario
+  (`confirmoAberto`), nunca por um invoke silencioso. "Numero dedicado" aplica
+  `whatsapp access restricted` **e** `whatsapp allow <numero pessoal>`: o Garra
+  fica num chip dedicado e o usuario fala dele pelo numero pessoal, que precisa
+  estar autorizado (senao o portao ficaria com 0 autorizados e descartaria o
+  proprio dono em silencio); o numero e validado/normalizado no core
+  (`normalizar_numero`, E.164). Nenhum default de seguranca e afrouxado em
+  silencio. A persona (nome saneado, estilo, idioma pt-BR por padrao) vira
+  `agent.system_prompt` pelo novo `ConfigLoader::set_agent_system_prompt`. O
+  `concluido` so e gravado — e o gateway so reinicia — apos todos os passos
+  sairem com exit 0.
+- **Endurecimento da webview do desktop (#1636, fatia 3).** CSP restritiva no
+  `tauri.conf.json` (`default-src 'self'; script-src 'self'; style-src 'self'
+  'unsafe-inline'; ...`): todas as telas do desktop passaram a carregar o JS por
+  arquivo externo (`onboarding.js`, `settings.js`, `chat-bar.js`, `boot.js`), sem
+  script inline. A janela do wizard ganhou uma capability propria e minima
+  (`capabilities/onboarding.json`, so IPC + eventos), fora da `default` ampla.
+- **Logica do onboarding testada no CI (#1636, fatia 3).** A casca Tauri
+  (`garraia-desktop`, fora dos gates de CI) ficou fina: a montagem do comando do
+  sidecar, o mapeamento modo->config, o primeiro-uso e o texto da persona vivem
+  em `garraia-desktop-core::onboarding` (puro, com testes). A UI tem um teste
+  Playwright (`crates/garraia-desktop/tests/`) que abre `onboarding.html` sem
+  Tauri e sem gateway, com um `window.__TAURI__` falso, e dirige o fluxo com
+  eventos NDJSON gravados — inclusive um QR real da fatia 1 — afirmando a
+  navegacao, o canvas desenhado, a persistencia do modo/persona e o caminho de
+  erro. O `desktop.yml` ganhou o job `onboarding-ui` e um tripwire de grep no
+  `assert-ui-assets`. O roteiro manual do pareamento real (com celular) esta em
+  `docs/desktop.md`.
+- **Runtime Node.js privado empacotado no instalador do Garra Desktop (#1636, fatia C).**
+  Os instaladores do desktop (MSI/NSIS no Windows, `.deb`/AppImage no Linux,
+  `.dmg`/`.app` no macOS) agora trazem o runtime Node privado e a ponte
+  pre-construida do WhatsApp (`node_modules` + `THIRD_PARTY_NOTICES.txt` +
+  `manifest.json`), para que o usuario nao precise instalar Node, npm ou usar
+  terminal, e nenhuma dependencia seja baixada na primeira execucao. Os scripts
+  fonte-unica de build (`build-installer.ps1`, `build-desktop-linux.sh`,
+  `build-desktop-macos.sh`) montam o bundle da fatia B em
+  `crates/garraia-desktop/src-tauri/node-runtime/` antes do `cargo tauri build`,
+  e o `tauri.conf.json` mapeia esse diretorio para os resources do Tauri. O
+  `node/` e o `bridge-whatsapp/` ficam exatamente num dos caminhos do contrato
+  do resolver (fatia A), relativos ao sidecar `garraia`: ao lado do exe no
+  Windows, em `Contents/Resources/` no macOS e em `/usr/lib/garraia-desktop/` no
+  `.deb`/AppImage. O Node privado e usado sempre por caminho explicito, sem
+  mexer no `PATH` global nem substituir instalacoes existentes. LICENSE do Node
+  e THIRD_PARTY_NOTICES vao no pacote.
+- **Smoke de instalador em ambiente limpo no CI (#1636, fatia C).** O
+  `desktop.yml` ganhou jobs `smoke-windows`/`smoke-linux`/`smoke-macos` que, por
+  plataforma, pegam o instalador gerado, extraem a arvore num caminho com
+  espaco, escondem todo Node global do `PATH` e rodam o sidecar instalado
+  `garraia whatsapp self-test --json`, exigindo `node_origin == privado`,
+  `self_test == ok` e o carregamento de baileys + pino + sharp, alem de provar
+  que o `node/` e o `bridge-whatsapp/node_modules` sao irmaos do sidecar no
+  layout do contrato. Jobs irmaos cobrem ainda a inicializacao pelo desktop
+  (`desktop-launch-{linux,windows,macos}`: o app sobe, o sidecar responde
+  `GET /api/health` e morre junto com o app em <=15s), a atualizacao e a
+  desinstalacao (`update-{linux,macos,windows}`: v0.4.9 -> novo, a sessao em
+  `~/.garraia/whatsapp` sobrevive, e a desinstalacao tira o pacote e preserva o
+  dado do usuario). Sem `continue-on-error`. Fora de escopo automatizado ficam
+  so o pareamento real do WhatsApp (precisa de telefone + QR) e a
+  assinatura/notarizacao do app (decisao do dono); marcados em `docs/desktop.md`.
+- **Novo `docs/desktop.md` (#1636, fatia C).** Documenta o layout por formato, o
+  que o instalador traz, o que a desinstalacao remove e o que fica
+  (`~/.garraia/whatsapp/` preservado), como o bundle e montado e o que nao e
+  validado automaticamente.
+- **Runtime Node.js privado + ponte do WhatsApp empacotados e verificados (#1636, fatia B).**
+  Novo `scripts/desktop/node-runtime/build-node-runtime.sh`: dado
+  `--platform win-x64|linux-x64|darwin-arm64 --out <dir>`, baixa o artefato
+  OFICIAL do Node.js (versao fixada em `node-version.txt`, hoje v24.22.1 LTS
+  Krypton), verifica a PROCEDENCIA por GPG contra as chaves do release team
+  vendorizadas no repo (`keys/*.asc` + allowlist `keys/FINGERPRINTS.txt`, num
+  GNUPGHOME isolado, exigindo que a chave primaria que assinou esteja na lista)
+  e a INTEGRIDADE por SHA-256 (nome de arquivo inteiro), extrai so o runtime
+  (`node`/`node.exe` + `LICENSE`), monta a ponte com
+  `npm ci --omit=dev --no-audit --no-fund` usando o Node e o npm do PROPRIO
+  tarball (sem cross-install), gera `THIRD_PARTY_NOTICES.txt` (Node + todos os
+  pacotes de `node_modules`, falhando se algum nao tiver licenca identificavel)
+  e grava `manifest.json` (versao, plataforma, sha256, fingerprint do
+  assinante, estado do lock da ponte). Layout combinado com o resolver Rust:
+  `node/node.exe` no Windows, `node/bin/node` no Unix. Novo workflow
+  `.github/workflows/node-runtime.yml` (matriz das 3 plataformas em
+  `pull_request`, `workflow_dispatch` e `workflow_call` para a fatia C reusar):
+  monta o bundle num caminho com espaco, esconde o Node global do runner e
+  prova que o bundle roda sozinho (carrega baileys+pino+sharp com o Node
+  privado, sem `NODE_PATH`), publica cada bundle como artifact de retencao
+  curta e roda um teste negativo que prova a recusa de artefato ou SHASUMS
+  adulterado. Nao mexe em `bridge.mjs` nem no codigo Rust da ponte. Refs #1636.
+- **Node privado por caminho explicito para a ponte do WhatsApp (#1636).**
+  O modo vinculado agora resolve o `node` por caminho explicito, nesta ordem:
+  `GARRAIA_NODE_BIN` (absoluto; invalido e erro, nunca fallback silencioso para
+  a PATH), depois o Node privado empacotado ao lado do executavel em execucao
+  (layouts fixos por plataforma, relativos ao `current_exe()`), e so entao a
+  PATH. O resolver nunca muda o `PATH` do processo nem substitui instalacoes
+  existentes: o Node escolhido e invocado pelo caminho absoluto. O gateway e a
+  CLI usam o mesmo resolver e registram a origem (`env`/`privado`/`path`).
+- **`npm` so e exigido quando ha dependencias a instalar (#1636).** Com a
+  arvore pronta (`node_modules` ja no lugar), o pareamento e o atendimento
+  sobem sem `npm` nenhum; `npm` so e cobrado quando o plano e instalar, e sua
+  ausencia vira um erro claro em vez de uma falha de `spawn` crua.
+- **Semeadura da arvore pre-construida da ponte (#1636).** Quando ha um
+  diretorio de ponte pre-construida ao lado do Node privado e ele bate com o
+  `package-lock.json` embutido no binario, o `node_modules` e copiado
+  (atomicamente, sem shell) para o diretorio da ponte em vez de rodar
+  `npm ci`; arvore que nao bate e ignorada com aviso, caindo no comportamento
+  de sempre. Prepara a fatia de empacotamento (nenhuma primeira execucao
+  precisa baixar dependencia).
+- **`garra whatsapp self-test [--json]` (#1636).** Resolve o Node e roda
+  `bridge.mjs --self-test`, que importa todas as dependencias de execucao
+  (Baileys, pino, sharp) sem abrir socket nem parear, e reporta a origem do
+  Node, o caminho, a versao e a versao de cada dependencia. Smoke dos
+  instaladores em ambiente sem Node global.
+- **Maquina de estados do onboarding do desktop (#1636).** Novo modulo
+  `onboarding` em `garraia-desktop-core` (sem Tauri, dentro dos gates de CI):
+  as telas do Assistente de Primeiro Uso — `BoasVindas → ModoWhatsApp → Qr →
+  Personalidade → Pronto` — como estado puro, sem relogio nem I/O, no padrao do
+  `state.rs`. A tela do QR mapeia os eventos NDJSON do `garra whatsapp link
+  --machine` (fatia 1) via o tipo `EventoNdjson` (serde, tolerante a eventos
+  desconhecidos). `Avancar` nao pula o vinculo, `Falhou` permite tentar de novo
+  e nenhum estado terminal avanca sozinho. Inclui o tipo `OnboardingPersistido`
+  (round-trip para `onboarding.json`). So logica e testes; a janela e a fiacao
+  da webview ficam para a fatia 3. Refs #1636
+- **`garra whatsapp link --machine`: pareamento em NDJSON (#1636).** Novo modo-
+  maquina do `link`: nao exige terminal, nao le stdin e emite NDJSON no stdout
+  (uma linha por evento, com `schema` e `event` — `status`, `qr`, `error`,
+  `log`). O QR sai como matriz de `0`/`1` pelo mesmo motor de QR do terminal,
+  via a nova `qr::modules` em `garraia-channels` (um motor so, sem risco de
+  polaridade invertida); o payload cru nunca entra. A ordem que e contrato se
+  mantem: `session_saved` antes de `channel_enabled`. Erros tambem saem como
+  NDJSON e o exit code segue os mesmos sysexits do `link`. O `link` interativo
+  fica inalterado. Para o app desktop consumir como sidecar; ver
+  `docs/whatsapp.md` secao "Modo maquina". Refs #1636
+- **Site de documentacao Docusaurus em `website/`, publicado no GitHub Pages (#1639).**
+  O conteudo nao e escrito la: vem do markdown que ja existe no repositorio
+  (`README`, `docs/**`, `docs/adr/**`, `wiki/**`, `CHANGELOG`, `ROADMAP`,
+  `CONTRIBUTING`, ...) por um script de sync em Node puro — fonte unica de verdade,
+  nada reescrito a mao. Portugues (Brasil) como idioma padrao e ingles parcial
+  (Introducao, Instalacao, Releases e as paginas What's New), com o restante caindo
+  para o portugues. Busca offline (`@easyops-cn/docusaurus-search-local`), tema
+  claro/escuro e o workflow `docs-site.yml`, que compila cada PR e publica no Pages
+  a cada push na `main`. Publicado em https://michelbr84.github.io/GarraRUST/
+  (`url`/`baseUrl` configuraveis por env). Nao altera o `ci.yml` nem o site
+  `garraia.org`.
+- Canal WhatsApp linked: guarda de cadencia entre turnos por chat (#1650). Passando de 20 turnos admitidos em 60s no mesmo chat, o turno e cortado com log `possivel loop entre agentes`, com um unico aviso por rajada; turno cortado nao conta na janela, entao o chat volta sozinho quando o outro lado cala. Teto ainda fixo (configuravel e contador em `doctor` ficam como follow-up).
+- **Fundacao de schema de billing do Garra Cloud: plan/subscription/invoice (#1652).**
+  Migration 035 do `garraia-workspace` adiciona tres entidades. `plans` e um
+  catalogo global (sem RLS, mesma classe de roles/permissions), semeado apenas
+  com o plano `free` sem preco (price/currency NULL = preco nao fixado neste
+  repositorio MIT). `subscriptions` e `invoices` sao por tenant sob FORCE RLS
+  (isolamento por `group_id`, fail-closed via NULLIF, WITH CHECK identico ao
+  USING). Dinheiro e sempre inteiro de centavos + ISO 4217; ids de provedor de
+  pagamento sao opcionais e UNIQUE por provedor; nunca ha PII de cartao. A
+  fatura e ledger imutavel (garraia_app so SELECT/INSERT). Todo grupo sem
+  assinatura viva resolve para o plano Free pela funcao
+  `garraia_effective_plan_id` (sem trigger nem backfill; respeita RLS), entao
+  um tenant novo nasce Free sem intervir ninguem. So o schema: webhook
+  Stripe/Pix (#1653), entitlements (#1654), metering (#1655) e a pagina de
+  signup (#1656) ficam para as proximas issues. ADR 0026.
+- **Diagnostico nativo e seguro da instalacao do Garra (#1669).** Nova tool de
+  agente `garra_diagnostics` no `garraia-gateway`: relatorio estruturado e
+  somente leitura da propria instalacao — versao instalada, estado do gateway,
+  todos os canais com estado, servidores MCP, capacidades e ferramentas
+  disponiveis, configuracao efetiva validada (`garraia config check`),
+  presenca e ORIGEM de credenciais sem nunca revelar valores (vault /
+  config.yml / env), amostra limitada e redigida das ultimas linhas do log e
+  componentes relevantes (ponte Node do WhatsApp, banco alcancavel). Saida em
+  JSON com uma entrada por verificacao `{id, estado, evidencia, detalhe}` e
+  vocabulario fechada de estados (`ok`, `erro`, `nao_configurado`,
+  `bloqueado`, `degradado`, `nao_suportado`). Controle de acesso por sessao do
+  operador + turno (`sessao_do_operador`/`turno_restrito`), fail-closed: quem
+  nao e o operador recebe uma recusa e nada mais. File jail para a leitura do
+  log (so dentro do diretorio do produto), redacao de segredos
+  (`garraia_security`) em todo texto e zero shell. Refs #1669
+- **Catálogo versionado de funcionalidades embutido no binário (#1670).**
+  O Garra conhece e explica as funcionalidades da versão que está executando,
+  inclusive após instalação limpa (sem clone do repositório): a fonte única é o
+  manifesto `crates/garraia-gateway/assets/catalogo-funcionalidades.json`
+  (chaves estáveis em inglês, conteúdo pt-BR), embutido via `include_str!` —
+  o build falha se o arquivo-fonte não existir e nada é lido do disco em
+  runtime. Cada recurso traz descrição curta, pré-requisitos, limitações e
+  estado de disponibilidade (`disponivel` / `configuravel` / `opcional`), com
+  marcador de feature/config (`gate`) para o que depende de compilação ou
+  interruptor (sandbox, TLS, mcp-http) — recurso que exige configuração nunca
+  aparece como `disponivel`. Consulta sob demanda pela nova tool
+  `garra_capabilities` (filtros `name`/`category`, limite de itens; sem filtro
+  devolve só contagens — consumo de contexto baixo), integrada ao
+  `garra_status`, que ganha a seção `catalog` com a versão do catálogo e o
+  enlace da tool. Em turno restrito a tool devolve só o subconjunto que a
+  permissão permite (itens `operator_only` retidos e contados).
+
+### Changed
+- **A automacao de release marca `make_latest: false` explicito para prereleases.** O `release.yml` ja punha `prerelease: true` em tags `-alpha`/`-beta`/`-rc`; agora tambem diz ao GitHub, com a mesma condicao, para **nao** torna-las "Latest release" (estavel: `make_latest: true`, o default agora explicito). Assim um RC nunca e servido por `/releases/latest`, e o `garra update` (fixo em `/releases/latest`) e o updater Tauri (que consulta `releases/latest/download/latest.json`) continuam na estavel anterior.
+- **Site de documentacao: cada secao ganha um indice gerado.** As URLs de categoria do Docusaurus (`/instalacao/`, `/gateway/`, `/seguranca/`...) listam as paginas da secao em vez de responder 404; a secao Releases mantem a pagina propria.
+- A guarda de cadencia entre turnos (#1658) completa a #1650: teto configuravel (`channels.whatsapp_linked.max_turnos_per_minute`, default inalterado de 20 turnos/60s), backoff crescente por rajada (60s -> 120s -> 240s, teto 8min, zera apos 2min de silencio), teto menor para mensagens vazias/stub (3 por janela, `min` com o teto do operador) e `turnos_ultima_hora` no diagnostico do gateway (tool `garra_diagnostics`, operator-only). O `garraia doctor` offline continua sem esse contador — memoria de outro processo, declarado na propria tool.
+
+### Fixed
+- **O boot do gateway sonda o Whisper antes de declarar o STT pronto.** A linha `STT initialized - Whisper at ...` saia incondicionalmente, mesmo com o servidor STT fora do ar, enquanto o TTS logo acima ja era sondado - o que levava o operador (e o proprio agente Garra) a crer que o STT estava vivo. Agora o boot chama `WhisperClient::health_check()` com orcamento de `timeouts.health` (nao trava o boot num host que engole pacotes) e loga `STT ready` so quando o Whisper responde, ou um `warn` "not reachable" quando nao; o cliente segue registrado nos dois casos, porque o servidor pode subir depois.
+- **Catalogo de funcionalidades acompanha o que entrou depois da 0.4.9.** O
+  manifesto `crates/garraia-gateway/assets/catalogo-funcionalidades.json`
+  (#1670), de onde o Garra tira a resposta sobre as proprias funcionalidades,
+  ganha os itens `garra_diagnostics` (#1669) e `desktop` (app com o Assistente
+  de Primeiro Uso, #1636), e corrige o `whatsapp_linked`: Node 20+ no host so
+  e pre-requisito da CLI, porque o app desktop ja traz um Node privado;
+  pareamento pelo assistente; cadencia entre turnos (#1650) e o alcance do
+  `whatsapp self-test`. O caminho da allowlist no catalogo passa a ser o que
+  se escreve no `config.yml` (`channels.whatsapp_linked.allow`, sem um
+  `settings.` que o YAML nao tem, porque o campo e achatado); o mesmo vale
+  para o `max_turnos_per_minute` da #1650. O `mcp-client` registra o jail fail-closed com o
+  servidor filesystem fixado em 2.0.0 (#1684), e `instalacao-atualizacao`
+  passa a citar o `install.ps1` e o canal de pre-lancamento. O runbook de
+  release (`docs/releasing.md`) ganha o passo de subir o `catalog_version`
+  junto com o bump do Cargo, que o teste da #1670 exige.
+- **Voz com o Chatterbox oficial volta a funcionar: o cliente agora descobre a assinatura do `generate_tts_audio`.** O cliente mandava so 4 valores (`[text, lang, null, 1.0]`), mas o app oficial (`multilingual_app.py`) liga 7 entradas (texto, idioma, referencia, exaggeration, temperature, seed, cfg_weight). O Gradio 6.x recusava a chamada curta com `event: error`, a rota `/api/tts` caia no fallback de texto sem avisar ninguem, e o `docs/voice.md` dizia que funcionava. Agora o cliente le `GET /gradio_api/info`, monta o `data` com exatamente o numero de valores que o servidor declara (usando os `parameter_default` dele, ou os defaults do app oficial), cacheia a assinatura e cai no layout oficial de 7 valores quando `/gradio_api/info` nao responde. Servidores customizados de 4 parametros continuam funcionando. Um `event: error` no SSE agora vira erro com a mensagem do servidor, e `/api/tts` e o canal de voz do Telegram registram `warn` com o motivo antes do fallback de texto.
+- **O Dashboard do Web Console mostra o bind real em vez de "0.0.0.0" fixo.** O card "Gateway port" trazia "Listening on 0.0.0.0" fixo no HTML, enganoso para quem escuta em `127.0.0.1`; agora ele reflete o `host:port` real derivado do `gateway_url` que `/api/health` ja devolve. A linha "Config dir" do painel Health, que sempre mostrou "-" (nenhum JS a preenchia), foi removida: a unica fonte do caminho no backend e gateada (`/api/diagnostics`), e `/api/health` e auth-free, entao expor o diretorio ali vazaria o home/usuario do SO a um peer anonimo num bind nao-loopback.
+- **`docs/voice.md` corrige o exemplo de `/api/stt` e documenta o pin do torch.** O exemplo usava `--data-binary`, mas o handler exige multipart com o campo `file` (um corpo cru volta `400 No audio file provided`); agora usa `-F "file=@audio.wav"`. A pagina tambem explica que o cliente se adapta a assinatura do `generate_tts_audio` e avisa que o `chatterbox-tts` fixa `torch==2.6.0`, que nao tem kernels Blackwell (sm_120) e quebra em RTX 50xx, com o override para as wheels cu128.
+- **Os instaladores nao caem num prerelease pelo caminho nao pinado.** Quando `/releases/latest` nao resolvia, o ultimo fallback de `install.sh` e `install.ps1` pegava o primeiro release nao-draft — e prereleases contam, entao um `curl | sh` / `irm | iex` podia instalar um `-rc`/`-beta`/`-alpha`. Os dois instaladores agora pulam `prerelease: true` tambem (alem de `draft: true`) e escolhem a estavel mais recente; o `install.sh` classifica cada release por `tag_name`/`draft`/`prerelease` em qualquer ordem (scanner com profundidade de chaves, imune a chaves `{}` dentro de `body`). Para instalar um RC de proposito, pine `GARRAIA_VERSION=vX.Y.Z-rcN`.
+- Fixa o `@modelcontextprotocol/server-filesystem` autoprovisionado em `@2.0.0` (o upstream deprecou a serie por data `2026.8.31` e voltou ao semver; `latest` agora e `2.0.0`). O handshake `initialize` + `tools/list` e identico entre as duas versoes (mesmas 14 tools, mesmos argumentos de caminho). Um `mcp.json` existente fixado em `@2026.8.31` continua valido e e reportado como pinado (OK) — o gateway nunca reescreve o arquivo do usuario; so instalacao nova recebe `@2.0.0`.
+- **O seletor "LLM Provider" do Web Console mostra as instancias reais, nao so tipos fixos.** Desde a #1540 um provider e registrado pela CHAVE do perfil (`llm.<chave>`), entao `llm.ollama-qwen3.provider: openai` registra sob o id `ollama-qwen3`. O `GET /api/providers` ainda comparava os ids contra um catalogo fixo de TIPOS, entao o console marcava "OpenAI (Not Configured)" / "Ollama (Not Configured)" e nunca mostrava `ollama-qwen3`. A resposta ganha um campo aditivo `instances` (id, `kind`, modelo, se e o padrao, se esta em fallback) e o `active` do catalogo passa a considerar o tipo configurado quando ha instancia daquele kind. `PATCH /api/providers/default` e `POST /api/providers/test` ja resolviam pelo id da instancia.
+- **README destaca a v0.4.9 como release mais recente, nao mais a v0.3.9.** A secao de marcos do `README.md` ainda anunciava a v0.3.9 (set 2026) como novidade; agora reflete a v0.4.9 (out 2026) com base na prosa de abertura do `CHANGELOG.md` e no link da wiki correspondente.
+- Atualiza `spin` 0.10.0 -> 0.10.1 e 0.9.8 -> 0.9.9 no `Cargo.lock` (0.10.0 e 0.9.8 foram yanked; derrubava `Security Audit` e `cargo-deny` nos PRs).
+- **Ponte do WhatsApp agora sobe o Node no Windows (#1636).** O `env_clear()`
+  da contencao do processo filho tirava `SystemRoot` e os demais essenciais de
+  sistema, e o Node abortava logo no boot com `Assertion failed:
+  ncrypto::CSPRNG(nullptr, 0)` (codigo 134) — a inicializacao do RNG de cripto
+  nao acha a cripto do Windows sem eles. O bridge passa a herdar, so no Windows,
+  os mesmos essenciais que o transporte stdio dos servidores MCP ja herdava
+  (`SystemRoot`, `SystemDrive`, `windir`, `COMSPEC`, `PATHEXT`, `USERPROFILE`,
+  `APPDATA`, ...), nenhum deles segredo nem vetor de execucao de codigo. Afetava
+  pareamento, atendimento e `npm ci`, nao so o novo `self-test`.
+- **No Linux e no macOS o sidecar do desktop tambem nao fica orfao numa morte abrupta do app (#1636).** O Job Object so existe no Windows; para o par app->sidecar no Unix, a casca lanca o gateway com `garra start --exit-with-parent <pid-do-app>`. O gateway vigia esse PID numa task de ~1 s (`garraia_common::parent_watch`: reparentamento via `getppid()` — a prova de reuso de PID — ou o PID sumindo) e, quando o app some, pede o encerramento gracioso pelo caminho do SIGTERM, derrubando a ponte Node pelo fluxo normal. Flag e nao variavel de ambiente, para o PID nao vazar para filhos; so em primeiro plano. No Windows a flag e no-op (o Job Object cobre). Logica pura testada e um teste de ponta a ponta no CI Linux/macOS matam o PID vigiado e afirmam que a vigia sai.
+- **A ponte Node do WhatsApp e o sidecar do desktop nao sobrevivem orfaos quando o pai morre de forma abrupta (#1636).** `kill_on_drop` e o `Drop` so cobrem a saida normal e o panic; um crash ou "Finalizar tarefa" no Gerenciador de Tarefas nao roda nenhuma limpeza. Agora, no Windows, a ponte e o sidecar entram num Job Object `KILL_ON_JOB_CLOSE` (modulos `jobobject` em `garraia-channels` e `garraia-desktop-core`), entao o SO encerra a arvore inteira ao fechar o handle quando o pai morre; no Unix a ponte nasce no proprio grupo de processos (`setpgid`) e o teardown varre o grupo com `kill(-pgid)`, pegando netos; e em todas as plataformas a ponte sai ao ver EOF no stdin (o pai que morreu fecha o pipe), que e a rede de seguranca do macOS, sem PDEATHSIG. Um job de CI dedicado executa os testes de orfao em ubuntu, windows e macos — incluindo matar o pai com `TerminateProcess` e afirmar que nenhum descendente sobrevive.
+- `find_executable` da ponte do WhatsApp so aprova arquivo com bit de execucao no Unix; um `node` em `0644` deixa de passar na deteccao e de virar `npm ci` com codigo 126 (#1646).
+- O caminho nao-streaming autonomo do runtime (app mobile, `/ws`, `/v1/chat/completions`, chat REST) nao publica mais o marcador `[no textual response provided by the model]`: turno inteiramente vazio vira erro explicito, como no streaming (#1648, follow-up do #1048).
+- `garraia doctor` avisa quando ha outra copia de `garraia`/`garra` no `PATH` com versao diferente da que esta rodando (ex.: build antigo em `~/.local/bin` mascarando o `.deb` novo), listando os dois caminhos e o fix; campo `binary` no `--json` (#1649).
+- O log de reconexao do canal WhatsApp vinculado agora informa o motivo da queda (`reason`) e o codigo do Baileys (`reason_code`) quando o bridge os envia; antes a linha `WhatsApp vinculado caiu; reconectando` nao dizia por que a sessao caiu (#1663).
+- **A imagem Docker volta a compilar com os forks de `third_party/` (#1694).** O
+  `[patch.crates-io]` que aponta `tauri-plugin-updater` e `utoipa-swagger-ui`
+  para forks vendorizados (#1668) entrou depois da v0.4.9, e o Dockerfile nunca
+  copiava `third_party/`: o `cargo chef cook` abortava com "patch location
+  `/build/third_party/...` does not contain packages" e o Deploy do tag
+  v0.4.10-rc1 nao publicou imagem. O Dockerfile agora copia `third_party/` no
+  planner e nos dois lados do `cook`; o teste
+  `dockerfile_copies_every_patch_path_outside_crates` prende a regra em todo
+  PR, e o novo workflow `docker-build.yml` constroi a imagem (sem push) e
+  responde `/ping` quando muda o Dockerfile, o `Cargo.toml`/`Cargo.lock` da raiz ou
+  `third_party/`. O smoke Windows do desktop ganhou tetos internos que cabem no
+  teto do job, para um travamento deixar log em vez de virar cancelamento mudo.
+- **`/api/diagnostics` deixa de acender amarelo numa instalacao nova (#1695).**
+  A linha `tools.capabilities` saia `warning` em toda instalacao limpa,
+  porque `device_read`/`device_execute` (sem adapter de hardware) e
+  `telegram_send_voice` (modo voz desligado) contavam como indisponiveis —
+  visto no Windows e no Linux limpos do v0.4.10-rc1, contra o criterio D9 do
+  gate de release ("sem nenhum aviso espurio"). Agora ausencia de
+  configuracao vira `not_configured` (neutro, como o `bash` sem sandbox desde
+  a #1471): as tools de hardware devolvem `not_configured` quando nenhum
+  adapter (`hardware.mqtt`/`hardware.home_assistant`) foi declarado, e o
+  registro de capacidades trata `tts_unconfigured` como nao configurado.
+  Configurado e quebrado continua amarelo: adapter declarado sem nenhum
+  dispositivo segue `no_devices`, e canal configurado fora do ar segue
+  `channel_offline`. O motivo de origem continua no `reason_code`.
+- **Sem Node.js na maquina, o boot nao provisiona mais um MCP `filesystem` que nunca sobe (#1696).** A entrada autoprovisionada roda `npx`, e numa instalacao nova sem Node (a CLI num Linux limpo, ou o desktop num Windows sem Node global, ja que o Node privado do instalador e so da ponte do WhatsApp e nao traz `npx`) o spawn falhava com `No such file or directory`, o supervisor gastava os restarts e o `/api/diagnostics` ficava amarelo com `causa: other`. Sem `npx` no `PATH` o boot nao grava o `mcp.json` nem cria o workspace, e a linha `mcp.servers` fica `skipped` dizendo o que falta e como ligar o `filesystem`; as file tools nativas seguem disponiveis, e o primeiro boot depois de instalar o Node.js 20+ provisiona sozinho. Um `mcp.json` existente continua intocado, e servidor configurado que nao sobe segue acusando.
+- **No Windows, o `/api/diagnostics` deixa de dizer que o workspace esta "fora do data_dir" (#1698).** O `data_dir` e canonicalizado, e no Windows o canonico e `\\?\C:\...`, enquanto as raizes do `mcp.json` sao gravadas como `C:\...`; a comparacao crua falhava e toda instalacao Windows via `mcp.filesystem_root` e as outras linhas de raiz mostrarem "1 fora do data_dir" para o workspace que esta dentro. Os dois lados agora passam pela mesma forma comparavel antes de relativizar, o relativo sai sempre com `/`, e um symlink dentro do `data_dir` que aponta para fora continua aparecendo como fora. Achado na validacao do v0.4.10-rc1 (#1697).
+- **No desktop, a tela "Pronto" do Assistente de Primeiro Uso avisa quando falta provedor de LLM (#1700).** Antes, uma instalacao limpa pareava o WhatsApp e a tela anuncava "Garra conectado e pronto" — mas sem `llm:` no config o Garra recebia as mensagens e nunca respondia (o mesmo caso que o doctor do WhatsApp ja julga como "no provider configured"). Agora, depois do "Garra conectado", um comando le o MESMO config que o gateway le e devolve so o booleano (a chave nunca atravessa a webview); sem provedor, um aviso dourado explica que falta `garraia init` (com o caminho no Windows) antes do primeiro "oi" sem resposta. Quem tem provedor configurado ve exatamente a tela de antes. O passo de escolher o provedor dentro do assistente fica para a 0.5.0 (#1636).
+- **O CI deixa de ficar vermelho com o RUSTSEC-2026-0387 (#1701).** O backend do `jsonwebtoken` troca de `rust_crypto` para `aws_lc_rs`: como `rust_crypto` e uma feature monolitica (nao ha como desligar EC mantendo RS256/HS256) e o codigo so usa HS256/RS256, a cadeia RustCrypto EC/RSA inteira — 20 crates, incluindo o `crypto-bigint 0.5.5` vulneravel, que so tem fix em 0.7.6 — sai do lockfile sem nenhuma excecao no `deny.toml`/`audit.toml`. Trade-off documentado no comentario do `Cargo.toml`: o `aws-lc-sys` compila C nativo (cmake + perl, presentes nos runners).
+
+### Security
+- **Revoga de `garraia_app` o UPDATE/DELETE que a ALTER DEFAULT PRIVILEGES da migration 007 vazava para nove tabelas.** A ADP da 007 concede CRUD completo a toda tabela criada depois dela; varias migrations declararam um GRANT seletivo menor, mas GRANT e aditivo e nao restringe, entao o privilegio extra sobrevivia. A migration 036 (forward-only) revoga so o excesso: UPDATE em `task_attachments`/`message_attachments`/`message_reactions`/`message_mentions`/`doc_page_mentions`, DELETE em `doc_pages`/`user_email_change_requests`, e UPDATE+DELETE em `doc_page_versions`/`account_deletion_requests`. SELECT/INSERT e o privilegio de mutacao legitimo de cada tabela permanecem; o apagamento LGPD cross-tenant continua rodando em funcoes SECURITY DEFINER como `garraia_purge`, nunca pelo pool do app. O caso com peso de seguranca e `account_deletion_requests`: sem o revoke, um handler no escopo do proprio titular podia marcar o pedido como concluido sem o purge ou cancela-lo fora do fluxo.
+- Atualiza `ctutils` 0.4.2 -> 0.4.5 no `Cargo.lock` (RUSTSEC-2026-0385: geracao de mascara e comparacoes de `u128` sem tempo constante). Entra por `digest` 0.11, usado por `argon2`/`blake2` (hash de senha) e `hmac`. Sem mudanca de codigo.
+- Atualiza a familia `wasmtime`/`cranelift`/`wiggle` 49.0.3 -> 49.0.4 no `Cargo.lock` (RUSTSEC-2026-0379, critica, e RUSTSEC-2026-0378 no sandbox de plugins).
+- Atualiza `rustls-webpki` 0.103.15 -> 0.103.16 (RUSTSEC-2026-0382) e `webpki-roots`/`webpki-root-certs` 1.0.7 -> 1.0.10 (RUSTSEC-2026-0381/0383) no `Cargo.lock`.
+- Ignora com prazo (2026-11-20) RUSTSEC-2026-0381 para o shim `webpki-roots` 0.26.11 (reexporta o 1.0.10 corrigido) e espelha RUSTSEC-2026-0370/0371/0372 em `.cargo/audit.toml` (#1667).
+- Jail por sessao das tools MCP de filesystem (#1482) agora e fail-closed: uma ferramenta vinda do servidor `@modelcontextprotocol/server-filesystem` que o confinamento nao mapeia (uma tool nova ou renomeada de uma versao futura do pacote) e recusada em vez de repassada sem checar o caminho. Antes, operacao fora do mapa passava intocada em qualquer servidor; agora, so no servidor filesystem, ela so roda depois de ser mapeada em `OPERACOES_COM_CAMINHO` (revisao humana). Tools de outros servidores MCP seguem passando normalmente.
+- **Jail e workdir por orquestrador no `garra_agent` do MCP HTTP (#1626, item 1).**
+  Cada orquestrador da ponte HTTP passa a ter uma subarvore gravavel propria sob
+  `<data_dir>/workspace`, derivada da identidade dele por digest (SHA-256, 32 hex),
+  que vira a unica raiz efetiva das file tools (jail sem raiz fixa) e o workdir do
+  sandbox do `bash`. Antes o jail e o workdir eram globais (`agent.file_roots`),
+  iguais para todo orquestrador: o que um escrevia o outro lia — disclosure e
+  prompt-injection indireta cross-principal, a mesma classe que a #1449 fechou para
+  os canais. `agent.file_roots` deixa de alcancar o agente da ponte (ela atende
+  pedido de terceiro); sem workspace materializado o agente cai em fail-closed, com
+  as file tools negadas e o `bash` recusado. As mensagens das file tools e do
+  `git_diff`/`code_review` que iam ao orquestrador passam a mostrar o caminho
+  RELATIVO ao workspace, nunca o caminho absoluto do host (que traria `<data_dir>`
+  e o hash do proprio chamador) — principio da #1465. Limite conhecido: em
+  `isolated-pod` todos os orquestradores compartilham o filesystem do pod, entao o
+  workdir isola o `bash` so no sandbox docker/podman.
+- Corrigidos os advisories RUSTSEC-2026-0367, -0368 e -0369 (zip 4.6.1 e 8.6.0). O `tauri-plugin-updater` e o `utoipa-swagger-ui` passam a usar zip 9.0.5 por forks vendorizados em `third_party/` (ver `third_party/README.md`). Os assets do Swagger UI continuam embutidos e nao sao baixados no build. (#1662)
+- Excecao temporaria, com prazo ate 2026-11-18, para tres advisories somente `unmaintained` do desktop (zbus_names, zvariant, zvariant_derive). Acompanhamento em #1667. (#1662)
+- Canais remotos (Telegram, mobile e demais superficies que nao sao do operador) passam a ter o teto de superficie `Nivel::Read`: nao executam `bash`, nao escrevem arquivo, nao enviam mensagem proativa, nao agendam, nao acessam dispositivo e nao gravam memoria, mesmo com `/mode code` ou com o `auto`. Respostas normais nao mudam. Operadores (web, api, vscode, desktop) nao mudam. (#1665)
+- Security: o fork vendorizado do `tauri-plugin-updater` (`third_party/`) nunca mais desliga a verificação de TLS do updater. `dangerousAcceptInvalidCerts`/`dangerousAcceptInvalidHostnames` continuam aceitos na config (sem quebrar instalações) mas são ignorados, com aviso. Resolve os 4 alertas `rust/disabled-certificate-check` do CodeQL no PR #1668, por correção em código (preferência §3 do ledger de supressões). Teste de guarda: `updater_tls_nunca_desligado`. (#1671)
+- `website/`: `overrides` no `package-lock.json` resolvem **6 dos 7** alertas Dependabot npm (tinypool 2.1.2, postcss-selector-parser 7.1.6, serialize-javascript 7.0.5, uuid 11.1.1) — todos transitivos do toolchain do Docusaurus; `braces <= 3.0.3` permanece sem patch upstream (risco residual documentado na PR, revisão 2026-11-21).
+
+
 ## [0.4.10-rc2] - 2026-10-23
 
 **Segundo pre-lancamento da 0.4.10, nao e a versao estavel.** O rc1 publicou a Release como devia (prerelease, sem `latest`, canal estavel intacto: `/releases/latest`, `latest.json`, `garra update` e os instaladores sem versao fixada seguem na v0.4.9), mas o Deploy da imagem Docker falhou: o Dockerfile nao copiava os forks vendorizados de `third_party/` que o `[patch.crates-io]` usa desde #1668, e a imagem `0.4.10-rc1` nao existe. O rc2 corrige o Dockerfile e passa a construir a imagem (sem push) em todo PR que mexe no Dockerfile, no `Cargo.toml`/`Cargo.lock` da raiz ou em `third_party/` (#1694). A validacao do rc1 achou tambem um falso amarelo no diagnostico de uma instalacao nova: `tools.capabilities` contava `device_read` e `device_execute` como indisponiveis quando nenhum adapter de hardware estava configurado, e o certo e "nao configurado"; o rc2 corrige isso, e adapter configurado sem dispositivo continua acusando (#1695). E, numa maquina sem Node.js (a CLI num Linux limpo, ou o desktop num Windows sem Node global, ja que o Node privado do instalador e so da ponte do WhatsApp), o boot deixa de provisionar um MCP `filesystem` via `npx` que nunca subia e deixava o diagnostico amarelo; o diagnostico, o `garra doctor mcp` e a tool `garra_diagnostics` passam a dizer que falta o `npx`, e o primeiro boot depois de instalar o Node provisiona sozinho (#1696). No Windows, o diagnostico deixa de dizer que o workspace esta "fora do data_dir" quando ele esta dentro: o `data_dir` canonico (`\\?\C:\...`) nao casava com a raiz crua do `mcp.json` (#1698). Fora essas quatro correcoes, o codigo e o mesmo do rc1. Os testes que falham no Windows e que o CI Windows nao executa (ele so compila os testes) estao documentados, com evidencia, na #1697. Como o rc1, este RC sai como *prerelease* e nao e oferecido a quem esta na v0.4.9.
