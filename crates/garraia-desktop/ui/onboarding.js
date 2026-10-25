@@ -248,7 +248,29 @@ async function finalizar() {
     });
     txt.textContent = 'Garra conectado';
     $('pronto-status').style.color = 'var(--garra-ok)';
-    anunciar('Garra conectado e pronto para receber mensagens.');
+    // #1700: "conectado" nao e "conversa". Sem provedor de LLM no config, o
+    // Garra recebe as mensagens e nunca responde — o doctor do WhatsApp ja
+    // julga isso; a tela Pronto precisa dizer antes do primeiro "oi" sem
+    // resposta. So o booleano volta daqui (a chave nunca atravessa a webview).
+    try {
+      const temProvedor = await invoke('onboarding_provedor_configurado');
+      if (!temProvedor) {
+        const aviso = $('pronto-aviso');
+        aviso.innerHTML =
+          '<b>Último passo:</b> falta dizer quem responde. Sem provedor de LLM ' +
+          'configurado, o Garra recebe suas mensagens e <b>não responde</b>. ' +
+          'No terminal, rode <code>garraia init</code> (Windows: <code>"C:\\Program Files\\garraia-desktop\\garraia.exe" init</code>) ' +
+          'e depois reabra o Garra.';
+        aviso.classList.add('ativo');
+        anunciar('Garra conectado, mas sem provedor de LLM: o Garra não vai responder até configurar. Veja o aviso na tela.');
+      } else {
+        anunciar('Garra conectado e pronto para receber mensagens.');
+      }
+    } catch (_) {
+      // Falhou a checagem (ex.: config ilegível): não inventa — mantém o
+      // anúncio completo e deixa o doctor/settings mostrarem o estado real.
+      anunciar('Garra conectado e pronto para receber mensagens.');
+    }
   } catch (e) {
     txt.textContent = 'Ainda não ficou pronto';
     const el = $('pronto-erro');
