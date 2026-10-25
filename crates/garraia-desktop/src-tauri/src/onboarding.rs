@@ -144,6 +144,21 @@ pub async fn onboarding_marcar_exibido(app: AppHandle) {
     }
 }
 
+/// O config do operador tem algum provedor de LLM (`llm:` nao vazio)? A tela
+/// "Pronto" nao pode prometer conversa sem um — o doctor do WhatsApp ja julga
+/// esse caso como "o WhatsApp recebe e nao responde" (doctor/tabela.rs,
+/// `c.provedores.is_empty()`), e o mesmo config é o que o gateway le. Erro de
+/// leitura conta como sem provedor: fail-closed para o proposito de avisar.
+/// Nunca devolve chave, nome de modelo ou caminho — so o booleano.
+#[tauri::command]
+pub async fn onboarding_provedor_configurado() -> bool {
+    garraia_config::ConfigLoader::new()
+        .ok()
+        .and_then(|l| l.load().ok())
+        .map(|c| !c.llm.is_empty())
+        .unwrap_or(false)
+}
+
 /// Inicia o pareamento: lanca `garraia whatsapp link --machine` e transmite cada
 /// linha NDJSON do stdout como evento `wa://ndjson`. Idempotente: um pareamento
 /// anterior e substituido e morto na troca.

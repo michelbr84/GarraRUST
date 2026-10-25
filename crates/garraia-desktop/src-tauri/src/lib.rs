@@ -89,6 +89,7 @@ pub fn run() {
             commands::install_update,
             onboarding::onboarding_estado,
             onboarding::onboarding_marcar_exibido,
+            onboarding::onboarding_provedor_configurado,
             onboarding::wa_iniciar_pareamento,
             onboarding::wa_cancelar_pareamento,
             onboarding::onboarding_validar_numero,
