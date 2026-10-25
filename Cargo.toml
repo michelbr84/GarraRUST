@@ -94,11 +94,13 @@ base64 = "0.23"
 uuid = { version = "1", features = ["v4"] }
 rand = "0.9"
 # Plan personal-api-key-revogada-vectorized-matsumoto §Step 3 / Decisões §2:
-# `jsonwebtoken 10` requires explicit backend selection. We pick `rust_crypto`
-# because the workspace already depends on `password-hash`/`argon2`/`pbkdf2`/
-# `hmac`/`sha2` (RustCrypto stack); no FIPS requirement justifies the
-# operational cost of the alternative `aws_lc_rs` (cmake + C toolchain).
-jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+# `jsonwebtoken 11` requires explicit backend selection. We pick `aws_lc_rs`
+# (RUSTSEC-2026-0387, #1701): the `rust_crypto` backend is a monolithic feature
+# that drags the whole RustCrypto EC/RSA chain (p256/p384/ecdsa/crypto-bigint)
+# into the lockfile even though the code only uses HS256/RS256 — both served
+# natively by aws-lc-rs, which is already in the dependency graph. Trade-off
+# accepted: aws-lc-sys needs cmake + perl at build time (present on CI).
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 
 # Plugin system — bumped 28→44 in GAR-454, 44→45 in GAR-708 (health run 32),
 # 45→46 in GAR-895 (health run 146, 2026-08-16): RUSTSEC-2026-0222 wasmtime 45.x
