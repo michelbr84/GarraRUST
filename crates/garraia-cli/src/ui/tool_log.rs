@@ -113,11 +113,25 @@ impl ToolLog {
 
     /// O inicio nao e prova de sucesso; so o evento final vira entrada.
     pub fn iniciar(&mut self, ferramenta: &str, alvo: &str) {
+        // Eventos da UI nao trazem tool_use_id. Se duas chamadas da
+        // mesma ferramenta se sobrepoem, o nome sozinho nao determina
+        // qual resultado pertence a qual arquivo. Omitir todos os
+        // respectivos alvos e preferivel a atribuir o arquivo errado.
+        let ambiguo = self.pendentes.iter().any(|(nome, _)| nome == ferramenta);
+        if ambiguo {
+            for (nome, anterior) in &mut self.pendentes {
+                if nome == ferramenta {
+                    anterior.clear();
+                }
+            }
+        }
         if self.pendentes.len() >= MAX_ENTRADAS {
             self.pendentes.pop_front();
         }
-        self.pendentes
-            .push_back((ferramenta.to_string(), alvo.to_string()));
+        self.pendentes.push_back((
+            ferramenta.to_string(),
+            if ambiguo { String::new() } else { alvo.to_string() },
+        ));
     }
 
     pub fn limpar_pendentes(&mut self) {
@@ -391,6 +405,20 @@ mod tests {
         assert!(resumo.contains("registro parcial"));
         assert!(!resumo.contains("segredo"));
         assert!(resumo.len() < 4096);
+    }
+
+    #[test]
+    fn chamadas_simultaneas_mesma_ferramenta_nao_atribuem_alvo_errado() {
+        let mut log = ToolLog::new();
+        let inicio = log.proximo_indice();
+        log.iniciar("file_write", "/work/primeiro.txt");
+        log.iniciar("file_write", "/work/segundo.txt");
+        log.registrar("file_write", "ok", true, Duration::ZERO, String::new());
+        log.registrar("file_write", "ok", true, Duration::ZERO, String::new());
+        let resumo = log.resumo_desde(inicio).unwrap();
+        assert_eq!(resumo.matches("file_write; sucesso reportado").count(), 2);
+        assert!(!resumo.contains("primeiro.txt"));
+        assert!(!resumo.contains("segundo.txt"));
     }
 
     #[test]
