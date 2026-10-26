@@ -549,7 +549,9 @@ fn tool_help(name: &str) -> Option<&'static str> {
         "web_fetch" => "Baixa o conteudo de uma URL publica (enderecos internos sao recusados).",
         "web_search" => "Busca na web (Brave) e devolve titulos, links e trechos.",
         "code_review" => "Revisa um diff ou arquivo e aponta problemas e melhorias.",
-        "cli_inspect" => "Consulta versao, provider/modelo e ferramentas reais desta CLI, somente leitura, sem gateway.",
+        "cli_inspect" => {
+            "Consulta versao, provider/modelo e ferramentas reais desta CLI, somente leitura, sem gateway."
+        }
         // ADR 0020 / epic #1124: os tres entram no prompt com as tools —
         // sem linha aqui, o prompt lista quem nao descreve e o teste que
         // confere a tabela contra o registro falha.
