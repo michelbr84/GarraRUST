@@ -549,6 +549,7 @@ fn tool_help(name: &str) -> Option<&'static str> {
         "web_fetch" => "Baixa o conteudo de uma URL publica (enderecos internos sao recusados).",
         "web_search" => "Busca na web (Brave) e devolve titulos, links e trechos.",
         "code_review" => "Revisa um diff ou arquivo e aponta problemas e melhorias.",
+        "cli_inspect" => "Consulta versao, provider/modelo e ferramentas reais desta CLI, somente leitura, sem gateway.",
         // ADR 0020 / epic #1124: os tres entram no prompt com as tools —
         // sem linha aqui, o prompt lista quem nao descreve e o teste que
         // confere a tabela contra o registro falha.
@@ -1350,7 +1351,11 @@ pub async fn run_chat(
         get_api_key(&config, "brave", "BRAVE_API_KEY"),
         config.agent.bash_allowlist.clone(),
     );
-    let tools_doc = tool_docs(&runtime.tool_names());
+    // A tool de inspecao sera registrada apos configurar o prompt; a lista
+    // visivel ao modelo ja inclui o nome que o registro efetivo recebera.
+    let mut tool_names = runtime.tool_names();
+    tool_names.push("cli_inspect".to_string());
+    let tools_doc = tool_docs(&tool_names);
 
     let system_prompt = format!(
         "Voce e o GarraIA, um assistente pessoal de IA criado em Rust. \
@@ -1375,6 +1380,16 @@ pub async fn run_chat(
     );
     runtime.set_system_prompt(system_prompt);
     runtime.set_max_tokens(4096);
+
+    // Acesso somente leitura ao runtime vivo, sem ciclo de Arc: a tool guarda
+    // um Weak e consulta somente a sessao que a invocou (#1712).
+    let runtime = Arc::new(runtime);
+    let inspect_model = Arc::new(std::sync::RwLock::new(model_name.clone()));
+    runtime.register_tool(Box::new(crate::cli_inspect_tool::CliInspectTool::new(
+        Arc::downgrade(&runtime),
+        provider_name.clone(),
+        Arc::clone(&inspect_model),
+    )));
 
     // #1088: o store so existe quando a pessoa pediu. Sem `--persist` nem
     // `--resume` fica `None` — nenhum banco aberto, nenhum arquivo criado —
@@ -2078,6 +2093,7 @@ pub async fn run_chat(
                 let nota_de_catalogo = "  (encontrado no catalogo completo do OpenRouter, fora da lista curada de /models)";
                 let ressalva_sem_listagem =
                     "  (provider nao expoe catalogo — troca aplicada sem validacao)";
+                let alterou_modelo = !matches!(efeito, EfeitoTrocaDeModelo::RecusarEManterEstado);
                 match efeito {
                     EfeitoTrocaDeModelo::RecusarEManterEstado => {
                         renderer.handle(
@@ -2134,6 +2150,11 @@ pub async fn run_chat(
                             &mut io::stdout(),
                         );
                     }
+                }
+                // Mesma escolha efetiva que o /status mostra, inclusive apos
+                // /model; nao copiar configuracao de boot para uma tool viva.
+                if alterou_modelo {
+                    *inspect_model.write().unwrap_or_else(|e| e.into_inner()) = model_name.clone();
                 }
                 continue;
             }
