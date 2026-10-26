@@ -130,7 +130,11 @@ impl ToolLog {
         }
         self.pendentes.push_back((
             ferramenta.to_string(),
-            if ambiguo { String::new() } else { alvo.to_string() },
+            if ambiguo {
+                String::new()
+            } else {
+                alvo.to_string()
+            },
         ));
     }
 
@@ -358,7 +362,10 @@ mod tests {
         let mut log = ToolLog::new();
         let inicio = log.proximo_indice();
         log.iniciar("file_write", "/home/usuario/privado/pagina.html");
-        assert!(log.resumo_desde(inicio).is_none(), "inicio nao prova resultado");
+        assert!(
+            log.resumo_desde(inicio).is_none(),
+            "inicio nao prova resultado"
+        );
         log.registrar(
             "file_write",
             "escreveu 713 bytes",
@@ -393,13 +400,7 @@ mod tests {
         let inicio = log.proximo_indice();
         for _ in 0..(MAX_ENTRADAS + 2) {
             log.iniciar("bash", "curl -H Authorization:segredo");
-            log.registrar(
-                "bash",
-                "ok",
-                true,
-                Duration::ZERO,
-                "segredo".into(),
-            );
+            log.registrar("bash", "ok", true, Duration::ZERO, "segredo".into());
         }
         let resumo = log.resumo_desde(inicio).expect("registro");
         assert!(resumo.contains("registro parcial"));
