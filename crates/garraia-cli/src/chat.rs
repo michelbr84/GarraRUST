@@ -425,6 +425,18 @@ fn persist_user_turn(store: &SessionStore, session_id: &str, user_text: &str) ->
     Ok(())
 }
 
+/// Evidencia independente do texto do modelo. So grava no modo opt-in.
+fn persist_tool_evidence(store: &SessionStore, session_id: &str, evidence: &str) -> Result<()> {
+    let meta = serde_json::json!({
+        "channel_id": "cli",
+        "user_id": "local",
+        "kind": "tool_evidence",
+        "source": "runtime",
+    });
+    store.append_message(session_id, "tool_evidence", evidence, chrono::Utc::now(), &meta)?;
+    Ok(())
+}
+
 /// Grava o lado do assistant: resposta completa ou o marcador de
 /// interrupcao de `marcador_de_interrupcao`. A sessao ja existe — o
 /// `persist_user_turn` do mesmo turno a criou.
@@ -491,7 +503,7 @@ fn load_history(store: &SessionStore, session_id: &str, limit: usize) -> Result<
         .filter_map(|m| {
             let role = match m.direction.as_str() {
                 "user" => ChatRole::User,
-                "assistant" => ChatRole::Assistant,
+                "assistant" | "tool_evidence" => ChatRole::Assistant,
                 _ => return None,
             };
             Some(ChatMessage {
@@ -1177,6 +1189,8 @@ where
         }
     }
 
+    tool_log.limpar_pendentes();
+
     // Fim de turno incondicional: vale para sucesso, erro do provedor,
     // timeout, Ctrl+C e cancelamento. O renderer limpa a animação (idempotente)
     // e garante que o rótulo saiu.
@@ -1199,7 +1213,10 @@ fn render_turn_event(
 ) {
     let ui = match evento {
         TurnEvent::TextDelta(texto) => UiEvent::TextDelta(texto),
-        TurnEvent::ToolStarted { name, detail } => UiEvent::ToolStarted { name, detail },
+        TurnEvent::ToolStarted { name, detail } => {
+            tool_log.iniciar(name, detail);
+            UiEvent::ToolStarted { name, detail }
+        },
         TurnEvent::ToolFinished {
             name,
             duration,
@@ -2182,6 +2199,7 @@ pub async fn run_chat(
         renderer.begin_turn(caps.spinner(turn_index));
         turn_index = turn_index.wrapping_add(1);
 
+        let inicio_evidencias = tool_log.proximo_indice();
         let (tx, rx) = mpsc::channel::<TurnEvent>(100);
 
         // The runtime appends the user message on top of the given history
@@ -2307,6 +2325,24 @@ pub async fn run_chat(
                     &mut stdout,
                 );
             }
+        }
+
+        // A resposta do LLM e o registro de ferramentas possuem proveniencias
+        // distintas. Nao misturar os dois textos e nem inferir que o sucesso
+        // anterior prova que o arquivo ainda existe neste instante.
+        if let Some(evidence) = tool_log.resumo_desde(inicio_evidencias) {
+            if let Some(ref store) = store
+                && let Err(e) = persist_tool_evidence(store, &session_id, &evidence)
+            {
+                renderer.handle(
+                    UiEvent::Warning(&format!("Evidencias de ferramentas nao gravadas: {e}")),
+                    &mut stdout,
+                );
+            }
+            history.push(ChatMessage {
+                role: ChatRole::Assistant,
+                content: MessagePart::Text(evidence),
+            });
         }
 
         println!();
@@ -4198,6 +4234,23 @@ mod persist_tests {
         let papeis: Vec<&str> = historico.iter().map(papel).collect();
         assert_eq!(papeis, vec!["user", "assistant", "user", "assistant"]);
         assert_eq!(textos(&historico), vec!["oi", "ola", "tudo bem?", "tudo"]);
+    }
+
+    #[test]
+    fn resume_hidrata_registro_do_executor_separado_da_resposta() {
+        let store = SessionStore::in_memory().expect("store em memoria");
+        persist_user_turn(&store, "cli-evidencia", "crie pagina.html").expect("user");
+        persist_assistant_turn(&store, "cli-evidencia", "arquivo criado").expect("assistant");
+        persist_tool_evidence(
+            &store,
+            "cli-evidencia",
+            "[Registro automatico] evento local #0: file_write arquivo=pagina.html; sucesso reportado",
+        )
+        .expect("evidencia");
+        let history = load_history(&store, "cli-evidencia", RESUME_LIMIT).expect("resume");
+        assert_eq!(history.len(), 3);
+        assert_eq!(papel(&history[2]), "assistant");
+        assert!(textos(&history)[2].contains("file_write"));
     }
 
     /// Um id que nao existe devolve historico vazio em vez de erro: e o que
