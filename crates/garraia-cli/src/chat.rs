@@ -1101,6 +1101,13 @@ enum TurnOutcome<T, E> {
     Cancelled,
 }
 
+/// Somente um turno concluido tem par User/Assistant no history da CLI.
+/// Nao anexar evidencia como Assistant isolado apos timeout, cancelamento
+/// ou erro: ela ficaria sem o turno de usuario correspondente.
+fn turno_pode_anexar_evidencias<T, E>(outcome: &TurnOutcome<T, E>) -> bool {
+    matches!(outcome, TurnOutcome::Done(Ok(_)))
+}
+
 /// Await the streaming LLM call while concurrently draining `rx`, writing
 /// each delta to `out` as it arrives. The runtime pushes deltas through a
 /// bounded channel with `send().await` (runtime.rs), so the receiver MUST be
@@ -2266,6 +2273,7 @@ pub async fn run_chat(
             );
         }
 
+        let turno_concluido = turno_pode_anexar_evidencias(&outcome);
         match outcome {
             TurnOutcome::TimedOut => {
                 let cartao = ErrorCard::timeout_local(timeout_secs);
@@ -2336,7 +2344,10 @@ pub async fn run_chat(
         // A resposta do LLM e o registro de ferramentas possuem proveniencias
         // distintas. Nao misturar os dois textos e nem inferir que o sucesso
         // anterior prova que o arquivo ainda existe neste instante.
-        if let Some(evidence) = tool_log.resumo_desde(inicio_evidencias) {
+        // Somente o turno concluido entrou no history como User/Assistant.
+        if turno_concluido
+            && let Some(evidence) = tool_log.resumo_desde(inicio_evidencias)
+        {
             let evidence = format!("turno {}:\n{evidence}", uuid::Uuid::new_v4());
             if let Some(ref store) = store
                 && let Err(e) = persist_tool_evidence(store, &session_id, &evidence)
@@ -4609,5 +4620,18 @@ mod aprovacao_tests {
         turno(&rt, "cli-a", &mut a, "apaga o arquivo").await;
         turno(&rt, "cli-b", &mut b, "sim").await;
         assert_eq!(vezes.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[cfg(test)]
+mod testes_evidencia_por_resultado_do_turno {
+    use super::*;
+
+    #[test]
+    fn nao_anexa_evidencia_sem_par_de_historico_concluido() {
+        assert!(turno_pode_anexar_evidencias(&TurnOutcome::<(), ()>::Done(Ok(()))));
+        assert!(!turno_pode_anexar_evidencias(&TurnOutcome::<(), ()>::Done(Err(()))));
+        assert!(!turno_pode_anexar_evidencias(&TurnOutcome::<(), ()>::TimedOut));
+        assert!(!turno_pode_anexar_evidencias(&TurnOutcome::<(), ()>::Cancelled));
     }
 }
