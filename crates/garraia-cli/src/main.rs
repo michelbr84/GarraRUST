@@ -7,6 +7,7 @@ mod bind_gate;
 mod boot_gate_cli;
 mod capability_prompt;
 mod chat;
+mod cli_inspect_tool;
 mod chat_input;
 mod cli_args;
 mod config_cmd;
