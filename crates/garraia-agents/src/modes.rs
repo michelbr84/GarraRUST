@@ -939,6 +939,7 @@ impl ModeProfile {
                     // I/O nem rede) — o modelo precisa dela para nao negar
                     // um canal em que esta conectado.
                     "garra_status",
+                    "cli_inspect",
                 ]
                 .iter()
                 // #1384: a leitura do MCP `filesystem` (lista fechada de
@@ -1001,6 +1002,7 @@ impl ModeProfile {
                     // I/O nem rede) — o modelo precisa dela para nao negar
                     // um canal em que esta conectado.
                     "garra_status".to_string(),
+                    "cli_inspect".to_string(),
                 ],
                 // #1129: sem escrita no mundo físico também.
                 denied: vec![
@@ -1122,6 +1124,7 @@ impl ModeProfile {
                     // I/O nem rede) — o modelo precisa dela para nao negar
                     // um canal em que esta conectado.
                     "garra_status".to_string(),
+                    "cli_inspect".to_string(),
                 ],
                 denied: vec![
                     "file_write".to_string(),
@@ -1166,6 +1169,7 @@ impl ModeProfile {
                     // I/O nem rede) — o modelo precisa dela para nao negar
                     // um canal em que esta conectado.
                     "garra_status".to_string(),
+                    "cli_inspect".to_string(),
                 ],
                 denied: vec![],
                 required: vec![],
@@ -1213,6 +1217,7 @@ impl ModeProfile {
                     // I/O nem rede) — o modelo precisa dela para nao negar
                     // um canal em que esta conectado.
                     "garra_status".to_string(),
+                    "cli_inspect".to_string(),
                 ],
                 denied: vec![
                     "file_write".to_string(),
@@ -1256,6 +1261,7 @@ impl ModeProfile {
                     // I/O nem rede) — o modelo precisa dela para nao negar
                     // um canal em que esta conectado.
                     "garra_status".to_string(),
+                    "cli_inspect".to_string(),
                 ],
                 denied: vec![],
                 required: vec![],
@@ -2692,6 +2698,13 @@ mod tests {
             assert!(
                 ToolGate::for_mode_name(modo.as_str()).permite("garra_status"),
                 "modo '{modo}' esconde garra_status (#1347)"
+            );
+            assert!(
+                ToolGate::for_mode_name(modo.as_str()).permite_com_capacidades(
+                    "cli_inspect",
+                    &[crate::capacidades::Capacidade::RuntimeInspect],
+                ),
+                "modo '{modo}' esconde cli_inspect (#1712)"
             );
         }
         assert_eq!(
