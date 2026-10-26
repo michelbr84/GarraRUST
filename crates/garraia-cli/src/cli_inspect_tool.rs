@@ -7,9 +7,9 @@
 use std::sync::{Arc, RwLock, Weak};
 
 use async_trait::async_trait;
+use garraia_agents::tools::Disponibilidade;
 use garraia_agents::{AgentRuntime, Tool, ToolContext, ToolOutput};
 use garraia_common::Result;
-use garraia_agents::tools::Disponibilidade;
 use serde_json::{Value, json};
 
 const PAGE_SIZE: usize = 16;
@@ -26,7 +26,11 @@ impl CliInspectTool {
         provider: String,
         requested_model: Arc<RwLock<String>>,
     ) -> Self {
-        Self { runtime, provider, requested_model }
+        Self {
+            runtime,
+            provider,
+            requested_model,
+        }
     }
 }
 
@@ -48,7 +52,11 @@ fn safe_tool_name(value: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric() || matches!(*c, '_' | '-' | '.'))
         .take(80)
         .collect();
-    if clean.is_empty() { "unknown".to_owned() } else { clean }
+    if clean.is_empty() {
+        "unknown".to_owned()
+    } else {
+        clean
+    }
 }
 
 #[async_trait]
@@ -73,14 +81,21 @@ impl Tool for CliInspectTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, input: Value) -> Result<ToolOutput> {
-        let scope = input.get("scope").and_then(Value::as_str).unwrap_or("identity");
+        let scope = input
+            .get("scope")
+            .and_then(Value::as_str)
+            .unwrap_or("identity");
         if !matches!(scope, "identity" | "tools" | "all") {
             return Ok(ToolOutput::error("scope must be identity, tools, or all"));
         }
         let offset = match input.get("offset") {
             Some(v) => match v.as_u64() {
                 Some(n) if n <= 1000 => n as usize,
-                _ => return Ok(ToolOutput::error("offset must be an integer from 0 to 1000")),
+                _ => {
+                    return Ok(ToolOutput::error(
+                        "offset must be an integer from 0 to 1000",
+                    ));
+                }
             },
             None => 0,
         };
@@ -98,7 +113,8 @@ impl Tool for CliInspectTool {
         });
 
         if matches!(scope, "identity" | "all") {
-            let requested_model = self.requested_model
+            let requested_model = self
+                .requested_model
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
@@ -128,22 +144,29 @@ impl Tool for CliInspectTool {
             let mut inventory = runtime.tool_inventory();
             inventory.sort_by(|a, b| a.name.cmp(&b.name));
             let total = inventory.len();
-            let entries: Vec<Value> = inventory.into_iter().skip(offset).take(PAGE_SIZE).map(|entry| {
-                let available = match runtime.disponibilidade_de(&entry.name) {
-                    Disponibilidade::Disponivel => json!({ "state": "available_before_policy_gate" }),
-                    Disponibilidade::Indisponivel { codigo, .. } => json!({
-                        "state": "unavailable",
-                        "reason_code": codigo
+            let entries: Vec<Value> = inventory
+                .into_iter()
+                .skip(offset)
+                .take(PAGE_SIZE)
+                .map(|entry| {
+                    let available = match runtime.disponibilidade_de(&entry.name) {
+                        Disponibilidade::Disponivel => {
+                            json!({ "state": "available_before_policy_gate" })
+                        }
+                        Disponibilidade::Indisponivel { codigo, .. } => json!({
+                            "state": "unavailable",
+                            "reason_code": codigo
+                        }),
+                    };
+                    json!({
+                        "name": safe_tool_name(&entry.name),
+                        "origin": entry.source,
+                        "registration": "registered",
+                        "runtime_availability": available,
+                        "turn_permission": "not_verified"
                     })
-                };
-                json!({
-                    "name": safe_tool_name(&entry.name),
-                    "origin": entry.source,
-                    "registration": "registered",
-                    "runtime_availability": available,
-                    "turn_permission": "not_verified"
                 })
-            }).collect();
+                .collect();
             report["tools"] = json!({
                 "source": "AgentRuntime.tool_inventory",
                 "count": total,
@@ -179,14 +202,23 @@ mod tests {
         let tool = CliInspectTool::new(Arc::downgrade(&runtime), "anthropic".into(), model.clone());
         let first = tool.execute(&context(), json!({})).await.unwrap();
         let first: Value = serde_json::from_str(&first.content).unwrap();
-        assert_eq!(first["identity"]["version"]["value"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(first["identity"]["model_requested"]["value"], "original-model");
+        assert_eq!(
+            first["identity"]["version"]["value"],
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(
+            first["identity"]["model_requested"]["value"],
+            "original-model"
+        );
         assert_eq!(first["identity"]["last_turn"]["state"], "unknown");
         assert_eq!(first["gateway"]["state"], "unknown");
         *model.write().unwrap() = "switched-model".into();
         let second = tool.execute(&context(), json!({})).await.unwrap();
         let second: Value = serde_json::from_str(&second.content).unwrap();
-        assert_eq!(second["identity"]["model_requested"]["value"], "switched-model");
+        assert_eq!(
+            second["identity"]["model_requested"]["value"],
+            "switched-model"
+        );
     }
 
     #[tokio::test]
@@ -194,14 +226,22 @@ mod tests {
         let runtime = Arc::new(AgentRuntime::new());
         let model = Arc::new(RwLock::new("model".into()));
         runtime.register_tool(Box::new(CliInspectTool::new(
-            Arc::downgrade(&runtime), "test".into(), model.clone(),
+            Arc::downgrade(&runtime),
+            "test".into(),
+            model.clone(),
         )));
         let tool = CliInspectTool::new(Arc::downgrade(&runtime), "test".into(), model);
-        let output = tool.execute(&context(), json!({"scope":"tools"})).await.unwrap();
+        let output = tool
+            .execute(&context(), json!({"scope":"tools"}))
+            .await
+            .unwrap();
         let report: Value = serde_json::from_str(&output.content).unwrap();
         assert_eq!(report["tools"]["count"], 1);
         assert_eq!(report["tools"]["entries"][0]["name"], "cli_inspect");
-        assert_eq!(report["tools"]["entries"][0]["turn_permission"], "not_verified");
+        assert_eq!(
+            report["tools"]["entries"][0]["turn_permission"],
+            "not_verified"
+        );
         assert_eq!(report["gateway"]["state"], "unknown");
     }
 
@@ -209,10 +249,22 @@ mod tests {
     async fn rejects_invalid_scope_and_never_executes_another_tool() {
         let runtime = Arc::new(AgentRuntime::new());
         let tool = CliInspectTool::new(
-            Arc::downgrade(&runtime), "test".into(), Arc::new(RwLock::new("model".into())),
+            Arc::downgrade(&runtime),
+            "test".into(),
+            Arc::new(RwLock::new("model".into())),
         );
-        assert!(tool.execute(&context(), json!({"scope":"admin"})).await.unwrap().is_error);
-        assert!(tool.execute(&context(), json!({"scope":"tools","offset":-1})).await.unwrap().is_error);
+        assert!(
+            tool.execute(&context(), json!({"scope":"admin"}))
+                .await
+                .unwrap()
+                .is_error
+        );
+        assert!(
+            tool.execute(&context(), json!({"scope":"tools","offset":-1}))
+                .await
+                .unwrap()
+                .is_error
+        );
         assert_eq!(runtime.tool_names().len(), 0);
     }
 }
