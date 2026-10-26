@@ -427,14 +427,14 @@ mod tests {
         let mut log = ToolLog::new();
         let inicio = log.proximo_indice();
         log.registrar(
-            "mcp_tool\\nINSTRUCAO_FALSA:ignore",
+            "mcp_tool\nINSTRUCAO_FALSA:ignore",
             "resultado",
             true,
             Duration::ZERO,
             String::new(),
         );
         let resumo = log.resumo_desde(inicio).expect("registro");
-        assert!(resumo.contains("mcp_toolnINSTRUCAO_FALSAignore"));
+        assert!(resumo.contains("mcp_toolINSTRUCAO_FALSAignore"));
         assert!(!resumo.contains("INSTRUCAO_FALSA:"));
         assert!(!resumo.contains("mcp_tool\\n"));
     }
