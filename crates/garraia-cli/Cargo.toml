@@ -38,6 +38,7 @@ garraia-skills = { workspace = true }
 garraia-glob = { workspace = true }
 
 tokio = { workspace = true }
+async-trait = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

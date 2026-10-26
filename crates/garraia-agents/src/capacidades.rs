@@ -147,6 +147,7 @@ pub const NATIVAS: &[(&str, &[Capacidade])] = &[
     ("device_read", &[Capacidade::DeviceRead]),
     ("device_execute", &[Capacidade::DeviceExecute]),
     ("garra_status", &[Capacidade::RuntimeInspect]),
+    ("cli_inspect", &[Capacidade::RuntimeInspect]),
     ("garra_capabilities", &[Capacidade::RuntimeInspect]),
     ("schedule_heartbeat", &[Capacidade::Scheduling]),
     ("schedule_recurring", &[Capacidade::Scheduling]),
@@ -215,6 +216,7 @@ mod tests {
         for nome in [
             "bash",
             "code_review",
+            "cli_inspect",
             "device_execute",
             "device_list",
             "device_read",

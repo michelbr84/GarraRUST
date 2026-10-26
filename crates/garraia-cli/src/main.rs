@@ -9,6 +9,7 @@ mod capability_prompt;
 mod chat;
 mod chat_input;
 mod cli_args;
+mod cli_inspect_tool;
 mod config_cmd;
 mod defaults;
 mod desktop;
