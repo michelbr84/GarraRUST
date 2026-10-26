@@ -1216,7 +1216,7 @@ fn render_turn_event(
         TurnEvent::ToolStarted { name, detail } => {
             tool_log.iniciar(name, detail);
             UiEvent::ToolStarted { name, detail }
-        },
+        }
         TurnEvent::ToolFinished {
             name,
             duration,
@@ -2331,6 +2331,7 @@ pub async fn run_chat(
         // distintas. Nao misturar os dois textos e nem inferir que o sucesso
         // anterior prova que o arquivo ainda existe neste instante.
         if let Some(evidence) = tool_log.resumo_desde(inicio_evidencias) {
+            let evidence = format!("turno {}:\n{evidence}", uuid::Uuid::new_v4());
             if let Some(ref store) = store
                 && let Err(e) = persist_tool_evidence(store, &session_id, &evidence)
             {
