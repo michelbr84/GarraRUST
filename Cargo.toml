@@ -70,7 +70,7 @@ clap = { version = "4", features = ["derive", "env"] }
 # disputando com o vigia de `chat.rs`. COM ela so registra SIGWINCH, pelo
 # `signal-hook-registry` que o tokio ja usa, e nao toca no SIGINT. Ha teste
 # em `chat_input.rs` varrendo esta linha.
-rustyline = { version = "18", default-features = false, features = ["with-file-history", "signal-hook"] }
+rustyline = { version = "19", default-features = false, features = ["with-file-history", "signal-hook"] }
 
 # Logging / Tracing
 tracing = "0.1"
