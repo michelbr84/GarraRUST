@@ -155,6 +155,19 @@ impl ToolLog {
         self.entradas.is_empty()
     }
 
+    /// O indice que a proxima chamada registrada vai receber. Lido antes de
+    /// um turno, marca de onde `desde` deve comecar (#1708).
+    pub fn proximo_indice(&self) -> usize {
+        self.proximo
+    }
+
+    /// As entradas ainda guardadas com indice `>= inicio`, da mais antiga
+    /// para a mais nova. Entradas expulsas pelo limite simplesmente nao
+    /// aparecem.
+    pub fn desde(&self, inicio: usize) -> impl Iterator<Item = &Entrada> {
+        self.entradas.iter().filter(move |e| e.indice >= inicio)
+    }
+
     /// Procura por indice, distinguindo expirada de inexistente.
     pub fn buscar(&self, indice: usize) -> Busca<'_> {
         if let Some(e) = self.entradas.iter().find(|e| e.indice == indice) {

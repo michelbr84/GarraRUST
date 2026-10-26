@@ -428,6 +428,44 @@ fn persist_user_turn(store: &SessionStore, session_id: &str, user_text: &str) ->
 /// Grava o lado do assistant: resposta completa ou o marcador de
 /// interrupcao de `marcador_de_interrupcao`. A sessao ja existe — o
 /// `persist_user_turn` do mesmo turno a criou.
+/// #1708: o `history` do chat so guardava o texto final do assistant, entao o
+/// modelo perdia as ferramentas que o proprio executor rodou e passava a negar
+/// operacoes reais. Esta nota e montada do `ToolLog` (originada no executor,
+/// nunca pelo LLM) e vai SO para o historico em memoria — nao para o disco
+/// nem para a tela.
+///
+/// Leva nome, detalhe curto e status. **Nunca** a saida da ferramenta: ela e
+/// conteudo nao confiavel e nao deve virar texto do assistant. Nem prova que
+/// o estado atual do mundo bate com o registro.
+fn nota_de_ferramentas<'a>(
+    entradas: impl Iterator<Item = &'a crate::ui::tool_log::Entrada>,
+) -> String {
+    const MAX_ITENS: usize = 20;
+    const MAX_DETALHE: usize = 120;
+
+    let linhas: Vec<String> = entradas
+        .take(MAX_ITENS)
+        .map(|e| {
+            let detalhe: String = e
+                .detalhe
+                .chars()
+                .take(MAX_DETALHE)
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            let status = if e.sucesso { "ok" } else { "erro" };
+            format!("- #{} {} {detalhe} -> {status}", e.indice, e.ferramenta)
+        })
+        .collect();
+    if linhas.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\n[registro do runtime: ferramentas executadas neste turno; \
+         status reportado pelo executor, nao verificacao do estado atual]\n{}",
+        linhas.join("\n")
+    )
+}
+
 fn persist_assistant_turn(
     store: &SessionStore,
     session_id: &str,
@@ -2183,6 +2221,7 @@ pub async fn run_chat(
         turn_index = turn_index.wrapping_add(1);
 
         let (tx, rx) = mpsc::channel::<TurnEvent>(100);
+        let tool_log_inicio = tool_log.proximo_indice();
 
         // The runtime appends the user message on top of the given history
         // (runtime.rs), so `history` must NOT contain it yet — it is pushed
@@ -2280,13 +2319,15 @@ pub async fn run_chat(
                     );
                 }
 
+                // #1708: o modelo precisa ver o que o executor rodou.
+                let nota = nota_de_ferramentas(tool_log.desde(tool_log_inicio));
                 history.push(ChatMessage {
                     role: ChatRole::User,
                     content: MessagePart::Text(input.clone()),
                 });
                 history.push(ChatMessage {
                     role: ChatRole::Assistant,
-                    content: MessagePart::Text(full_response),
+                    content: MessagePart::Text(format!("{full_response}{nota}")),
                 });
             }
             TurnOutcome::Done(Err(e)) => {
@@ -2360,6 +2401,39 @@ mod testes_1225_s2 {
             let tool = runtime.find_tool(nome).expect("registrada");
             roda_recusada(tool, input).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod testes_1708 {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn nota_lista_so_o_turno_e_nunca_a_saida() {
+        let mut log = ToolLog::new();
+        log.registrar("bash", "antigo", true, Duration::ZERO, "x".into());
+        let inicio = log.proximo_indice();
+        log.registrar(
+            "Write",
+            "pagina.html",
+            true,
+            Duration::ZERO,
+            "SEGREDO".into(),
+        );
+        log.registrar("Read", "a\nb", false, Duration::ZERO, "y".into());
+
+        let nota = nota_de_ferramentas(log.desde(inicio));
+        assert!(nota.contains("#1 Write pagina.html -> ok"));
+        assert!(nota.contains("#2 Read a b -> erro"));
+        assert!(!nota.contains("antigo"));
+        assert!(!nota.contains("SEGREDO"));
+    }
+
+    #[test]
+    fn turno_sem_ferramenta_nao_gera_nota() {
+        let log = ToolLog::new();
+        assert!(nota_de_ferramentas(log.desde(log.proximo_indice())).is_empty());
     }
 }
 
