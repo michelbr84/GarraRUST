@@ -433,7 +433,13 @@ fn persist_tool_evidence(store: &SessionStore, session_id: &str, evidence: &str)
         "kind": "tool_evidence",
         "source": "runtime",
     });
-    store.append_message(session_id, "tool_evidence", evidence, chrono::Utc::now(), &meta)?;
+    store.append_message(
+        session_id,
+        "tool_evidence",
+        evidence,
+        chrono::Utc::now(),
+        &meta,
+    )?;
     Ok(())
 }
 
