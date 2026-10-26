@@ -152,7 +152,7 @@ impl ToolLog {
                 let nome = entrada.alvo.rsplit(['/', '\\']).next().unwrap_or("");
                 let nome: String = nome
                     .chars()
-                    .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+                    .filter(|c| c.is_alphanumeric() || matches!(*c, '.' | '_' | '-'))
                     .take(80)
                     .collect();
                 if nome.is_empty() {
@@ -345,7 +345,13 @@ mod tests {
         let inicio = log.proximo_indice();
         log.iniciar("file_write", "/home/usuario/privado/pagina.html");
         assert!(log.resumo_desde(inicio).is_none(), "inicio nao prova resultado");
-        log.registrar("file_write", "escreveu 713 bytes", true, Duration::ZERO, "segredo".into());
+        log.registrar(
+            "file_write",
+            "escreveu 713 bytes",
+            true,
+            Duration::ZERO,
+            "segredo".into(),
+        );
         let resumo = log.resumo_desde(inicio).expect("registro");
         assert!(resumo.contains("file_write arquivo=pagina.html; sucesso reportado"));
         assert!(!resumo.contains("/home/usuario"));
@@ -353,10 +359,18 @@ mod tests {
         assert!(!resumo.contains("713 bytes"));
 
         log.iniciar("file_read", "/home/usuario/privado/TESTE.md");
-        log.registrar("file_read", "permissao negada", false, Duration::ZERO, String::new());
-        assert!(log.resumo_desde(inicio).unwrap().contains(
-            "file_read arquivo=TESTE.md; falha/recusa reportada"
-        ));
+        log.registrar(
+            "file_read",
+            "permissao negada",
+            false,
+            Duration::ZERO,
+            String::new(),
+        );
+        assert!(
+            log.resumo_desde(inicio)
+                .unwrap()
+                .contains("file_read arquivo=TESTE.md; falha/recusa reportada")
+        );
     }
 
     #[test]
@@ -365,7 +379,13 @@ mod tests {
         let inicio = log.proximo_indice();
         for _ in 0..(MAX_ENTRADAS + 2) {
             log.iniciar("bash", "curl -H Authorization:segredo");
-            log.registrar("bash", "ok", true, Duration::ZERO, "segredo".into());
+            log.registrar(
+                "bash",
+                "ok",
+                true,
+                Duration::ZERO,
+                "segredo".into(),
+            );
         }
         let resumo = log.resumo_desde(inicio).expect("registro");
         assert!(resumo.contains("registro parcial"));
