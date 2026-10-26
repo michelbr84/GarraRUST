@@ -2345,9 +2345,7 @@ pub async fn run_chat(
         // distintas. Nao misturar os dois textos e nem inferir que o sucesso
         // anterior prova que o arquivo ainda existe neste instante.
         // Somente o turno concluido entrou no history como User/Assistant.
-        if turno_concluido
-            && let Some(evidence) = tool_log.resumo_desde(inicio_evidencias)
-        {
+        if turno_concluido && let Some(evidence) = tool_log.resumo_desde(inicio_evidencias) {
             let evidence = format!("turno {}:\n{evidence}", uuid::Uuid::new_v4());
             if let Some(ref store) = store
                 && let Err(e) = persist_tool_evidence(store, &session_id, &evidence)
@@ -4629,9 +4627,17 @@ mod testes_evidencia_por_resultado_do_turno {
 
     #[test]
     fn nao_anexa_evidencia_sem_par_de_historico_concluido() {
-        assert!(turno_pode_anexar_evidencias(&TurnOutcome::<(), ()>::Done(Ok(()))));
-        assert!(!turno_pode_anexar_evidencias(&TurnOutcome::<(), ()>::Done(Err(()))));
-        assert!(!turno_pode_anexar_evidencias(&TurnOutcome::<(), ()>::TimedOut));
-        assert!(!turno_pode_anexar_evidencias(&TurnOutcome::<(), ()>::Cancelled));
+        assert!(turno_pode_anexar_evidencias(&TurnOutcome::<(), ()>::Done(
+            Ok(())
+        )));
+        assert!(!turno_pode_anexar_evidencias(&TurnOutcome::<(), ()>::Done(
+            Err(())
+        )));
+        assert!(!turno_pode_anexar_evidencias(
+            &TurnOutcome::<(), ()>::TimedOut
+        ));
+        assert!(!turno_pode_anexar_evidencias(
+            &TurnOutcome::<(), ()>::Cancelled
+        ));
     }
 }
