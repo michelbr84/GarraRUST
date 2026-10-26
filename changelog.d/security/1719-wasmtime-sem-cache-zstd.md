@@ -1,0 +1,1 @@
+Desliga a feature `cache` do wasmtime (nao usada por garraia-plugins), removendo zstd 0.13 / zstd-safe 7.2 / zstd-sys 2.0.16 do Cargo.lock e destravando `cargo audit`/`cargo deny` (RUSTSEC-2026-0391, 0395 a 0406, 0410). O wasmtime 49 e 50 fixam `zstd ^0.13`, entao so desligar a feature resolve.
