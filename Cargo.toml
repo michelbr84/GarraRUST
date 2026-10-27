@@ -146,8 +146,8 @@ jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_r
 # de modulos compilados (`Config::cache_config_load*`) nao e usado por
 # garraia-plugins; o resto das features default foi mantido. Religar o `cache`
 # so quando o wasmtime aceitar zstd >= 0.14.3 / zstd-safe >= 8.2 / zstd-sys >= 2.1.2.
-wasmtime = { version = "49", default-features = false, features = ["anyhow", "async", "backtrace", "gc", "gc-copying", "gc-drc", "gc-null", "wat", "profiling", "parallel-compilation", "cranelift", "pooling-allocator", "demangle", "addr2line", "coredump", "debug-builtins", "runtime", "component-model", "component-model-async", "threads", "stack-switching", "std", "debug", "compile-time-builtins", "wit-parser"] }
-wasmtime-wasi = { version = "49", features = ["p1"] }
+wasmtime = { version = "50", default-features = false, features = ["anyhow", "async", "backtrace", "gc", "gc-copying", "gc-drc", "gc-null", "wat", "profiling", "parallel-compilation", "cranelift", "pooling-allocator", "demangle", "addr2line", "coredump", "debug-builtins", "runtime", "component-model", "component-model-async", "threads", "stack-switching", "std", "debug", "compile-time-builtins", "wit-parser"] }
+wasmtime-wasi = { version = "50", features = ["p1"] }
 
 # Discord
 # Segue em native_tls_backend, com OpenSSL VENDORED (estático) via o dep
