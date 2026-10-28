@@ -403,15 +403,17 @@ pub fn aplicar_recusas_de_credencial(
 }
 
 /// `credencial recusada (401) em 2026-10-28T19:05:12Z` — e, a partir da
-/// segunda recusa seguida, quantas foram. Hora em UTC com `Z`, como todo
-/// timestamp de API deste repo. So status e hora: o corpo do 401 nao entra
-/// aqui porque `/api/health` e auth-free e ele pode carregar o prefixo da
-/// propria chave.
+/// segunda recusa seguida, quantas foram. Conta **chamadas** ao provider,
+/// nao turnos de conversa: um turno pode fazer mais de uma (extracao de
+/// memoria, segunda passada de ferramentas), e cada uma recusada conta. Hora
+/// em UTC com `Z`, como todo timestamp de API deste repo. So status e hora:
+/// o corpo do 401 nao entra aqui porque `/api/health` e auth-free e ele pode
+/// carregar o prefixo da propria chave.
 fn motivo_da_recusa(recusa: &RecusaDeCredencial) -> String {
     let quando = chrono::DateTime::<chrono::Utc>::from(recusa.quando)
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let seguidas = if recusa.seguidas > 1 {
-        format!(" ({} turnos seguidos)", recusa.seguidas)
+        format!(" ({} recusas seguidas)", recusa.seguidas)
     } else {
         String::new()
     };
@@ -722,7 +724,7 @@ mod tests {
         assert_eq!(
             saida[0].error.as_deref(),
             Some(
-                "credencial recusada (403) em 2026-10-28T19:05:12Z (3 turnos seguidos); \
+                "credencial recusada (403) em 2026-10-28T19:05:12Z (3 recusas seguidas); \
                  sonda: HTTP 503 Service Unavailable"
             )
         );
