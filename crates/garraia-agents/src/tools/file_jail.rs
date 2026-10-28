@@ -301,16 +301,7 @@ impl FileJail {
     /// `list_allowed_directories` com exatamente esta lista.
     pub fn effective_roots(&self, session_dir: Option<&str>) -> Vec<PathBuf> {
         let mut roots = self.roots.clone();
-        if let Some(wd) = session_dir.map(str::trim).filter(|w| !w.is_empty()) {
-            match std::fs::canonicalize(wd) {
-                Ok(resolved) => roots.push(resolved),
-                Err(e) => warn!(
-                    working_dir = %wd,
-                    error = %e,
-                    "working_dir da sessao ignorado como raiz: nao resolveu"
-                ),
-            }
-        }
+        roots.extend(raiz_da_sessao(session_dir));
         roots
     }
 
@@ -328,6 +319,26 @@ impl FileJail {
         if roots.is_empty() {
             return Err(Denial::NoRoots);
         }
+        // #1724: caminho relativo nasce numa raiz, nao no CWD do processo. No
+        // gateway o CWD nao e raiz nenhuma, e `notas.txt` era recusado como
+        // "fora" mesmo com uma unica raiz declarada — o modelo repetia a
+        // tentativa ate derrubar o breaker. A ancora nunca amplia o jail: o
+        // resultado passa pela mesma checagem de `starts_with(root)` abaixo.
+        let ancorado;
+        let path = if path.is_relative() {
+            let cwd = std::env::current_dir()
+                .ok()
+                .and_then(|c| std::fs::canonicalize(c).ok());
+            ancorado = ancora_para_relativo(
+                &roots,
+                raiz_da_sessao(session_dir).as_deref(),
+                cwd.as_deref(),
+            )
+            .join(path);
+            ancorado.as_path()
+        } else {
+            path
+        };
         let resolved = resolve_nearest_existing(path)?;
         if roots.iter().any(|root| resolved.starts_with(root)) {
             Ok(resolved)
@@ -335,6 +346,46 @@ impl FileJail {
             Err(Denial::Outside)
         }
     }
+}
+
+/// O `working_dir` da sessao canonicalizado, quando ha um e ele resolve.
+/// `None` (com `warn!`) quando nao resolve: um diretorio inexistente nao
+/// autoriza nada, nem serve de ancora.
+fn raiz_da_sessao(session_dir: Option<&str>) -> Option<PathBuf> {
+    let wd = session_dir.map(str::trim).filter(|w| !w.is_empty())?;
+    match std::fs::canonicalize(wd) {
+        Ok(resolved) => Some(resolved),
+        Err(e) => {
+            warn!(
+                working_dir = %wd,
+                error = %e,
+                "working_dir da sessao ignorado como raiz: nao resolveu"
+            );
+            None
+        }
+    }
+}
+
+/// Onde um caminho relativo comeca (#1724), nesta ordem:
+///
+/// 1. o `working_dir` da sessao, quando ha um — e a pasta "desta conversa";
+/// 2. o CWD do processo, **se ele proprio esta dentro de uma raiz** — e a CLI,
+///    onde `garra chat` roda no diretorio que o dono escolheu e `file_read
+///    Cargo.toml` sempre funcionou assim;
+/// 3. a primeira raiz configurada — o gateway com `agent.file_roots`.
+///
+/// Pura: recebe o CWD em vez de le-lo, para o teste fixar os tres casos.
+/// `roots` nao e vazio (quem chama ja devolveu `NoRoots`).
+fn ancora_para_relativo(roots: &[PathBuf], sessao: Option<&Path>, cwd: Option<&Path>) -> PathBuf {
+    if let Some(s) = sessao {
+        return s.to_path_buf();
+    }
+    if let Some(c) = cwd
+        && roots.iter().any(|r| c.starts_with(r))
+    {
+        return c.to_path_buf();
+    }
+    roots[0].clone()
 }
 
 /// Canonicaliza uma raiz declarada. `None` (com `warn!`) quando ela nao
@@ -422,10 +473,11 @@ fn resolve_nearest_existing(path: &Path) -> Result<PathBuf, Denial> {
             return Err(Denial::Unresolvable);
         };
         // Caminho relativo que acabou os componentes: o pai vira `""`, que nao
-        // canonicaliza. Ancora no CWD do processo — que e onde um caminho
-        // relativo ja resolvia — e deixa a checagem de raiz decidir. No
-        // gateway o CWD nao e raiz, entao isto nega; na CLI ele e, entao
-        // `file_read Cargo.toml` continua funcionando.
+        // canonicaliza. Ancora no CWD do processo e deixa a checagem de raiz
+        // decidir. Desde o #1724 `confine` ja ancorou todo relativo numa raiz
+        // (sessao > CWD dentro de raiz > primeira raiz) antes de chegar aqui,
+        // entao este ramo so vale para quem chama esta funcao com um relativo
+        // cru — e ai o CWD e o unico lugar possivel, como sempre foi.
         let pai = if pai.as_os_str().is_empty() {
             Path::new(".")
         } else {
@@ -503,6 +555,82 @@ mod tests {
             jail.confine(Path::new("/etc/passwd"), None),
             Err(Denial::Outside)
         );
+    }
+
+    /// #1724: caminho relativo nasce na raiz configurada, nao no CWD do
+    /// processo — no gateway o CWD nao e raiz, e `notas.txt` era recusado
+    /// mesmo com uma unica raiz declarada. Vale para o que existe e para o que
+    /// ainda vai ser escrito.
+    #[test]
+    fn relativo_sem_sessao_ancora_na_primeira_raiz() {
+        let (_t, root) = raiz();
+        std::fs::write(root.join("notas.txt"), b"x").expect("write");
+        let jail = FileJail::from_roots([&root]);
+        assert_eq!(
+            jail.confine(Path::new("notas.txt"), None)
+                .expect("relativo resolve na raiz"),
+            root.join("notas.txt")
+        );
+        assert_eq!(
+            jail.confine(Path::new("novo/arq.txt"), None)
+                .expect("relativo inexistente resolve na raiz"),
+            root.join("novo/arq.txt")
+        );
+    }
+
+    /// Com `working_dir` de sessao, o relativo e da sessao, nao da raiz fixa.
+    #[test]
+    fn relativo_com_sessao_ancora_na_sessao() {
+        let (_t, root) = raiz();
+        let sessao = root.join("sessao-a");
+        std::fs::create_dir_all(&sessao).expect("mkdir");
+        let jail = FileJail::from_roots([&root]);
+        let sessao_str = sessao.to_string_lossy().into_owned();
+        assert_eq!(
+            jail.confine(Path::new("meu.txt"), Some(&sessao_str))
+                .expect("relativo resolve na sessao"),
+            sessao.join("meu.txt")
+        );
+    }
+
+    /// A ancora nunca amplia o jail: `..` relativo continua `Outside`, e sem
+    /// raiz nenhuma o relativo continua "sem raiz" — nunca cai no CWD.
+    #[test]
+    fn relativo_com_dotdot_e_outside_e_sem_raiz_e_no_roots() {
+        let (_t, root) = raiz();
+        let jail = FileJail::from_roots([&root]);
+        assert_eq!(
+            jail.confine(Path::new("../fora.txt"), None),
+            Err(Denial::Outside)
+        );
+        assert_eq!(
+            FileJail::sessions_only().confine(Path::new("notas.txt"), None),
+            Err(Denial::NoRoots)
+        );
+    }
+
+    /// A ordem da ancora, pura: sessao > CWD dentro de uma raiz > primeira
+    /// raiz. O CWD fora de toda raiz nao conta — e o caso do gateway.
+    #[test]
+    fn ancora_prefere_sessao_depois_cwd_dentro_da_raiz_depois_primeira_raiz() {
+        let a = PathBuf::from("/raiz-a");
+        let b = PathBuf::from("/raiz-b");
+        let roots = vec![a.clone(), b.clone()];
+        let sessao = PathBuf::from("/raiz-a/sessao");
+        let cwd_dentro = PathBuf::from("/raiz-b/sub");
+        assert_eq!(
+            ancora_para_relativo(&roots, Some(&sessao), Some(&cwd_dentro)),
+            sessao
+        );
+        assert_eq!(
+            ancora_para_relativo(&roots, None, Some(&cwd_dentro)),
+            cwd_dentro
+        );
+        assert_eq!(
+            ancora_para_relativo(&roots, None, Some(Path::new("/outro"))),
+            a
+        );
+        assert_eq!(ancora_para_relativo(&roots, None, None), a);
     }
 
     /// O vetor classico: symlink dentro da raiz apontando para fora. So pega

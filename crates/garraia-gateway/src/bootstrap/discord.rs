@@ -263,6 +263,26 @@ fn handle_discord_command(
             if let Some(mut session) = state.sessions.get_mut(&session_id) {
                 session.history.clear();
             }
+            // #1723: so a memoria nao basta — `hydrate_session_history` traz o
+            // banco de volta quando ela esta vazia. Mesmo tratamento do
+            // `/clear` do registro de comandos (`commands.rs`).
+            if let Some(store) = &state.session_store {
+                let store = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async { store.lock().await })
+                });
+                if let Err(e) = store.clear_session_messages(&session_id) {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        erro = %e,
+                        "/clear (discord): falhou ao apagar o historico persistido"
+                    );
+                    return Ok(
+                        "History cleared in memory, but the stored history could not \
+                               be deleted; it may come back on the next turn."
+                            .to_string(),
+                    );
+                }
+            }
             Ok("Conversation history cleared.".to_string())
         }
         "pair" => {

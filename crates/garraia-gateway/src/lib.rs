@@ -23,6 +23,7 @@ pub mod cluster;
 pub mod commands;
 pub mod context_summarizer;
 pub mod diagnostics_handler;
+pub mod erro_http;
 pub mod externalization;
 pub mod gateway_auth;
 pub mod health;
