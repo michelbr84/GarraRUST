@@ -974,10 +974,19 @@ async fn handle_non_streaming(
             Json(resp).into_response()
         }
         Err(e) => {
-            error!("Agent error: {}", e);
+            // #1726: o status segue a classe do erro (400 para pedido errado,
+            // 502 para provider/rede), e o corpo e o objeto de erro da OpenAI,
+            // nao texto solto com "Agent error:" na frente.
+            let status = crate::erro_http::status_para_erro_do_agente(&e);
+            error!(%status, "Agent error: {}", e);
             (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Agent error: {}", e),
+                status,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": e.to_string(),
+                        "type": crate::erro_http::tipo_openai(status),
+                    }
+                })),
             )
                 .into_response()
         }

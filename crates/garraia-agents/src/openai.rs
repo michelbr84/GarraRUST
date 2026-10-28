@@ -395,8 +395,11 @@ impl LlmProvider for OpenAiProvider {
             {
                 return Err(e);
             }
+            // #1726: so a frase do provider sai daqui — o corpo inteiro do
+            // OpenRouter carrega o `user_id` da conta do operador.
             return Err(Error::Agent(format!(
-                "openai API error: status={status}, body={body}"
+                "openai API error: status={status}, body={}",
+                crate::providers::corpo_de_erro_sanitizado(&body)
             )));
         }
 
@@ -565,8 +568,11 @@ impl LlmProvider for OpenAiProvider {
             {
                 return Err(e);
             }
+            // #1726: so a frase do provider sai daqui — o corpo inteiro do
+            // OpenRouter carrega o `user_id` da conta do operador.
             return Err(Error::Agent(format!(
-                "openai API error: status={status}, body={body}"
+                "openai API error: status={status}, body={}",
+                crate::providers::corpo_de_erro_sanitizado(&body)
             )));
         }
 

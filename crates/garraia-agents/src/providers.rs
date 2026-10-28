@@ -220,9 +220,146 @@ pub(crate) fn erro_de_envio(contexto: &str, e: &reqwest::Error) -> Error {
     }
 }
 
+/// O corpo de erro HTTP do provider reduzido ao que pode sair do processo
+/// (#1726): a frase `error.message` quando o corpo e o JSON de erro no
+/// formato da OpenAI (mais `error.code`, se houver), ou o corpo truncado a
+/// 200 caracteres quando nao e. Nunca o JSON inteiro.
+///
+/// O OpenRouter devolve `{"error":{...},"user_id":"user_..."}`; o `user_id` e
+/// a conta do operador, e ia inteiro para a resposta HTTP do gateway e para o
+/// envelope do `garra ask`. O log do provider ja truncava o corpo — era a
+/// mensagem de erro que o repassava cru.
+pub(crate) fn corpo_de_erro_sanitizado(body: &str) -> String {
+    const MAX_CHARS: usize = 200;
+    let aparado = body.trim();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(aparado)
+        && let Some(erro) = v.get("error")
+    {
+        let mensagem = erro
+            .get("message")
+            .and_then(|m| m.as_str())
+            .or_else(|| erro.as_str())
+            .unwrap_or("provider returned an error");
+        let codigo = erro
+            .get("code")
+            .and_then(|c| {
+                c.as_str()
+                    .map(str::to_string)
+                    .or_else(|| c.as_u64().map(|n| n.to_string()))
+            })
+            .map(|c| format!(" (code={c})"))
+            .unwrap_or_default();
+        return format!("{}{codigo}", truncar(mensagem, MAX_CHARS));
+    }
+    truncar(aparado, MAX_CHARS)
+}
+
+/// Corta em `max` caracteres (nao bytes: o corpo pode ter acento ou emoji),
+/// marcando o corte.
+fn truncar(texto: &str, max: usize) -> String {
+    if texto.chars().count() <= max {
+        return texto.to_string();
+    }
+    let inicio: String = texto.chars().take(max).collect();
+    format!("{inicio}…")
+}
+
+/// O status HTTP que o provider respondeu, lido da mensagem de `Error::Agent`
+/// (`"... status=400 Bad Request, ..."`). `None` para erro sem status (rede,
+/// parse, texto de outra origem) e para `Error::Transport`.
+///
+/// Texto, e nao tipo, porque e o contrato que ja existe: `is_retryable_error`
+/// no runtime classifica 429/5xx pela mesma substring, e os providers
+/// escrevem `status={status}` ha varias versoes. Le o PRIMEIRO `status=` da
+/// mensagem; o corpo sanitizado vem depois e nao carrega outro. E o que o
+/// gateway usa para responder 400 em vez de 500 quando o erro e do pedido
+/// (#1726).
+pub fn status_http_do_erro(err: &Error) -> Option<u16> {
+    let Error::Agent(msg) = err else {
+        return None;
+    };
+    let depois = msg.split_once("status=")?.1;
+    let digitos: String = depois.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digitos
+        .parse::<u16>()
+        .ok()
+        .filter(|s| (100..600).contains(s))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1726: o `user_id` do OpenRouter nao sobrevive a sanitizacao; a frase
+    /// do provider e o `code` sobrevivem.
+    #[test]
+    fn corpo_de_erro_sanitizado_fica_so_com_a_frase_do_provider() {
+        let bruto = r#"{"error":{"message":"garraia is not a valid model ID","code":400},"user_id":"user_30DUSuPezaeY1jmnFqymmg2ApXf"}"#;
+        let limpo = corpo_de_erro_sanitizado(bruto);
+        assert_eq!(limpo, "garraia is not a valid model ID (code=400)");
+        assert!(!limpo.contains("user_"), "{limpo}");
+
+        // `code` em string (Anthropic/OpenAI) tambem entra; sem `code`, so a frase.
+        assert_eq!(
+            corpo_de_erro_sanitizado(
+                r#"{"error":{"message":"bad","code":"invalid_request_error"}}"#
+            ),
+            "bad (code=invalid_request_error)"
+        );
+        assert_eq!(
+            corpo_de_erro_sanitizado(r#"{"error":{"message":"so a frase"}}"#),
+            "so a frase"
+        );
+        // `error` como string crua.
+        assert_eq!(corpo_de_erro_sanitizado(r#"{"error":"texto"}"#), "texto");
+    }
+
+    /// Corpo que nao e o JSON de erro: truncado por caracteres, nao por bytes.
+    #[test]
+    fn corpo_de_erro_sanitizado_trunca_texto_cru_por_caracteres() {
+        assert_eq!(corpo_de_erro_sanitizado("  Bad Gateway  "), "Bad Gateway");
+        let longo = "é".repeat(500);
+        let limpo = corpo_de_erro_sanitizado(&longo);
+        assert_eq!(limpo.chars().count(), 201, "200 + o marcador");
+        assert!(limpo.ends_with('…'));
+        // JSON que nao tem `error` tambem e texto cru.
+        assert_eq!(
+            corpo_de_erro_sanitizado(r#"{"detail":"x"}"#),
+            r#"{"detail":"x"}"#
+        );
+    }
+
+    /// #1726: o status sai do texto do `Error::Agent`, no formato que os
+    /// providers escrevem; transporte e texto sem status dao `None`.
+    #[test]
+    fn status_http_do_erro_le_o_status_da_mensagem() {
+        let e = Error::Agent(
+            "openai API error: status=400 Bad Request, body=garraia is not a valid model ID".into(),
+        );
+        assert_eq!(status_http_do_erro(&e), Some(400));
+        let e = Error::Agent("erro na API da Anthropic: status=529 Overloaded, body=...".into());
+        assert_eq!(status_http_do_erro(&e), Some(529));
+        let e = Error::Agent("openai API error (SSE): status=503, error=upstream".into());
+        assert_eq!(status_http_do_erro(&e), Some(503));
+        assert_eq!(
+            status_http_do_erro(&Error::Agent("sem status nenhum".into())),
+            None
+        );
+        assert_eq!(
+            status_http_do_erro(&Error::Agent("status=abc".into())),
+            None
+        );
+        assert_eq!(
+            status_http_do_erro(&Error::Agent("status=9999".into())),
+            None
+        );
+        assert_eq!(
+            status_http_do_erro(&Error::Transport(
+                "openai request failed: error sending request".into()
+            )),
+            None
+        );
+    }
 
     /// Porta fechada em loopback: o unico erro de rede que um teste pode
     /// provocar sem depender de rede de verdade.
