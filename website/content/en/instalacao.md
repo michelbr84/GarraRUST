@@ -23,7 +23,7 @@ The Windows sibling of `install.sh`, at behavioral parity with it.
 
 ## Build from source
 
-Requires Rust 1.96+ (the MSRV declared in `Cargo.toml`).
+Requires Rust 1.97+ (the MSRV declared in `Cargo.toml`).
 
 ```bash
 cargo build --release -p garraia
