@@ -323,11 +323,45 @@ pub fn run_rollback() -> Result<()> {
         );
     }
 
+    #[cfg(windows)]
+    restore_backup_via_aside(&current_exe, &backup_path)?;
+    #[cfg(not(windows))]
     fs::rename(&backup_path, &current_exe).context("failed to restore backup")?;
 
     println!("Rolled back to previous version.");
     println!("Restart the daemon to apply: garraia restart");
 
+    Ok(())
+}
+
+/// Restaura `backup` sobre `current` sem renomear por cima de uma imagem em
+/// execucao (#1720). No Windows isso falha com "Access is denied" quando
+/// `current` e o proprio processo; mover o atual para o lado funciona mesmo
+/// rodando, e so depois o backup toma o lugar — a mesma estrategia do
+/// `run_update`, com desfazer se o segundo passo falhar.
+#[cfg(any(windows, test))]
+fn restore_backup_via_aside(current: &std::path::Path, backup: &std::path::Path) -> Result<()> {
+    let aside = current.with_extension("rollback");
+    // Sobra de um rollback anterior (ainda mapeada na epoca): o alvo do
+    // rename nao pode existir.
+    if aside.exists() {
+        let _ = fs::remove_file(&aside);
+    }
+
+    let moved = current.exists();
+    if moved {
+        fs::rename(current, &aside).context("failed to move current binary aside")?;
+    }
+
+    if let Err(e) = fs::rename(backup, current) {
+        if moved {
+            let _ = fs::rename(&aside, current);
+        }
+        return Err(e).context("failed to restore backup");
+    }
+
+    // Best-effort: no Windows o arquivo ainda pode estar em uso.
+    let _ = fs::remove_file(&aside);
     Ok(())
 }
 
@@ -590,5 +624,52 @@ mod installed_exe_tests {
             calls, 1,
             "update.rs deve chamar std::env::current_exe() exatamente uma vez, em installed_exe()"
         );
+    }
+}
+
+#[cfg(test)]
+mod rollback_tests {
+    use super::restore_backup_via_aside;
+
+    /// #1720: o backup toma o lugar do atual e o `.rollback` nao sobra.
+    #[test]
+    fn restaura_backup_e_limpa_o_lado() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("garraia");
+        let backup = dir.path().join("garraia.old");
+        std::fs::write(&current, b"novo").unwrap();
+        std::fs::write(&backup, b"antigo").unwrap();
+
+        restore_backup_via_aside(&current, &backup).unwrap();
+
+        assert_eq!(std::fs::read(&current).unwrap(), b"antigo");
+        assert!(!backup.exists());
+        assert!(!dir.path().join("garraia.rollback").exists());
+    }
+
+    /// Falha ao trazer o backup desfaz: o binario atual volta ao lugar.
+    #[test]
+    fn falha_desfaz_e_mantem_o_atual() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("garraia");
+        let backup = dir.path().join("garraia.old"); // nao existe
+        std::fs::write(&current, b"novo").unwrap();
+
+        assert!(restore_backup_via_aside(&current, &backup).is_err());
+        assert_eq!(std::fs::read(&current).unwrap(), b"novo");
+    }
+
+    /// Sobra de rollback anterior nao bloqueia o proximo.
+    #[test]
+    fn sobra_de_rollback_anterior_nao_bloqueia() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("garraia");
+        let backup = dir.path().join("garraia.old");
+        std::fs::write(&current, b"novo").unwrap();
+        std::fs::write(&backup, b"antigo").unwrap();
+        std::fs::write(dir.path().join("garraia.rollback"), b"lixo").unwrap();
+
+        restore_backup_via_aside(&current, &backup).unwrap();
+        assert_eq!(std::fs::read(&current).unwrap(), b"antigo");
     }
 }
