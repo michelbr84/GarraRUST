@@ -652,18 +652,25 @@ pub fn build_router(
                     let provider = provider.clone();
                     async move {
                         let mut resp = next.run(req).await;
-                        resp.headers_mut().insert(
-                            "X-AI-Provider",
-                            axum::http::HeaderValue::from_str(&provider).unwrap_or_else(|_| {
-                                axum::http::HeaderValue::from_static("unknown")
-                            }),
-                        );
-                        resp.headers_mut().insert(
-                            "X-AI-Model",
-                            axum::http::HeaderValue::from_str(&model).unwrap_or_else(|_| {
-                                axum::http::HeaderValue::from_static("unknown")
-                            }),
-                        );
+                        // #1733: o handler que sabe quem respondeu de fato
+                        // (fallback) ja pos os headers do turno; o default da
+                        // config so preenche o que ficou vazio.
+                        if !resp.headers().contains_key("X-AI-Provider") {
+                            resp.headers_mut().insert(
+                                "X-AI-Provider",
+                                axum::http::HeaderValue::from_str(&provider).unwrap_or_else(|_| {
+                                    axum::http::HeaderValue::from_static("unknown")
+                                }),
+                            );
+                        }
+                        if !resp.headers().contains_key("X-AI-Model") {
+                            resp.headers_mut().insert(
+                                "X-AI-Model",
+                                axum::http::HeaderValue::from_str(&model).unwrap_or_else(|_| {
+                                    axum::http::HeaderValue::from_static("unknown")
+                                }),
+                            );
+                        }
                         resp
                     }
                 },

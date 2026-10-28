@@ -179,6 +179,17 @@ pub struct SendMessageRequest {
 pub struct SendMessageResponse {
     pub session_id: String,
     pub content: String,
+    /// #1733: o provider que de fato respondeu o turno — difere do default
+    /// da config quando o primario falhou e um fallback serviu.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// #1733: o modelo que respondeu (o da resposta do provider quando ele o
+    /// informa; senao o pedido). Aditivo: clientes antigos ignoram.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// #1733: `true` quando o primario falhou e um fallback serviu.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -579,14 +590,28 @@ pub async fn send_message(
                     &response_text,
                 )
                 .await;
-            (
+            // #1733: quem respondeu de fato, lido do que o runtime registrou
+            // para este turno (nao da config, que so diz o configurado).
+            let stats = state.agents.last_turn_stats(&session_id);
+            let mut resposta = (
                 StatusCode::OK,
                 Json(serde_json::json!(SendMessageResponse {
                     session_id,
                     content: response_text,
+                    provider: stats.as_ref().map(|t| t.provider.clone()),
+                    model: stats.as_ref().map(|t| t.model.clone()),
+                    fallback: stats.as_ref().map(|t| t.fallback),
                 })),
             )
-                .into_response()
+                .into_response();
+            if let Some(t) = &stats {
+                for (nome, valor) in [("X-AI-Provider", &t.provider), ("X-AI-Model", &t.model)] {
+                    if let Ok(v) = axum::http::HeaderValue::from_str(valor) {
+                        resposta.headers_mut().insert(nome, v);
+                    }
+                }
+            }
+            resposta
         }
         Err(e) => {
             // #1726: 400 quando o provider recusou o PEDIDO (modelo invalido,
@@ -1939,6 +1964,64 @@ mod sessao_apos_restart_tests {
             Some(0),
             "turno recusado nao vira historico"
         );
+    }
+
+    /// Primario cuja credencial e recusada (401): o runtime cai no fallback.
+    struct ProviderComChaveMorta;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ProviderComChaveMorta {
+        fn provider_id(&self) -> &str {
+            "primario"
+        }
+        fn configured_model(&self) -> Option<&str> {
+            Some("primario-1")
+        }
+        async fn complete(&self, _request: &LlmRequest) -> garraia_common::Result<LlmResponse> {
+            Err(garraia_common::Error::Agent(
+                "openai API error: status=401 Unauthorized, body=User not found.".to_string(),
+            ))
+        }
+        async fn health_check(&self) -> garraia_common::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// #1733: quando o primario falha e o fallback responde, o corpo e os
+    /// headers do turno dizem quem respondeu de fato — nao o default.
+    #[tokio::test]
+    async fn resposta_do_turno_nomeia_o_fallback_que_respondeu() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = processo(dir.path(), Some(Arc::new(ProviderQueAnota::default())));
+        st.agents.register_provider(Arc::new(ProviderComChaveMorta));
+        st.agents.set_default_provider_id("primario");
+        st.agents.set_fallback_providers(vec!["anota".to_string()]);
+        let sid = criar_sessao_rest(&st).await;
+
+        let resp = send_message(
+            State(Arc::clone(&st)),
+            Path(sid),
+            Json(SendMessageRequest {
+                content: "oi".to_string(),
+                agent_id: None,
+                model: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let h = |n: &str| {
+            resp.headers()
+                .get(n)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        assert_eq!(h("X-AI-Provider").as_deref(), Some("anota"));
+        assert_eq!(h("X-AI-Model").as_deref(), Some("anota-1"));
+        let (_, corpo) = em_json(resp).await;
+        assert_eq!(corpo["provider"], "anota", "{corpo}");
+        assert_eq!(corpo["model"], "anota-1", "{corpo}");
+        assert_eq!(corpo["fallback"], true, "{corpo}");
     }
 
     /// #1726: `content` vazio ou so espaco e erro de uso — `400` sem chamar o

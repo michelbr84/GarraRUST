@@ -1,0 +1,1 @@
+- **API: a resposta do turno diz quem respondeu (#1733).** `POST /api/sessions/{id}/messages` passa a devolver `provider`, `model` e `fallback` do turno (aditivo) e os headers `X-AI-Provider`/`X-AI-Model` refletem quem respondeu de fato, nao o default da config (#1733).
