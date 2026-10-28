@@ -407,16 +407,42 @@ pub(super) fn o_aviso_de_mcp_escondida_nomeia_ferramenta_e_sintaxe() {
         input_schema: serde_json::json!({"type": "object"}),
     }];
     let mensagens = mensagens_mcp_fora_da_whitelist(&g, &todas);
-    assert_eq!(mensagens.len(), 1, "uma linha por ferramenta escondida");
-    let m = &mensagens[0];
+    assert_eq!(mensagens.len(), 1, "uma linha por servidor escondido");
+    let m = &mensagens[0].mensagem;
     assert!(m.contains("search"), "{m}");
-    assert!(m.contains("meu-servidor__escreve"), "{m}");
+    assert!(m.contains("`meu-servidor`") && m.contains("escreve"), "{m}");
     assert!(m.contains("`servidor/*`"), "{m}");
 
     // Portao sem politica: nao restringe, nao avisa.
     assert!(
         mensagens_mcp_fora_da_whitelist(&crate::modes::ToolGate::sem_politica(), &todas).is_empty()
     );
+}
+
+/// **#1734.** N tools do mesmo servidor viram UMA linha agregada; servidores
+/// distintos ficam em linhas distintas, com chaves `(modo, servidor)` proprias.
+#[test]
+pub(super) fn o_aviso_de_mcp_escondida_agrega_por_servidor() {
+    let g = crate::modes::ToolGate::for_mode_name("search");
+    let def = |n: &str| crate::ToolDefinition {
+        name: n.to_string(),
+        description: String::new(),
+        input_schema: serde_json::json!({"type": "object"}),
+    };
+    let todas = vec![
+        def("filesystem__write_file"),
+        def("filesystem__edit_file"),
+        def("outro__faz"),
+    ];
+    let avisos = mensagens_mcp_fora_da_whitelist(&g, &todas);
+    assert_eq!(avisos.len(), 2, "uma linha por servidor");
+    assert_eq!(
+        avisos[0].chave,
+        ("search".to_string(), "filesystem".to_string())
+    );
+    assert!(avisos[0].mensagem.contains("write_file"));
+    assert!(avisos[0].mensagem.contains("edit_file"));
+    assert_eq!(avisos[1].chave.1, "outro");
 }
 
 /// **#1264 criterio 3, o aviso do caso vazio.** Perfil com whitelist
