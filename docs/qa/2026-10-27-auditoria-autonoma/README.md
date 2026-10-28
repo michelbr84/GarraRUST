@@ -357,3 +357,27 @@ aos cenários adversos testados; os dois P1 encontrados (MCP `filesystem` no Win
 independente e reteste real nesta missão. Permanecem como ressalvas documentadas:
 fallback em 401/403 (#1735), transparência do fallback (#1733), cobertura de testes no
 Windows (#1697) e a memória por sessão como comportamento padrão.
+
+## Adendo — 2026-10-28 (tarde): fechamento dos follow-ups #1733, #1734 e #1743
+
+Mesma metodologia (instância isolada na porta 3900, chave OpenRouter inválida, fallback
+Ollama `qwen3.5:0.8b`, nenhum canal ligado), sobre `main` em `601c6842`.
+
+| Item | Pela manhã | Agora |
+| --- | --- | --- |
+| #1733 transparência do fallback | aberta | Fechada pela **#1745** (sessão do dono, `601c6842`): `POST /api/sessions/{id}/messages` devolve `provider`/`model`/`fallback` e headers por turno. Complemento OpenAI-compat na **#1747**: no reteste (19:52Z) `/v1/chat/completions` ainda devolvia `model=z-ai/glm-5.3-flash`, sem `provider` e com `X-AI-Provider: openrouter` enquanto o Ollama respondia; passa a nomear quem respondeu no corpo, nos headers e no chunk final do streaming. A verificação independente achou, e a PR corrige, um P3 extra: a pausa de confirmação (GAR-187) não gravava as stats do turno, e a resposta podia nomear o provider do turno anterior da sessão. |
+| #1734 WARN repetido de MCP escondida | aberta | Fechada pela **#1744** (sessão do dono). |
+| #1743 health verde com chave inválida | aberta | **#1746**: antes de qualquer turno `openrouter ok:true` (sonda pública); após um turno 401 → `ok:false`, `credencial recusada (401) em 2026-10-28T19:52:04Z`, `status: degraded`, aviso em `warnings`; `garra doctor` mostra `gateway vivo: FALHA — credencial recusada…` (texto e `--json`). O corpo do 401 nunca entra no health (auth-free). |
+
+Revisão independente da #1746: 4 lentes (correção/concorrência, segurança, testes/CI,
+contrato de API), cada achado submetido a 2 céticos; **0 achados confirmados** (4 P3 de
+cobertura/limitação refutados como pré-existentes ou preferência). Segurança: PASS, R1.
+Verificação independente da #1747: PARTIAL por 1 P3 (pausa), corrigido na própria PR.
+Testes novos: 17 na #1746 (módulo puro 4, runtime 5, health 4, e2e 1, doctor 3) e 3 na #1747.
+
+Armadilha de ambiente registrada nesta rodada: `CARGO_TARGET_DIR` compartilhado entre
+worktrees de branches diferentes contamina o build local — o cargo trata árvores com o
+mesmo layout como a mesma unidade e reaproveita artefatos da outra. A verificação local
+foi refeita com os fontes "tocados"; o CI é o árbitro.
+
+Seguem abertas: #1697 (testes Windows), #1737 (follow-ups LOW/INFO) e os itens 5–9 da §10.
