@@ -40,6 +40,8 @@ mod aprovacao_retomada;
 mod aprovacao_vinculada;
 mod aviso_de_loop;
 mod breaker;
+/// #1725: data e hora do turno no system prompt.
+mod contexto_temporal;
 mod disponibilidade;
 /// T6 (`tool_program_com_passo_negado_casa_todo_inicio_com_fim_no_streaming`)
 /// e T10 (`tool_program_que_esgota_a_tarefa_casa_todo_inicio_com_fim_no_streaming`)
