@@ -1291,12 +1291,16 @@ jobs:
   # do 49.0.2 (cranelift 0.136.2, pulley/wiggle 49.0.2) segue declarando
   # rustc 1.96.0. O piso e o nome deste job ficam em 1.96. Quebra a série —
   # não presuma que todo bump do wasmtime sobe o MSRV; leia os manifests.
+  # 2026-10-28 (Dependabot #1714): wasmtime 49.0.4 → 50.0.0 retoma a serie —
+  # cranelift 0.137.0 declara rustc 1.97.0, piso elevado de 1.96 → 1.97
+  # (Cargo.toml `rust-version` + este job, juntos). Sexto bump com a mesma
+  # forma em sete.
   # `--locked` garante que o lockfile não é regerado durante o check
   # (qualquer drift falha o build). `garraia-desktop` excluído pelos
   # mesmos motivos do clippy/build (este job não instala GTK/webkit nem
   # prepara o sidecar; quem compila a crate é o desktop.yml).
   msrv:
-    name: MSRV check (1.96)
+    name: MSRV check (1.97)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1304,12 +1308,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust 1.96
-        # MSRV pin — este @1.96 é o Minimum Supported Rust Version do
+      - name: Install Rust 1.97
+        # MSRV pin — este @1.97 é o Minimum Supported Rust Version do
         # workspace, NÃO uma versão de action a ser bumpada. Ignorado no
         # dependabot.yml (grupo gh-actions-all) para o Dependabot não
         # propor de novo um toolchain inexistente (ex.: @1.100, PR #819).
-        uses: dtolnay/rust-toolchain@1.96
+        uses: dtolnay/rust-toolchain@1.97
 
       # GAR-822 (vestigial since #1228): the gateway builds utoipa-swagger-ui with
       # `vendored`, so its build.rs reads the embedded zip and never this cache.
@@ -1317,8 +1321,8 @@ jobs:
       - name: Cache Swagger UI zip
         uses: ./.github/actions/swagger-ui-cache
 
-      - name: cargo +1.96 check
-        run: cargo +1.96 check --workspace --exclude garraia-desktop --locked
+      - name: cargo +1.97 check
+        run: cargo +1.97 check --workspace --exclude garraia-desktop --locked
 
   # Android/Termux (ADR 0016, issues #910/#911/#913).
   #

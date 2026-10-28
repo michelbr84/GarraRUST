@@ -32,7 +32,7 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/michelbr84/GarraRUST"
 description = "A personal AI assistant platform, rewritten in Rust"
-rust-version = "1.96"
+rust-version = "1.97"
 
 [workspace.dependencies]
 # Async runtime
@@ -139,6 +139,11 @@ jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_r
 # still declares rustc 1.96.0, so `rust-version` and the `MSRV check (1.96)`
 # job stay put. Do not assume the "bump raises MSRV" pattern always holds;
 # read the published manifests.
+# 49.0.4→50.0.0 (Dependabot #1714, landed 2026-10-28): the series resumes —
+# the 50.0.0 tree (cranelift 0.137.0, pulley/wiggle 50.0.0) declares rustc
+# 1.97.0, so `rust-version` goes 1.96 → 1.97 together with the
+# `MSRV check (1.97)` job in ci.yml. Sixth MSRV raise in seven bumps; no
+# runtime.rs migration was needed (API unchanged for garraia-plugins).
 #
 # `cache` fica DESLIGADO (RUSTSEC-2026-0391/0395..0406/0410, zstd 0.13 / zstd-safe 7.2 /
 # zstd-sys 2.0.16, publicados em 2026-10-16): `wasmtime-internal-cache` fixa
@@ -146,8 +151,8 @@ jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_r
 # de modulos compilados (`Config::cache_config_load*`) nao e usado por
 # garraia-plugins; o resto das features default foi mantido. Religar o `cache`
 # so quando o wasmtime aceitar zstd >= 0.14.3 / zstd-safe >= 8.2 / zstd-sys >= 2.1.2.
-wasmtime = { version = "49", default-features = false, features = ["anyhow", "async", "backtrace", "gc", "gc-copying", "gc-drc", "gc-null", "wat", "profiling", "parallel-compilation", "cranelift", "pooling-allocator", "demangle", "addr2line", "coredump", "debug-builtins", "runtime", "component-model", "component-model-async", "threads", "stack-switching", "std", "debug", "compile-time-builtins", "wit-parser"] }
-wasmtime-wasi = { version = "49", features = ["p1"] }
+wasmtime = { version = "50", default-features = false, features = ["anyhow", "async", "backtrace", "gc", "gc-copying", "gc-drc", "gc-null", "wat", "profiling", "parallel-compilation", "cranelift", "pooling-allocator", "demangle", "addr2line", "coredump", "debug-builtins", "runtime", "component-model", "component-model-async", "threads", "stack-switching", "std", "debug", "compile-time-builtins", "wit-parser"] }
+wasmtime-wasi = { version = "50", features = ["p1"] }
 
 # Discord
 # Segue em native_tls_backend, com OpenSSL VENDORED (estático) via o dep
