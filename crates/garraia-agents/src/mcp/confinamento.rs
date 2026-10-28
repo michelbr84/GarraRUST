@@ -103,7 +103,7 @@ pub fn confinar_argumentos(
         }
         let texto = raizes
             .iter()
-            .map(|r| r.display().to_string())
+            .map(|r| caminho_para_o_servidor(r))
             .collect::<Vec<_>>()
             .join("\n");
         return Ok(Confinado::RespondeLocal(texto));
@@ -150,10 +150,50 @@ pub fn confinar_argumentos(
 /// jail, ou a recusa. Relativo sem diretorio de sessao e "sem raiz".
 fn confinar_um(pedido: &str, jail: &FileJail, session_dir: Option<&str>) -> Result<String, Denial> {
     let caminho = caminho_pedido(pedido, session_dir).ok_or(Denial::NoRoots)?;
-    Ok(jail
-        .confine(&caminho, session_dir)?
-        .to_string_lossy()
-        .into_owned())
+    let resolvido = jail.confine(&caminho, session_dir)?;
+    Ok(caminho_para_o_servidor(&resolvido))
+}
+
+/// O caminho resolvido pelo jail, no formato que o servidor de filesystem
+/// aceita (#1722).
+///
+/// `FileJail::confine` devolve o resultado de `std::fs::canonicalize`, que no
+/// Windows vem com o prefixo verbatim (`\\?\C:\...`, ou `\\?\UNC\srv\share`).
+/// O `@modelcontextprotocol/server-filesystem` (Node) normaliza esse prefixo
+/// para `C:\?\C:\...` e responde `Access denied - path outside allowed
+/// directories` para TODA operacao com caminho — so `list_allowed_directories`,
+/// que nem chega ao servidor, funcionava. A checagem do jail continua sobre o
+/// canonico; so a **string entregue ao servidor** perde o prefixo. Em
+/// Linux/macOS `canonicalize` nao tem prefixo, e a funcao e identidade.
+///
+/// As raizes de `list_allowed_directories` saem pelo mesmo caminho: e delas
+/// que o modelo copia o formato, e ensinar `\\?\` era ensinar o que o
+/// servidor recusa.
+pub(crate) fn caminho_para_o_servidor(resolvido: &Path) -> String {
+    sem_prefixo_verbatim(&resolvido.to_string_lossy())
+}
+
+/// A metade pura de [`caminho_para_o_servidor`]: tira o prefixo verbatim do
+/// Windows de uma string de caminho, e nada mais.
+///
+/// - `\\?\C:\x`           -> `C:\x`
+/// - `\\?\UNC\srv\share\x` -> `\\srv\share\x`
+/// - qualquer outra coisa  -> inalterada (inclusive caminhos POSIX)
+///
+/// Nao e `dunce::simplified`: aquele tambem recusa tirar o prefixo de
+/// caminhos longos ou com componentes reservados, porque o alvo dele e a API
+/// Win32 legada. O alvo aqui e um processo Node, que aceita caminho longo
+/// sem prefixo e so tropeca no `\\?\`.
+pub(crate) fn sem_prefixo_verbatim(caminho: &str) -> String {
+    const VERBATIM: &str = r"\\?\";
+    const VERBATIM_UNC: &str = r"\\?\UNC\";
+    if let Some(resto) = caminho.strip_prefix(VERBATIM_UNC) {
+        return format!(r"\\{resto}");
+    }
+    if let Some(resto) = caminho.strip_prefix(VERBATIM) {
+        return resto.to_string();
+    }
+    caminho.to_string()
 }
 
 /// Um caminho do modelo, absoluto ou relativo ao diretorio da sessao.
@@ -195,11 +235,80 @@ mod tests {
         (tmp, a, b)
     }
 
+    /// O que o servidor deve receber para `p`: o canonico, ja sem o prefixo
+    /// verbatim do Windows (#1722) — em Linux/macOS e so o canonico.
     fn canon(p: &Path) -> String {
-        std::fs::canonicalize(p)
-            .expect("canonicalize")
-            .to_string_lossy()
-            .into_owned()
+        caminho_para_o_servidor(&std::fs::canonicalize(p).expect("canonicalize"))
+    }
+
+    /// #1722: a string pura, em todo SO. O Windows e o unico que produz o
+    /// prefixo, mas a regra e de texto e tem de valer igual em todo lugar.
+    #[test]
+    fn sem_prefixo_verbatim_tira_so_o_prefixo_do_windows() {
+        assert_eq!(
+            sem_prefixo_verbatim(r"\\?\C:\Users\x\ws\a.txt"),
+            r"C:\Users\x\ws\a.txt"
+        );
+        assert_eq!(
+            sem_prefixo_verbatim(r"\\?\UNC\srv\share\a.txt"),
+            r"\\srv\share\a.txt"
+        );
+        assert_eq!(
+            sem_prefixo_verbatim(r"C:\Users\x\ws\a.txt"),
+            r"C:\Users\x\ws\a.txt"
+        );
+        assert_eq!(
+            sem_prefixo_verbatim(r"\\srv\share\a.txt"),
+            r"\\srv\share\a.txt"
+        );
+        assert_eq!(sem_prefixo_verbatim("/home/x/ws/a.txt"), "/home/x/ws/a.txt");
+        assert_eq!(sem_prefixo_verbatim("a.txt"), "a.txt");
+        assert_eq!(sem_prefixo_verbatim(""), "");
+    }
+
+    /// #1722, de ponta a ponta no SO que tem o prefixo: o caminho reescrito e
+    /// as raizes de `list_allowed_directories` saem SEM `\\?\`, e o reescrito
+    /// e exatamente o caminho que o servidor Node tem como raiz permitida.
+    #[cfg(windows)]
+    #[test]
+    fn no_windows_o_servidor_recebe_o_caminho_sem_prefixo_verbatim() {
+        let (_tmp, a, _b) = sessao();
+        let a_str = a.to_string_lossy().into_owned();
+        let canonico = std::fs::canonicalize(a.join("meu.txt")).expect("canonicalize");
+        assert!(
+            canonico.to_string_lossy().starts_with(r"\\?\"),
+            "precondicao: o canonico do Windows e verbatim: {}",
+            canonico.display()
+        );
+
+        let r = confinar_fs(
+            "read_text_file",
+            Some(args(&[("path", Value::String(a_str.clone()))])),
+            &jail_so_sessao(),
+            Some(&a_str),
+        )
+        .expect("dentro");
+        let Confinado::Reescrito(m) = r else {
+            panic!("{r:?}")
+        };
+        let entregue = m["path"].as_str().expect("string");
+        assert!(!entregue.starts_with(r"\\?\"), "verbatim vazou: {entregue}");
+        assert!(entregue.ends_with(r"\sessao-a"), "{entregue}");
+
+        let r = confinar_fs(
+            LIST_ALLOWED_DIRECTORIES,
+            None,
+            &jail_so_sessao(),
+            Some(&a_str),
+        )
+        .expect("local");
+        let Confinado::RespondeLocal(texto) = r else {
+            panic!("{r:?}")
+        };
+        assert!(
+            !texto.contains(r"\\?\"),
+            "raiz verbatim ensinada ao modelo: {texto}"
+        );
     }
 
     /// Atalho dos testes: confina como se a chamada viesse do proprio servidor
