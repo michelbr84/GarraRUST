@@ -196,6 +196,15 @@ fn is_transport_error(err: &Error) -> bool {
     matches!(err, Error::Transport(_))
 }
 
+/// #1735: o provider **respondeu** recusando a credencial (401/403) - chave
+/// invalida, expirada ou sem permissao. Nao e transitorio, entao nao ha retry
+/// no primario; mas tambem nao e erro do PEDIDO (400/404/413/422), logo outro
+/// provider pode atende-lo e o fallback entra.
+fn is_credential_error(err: &Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("status=401") || msg.contains("status=403")
+}
+
 /// Resolve provider ID from model override.
 /// Models like "openrouter/auto", "openai/gpt-4o" have the provider as prefix.
 ///
@@ -4146,6 +4155,16 @@ impl AgentRuntime {
                         primary_cb.record_failure().await;
                         break;
                     }
+                    // #1735: credencial recusada. Sem retry (nao e transitorio)
+                    // e sem `return`: o fallback e para isso que existe.
+                    Err(e) if is_credential_error(&e) => {
+                        warn!(
+                            "credencial do provider '{}' recusada ({}); usando fallback",
+                            primary_id, e
+                        );
+                        primary_cb.record_failure().await;
+                        break;
+                    }
                     Err(e) if is_retryable_error(&e) => {
                         warn!(
                             "provider '{}' attempt {} failed (retryable): {}",
@@ -4220,7 +4239,9 @@ impl AgentRuntime {
             // do fix anterior. Aqui nao existe orcamento de retry para queimar
             // — e uma tentativa e o fallback —, entao transporte entra na
             // mesma porta que 429/5xx.
-            Err(e) if is_retryable_error(&e) || is_transport_error(&e) => {
+            Err(e)
+                if is_retryable_error(&e) || is_transport_error(&e) || is_credential_error(&e) =>
+            {
                 warn!(
                     "streaming provider '{}' failed, trying fallbacks: {}",
                     primary_id, e
