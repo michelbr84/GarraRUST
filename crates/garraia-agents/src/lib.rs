@@ -34,8 +34,11 @@ pub mod sandbox;
 pub(crate) mod sandbox_spawn;
 pub mod tools;
 pub use sandbox::{SandboxBackend, SandboxMode, SandboxPolicy};
+pub mod recusa_de_credencial;
 pub mod turn_events;
 pub mod turn_stats;
+
+pub use recusa_de_credencial::RecusaDeCredencial;
 
 pub use anthropic::AnthropicProvider;
 #[cfg(feature = "dev-echo-provider")]

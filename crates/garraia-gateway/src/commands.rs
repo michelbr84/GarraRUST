@@ -300,6 +300,12 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                 .unwrap();
             if let Some(cache) = &state.health_cache {
                 if let Ok(checks) = cache.try_read() {
+                    // #1743: a recusa de credencial vista nos turnos vence a
+                    // sonda — o mesmo que o `/api/health` mostra.
+                    let checks = crate::health::aplicar_recusas_de_credencial(
+                        checks.clone(),
+                        &state.agents.recusas_de_credencial(),
+                    );
                     let mut output = String::from("🏥 System Health:\n\n");
                     for check in checks.iter() {
                         let icon = if check.ok { "✅" } else { "❌" };
