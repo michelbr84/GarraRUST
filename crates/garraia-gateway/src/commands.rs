@@ -132,6 +132,26 @@ pub fn register_commands(registry: &mut CommandRegistry) {
             if let Some(mut session) = state.sessions.get_mut(&session_id) {
                 session.history.clear();
             }
+            // #1723: a copia em memoria vazia faz `hydrate_session_history`
+            // recarregar do banco no turno seguinte — apagar so ela era
+            // "limpei" seguido do historico inteiro de volta. O disco vai
+            // junto, e uma falha ao apaga-lo e dita, nao escondida atras de
+            // um "cleared" que nao aconteceu.
+            if let Some(store) = &state.session_store {
+                let store = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async { store.lock().await })
+                });
+                if let Err(e) = store.clear_session_messages(&session_id) {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        erro = %e,
+                        "/clear: falhou ao apagar o historico persistido"
+                    );
+                    return Ok("⚠️ Historico em memoria limpo, mas nao consegui apagar o \
+                               historico gravado; ele pode voltar no proximo turno."
+                        .to_string());
+                }
+            }
             Ok("🗑️ Conversation history cleared.".to_string())
         },
     )));
