@@ -181,7 +181,16 @@ case "$DIST_BASE_URL" in
 esac
 fetch() {
   # $1 = nome do arquivo remoto; baixa para $DL_DIR/$1
-  curl -fsSL --retry 3 --retry-delay 2 "${CURL_PROTO[@]}" \
+  #
+  # #1740: `--retry` sozinho so repete erros que o curl julga transitorios
+  # (timeout, 5xx, reset). O `curl: (92) HTTP/2 stream 1 was not closed
+  # cleanly: INTERNAL_ERROR` que o CDN do nodejs.org devolve de vez em quando
+  # nao esta na lista — derrubou o Build macOS .dmg em duas runs seguidas em
+  # 2026-10-28 sem retentar nenhuma vez. `--retry-all-errors` repete tambem
+  # esse, e `--http1.1` evita o proprio stream HTTP/2 que quebra (o download
+  # de ~50 MB nao perde nada em HTTP/1.1). Nada muda na procedencia: GPG e
+  # SHA-256 continuam validando o que chegou.
+  curl -fsSL --http1.1 --retry 5 --retry-delay 2 --retry-all-errors "${CURL_PROTO[@]}" \
     "${DIST_DIR_URL}/$1" -o "${DL_DIR}/$1"
 }
 info "(a) baixando artefato, SHASUMS256.txt e SHASUMS256.txt.sig"
