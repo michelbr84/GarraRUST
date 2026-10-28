@@ -103,7 +103,7 @@ pub fn confinar_argumentos(
         }
         let texto = raizes
             .iter()
-            .map(|r| r.display().to_string())
+            .map(|r| caminho_para_o_servidor(r))
             .collect::<Vec<_>>()
             .join("\n");
         return Ok(Confinado::RespondeLocal(texto));
@@ -147,25 +147,97 @@ pub fn confinar_argumentos(
 }
 
 /// Um caminho, confinado: o que o modelo pediu vira o resolvido dentro do
-/// jail, ou a recusa. Relativo sem diretorio de sessao e "sem raiz".
+/// jail, ou a recusa. Relativo nasce no diretorio da sessao; sem sessao, o
+/// jail o ancora na raiz declarada (#1724) — e sem raiz nenhuma e "sem raiz".
 fn confinar_um(pedido: &str, jail: &FileJail, session_dir: Option<&str>) -> Result<String, Denial> {
-    let caminho = caminho_pedido(pedido, session_dir).ok_or(Denial::NoRoots)?;
-    Ok(jail
-        .confine(&caminho, session_dir)?
-        .to_string_lossy()
-        .into_owned())
+    let caminho = caminho_pedido(pedido, session_dir);
+    let resolvido = jail.confine(&caminho, session_dir)?;
+    Ok(caminho_para_o_servidor(&resolvido))
 }
 
-/// Um caminho do modelo, absoluto ou relativo ao diretorio da sessao.
-fn caminho_pedido(pedido: &str, session_dir: Option<&str>) -> Option<PathBuf> {
+/// O caminho resolvido pelo jail, no formato que o servidor de filesystem
+/// aceita (#1722).
+///
+/// `FileJail::confine` devolve o resultado de `std::fs::canonicalize`, que no
+/// Windows vem com o prefixo verbatim (`\\?\C:\...`, ou `\\?\UNC\srv\share`).
+/// O `@modelcontextprotocol/server-filesystem` (Node) normaliza esse prefixo
+/// para `C:\?\C:\...` e responde `Access denied - path outside allowed
+/// directories` para TODA operacao com caminho — so `list_allowed_directories`,
+/// que nem chega ao servidor, funcionava. A checagem do jail continua sobre o
+/// canonico; so a **string entregue ao servidor** perde o prefixo. Em
+/// Linux/macOS `canonicalize` nao tem prefixo, e a funcao e identidade.
+///
+/// As raizes de `list_allowed_directories` saem pelo mesmo caminho: e delas
+/// que o modelo copia o formato, e ensinar `\\?\` era ensinar o que o
+/// servidor recusa.
+///
+/// Segunda rodada (#1722, reteste real): tirar o prefixo nao bastou. Probe
+/// direto no servidor `2026.8.31`, com a raiz declarada em `\` como `garra
+/// init` escreve:
+///
+/// ```text
+/// list_directory  C:\ws              -> OK   (a raiz em si)
+/// read_text_file  C:\ws\notas.txt    -> Access denied - path outside allowed directories
+/// read_text_file  C:/ws/notas.txt    -> OK
+/// read_text_file  c:\ws\notas.txt    -> Access denied (drive minusculo)
+/// ```
+///
+/// Todo caminho-FILHO com `\` e recusado e todo caminho com `/` e aceito,
+/// independentemente de como a raiz foi escrita. Node aceita `/` em qualquer
+/// caminho Windows, entao a string entregue sai com `/` — e so no Windows:
+/// em POSIX `\` e caractere valido de nome de arquivo.
+pub(crate) fn caminho_para_o_servidor(resolvido: &Path) -> String {
+    let sem_prefixo = sem_prefixo_verbatim(&resolvido.to_string_lossy());
+    if cfg!(windows) {
+        com_barras_normais(&sem_prefixo)
+    } else {
+        sem_prefixo
+    }
+}
+
+/// `\` -> `/`, e nada mais. Chamada so no Windows, por
+/// [`caminho_para_o_servidor`]; publica na crate para o teste fixar a regra em
+/// todo SO. UNC `\\srv\share\x` vira `//srv/share/x`, que o Node tambem le
+/// como UNC.
+pub(crate) fn com_barras_normais(caminho: &str) -> String {
+    caminho.replace('\\', "/")
+}
+
+/// A metade pura de [`caminho_para_o_servidor`]: tira o prefixo verbatim do
+/// Windows de uma string de caminho, e nada mais.
+///
+/// - `\\?\C:\x`           -> `C:\x`
+/// - `\\?\UNC\srv\share\x` -> `\\srv\share\x`
+/// - qualquer outra coisa  -> inalterada (inclusive caminhos POSIX)
+///
+/// Nao e `dunce::simplified`: aquele tambem recusa tirar o prefixo de
+/// caminhos longos ou com componentes reservados, porque o alvo dele e a API
+/// Win32 legada. O alvo aqui e um processo Node, que aceita caminho longo
+/// sem prefixo e so tropeca no `\\?\`.
+pub(crate) fn sem_prefixo_verbatim(caminho: &str) -> String {
+    const VERBATIM: &str = r"\\?\";
+    const VERBATIM_UNC: &str = r"\\?\UNC\";
+    if let Some(resto) = caminho.strip_prefix(VERBATIM_UNC) {
+        return format!(r"\\{resto}");
+    }
+    if let Some(resto) = caminho.strip_prefix(VERBATIM) {
+        return resto.to_string();
+    }
+    caminho.to_string()
+}
+
+/// Um caminho do modelo: absoluto como veio; relativo ao diretorio da sessao
+/// quando ha um; e relativo cru quando nao ha — `FileJail::confine` o ancora
+/// na raiz declarada (#1724), com a mesma regra das tools nativas.
+fn caminho_pedido(pedido: &str, session_dir: Option<&str>) -> PathBuf {
     let p = Path::new(pedido);
     if p.is_absolute() {
-        return Some(p.to_path_buf());
+        return p.to_path_buf();
     }
-    session_dir
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| Path::new(s).join(p))
+    match session_dir.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => Path::new(s).join(p),
+        None => p.to_path_buf(),
+    }
 }
 
 #[cfg(test)]
@@ -195,11 +267,115 @@ mod tests {
         (tmp, a, b)
     }
 
+    /// O que o servidor deve receber para `p`: o canonico, ja sem o prefixo
+    /// verbatim do Windows (#1722) — em Linux/macOS e so o canonico.
     fn canon(p: &Path) -> String {
-        std::fs::canonicalize(p)
-            .expect("canonicalize")
-            .to_string_lossy()
-            .into_owned()
+        caminho_para_o_servidor(&std::fs::canonicalize(p).expect("canonicalize"))
+    }
+
+    /// #1722: a string pura, em todo SO. O Windows e o unico que produz o
+    /// prefixo, mas a regra e de texto e tem de valer igual em todo lugar.
+    #[test]
+    fn sem_prefixo_verbatim_tira_so_o_prefixo_do_windows() {
+        assert_eq!(
+            sem_prefixo_verbatim(r"\\?\C:\Users\x\ws\a.txt"),
+            r"C:\Users\x\ws\a.txt"
+        );
+        assert_eq!(
+            sem_prefixo_verbatim(r"\\?\UNC\srv\share\a.txt"),
+            r"\\srv\share\a.txt"
+        );
+        assert_eq!(
+            sem_prefixo_verbatim(r"C:\Users\x\ws\a.txt"),
+            r"C:\Users\x\ws\a.txt"
+        );
+        assert_eq!(
+            sem_prefixo_verbatim(r"\\srv\share\a.txt"),
+            r"\\srv\share\a.txt"
+        );
+        assert_eq!(sem_prefixo_verbatim("/home/x/ws/a.txt"), "/home/x/ws/a.txt");
+        assert_eq!(sem_prefixo_verbatim("a.txt"), "a.txt");
+        assert_eq!(sem_prefixo_verbatim(""), "");
+    }
+
+    /// #1722, segunda rodada: a troca de separador e so isso — drive, UNC e
+    /// caminhos ja com `/` ficam como estao. Regra de string, em todo SO.
+    #[test]
+    fn com_barras_normais_troca_so_o_separador() {
+        assert_eq!(
+            com_barras_normais(r"C:\Users\x\ws\a.txt"),
+            "C:/Users/x/ws/a.txt"
+        );
+        assert_eq!(
+            com_barras_normais(r"\\srv\share\a.txt"),
+            "//srv/share/a.txt"
+        );
+        assert_eq!(
+            com_barras_normais("C:/Users/x/ws/a.txt"),
+            "C:/Users/x/ws/a.txt"
+        );
+        assert_eq!(com_barras_normais("/home/x/a.txt"), "/home/x/a.txt");
+        assert_eq!(com_barras_normais(""), "");
+        // Encadeada com a remocao do prefixo, e o que o Windows entrega.
+        assert_eq!(
+            com_barras_normais(&sem_prefixo_verbatim(r"\\?\C:\Users\x\ws\a.txt")),
+            "C:/Users/x/ws/a.txt"
+        );
+    }
+
+    /// #1722, de ponta a ponta no SO que tem o prefixo: o caminho reescrito e
+    /// as raizes de `list_allowed_directories` saem SEM `\\?\`, e o reescrito
+    /// e exatamente o caminho que o servidor Node tem como raiz permitida.
+    #[cfg(windows)]
+    #[test]
+    fn no_windows_o_servidor_recebe_o_caminho_sem_prefixo_verbatim() {
+        let (_tmp, a, _b) = sessao();
+        let a_str = a.to_string_lossy().into_owned();
+        let canonico = std::fs::canonicalize(a.join("meu.txt")).expect("canonicalize");
+        assert!(
+            canonico.to_string_lossy().starts_with(r"\\?\"),
+            "precondicao: o canonico do Windows e verbatim: {}",
+            canonico.display()
+        );
+
+        let r = confinar_fs(
+            "read_text_file",
+            Some(args(&[("path", Value::String(a_str.clone()))])),
+            &jail_so_sessao(),
+            Some(&a_str),
+        )
+        .expect("dentro");
+        let Confinado::Reescrito(m) = r else {
+            panic!("{r:?}")
+        };
+        let entregue = m["path"].as_str().expect("string");
+        assert!(!entregue.starts_with(r"\\?\"), "verbatim vazou: {entregue}");
+        // Segunda rodada da #1722: o servidor recusa caminho-filho com `\`;
+        // o que sai daqui e `C:/.../sessao-a`, sem barra invertida nenhuma.
+        assert!(
+            !entregue.contains('\\'),
+            "barra invertida vazou: {entregue}"
+        );
+        assert!(entregue.ends_with("/sessao-a"), "{entregue}");
+        assert!(
+            entregue.chars().nth(1) == Some(':'),
+            "drive letter preservada: {entregue}"
+        );
+
+        let r = confinar_fs(
+            LIST_ALLOWED_DIRECTORIES,
+            None,
+            &jail_so_sessao(),
+            Some(&a_str),
+        )
+        .expect("local");
+        let Confinado::RespondeLocal(texto) = r else {
+            panic!("{r:?}")
+        };
+        assert!(
+            !texto.contains(r"\\?\"),
+            "raiz verbatim ensinada ao modelo: {texto}"
+        );
     }
 
     /// Atalho dos testes: confina como se a chamada viesse do proprio servidor
@@ -302,6 +478,36 @@ mod tests {
             None,
         );
         assert!(matches!(r, Err(Denial::NoRoots)), "{r:?}");
+    }
+
+    /// #1724: sem diretorio de sessao mas com raiz declarada (o gateway com
+    /// `agent.file_roots`), o relativo resolve na raiz — antes era "sem raiz"
+    /// e o modelo, que pede `notas.txt` naturalmente, batia na recusa ate o
+    /// breaker. Continua confinado: `..` e caminho fora seguem recusados.
+    #[test]
+    fn relativo_sem_sessao_mas_com_raiz_declarada_resolve_na_raiz() {
+        let (_tmp, a, _b) = sessao();
+        let workspace = a.parent().expect("workspace");
+        let jail = FileJail::from_roots([workspace]);
+        let r = confinar_fs(
+            "read_file",
+            Some(args(&[("path", Value::String("sessao-a/meu.txt".into()))])),
+            &jail,
+            None,
+        )
+        .expect("relativo na raiz declarada");
+        let Confinado::Reescrito(m) = r else {
+            panic!("{r:?}")
+        };
+        assert_eq!(m["path"], Value::String(canon(&a.join("meu.txt"))));
+
+        let r = confinar_fs(
+            "read_file",
+            Some(args(&[("path", Value::String("../fora.txt".into()))])),
+            &jail,
+            None,
+        );
+        assert!(matches!(r, Err(Denial::Outside)), "{r:?}");
     }
 
     /// `..` e recusado como nas tools nativas.
