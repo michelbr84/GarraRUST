@@ -1800,6 +1800,68 @@ mod sessao_apos_restart_tests {
         );
     }
 
+    /// `/clear` apaga o historico do disco, nao so a copia em memoria (#1723).
+    /// Antes, a memoria vazia fazia `hydrate_session_history` recarregar tudo
+    /// do banco no turno seguinte, e "limpei" vinha seguido da conversa
+    /// inteira de volta — inclusive depois de um restart.
+    ///
+    /// `multi_thread` porque o `/clear` alcanca o store por `block_in_place`,
+    /// como os outros comandos do registro.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clear_apaga_o_historico_persistido_e_ele_nao_volta() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let provider = Arc::new(ProviderQueAnota::default());
+        let st = processo(dir.path(), Some(Arc::clone(&provider)));
+        // `processo` nao registra os comandos (o boot faz isso em `server.rs`);
+        // sem o registro, `/clear` chegaria ao modelo como texto.
+        crate::commands::register_commands(&mut st.command_registry.write().expect("registry"));
+        let sid = criar_sessao_rest(&st).await;
+        st.persist_turn(&sid, Some("api"), None, "segredo-antes", "resposta-antes")
+            .await;
+        assert_eq!(
+            linha(&st, &sid).await.map(|l| l.2),
+            Some(2),
+            "precondicao: as duas mensagens estao no banco"
+        );
+
+        let (status, corpo) = mandar(&st, &sid, "/clear").await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert_eq!(corpo["command"], "clear", "{corpo}");
+
+        // O banco esvaziou, e ler o historico nao traz nada de volta.
+        assert_eq!(
+            linha(&st, &sid).await.map(|l| l.2),
+            Some(0),
+            "o /clear apaga as mensagens gravadas"
+        );
+        let (status, corpo) = historico(&st, &sid).await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert!(
+            textos(&corpo).is_empty(),
+            "o historico voltou do disco: {corpo}"
+        );
+
+        // O turno seguinte comeca limpo: o modelo nao ve o que foi apagado.
+        let (status, corpo) = mandar(&st, &sid, "pergunta-depois").await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        let vistas = provider.vistas.lock().expect("lock").clone();
+        let primeira = vistas.first().expect("o modelo foi chamado");
+        assert!(
+            !primeira.iter().any(|t| t == "segredo-antes"),
+            "o historico apagado chegou ao modelo: {primeira:?}"
+        );
+
+        // E um restart tambem nao ressuscita o que foi apagado.
+        let depois = processo(dir.path(), None);
+        let (status, corpo) = historico(&depois, &sid).await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert_eq!(
+            textos(&corpo),
+            vec!["pergunta-depois".to_string(), "resposta-depois".to_string()],
+            "so o turno posterior ao /clear sobrevive ao restart"
+        );
+    }
+
     /// Id que nao existe em lugar nenhum continua `404` nas tres rotas — e
     /// perguntar nao cria sessao, nem em memoria nem no banco.
     #[tokio::test]
