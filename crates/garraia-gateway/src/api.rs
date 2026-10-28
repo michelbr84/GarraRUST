@@ -1810,6 +1810,29 @@ mod sessao_apos_restart_tests {
         );
     }
 
+    /// Id que nao existe em lugar nenhum continua `404` nas tres rotas — e
+    /// perguntar nao cria sessao, nem em memoria nem no banco.
+    #[tokio::test]
+    async fn id_desconhecido_continua_404_sem_deixar_rastro() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = processo(dir.path(), Some(Arc::new(ProviderQueAnota::default())));
+        let id = "nao-existe-em-lugar-nenhum";
+
+        let (status, corpo) = historico(&st, id).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
+        assert_eq!(corpo["error"], "session not found");
+        let (status, corpo) = mandar(&st, id, "oi").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
+        let (status, corpo) = apagar(&st, id).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
+
+        assert!(
+            !st.sessions.contains_key(id),
+            "404 nao cria sessao em memoria"
+        );
+        assert_eq!(linha(&st, id).await, None, "404 nao cria linha no banco");
+    }
+
     /// Provider que recusa o pedido como o OpenRouter recusa um modelo que
     /// nao existe: `400` com a frase ja sanitizada na origem (#1726).
     #[derive(Default)]
@@ -1875,29 +1898,6 @@ mod sessao_apos_restart_tests {
             "o modelo nao e chamado para mensagem vazia"
         );
         assert_eq!(linha(&st, &sid).await.map(|l| l.2), Some(0));
-    }
-
-    /// Id que nao existe em lugar nenhum continua `404` nas tres rotas — e
-    /// perguntar nao cria sessao, nem em memoria nem no banco.
-    #[tokio::test]
-    async fn id_desconhecido_continua_404_sem_deixar_rastro() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let st = processo(dir.path(), Some(Arc::new(ProviderQueAnota::default())));
-        let id = "nao-existe-em-lugar-nenhum";
-
-        let (status, corpo) = historico(&st, id).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
-        assert_eq!(corpo["error"], "session not found");
-        let (status, corpo) = mandar(&st, id, "oi").await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
-        let (status, corpo) = apagar(&st, id).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
-
-        assert!(
-            !st.sessions.contains_key(id),
-            "404 nao cria sessao em memoria"
-        );
-        assert_eq!(linha(&st, id).await, None, "404 nao cria linha no banco");
     }
 
     /// Sessao de outra superficie so no disco: a rota REST nao a alcanca
