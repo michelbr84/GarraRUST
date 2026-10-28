@@ -400,30 +400,46 @@ pub struct AgentRuntime {
 fn mensagens_mcp_fora_da_whitelist(
     portao: &crate::modes::ToolGate,
     todas: &[crate::ToolDefinition],
-) -> Vec<String> {
+) -> Vec<AvisoMcpEscondida> {
     if !portao.restringe_por_whitelist() {
         return Vec::new();
     }
-    let escondidas: Vec<&str> = todas
+    let modo = portao.nome_do_modo().unwrap_or("");
+    // Agrupa por servidor (prefixo antes de `__`), preservando a ordem de
+    // aparicao: 14 tools do mesmo servidor viram UMA linha (#1734).
+    let mut por_servidor: Vec<(&str, Vec<&str>)> = Vec::new();
+    for nome in todas
         .iter()
         .map(|d| d.name.as_str())
         .filter(|n| crate::modes::ToolGate::eh_ferramenta_mcp(n) && !portao.permite(n))
-        .collect();
-    if escondidas.is_empty() {
-        return Vec::new();
+    {
+        let (servidor, ferramenta) = nome.split_once("__").unwrap_or((nome, ""));
+        match por_servidor.iter_mut().find(|(s, _)| *s == servidor) {
+            Some((_, ferramentas)) => ferramentas.push(ferramenta),
+            None => por_servidor.push((servidor, vec![ferramenta])),
+        }
     }
-    let modo = portao.nome_do_modo().unwrap_or("");
-    escondidas
-        .iter()
-        .map(|nome| {
-            format!(
-                "modo restrito `{modo}` escondeu a ferramenta MCP `{nome}` nao \
-                 declarada: o modelo nao vai ve-la neste turno. Declare \
-                 `servidor/*` (ou o nome completo `servidor__ferramenta`) na \
-                 `allowed` do perfil para liberar."
-            )
+    por_servidor
+        .into_iter()
+        .map(|(servidor, ferramentas)| AvisoMcpEscondida {
+            chave: (modo.to_string(), servidor.to_string()),
+            mensagem: format!(
+                "modo restrito `{modo}` escondeu {} ferramenta(s) MCP nao \
+                 declarada(s) do servidor `{servidor}` ({}): o modelo nao vai \
+                 ve-las neste turno. Declare `servidor/*` (ou o nome completo \
+                 `servidor__ferramenta`) na `allowed` do perfil para liberar.",
+                ferramentas.len(),
+                ferramentas.join(", ")
+            ),
         })
         .collect()
+}
+
+/// Um aviso agregado de MCP escondida: a chave `(modo, servidor)` serve para
+/// emitir o `warn!` uma unica vez por processo (#1734).
+struct AvisoMcpEscondida {
+    chave: (String, String),
+    mensagem: String,
 }
 
 /// Emite, em `warn!`, o aviso montado por [`mensagens_mcp_fora_da_whitelist`].
@@ -432,9 +448,25 @@ fn mensagens_mcp_fora_da_whitelist(
 /// servidor MCP, nao o modelo. **Recebe a lista INTEIRA**, antes do filtro do
 /// portao: o aviso e justamente sobre o que o filtro tirou, e uma lista ja
 /// filtrada nao tem mais o que mostrar.
+///
+/// Um `warn!` por `(modo, servidor)` por processo; as repeticoes por turno
+/// descem para `debug!` (#1734).
 fn avisar_mcp_fora_da_whitelist(portao: &crate::modes::ToolGate, todas: &[crate::ToolDefinition]) {
-    for mensagem in mensagens_mcp_fora_da_whitelist(portao, todas) {
-        warn!("{mensagem}");
+    static JA_AVISADOS: std::sync::Mutex<Option<std::collections::HashSet<(String, String)>>> =
+        std::sync::Mutex::new(None);
+    for aviso in mensagens_mcp_fora_da_whitelist(portao, todas) {
+        let primeira_vez = match JA_AVISADOS.lock() {
+            Ok(mut g) => g
+                .get_or_insert_with(Default::default)
+                .insert(aviso.chave.clone()),
+            // Lock envenenado: na duvida, avisa (nunca engole o aviso).
+            Err(_) => true,
+        };
+        if primeira_vez {
+            warn!("{}", aviso.mensagem);
+        } else {
+            debug!("{}", aviso.mensagem);
+        }
     }
 }
 
