@@ -161,6 +161,11 @@ pub struct ChatCompletionResponse {
     pub object: String,
     pub created: i64,
     pub model: String,
+    /// #1733: quem de fato atendeu o turno. Aditivo e opcional — ausente
+    /// quando o runtime nao registrou stats do turno. Precedente: o OpenRouter
+    /// devolve `provider` no topo da resposta de `/v1/chat/completions`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     pub choices: Vec<Choice>,
     pub usage: Usage,
 }
@@ -200,6 +205,11 @@ pub struct ChatCompletionChunk {
     pub object: String,
     pub created: i64,
     pub model: String,
+    /// #1733: o provider que atendeu o turno. So o chunk final (fase 2) sabe
+    /// disso — ver `handle_streaming`. `None` nos chunks anteriores, que saem
+    /// antes de o fallback ser decidido.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     pub choices: Vec<ChunkChoice>,
 }
 
@@ -666,6 +676,12 @@ async fn handle_streaming(
     let user_msg_clone = user_message.clone();
     let user_id_clone = user_id.clone();
 
+    // #1733: o stream le, no chunk final, quem de fato respondeu o turno.
+    // Clones proprios porque `state`/`session_id` originais sao movidos para a
+    // task spawnada abaixo. Sao `Arc`/`String`, entao o custo e desprezivel.
+    let state_do_stream = state.clone();
+    let session_do_stream = session_id.clone();
+
     // #1541 (defeito 4): canal de desfecho do turno. O `delta_tx` fecha
     // exatamente igual num sucesso mudo e numa falha do provider, entao o SSE
     // sozinho nao consegue distinguir os dois — precisa que a task **diga**.
@@ -749,8 +765,10 @@ async fn handle_streaming(
             created,
             model,
             Some(desfecho_rx),
+            state_do_stream,
+            session_do_stream,
         ),
-        |(phase, mut rx_opt, chunk_id, created, model, desfecho_opt)| async move {
+        |(phase, mut rx_opt, chunk_id, created, model, desfecho_opt, state, session_id)| async move {
             match phase {
                 // Phase 0: emit initial chunk establishing role
                 0 => {
@@ -759,6 +777,8 @@ async fn handle_streaming(
                         object: "chat.completion.chunk".to_string(),
                         created,
                         model: model.clone(),
+                        // #1733: so o chunk final (fase 2) conhece o provider.
+                        provider: None,
                         choices: vec![ChunkChoice {
                             index: 0,
                             delta: DeltaContent {
@@ -770,7 +790,19 @@ async fn handle_streaming(
                     };
                     let event =
                         Event::default().data(serde_json::to_string(&chunk).unwrap_or_default());
-                    Some((event, (1, rx_opt, chunk_id, created, model, desfecho_opt)))
+                    Some((
+                        event,
+                        (
+                            1,
+                            rx_opt,
+                            chunk_id,
+                            created,
+                            model,
+                            desfecho_opt,
+                            state,
+                            session_id,
+                        ),
+                    ))
                 }
                 // Phase 1: stream content deltas; on channel close → go to phase 2
                 1 => {
@@ -782,6 +814,8 @@ async fn handle_streaming(
                                 object: "chat.completion.chunk".to_string(),
                                 created,
                                 model: model.clone(),
+                                // #1733: o fallback so se decide depois.
+                                provider: None,
                                 choices: vec![ChunkChoice {
                                     index: 0,
                                     delta: DeltaContent {
@@ -793,7 +827,19 @@ async fn handle_streaming(
                             };
                             let event = Event::default()
                                 .data(serde_json::to_string(&chunk).unwrap_or_default());
-                            Some((event, (1, Some(rx), chunk_id, created, model, desfecho_opt)))
+                            Some((
+                                event,
+                                (
+                                    1,
+                                    Some(rx),
+                                    chunk_id,
+                                    created,
+                                    model,
+                                    desfecho_opt,
+                                    state,
+                                    session_id,
+                                ),
+                            ))
                         }
                         None => {
                             // Canal fechado. #1541 (defeito 4): fechar sempre
@@ -825,11 +871,25 @@ async fn handle_streaming(
                                         .data(serde_json::to_string(&erro).unwrap_or_default())
                                 }
                                 None => {
+                                    // #1733: so AQUI quem de fato respondeu e
+                                    // conhecido. A task registra as stats no fim
+                                    // do turno ANTES de mandar o desfecho pelo
+                                    // oneshot que acabamos de aguardar, entao
+                                    // neste ponto elas ja existem. Os chunks
+                                    // anteriores sairam com o rotulo pedido (o
+                                    // fallback so se decide depois), por isso so
+                                    // o chunk final carrega a verdade.
+                                    let stats = state.agents.last_turn_stats(&session_id);
+                                    let modelo_final = stats
+                                        .as_ref()
+                                        .map(|s| s.model.clone())
+                                        .unwrap_or_else(|| model.clone());
                                     let chunk = ChatCompletionChunk {
                                         id: chunk_id.clone(),
                                         object: "chat.completion.chunk".to_string(),
                                         created,
-                                        model: model.clone(),
+                                        model: modelo_final,
+                                        provider: stats.as_ref().map(|s| s.provider.clone()),
                                         choices: vec![ChunkChoice {
                                             index: 0,
                                             delta: DeltaContent {
@@ -843,14 +903,29 @@ async fn handle_streaming(
                                         .data(serde_json::to_string(&chunk).unwrap_or_default())
                                 }
                             };
-                            Some((event, (3, None, chunk_id, created, model, None)))
+                            Some((
+                                event,
+                                (3, None, chunk_id, created, model, None, state, session_id),
+                            ))
                         }
                     }
                 }
                 // Phase 3: emit [DONE] sentinel
                 3 => {
                     let event = Event::default().data("[DONE]");
-                    Some((event, (4, rx_opt, chunk_id, created, model, desfecho_opt)))
+                    Some((
+                        event,
+                        (
+                            4,
+                            rx_opt,
+                            chunk_id,
+                            created,
+                            model,
+                            desfecho_opt,
+                            state,
+                            session_id,
+                        ),
+                    ))
                 }
                 // Phase 4+: stream ended
                 _ => None,
@@ -932,11 +1007,22 @@ async fn handle_non_streaming(
                 total_tokens: 0,
             };
 
+            // #1733: o `model` ecoado passa a ser quem de fato respondeu, nao o
+            // rotulo pedido. Com fallback os dois divergem — o primario morto e
+            // o modelo local que serviu. O runtime registrou as stats no fim do
+            // turno (ja concluido neste ponto); sem stats, mantem o rotulo.
+            let stats = state.agents.last_turn_stats(&session_id);
+            let modelo_ecoado = stats
+                .as_ref()
+                .map(|s| s.model.clone())
+                .unwrap_or_else(|| model.clone());
+
             let resp = ChatCompletionResponse {
                 id: response_id,
                 object: "chat.completion".to_string(),
                 created: now,
-                model: model.clone(),
+                model: modelo_ecoado,
+                provider: stats.as_ref().map(|s| s.provider.clone()),
                 choices: vec![Choice {
                     index: 0,
                     message: ResponseMessage {
@@ -971,7 +1057,14 @@ async fn handle_non_streaming(
                 });
             }
 
-            Json(resp).into_response()
+            // #1733: os mesmos headers por turno do `POST /api/sessions/.../
+            // messages`, pela via compartilhada. Sem stats, o middleware do
+            // router ainda preenche o default da config.
+            let mut resposta = Json(resp).into_response();
+            if let Some(s) = &stats {
+                crate::resposta_turno::aplicar_headers_do_turno(&mut resposta, s);
+            }
+            resposta
         }
         Err(e) => {
             // #1726: o status segue a classe do erro (400 para pedido errado,
@@ -1165,6 +1258,11 @@ fn resolve_user_id(headers: &HeaderMap, state: &SharedState) -> Option<String> {
     }
     owner
 }
+
+/// #1733: `/v1/chat/completions` diz quem respondeu (corpo + headers por
+/// turno), em arquivo proprio por precisar de `AppState`/`AgentRuntime` reais.
+#[cfg(test)]
+mod quem_respondeu_tests;
 
 #[cfg(test)]
 mod tests {

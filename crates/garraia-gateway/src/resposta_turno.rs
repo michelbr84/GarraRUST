@@ -36,11 +36,25 @@ pub fn montar(session_id: String, content: String, stats: Option<TurnStats>) -> 
     };
     let mut resposta = (StatusCode::OK, Json(corpo)).into_response();
     if let Some(t) = &stats {
-        for (nome, valor) in [("X-AI-Provider", &t.provider), ("X-AI-Model", &t.model)] {
-            if let Ok(v) = HeaderValue::from_str(valor) {
-                resposta.headers_mut().insert(nome, v);
-            }
-        }
+        aplicar_headers_do_turno(&mut resposta, t);
     }
     resposta
+}
+
+/// Poe os headers `X-AI-Provider`/`X-AI-Model` do turno numa resposta ja
+/// montada, direto das `TurnStats`.
+///
+/// Extraido de [`montar`] para o shim OpenAI-compat (`openai_api.rs`) reusar a
+/// mesma logica em `/v1/chat/completions` — os dois caminhos poem os mesmos
+/// headers por turno, e o middleware do router so preenche o default da config
+/// quando nenhum handler os pos (#1733).
+pub fn aplicar_headers_do_turno(resposta: &mut Response, stats: &TurnStats) {
+    for (nome, valor) in [
+        ("X-AI-Provider", &stats.provider),
+        ("X-AI-Model", &stats.model),
+    ] {
+        if let Ok(v) = HeaderValue::from_str(valor) {
+            resposta.headers_mut().insert(nome, v);
+        }
+    }
 }
