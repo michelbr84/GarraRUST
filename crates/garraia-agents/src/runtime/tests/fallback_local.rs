@@ -3,7 +3,7 @@ use super::*;
 // ─── #1249: rede caida cai para o provider local ──────────────────────
 
 /// Como o primario falha, e a diferenca que a issue #1249 cobra.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum FalhaSimulada {
     /// Rede caida: o cabo saiu, o DNS morreu, a porta nao responde. O
     /// provider classifica no ponto de captura (`erro_de_envio`), entao
@@ -16,6 +16,9 @@ pub(super) enum FalhaSimulada {
     Credencial,
     /// #1735: erro do PEDIDO (400) - outro provider nao o corrige.
     PedidoInvalido,
+    /// #1743: chave valida mas sem permissao para o modelo - o provider
+    /// responde 403. E credencial tambem, e o status anotado e o 403.
+    Permissao,
 }
 
 impl FalhaSimulada {
@@ -38,6 +41,10 @@ impl FalhaSimulada {
             ),
             Self::PedidoInvalido => Error::Agent(
                 "openai API error: status=400 Bad Request, body=not a valid model ID".to_string(),
+            ),
+            Self::Permissao => Error::Agent(
+                "openai API error: status=403 Forbidden, body=Key has no access to this model"
+                    .to_string(),
             ),
         }
     }
@@ -529,5 +536,206 @@ pub(super) async fn erro_do_pedido_nao_aciona_o_fallback() {
             .await
             .is_err(),
         "400 em streaming tambem propaga"
+    );
+}
+
+// --- #1743: a recusa de credencial fica anotada para o /api/health ---
+
+/// O primario cuja chave pode ser trocada no meio do teste: morta (401) ate
+/// alguem chamar `aceitar()`, e depois responde como qualquer provider.
+pub(super) struct PrimarioComChaveTrocavel {
+    valida: std::sync::atomic::AtomicBool,
+}
+
+impl PrimarioComChaveTrocavel {
+    pub(super) fn com_chave_morta() -> Self {
+        Self {
+            valida: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// O operador trocou a chave: a partir daqui o provider aceita.
+    pub(super) fn aceitar(&self) {
+        self.valida.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn chave_valida(&self) -> bool {
+        self.valida.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for PrimarioComChaveTrocavel {
+    fn provider_id(&self) -> &str {
+        "openai"
+    }
+
+    async fn complete(&self, _request: &LlmRequest) -> Result<LlmResponse> {
+        if !self.chave_valida() {
+            return Err(FalhaSimulada::Credencial.erro());
+        }
+        Ok(LlmResponse {
+            content: vec![ContentBlock::Text {
+                text: "respondi da nuvem".to_string(),
+            }],
+            model: "gpt-4o".to_string(),
+            stop_reason: None,
+            usage: None,
+        })
+    }
+
+    async fn stream_complete(
+        &self,
+        _request: &LlmRequest,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+        if !self.chave_valida() {
+            return Err(FalhaSimulada::Credencial.erro());
+        }
+        Ok(Box::pin(futures::stream::iter(vec![
+            Ok(StreamEvent::TextDelta("respondi da nuvem".to_string())),
+            Ok(StreamEvent::MessageStop),
+        ])))
+    }
+
+    async fn health_check(&self) -> Result<bool> {
+        Ok(true)
+    }
+}
+
+/// 401 no primario, caminho batch: o runtime anota status e hora para o
+/// health, so do provider que recusou - o fallback que respondeu fica limpo.
+#[tokio::test(start_paused = true)]
+pub(super) async fn credencial_recusada_fica_anotada_para_o_health_em_batch() {
+    let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Credencial);
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+    assert!(
+        runtime.recusas_de_credencial().is_empty(),
+        "nada antes do turno"
+    );
+
+    runtime
+        .complete_reportando_provider(&como_dyn, &pedido_simples())
+        .await
+        .expect("o fallback local completa o turno");
+
+    let recusa = runtime
+        .recusa_de_credencial("openai")
+        .expect("a recusa do primario fica anotada");
+    assert_eq!(recusa.provider, "openai");
+    assert_eq!(recusa.status, 401);
+    assert_eq!(recusa.seguidas, 1);
+    assert!(
+        runtime.recusa_de_credencial("ollama").is_none(),
+        "o fallback respondeu: nada a anotar dele"
+    );
+
+    // Segundo turno com a mesma chave morta: continua UMA linha, contando.
+    runtime
+        .complete_reportando_provider(&como_dyn, &pedido_simples())
+        .await
+        .expect("o fallback local completa o turno");
+    let todas = runtime.recusas_de_credencial();
+    assert_eq!(todas.len(), 1, "uma linha por provider, nao um historico");
+    assert_eq!(todas[0].seguidas, 2);
+}
+
+/// O mesmo sinal no braco de streaming, que tem laco proprio.
+#[tokio::test]
+pub(super) async fn credencial_recusada_fica_anotada_para_o_health_em_streaming() {
+    let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Credencial);
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+
+    let _stream = runtime
+        .stream_complete_with_fallback(&como_dyn, &pedido_simples())
+        .await
+        .expect("o stream do fallback local tem de chegar");
+
+    let recusa = runtime
+        .recusa_de_credencial("openai")
+        .expect("a recusa do primario fica anotada tambem em streaming");
+    assert_eq!(recusa.status, 401);
+    assert!(runtime.recusa_de_credencial("ollama").is_none());
+}
+
+/// Criterio de aceitacao da #1743: um turno que passa expira a recusa - nos
+/// dois caminhos.
+#[tokio::test(start_paused = true)]
+pub(super) async fn turno_que_passa_expira_a_recusa_de_credencial() {
+    let runtime = AgentRuntime::new();
+    let primario = Arc::new(PrimarioComChaveTrocavel::com_chave_morta());
+    runtime.register_provider(primario.clone());
+    runtime.register_provider(Arc::new(LocalQueResponde));
+    runtime.set_fallback_providers(vec!["ollama".to_string()]);
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+
+    let (_, quem) = runtime
+        .complete_reportando_provider(&como_dyn, &pedido_simples())
+        .await
+        .expect("o fallback local completa o turno");
+    assert_eq!(quem, "ollama");
+    assert!(runtime.recusa_de_credencial("openai").is_some());
+
+    primario.aceitar();
+    let (_, quem) = runtime
+        .complete_reportando_provider(&como_dyn, &pedido_simples())
+        .await
+        .expect("com a chave nova o primario responde");
+    assert_eq!(quem, "openai");
+    assert!(
+        runtime.recusa_de_credencial("openai").is_none(),
+        "o turno que passou expirou a recusa"
+    );
+
+    // E em streaming: recusa anotada de novo, e expirada de novo.
+    let primario_stream = Arc::new(PrimarioComChaveTrocavel::com_chave_morta());
+    let runtime_stream = AgentRuntime::new();
+    runtime_stream.register_provider(primario_stream.clone());
+    runtime_stream.register_provider(Arc::new(LocalQueResponde));
+    runtime_stream.set_fallback_providers(vec!["ollama".to_string()]);
+    let como_dyn_stream: Arc<dyn LlmProvider> = primario_stream.clone();
+    let _ = runtime_stream
+        .stream_complete_with_fallback(&como_dyn_stream, &pedido_simples())
+        .await
+        .expect("fallback em streaming");
+    assert!(runtime_stream.recusa_de_credencial("openai").is_some());
+    primario_stream.aceitar();
+    let _ = runtime_stream
+        .stream_complete_with_fallback(&como_dyn_stream, &pedido_simples())
+        .await
+        .expect("primario em streaming");
+    assert!(runtime_stream.recusa_de_credencial("openai").is_none());
+}
+
+/// 400 e erro do pedido e 429 e sobrecarga: nenhum dos dois e recusa de
+/// credencial, e o health nao pode acusar a chave por eles.
+#[tokio::test(start_paused = true)]
+pub(super) async fn erro_do_pedido_e_sobrecarga_nao_sao_recusa_de_credencial() {
+    for falha in [FalhaSimulada::PedidoInvalido, FalhaSimulada::Sobrecarga] {
+        let (runtime, primario) = runtime_com_fallback_local(falha);
+        let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+        let _ = runtime
+            .complete_reportando_provider(&como_dyn, &pedido_simples())
+            .await;
+        assert!(
+            runtime.recusas_de_credencial().is_empty(),
+            "{falha:?} nao e recusa de credencial"
+        );
+    }
+}
+
+/// 403 tambem e credencial (sem permissao), e o status anotado e o 403.
+#[tokio::test(start_paused = true)]
+pub(super) async fn recusa_403_fica_anotada_com_o_proprio_status() {
+    let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Permissao);
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+
+    let (_, quem) = runtime
+        .complete_reportando_provider(&como_dyn, &pedido_simples())
+        .await
+        .expect("o fallback local completa o turno");
+    assert_eq!(quem, "ollama");
+    assert_eq!(
+        runtime.recusa_de_credencial("openai").map(|r| r.status),
+        Some(403)
     );
 }

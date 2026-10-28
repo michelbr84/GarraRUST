@@ -354,6 +354,12 @@ pub struct AgentRuntime {
     /// fallback e o runtime — perguntar a config devolveria o configurado, que
     /// a issue distingue explicitamente do efetivo.
     turn_stats: RwLock<crate::turn_stats::TurnStatsRegistry>,
+    /// #1743: a ultima recusa de credencial (401/403) por provider, para o
+    /// `/api/health` dizer "chave morta" sem sondar o provider de novo. Quem
+    /// observa a recusa e o laco de fallback — o unico ponto que ve o erro
+    /// do primario antes de ele virar resposta do fallback. Expira quando um
+    /// turno do mesmo provider volta a passar. Ver `crate::recusa_de_credencial`.
+    recusas_de_credencial: RwLock<crate::recusa_de_credencial::RecusasDeCredencial>,
     /// #1343: pedidos de confirmacao pausados, esperando o "sim" do proximo
     /// turno. So os turnos com `ExecContext::approval_scope` escrevem e leem
     /// aqui. Mora no runtime porque ele e o unico ponto que gateway e CLI
@@ -1161,6 +1167,9 @@ impl AgentRuntime {
             resilience: Arc::new(ResilienceManager::new()),
             fallback_providers_list: RwLock::new(Vec::new()),
             turn_stats: RwLock::new(crate::turn_stats::TurnStatsRegistry::new()),
+            recusas_de_credencial: RwLock::new(
+                crate::recusa_de_credencial::RecusasDeCredencial::new(),
+            ),
             context_policy: ContextPolicy::default(),
             tools_model: RwLock::new(None),
             noise_policy: crate::memory_noise::NoisePolicy::default(),
@@ -1330,6 +1339,58 @@ impl AgentRuntime {
     fn record_turn_stats(&self, session_id: &str, stats: crate::turn_stats::TurnStats) {
         if let Ok(mut reg) = self.turn_stats.write() {
             reg.record(session_id, stats);
+        }
+    }
+
+    /// #1743: a ultima recusa de credencial (401/403) deste provider, se
+    /// nenhum turno dele passou depois dela.
+    pub fn recusa_de_credencial(
+        &self,
+        provider_id: &str,
+    ) -> Option<crate::recusa_de_credencial::RecusaDeCredencial> {
+        self.recusas_de_credencial
+            .read()
+            .ok()?
+            .get(provider_id)
+            .cloned()
+    }
+
+    /// #1743: todas as recusas de credencial em vigor, em ordem de provider.
+    /// E o que o `/api/health` sobrepoe aos checks sondados.
+    pub fn recusas_de_credencial(&self) -> Vec<crate::recusa_de_credencial::RecusaDeCredencial> {
+        self.recusas_de_credencial
+            .read()
+            .map(|r| r.todas())
+            .unwrap_or_default()
+    }
+
+    /// #1743: o provider respondeu 401/403. Anota status e hora; o corpo do
+    /// erro fica no log (ja sanitizado), nunca aqui — o health e auth-free.
+    fn anotar_recusa_de_credencial(&self, provider_id: &str, err: &Error) {
+        let status = crate::providers::status_http_do_erro(err).unwrap_or(
+            if err.to_string().contains("status=403") {
+                403
+            } else {
+                401
+            },
+        );
+        if let Ok(mut recusas) = self.recusas_de_credencial.write() {
+            recusas.registrar(provider_id, status, std::time::SystemTime::now());
+        }
+    }
+
+    /// #1743: um turno deste provider passou — a recusa, se havia, expira.
+    fn anotar_credencial_aceita(&self, provider_id: &str) {
+        let havia = self
+            .recusas_de_credencial
+            .write()
+            .map(|mut r| r.limpar(provider_id))
+            .unwrap_or(false);
+        if havia {
+            info!(
+                "credencial do provider '{}' voltou a ser aceita; health volta ao normal",
+                provider_id
+            );
         }
     }
 
@@ -4186,6 +4247,7 @@ impl AgentRuntime {
                 match primary.complete(request).await {
                     Ok(resp) => {
                         primary_cb.record_success().await;
+                        self.anotar_credencial_aceita(&primary_id);
                         return Ok((resp, primary_id.clone()));
                     }
                     // #1249: rede caida. Uma tentativa e cai para o fallback,
@@ -4215,6 +4277,8 @@ impl AgentRuntime {
                             primary_id, e
                         );
                         primary_cb.record_failure().await;
+                        // #1743: o health precisa saber que a chave morreu.
+                        self.anotar_recusa_de_credencial(&primary_id, &e);
                         break;
                     }
                     Err(e) if is_retryable_error(&e) => {
@@ -4259,11 +4323,15 @@ impl AgentRuntime {
             match fallback.complete(&pedido_do_fallback).await {
                 Ok(resp) => {
                     cb.record_success().await;
+                    self.anotar_credencial_aceita(fallback_id);
                     return Ok((resp, fallback_id.clone()));
                 }
                 Err(e) => {
                     warn!("fallback '{}' failed: {}", fallback_id, e);
                     cb.record_failure().await;
+                    if is_credential_error(&e) {
+                        self.anotar_recusa_de_credencial(fallback_id, &e);
+                    }
                 }
             }
         }
@@ -4286,7 +4354,11 @@ impl AgentRuntime {
         let primary_id = primary.provider_id().to_string();
 
         match primary.stream_complete(request).await {
-            Ok(stream) => return Ok(stream),
+            Ok(stream) => {
+                // O stream so chega depois de um 2xx: a credencial foi aceita.
+                self.anotar_credencial_aceita(&primary_id);
+                return Ok(stream);
+            }
             // #1249: o braco de streaming e separado do batch e ficou de fora
             // do fix anterior. Aqui nao existe orcamento de retry para queimar
             // — e uma tentativa e o fallback —, entao transporte entra na
@@ -4300,6 +4372,10 @@ impl AgentRuntime {
                 );
                 let cb = self.resilience.circuit_breaker(&primary_id).await;
                 cb.record_failure().await;
+                if is_credential_error(&e) {
+                    // #1743: mesmo sinal do caminho batch.
+                    self.anotar_recusa_de_credencial(&primary_id, &e);
+                }
             }
             Err(e) => return Err(e),
         }
@@ -4319,10 +4395,16 @@ impl AgentRuntime {
             info!("streaming fallback: trying '{}'", fallback_id);
             let pedido_do_fallback = requisicao_para_o_fallback(request, fallback_id);
             match fallback.stream_complete(&pedido_do_fallback).await {
-                Ok(stream) => return Ok(stream),
+                Ok(stream) => {
+                    self.anotar_credencial_aceita(fallback_id);
+                    return Ok(stream);
+                }
                 Err(e) => {
                     warn!("streaming fallback '{}' failed: {}", fallback_id, e);
                     cb.record_failure().await;
+                    if is_credential_error(&e) {
+                        self.anotar_recusa_de_credencial(fallback_id, &e);
+                    }
                 }
             }
         }
