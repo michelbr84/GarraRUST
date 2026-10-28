@@ -176,12 +176,6 @@ pub struct SendMessageRequest {
 }
 
 #[derive(Serialize)]
-pub struct SendMessageResponse {
-    pub session_id: String,
-    pub content: String,
-}
-
-#[derive(Serialize)]
 pub struct SessionInfo {
     pub session_id: String,
     pub channel_id: Option<String>,
@@ -579,14 +573,8 @@ pub async fn send_message(
                     &response_text,
                 )
                 .await;
-            (
-                StatusCode::OK,
-                Json(serde_json::json!(SendMessageResponse {
-                    session_id,
-                    content: response_text,
-                })),
-            )
-                .into_response()
+            let stats = state.agents.last_turn_stats(&session_id);
+            crate::resposta_turno::montar(session_id, response_text, stats)
         }
         Err(e) => {
             // #1726: 400 quando o provider recusou o PEDIDO (modelo invalido,
@@ -1940,6 +1928,8 @@ mod sessao_apos_restart_tests {
             "turno recusado nao vira historico"
         );
     }
+
+    mod turno;
 
     /// #1726: `content` vazio ou so espaco e erro de uso — `400` sem chamar o
     /// modelo e sem gravar nada.

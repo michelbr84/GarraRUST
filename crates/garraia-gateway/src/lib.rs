@@ -60,6 +60,7 @@ pub mod projects_handler;
 pub mod projetos_da_sessao;
 pub mod push_channels;
 pub mod rate_limiter;
+pub mod resposta_turno;
 pub mod rest_v1;
 pub mod router;
 pub mod runs_handler;
