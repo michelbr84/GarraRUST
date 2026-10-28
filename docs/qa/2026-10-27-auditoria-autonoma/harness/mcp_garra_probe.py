@@ -1,0 +1,20 @@
+import json, subprocess, sys, os, time
+sys.stdout.reconfigure(encoding="utf-8")
+env = dict(os.environ, GARRAIA_CONFIG_DIR=r"<scratch>/garra-qa/config")
+p = subprocess.Popen([r"C:/Users/<user>/OneDrive/Projetos-Claude/GarraRUST/target/debug/garra.exe", "mcp-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1, env=env)
+def rpc(obj, timeout=120):
+    p.stdin.write(json.dumps(obj) + "\n"); p.stdin.flush()
+    line = p.stdout.readline()
+    return json.loads(line) if line.strip() else None
+t0=time.time(); r = rpc({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}})
+print("initialize:", json.dumps(r.get("result",{}).get("serverInfo")), "caps:", list(r.get("result",{}).get("capabilities",{}).keys()), f"{int((time.time()-t0)*1000)}ms")
+p.stdin.write(json.dumps({"jsonrpc":"2.0","method":"notifications/initialized"})+"\n"); p.stdin.flush()
+r = rpc({"jsonrpc":"2.0","id":2,"method":"tools/list"})
+print("tools:", [t["name"] for t in r.get("result",{}).get("tools",[])])
+t0=time.time(); r = rpc({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"garra_ask","arguments":{"message":"Responda apenas: MCP-OK","model":"z-ai/glm-5.3-flash"}}})
+print("garra_ask:", json.dumps(r.get("result", r.get("error")), ensure_ascii=False)[:300], f"{int((time.time()-t0)*1000)}ms")
+r = rpc({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"garra_ask","arguments":{"message":""}}})
+print("garra_ask vazio:", json.dumps(r.get("result", r.get("error")), ensure_ascii=False)[:200])
+r = rpc({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"ferramenta_inexistente","arguments":{}}})
+print("tool inexistente:", json.dumps(r.get("result", r.get("error")), ensure_ascii=False)[:200])
+p.kill(); err = p.stderr.read(); print("stderr tail:", err[-300:].replace("\n"," | "))

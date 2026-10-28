@@ -471,6 +471,16 @@ pub async fn send_message(
         return *resposta;
     }
 
+    // #1726: mensagem vazia (ou so espaco) e erro de uso, nao um turno — nao
+    // vale uma chamada ao LLM, nem uma linha vazia no historico.
+    if body.content.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "content must not be empty" })),
+        )
+            .into_response();
+    }
+
     // Slash commands never reach the model. Not persisted into history either
     // (same as Telegram): `/help` output is not conversation, and it would
     // only pollute the context the next turn sends.
@@ -579,12 +589,12 @@ pub async fn send_message(
                 .into_response()
         }
         Err(e) => {
-            warn!("agent error in API session {session_id}: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            )
-                .into_response()
+            // #1726: 400 quando o provider recusou o PEDIDO (modelo invalido,
+            // request malformado), 502 para provider/rede, 500 so para o que
+            // nao se classifica. O texto ja vem sanitizado da origem.
+            let status = crate::erro_http::status_para_erro_do_agente(&e);
+            warn!(%status, "agent error in API session {session_id}: {e}");
+            (status, Json(serde_json::json!({ "error": e.to_string() }))).into_response()
         }
     }
 }
@@ -1800,6 +1810,68 @@ mod sessao_apos_restart_tests {
         );
     }
 
+    /// `/clear` apaga o historico do disco, nao so a copia em memoria (#1723).
+    /// Antes, a memoria vazia fazia `hydrate_session_history` recarregar tudo
+    /// do banco no turno seguinte, e "limpei" vinha seguido da conversa
+    /// inteira de volta — inclusive depois de um restart.
+    ///
+    /// `multi_thread` porque o `/clear` alcanca o store por `block_in_place`,
+    /// como os outros comandos do registro.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clear_apaga_o_historico_persistido_e_ele_nao_volta() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let provider = Arc::new(ProviderQueAnota::default());
+        let st = processo(dir.path(), Some(Arc::clone(&provider)));
+        // `processo` nao registra os comandos (o boot faz isso em `server.rs`);
+        // sem o registro, `/clear` chegaria ao modelo como texto.
+        crate::commands::register_commands(&mut st.command_registry.write().expect("registry"));
+        let sid = criar_sessao_rest(&st).await;
+        st.persist_turn(&sid, Some("api"), None, "segredo-antes", "resposta-antes")
+            .await;
+        assert_eq!(
+            linha(&st, &sid).await.map(|l| l.2),
+            Some(2),
+            "precondicao: as duas mensagens estao no banco"
+        );
+
+        let (status, corpo) = mandar(&st, &sid, "/clear").await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert_eq!(corpo["command"], "clear", "{corpo}");
+
+        // O banco esvaziou, e ler o historico nao traz nada de volta.
+        assert_eq!(
+            linha(&st, &sid).await.map(|l| l.2),
+            Some(0),
+            "o /clear apaga as mensagens gravadas"
+        );
+        let (status, corpo) = historico(&st, &sid).await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert!(
+            textos(&corpo).is_empty(),
+            "o historico voltou do disco: {corpo}"
+        );
+
+        // O turno seguinte comeca limpo: o modelo nao ve o que foi apagado.
+        let (status, corpo) = mandar(&st, &sid, "pergunta-depois").await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        let vistas = provider.vistas.lock().expect("lock").clone();
+        let primeira = vistas.first().expect("o modelo foi chamado");
+        assert!(
+            !primeira.iter().any(|t| t == "segredo-antes"),
+            "o historico apagado chegou ao modelo: {primeira:?}"
+        );
+
+        // E um restart tambem nao ressuscita o que foi apagado.
+        let depois = processo(dir.path(), None);
+        let (status, corpo) = historico(&depois, &sid).await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert_eq!(
+            textos(&corpo),
+            vec!["pergunta-depois".to_string(), "resposta-depois".to_string()],
+            "so o turno posterior ao /clear sobrevive ao restart"
+        );
+    }
+
     /// Id que nao existe em lugar nenhum continua `404` nas tres rotas — e
     /// perguntar nao cria sessao, nem em memoria nem no banco.
     #[tokio::test]
@@ -1821,6 +1893,73 @@ mod sessao_apos_restart_tests {
             "404 nao cria sessao em memoria"
         );
         assert_eq!(linha(&st, id).await, None, "404 nao cria linha no banco");
+    }
+
+    /// Provider que recusa o pedido como o OpenRouter recusa um modelo que
+    /// nao existe: `400` com a frase ja sanitizada na origem (#1726).
+    #[derive(Default)]
+    struct ProviderQueRecusa;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ProviderQueRecusa {
+        fn provider_id(&self) -> &str {
+            "recusa"
+        }
+        fn configured_model(&self) -> Option<&str> {
+            Some("recusa-1")
+        }
+        async fn complete(&self, _request: &LlmRequest) -> garraia_common::Result<LlmResponse> {
+            Err(garraia_common::Error::Agent(
+                "openai API error: status=400 Bad Request, body=xyz is not a valid model ID (code=400)"
+                    .to_string(),
+            ))
+        }
+        async fn health_check(&self) -> garraia_common::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// #1726: o `400` do provider e erro do CLIENTE — a rota responde `400`,
+    /// nao `500`, e o corpo nao carrega o `user_id` do operador (ja sai
+    /// sanitizado na origem; aqui a garantia e que a rota nao o reintroduz).
+    #[tokio::test]
+    async fn modelo_recusado_pelo_provider_e_400_sem_corpo_bruto() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = processo(dir.path(), None);
+        st.agents.register_provider(Arc::new(ProviderQueRecusa));
+        let sid = criar_sessao_rest(&st).await;
+
+        let (status, corpo) = mandar(&st, &sid, "oi").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{corpo}");
+        let erro = corpo["error"].as_str().expect("error e texto");
+        assert!(erro.contains("not a valid model ID"), "{erro}");
+        assert!(!erro.contains("user_"), "{erro}");
+        assert_eq!(
+            linha(&st, &sid).await.map(|l| l.2),
+            Some(0),
+            "turno recusado nao vira historico"
+        );
+    }
+
+    /// #1726: `content` vazio ou so espaco e erro de uso — `400` sem chamar o
+    /// modelo e sem gravar nada.
+    #[tokio::test]
+    async fn content_vazio_e_400_sem_chamar_o_modelo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let provider = Arc::new(ProviderQueAnota::default());
+        let st = processo(dir.path(), Some(Arc::clone(&provider)));
+        let sid = criar_sessao_rest(&st).await;
+
+        for vazio in ["", "   ", "\n\t "] {
+            let (status, corpo) = mandar(&st, &sid, vazio).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{vazio:?}: {corpo}");
+            assert_eq!(corpo["error"], "content must not be empty");
+        }
+        assert!(
+            provider.vistas.lock().expect("lock").is_empty(),
+            "o modelo nao e chamado para mensagem vazia"
+        );
+        assert_eq!(linha(&st, &sid).await.map(|l| l.2), Some(0));
     }
 
     /// Sessao de outra superficie so no disco: a rota REST nao a alcanca

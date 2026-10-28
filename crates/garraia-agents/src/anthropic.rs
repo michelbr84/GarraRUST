@@ -140,8 +140,10 @@ impl LlmProvider for AnthropicProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
+            // #1726: so a frase do provider, nunca o corpo inteiro.
             return Err(Error::Agent(format!(
-                "erro na API da Anthropic: status={status}, body={body}"
+                "erro na API da Anthropic: status={status}, body={}",
+                crate::providers::corpo_de_erro_sanitizado(&body)
             )));
         }
 
@@ -180,8 +182,10 @@ impl LlmProvider for AnthropicProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
+            // #1726: so a frase do provider, nunca o corpo inteiro.
             return Err(Error::Agent(format!(
-                "erro na API da Anthropic: status={status}, body={body}"
+                "erro na API da Anthropic: status={status}, body={}",
+                crate::providers::corpo_de_erro_sanitizado(&body)
             )));
         }
 
