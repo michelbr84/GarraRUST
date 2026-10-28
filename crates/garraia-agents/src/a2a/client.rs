@@ -70,8 +70,10 @@ impl A2AClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            // #1737 F2: so a frase do peer, nunca o corpo inteiro.
             return Err(Error::Agent(format!(
-                "criação de tarefa falhou com status {status}: {body}"
+                "criação de tarefa falhou com status {status}: {}",
+                crate::providers::corpo_de_erro_sanitizado(&body)
             )));
         }
 
