@@ -133,10 +133,12 @@ impl OpenAiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            tracing::warn!("Failed to list models: status={}, body={}", status, body);
+            // #1726: mesma sanitizacao do chat — o corpo do OpenRouter traz o
+            // `user_id` da conta do operador.
+            let corpo = crate::providers::corpo_de_erro_sanitizado(&body);
+            tracing::warn!("Failed to list models: status={}, body={}", status, corpo);
             return Err(Error::Agent(format!(
-                "failed to list models: status={}, body={}",
-                status, body
+                "failed to list models: status={status}, body={corpo}"
             )));
         }
 
@@ -481,22 +483,13 @@ impl LlmProvider for OpenAiProvider {
         if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed_body)
             && let Some(error) = json_val.get("error")
         {
-            let msg = error
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown error");
-            let code = error
-                .get("code")
-                .and_then(|c| c.as_u64())
-                .map(|c| format!(", code={c}"))
-                .unwrap_or_default();
+            let mensagem = mensagem_de_erro_no_corpo_200(error);
             tracing::warn!(
-                "openai API returned error body with 200 status: {}{}, endpoint={}",
-                msg,
-                code,
+                "openai API returned error body with 200 status: {}, endpoint={}",
+                mensagem,
                 self.endpoint()
             );
-            return Err(Error::Agent(format!("openai API error: {msg}")));
+            return Err(Error::Agent(mensagem));
         }
 
         // Try to parse as JSON, with detailed error logging
@@ -1119,10 +1112,68 @@ fn erro_de_roteamento_openrouter(
     Some(Error::Agent(msg))
 }
 
+/// Mensagem para um objeto de erro entregue com HTTP 200 (#1726).
+///
+/// O OpenRouter responde `200` com `{"error":{"message":..,"code":400}}` em
+/// vez de `400` em alguns caminhos. Quando `error.code` e um status HTTP, ele
+/// vai como `status=NNN` na mensagem para a classificacao de quem le o texto
+/// (`status_http_do_erro` no gateway, `is_retryable_error` no runtime) ser a
+/// mesma do caminho nao-200 — antes, um modelo invalido entregue assim
+/// continuava virando 500. So a frase do provider entra; nunca o corpo.
+fn mensagem_de_erro_no_corpo_200(error: &serde_json::Value) -> String {
+    let msg = error
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or("unknown error");
+    match error
+        .get("code")
+        .and_then(|c| c.as_u64())
+        .filter(|c| (100..600).contains(c))
+    {
+        Some(code) => {
+            format!("openai API error: status={code} (no corpo, com HTTP 200), body={msg}")
+        }
+        None => format!("openai API error: {msg}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::providers::ToolDefinition;
+
+    /// #1726: erro no corpo com HTTP 200 carrega `status=` quando o `code` e
+    /// um status HTTP, e so a frase do provider — o `user_id` fica de fora.
+    #[test]
+    fn erro_no_corpo_200_leva_status_quando_o_code_e_http() {
+        let corpo: serde_json::Value = serde_json::from_str(
+            r#"{"error":{"message":"garraia is not a valid model ID","code":400},"user_id":"user_30DUSuPezaeY1jmnFqymmg2ApXf"}"#,
+        )
+        .expect("json");
+        let msg = mensagem_de_erro_no_corpo_200(&corpo["error"]);
+        assert_eq!(
+            msg,
+            "openai API error: status=400 (no corpo, com HTTP 200), body=garraia is not a valid model ID"
+        );
+        assert_eq!(
+            crate::providers::status_http_do_erro(&Error::Agent(msg.clone())),
+            Some(400)
+        );
+        assert!(!msg.contains("user_"), "{msg}");
+
+        // `code` que nao e status HTTP (string, ou numero fora da faixa) nao
+        // vira `status=`; sem `message`, a frase generica.
+        let sem_status = mensagem_de_erro_no_corpo_200(
+            &serde_json::json!({"message": "x", "code": "invalid_request_error"}),
+        );
+        assert_eq!(sem_status, "openai API error: x");
+        let fora = mensagem_de_erro_no_corpo_200(&serde_json::json!({"message": "x", "code": 7}));
+        assert_eq!(fora, "openai API error: x");
+        assert_eq!(
+            mensagem_de_erro_no_corpo_200(&serde_json::json!({})),
+            "openai API error: unknown error"
+        );
+    }
 
     #[derive(Debug)]
     struct Camada(&'static str, Option<Box<Camada>>);
