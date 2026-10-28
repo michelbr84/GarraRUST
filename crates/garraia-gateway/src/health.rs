@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::extract::State;
+use garraia_agents::RecusaDeCredencial;
 use serde::Serialize;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -362,6 +363,64 @@ pub async fn run_all_checks(state: &SharedState) -> Vec<HealthStatus> {
     results
 }
 
+// ─── #1743: credencial recusada nos turnos ─────────────────────────────────
+
+/// Sobrepoe aos checks sondados a ultima recusa de credencial (401/403) que o
+/// runtime observou em cada provider (#1743).
+///
+/// A sonda do `/api/health` nao leva credencial: `GET /models` do OpenRouter
+/// e rota publica e responde 200 com a chave morta, e a Anthropic nem e
+/// sondada. Quem recebe o 401 e o turno — e ele anota no runtime
+/// (`AgentRuntime::recusas_de_credencial`). Aqui o check daquele provider
+/// vira `ok: false` com o motivo e a hora (UTC, ISO 8601 com `Z`); se a sonda
+/// tambem falhou, o erro dela fica atras, para nao sumir. Um provider
+/// recusado que nao tem check (tipo sem sonda) ganha um, porque a recusa foi
+/// observada de verdade. Expira sozinho: um turno que passa limpa a anotacao
+/// no runtime e o check volta ao que a sonda diz.
+pub fn aplicar_recusas_de_credencial(
+    mut checks: Vec<HealthStatus>,
+    recusas: &[RecusaDeCredencial],
+) -> Vec<HealthStatus> {
+    for recusa in recusas {
+        let motivo = motivo_da_recusa(recusa);
+        match checks.iter_mut().find(|c| c.name == recusa.provider) {
+            Some(check) => {
+                check.ok = false;
+                check.error = Some(match check.error.take() {
+                    Some(sonda) => format!("{motivo}; sonda: {sonda}"),
+                    None => motivo,
+                });
+            }
+            None => checks.push(HealthStatus {
+                name: recusa.provider.clone(),
+                ok: false,
+                latency_ms: None,
+                error: Some(motivo),
+            }),
+        }
+    }
+    checks
+}
+
+/// `credencial recusada (401) em 2026-10-28T19:05:12Z` — e, a partir da
+/// segunda recusa seguida, quantas foram. Hora em UTC com `Z`, como todo
+/// timestamp de API deste repo. So status e hora: o corpo do 401 nao entra
+/// aqui porque `/api/health` e auth-free e ele pode carregar o prefixo da
+/// propria chave.
+fn motivo_da_recusa(recusa: &RecusaDeCredencial) -> String {
+    let quando = chrono::DateTime::<chrono::Utc>::from(recusa.quando)
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let seguidas = if recusa.seguidas > 1 {
+        format!(" ({} turnos seguidos)", recusa.seguidas)
+    } else {
+        String::new()
+    };
+    format!(
+        "credencial recusada ({}) em {quando}{seguidas}",
+        recusa.status
+    )
+}
+
 // ─── Boot Table ────────────────────────────────────────────────────────────
 
 /// Format health check results as a pretty terminal table for boot logs.
@@ -499,6 +558,11 @@ pub async fn health_handler(State(state): State<SharedState>) -> Json<HealthResp
         run_all_checks(&state).await
     };
 
+    // #1743: o que os turnos viram da credencial vence o que a sonda sem
+    // credencial achou. Aplicado na leitura, e nao no cache, para que a
+    // recusa apareca no turno seguinte e suma assim que um turno passar.
+    let checks = aplicar_recusas_de_credencial(checks, &state.agents.recusas_de_credencial());
+
     let healthy = checks.iter().filter(|r| r.ok).count();
     let total = checks.len();
     let status = if total == 0 {
@@ -593,5 +657,106 @@ mod tests {
                 "{bad} deveria ser recusado pelo allowlist de esquema"
             );
         }
+    }
+
+    // ─── #1743: a recusa de credencial vista nos turnos sobrepoe a sonda ───
+
+    fn check(name: &str, ok: bool, latency_ms: Option<u128>, error: Option<&str>) -> HealthStatus {
+        HealthStatus {
+            name: name.to_string(),
+            ok,
+            latency_ms,
+            error: error.map(str::to_string),
+        }
+    }
+
+    fn recusa(provider: &str, status: u16, seguidas: u32) -> RecusaDeCredencial {
+        let quando = chrono::DateTime::parse_from_rfc3339("2026-10-28T19:05:12Z")
+            .expect("hora fixa do teste");
+        RecusaDeCredencial {
+            provider: provider.to_string(),
+            status,
+            quando: quando.into(),
+            seguidas,
+        }
+    }
+
+    /// O caso da issue: a sonda publica do OpenRouter responde 200 com a chave
+    /// morta; o turno viu o 401. O check vira vermelho, a latencia da sonda
+    /// fica, e o provider ao lado nao e tocado.
+    #[test]
+    fn recusa_de_credencial_derruba_o_check_que_a_sonda_deu_como_ok() {
+        let checks = vec![
+            check("openrouter", true, Some(76), None),
+            check("ollama", true, Some(4), None),
+        ];
+        let saida = aplicar_recusas_de_credencial(checks, &[recusa("openrouter", 401, 1)]);
+
+        assert_eq!(saida.len(), 2);
+        assert!(!saida[0].ok);
+        assert_eq!(saida[0].latency_ms, Some(76));
+        assert_eq!(
+            saida[0].error.as_deref(),
+            Some("credencial recusada (401) em 2026-10-28T19:05:12Z")
+        );
+        assert!(
+            saida[1].ok,
+            "o ollama nao tem nada a ver com a chave do openrouter"
+        );
+        assert!(saida[1].error.is_none());
+    }
+
+    /// Sonda e credencial falharam: as duas informacoes ficam, nessa ordem.
+    #[test]
+    fn recusa_de_credencial_preserva_o_erro_da_sonda_atras_do_motivo() {
+        let saida = aplicar_recusas_de_credencial(
+            vec![check(
+                "openai",
+                false,
+                Some(120),
+                Some("HTTP 503 Service Unavailable"),
+            )],
+            &[recusa("openai", 403, 3)],
+        );
+
+        assert_eq!(
+            saida[0].error.as_deref(),
+            Some(
+                "credencial recusada (403) em 2026-10-28T19:05:12Z (3 turnos seguidos); \
+                 sonda: HTTP 503 Service Unavailable"
+            )
+        );
+    }
+
+    /// A Anthropic nao e sondada (check estatico `ok: true` em
+    /// `run_all_checks`), e um provider de teste nem aparece na config: a
+    /// recusa observada ganha um check proprio em vez de se perder.
+    #[test]
+    fn recusa_de_provider_sem_check_ganha_um_check_proprio() {
+        let saida = aplicar_recusas_de_credencial(Vec::new(), &[recusa("anthropic", 401, 1)]);
+
+        assert_eq!(saida.len(), 1);
+        assert_eq!(saida[0].name, "anthropic");
+        assert!(!saida[0].ok);
+        assert_eq!(saida[0].latency_ms, None);
+        assert!(
+            saida[0]
+                .error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("credencial recusada (401) em ")),
+            "{:?}",
+            saida[0].error
+        );
+    }
+
+    /// Sem recusa em vigor, o health e exatamente o que a sonda disse.
+    #[test]
+    fn sem_recusas_os_checks_ficam_como_a_sonda_disse() {
+        let checks = vec![check("openrouter", true, Some(76), None)];
+        let saida = aplicar_recusas_de_credencial(checks, &[]);
+
+        assert_eq!(saida.len(), 1);
+        assert!(saida[0].ok);
+        assert!(saida[0].error.is_none());
     }
 }

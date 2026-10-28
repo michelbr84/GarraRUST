@@ -14,7 +14,11 @@
 //!      (presence-only) e, para os daemons locais keyless (`ollama`,
 //!      `llamacpp`), probe TCP com alvo vetado por `garraia_common::ssrf`
 //!      ([`IpScope::AllowPrivate`] — link-local, CGNAT, multicast e
-//!      unspecified continuam bloqueados; regra 14).
+//!      unspecified continuam bloqueados; regra 14). Com o daemon
+//!      escutando, tambem o que o `/api/health` dele diz do provider
+//!      (#1743): a sonda sobreposta pela ultima recusa de credencial
+//!      (401/403) que os turnos viram — e assim que uma chave morta
+//!      aparece aqui, porque a sonda sem credencial nao a detecta.
 //!   5. Daemon — reconciliação pidfile + porta (mesma fonte do `status`),
 //!      não-fatal quando parado.
 //!
@@ -356,6 +360,27 @@ pub(crate) struct ProviderCheck {
     pub probe: Option<ProbeResult>,
     /// URL efetivamente sondada (com o default aplicado).
     pub probe_url: Option<String>,
+    /// O que o gateway vivo reporta deste provider em `GET /api/health`
+    /// (#1743). `None` quando o daemon não está escutando, não respondeu, ou
+    /// não tem check com este nome.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<SaudeNoGateway>,
+}
+
+/// Um check do `/api/health` do daemon vivo, visto pelo doctor (#1743).
+///
+/// É a sonda do gateway **sobreposta pela última recusa de credencial** que
+/// os turnos viram — a única fonte que sabe de uma chave morta, porque a
+/// sonda sem credencial do OpenRouter responde 200 com ela. `error` é o
+/// texto que o gateway já montou (`credencial recusada (401) em <UTC>`);
+/// nunca contém o corpo do 401, por construção do lado de lá.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct SaudeNoGateway {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Diagnóstico do daemon do gateway (mesma fonte de verdade do `status`).
@@ -454,9 +479,79 @@ pub(crate) fn collect_provider_checks(config: &AppConfig) -> Vec<ProviderCheck> 
                 credential_source,
                 probe,
                 probe_url,
+                gateway: None,
             }
         })
         .collect()
+}
+
+/// Lê os `checks` de um corpo de `GET /api/health`, por nome de provider
+/// (#1743). Puro: check sem `name` ou sem `ok` é ignorado, corpo sem
+/// `checks` dá lista vazia.
+pub(crate) fn saude_por_provider(corpo: &serde_json::Value) -> Vec<(String, SaudeNoGateway)> {
+    corpo
+        .get("checks")
+        .and_then(|c| c.as_array())
+        .map(|checks| {
+            checks
+                .iter()
+                .filter_map(|c| {
+                    Some((
+                        c.get("name")?.as_str()?.to_string(),
+                        SaudeNoGateway {
+                            ok: c.get("ok")?.as_bool()?,
+                            latency_ms: c.get("latency_ms").and_then(|v| v.as_u64()),
+                            error: c.get("error").and_then(|e| e.as_str()).map(str::to_string),
+                        },
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Anexa a cada provider da config o check de mesmo nome do gateway vivo
+/// (#1743). O nome casa por construção: o gateway nomeia o check pela chave
+/// da entrada `llm:`, a mesma que o doctor usa.
+pub(crate) fn anexar_saude_do_gateway(
+    providers: &mut [ProviderCheck],
+    saude: &[(String, SaudeNoGateway)],
+) {
+    for p in providers.iter_mut() {
+        if let Some((_, s)) = saude.iter().find(|(nome, _)| *nome == p.name) {
+            p.gateway = Some(s.clone());
+        }
+    }
+}
+
+/// `GET /api/health` do daemon local, pelo MESMO guard SSRF do probe de
+/// daemon (URL vetada, IPs pinados, sem redirect, corpo limitado). A rota é
+/// auth-free por desenho, então não leva credencial. Qualquer falha é
+/// `None`: o doctor diz que não sabe, não que caiu.
+fn health_do_gateway_vivo(host: &str, porta: u16) -> Option<serde_json::Value> {
+    let host_url = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    let url = format!("http://{host_url}:{porta}/api/health");
+    let politica = daemon_probe_policy();
+    let vetted = vet_url(&url, &politica).ok()?;
+    let client = garraia_common::ssrf::pinned_client(&vetted, &politica).ok()?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    rt.block_on(async {
+        let resp = client.get(vetted.url.clone()).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let bytes = garraia_common::ssrf::read_capped(resp, 256 * 1024)
+            .await
+            .ok()?;
+        serde_json::from_slice(&bytes).ok()
+    })
 }
 
 /// Probe TCP curto para a porta do gateway. Host vem da config do operador
@@ -505,7 +600,7 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
     let loader = ConfigLoader::new()?;
     let dirs_ok = loader.ensure_dirs().is_ok();
 
-    let (config_check, config_error, providers, gateway, bash, mcp) = match loader.load() {
+    let (config_check, config_error, mut providers, gateway, bash, mcp) = match loader.load() {
         Ok(config) => {
             let check = garraia_config::run_check(&loader, &config);
             let providers = collect_provider_checks(&config);
@@ -556,6 +651,17 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
     .iter()
     .any(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()));
 
+    // #1743: o daemon vivo é quem sabe o que os turnos viram da credencial
+    // de cada provider — o `/api/health` dele (auth-free) traz a sonda já
+    // sobreposta por isso. Só pergunta quando a porta responde; parado, as
+    // linhas dos providers ficam sem o bloco, e o `[4/5] Daemon` já diz.
+    let daemon = check_daemon(&gateway.0, gateway.1);
+    if daemon.port_listening
+        && let Some(corpo) = health_do_gateway_vivo(&gateway.0, gateway.1)
+    {
+        anexar_saude_do_gateway(&mut providers, &saude_por_provider(&corpo));
+    }
+
     let report = DoctorReport {
         version: env!("CARGO_PKG_VERSION"),
         os: std::env::consts::OS,
@@ -566,7 +672,7 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
         config_error,
         config_check,
         providers,
-        daemon: check_daemon(&gateway.0, gateway.1),
+        daemon,
         binary: crate::doctor_binario::collect(path_env.as_deref()),
         mcp,
         termux_check: termux_detected().then(|| {
@@ -659,6 +765,22 @@ fn print_human(report: &DoctorReport, strict: bool) {
         println!("{line}");
         if let Some(source) = &p.credential_source {
             println!("          credencial: {source}");
+        }
+        // #1743: o que o daemon vivo viu da credencial nos turnos — é aqui
+        // que uma chave morta aparece, porque a sonda sem credencial não a vê.
+        match &p.gateway {
+            Some(s) if s.ok => {
+                let latencia = s
+                    .latency_ms
+                    .map(|ms| format!(" ({ms} ms)"))
+                    .unwrap_or_default();
+                println!("          gateway vivo: OK{latencia}");
+            }
+            Some(s) => println!(
+                "          gateway vivo: FALHA — {}",
+                s.error.as_deref().unwrap_or("sem detalhe")
+            ),
+            None => {}
         }
         match (&p.probe, &p.probe_url) {
             (Some(ProbeResult::Reachable), Some(url)) => {
@@ -797,6 +919,79 @@ mod tests {
             cfg.llm.insert((*k).to_string(), v.clone());
         }
         cfg
+    }
+
+    // ─── #1743: saude do gateway vivo por provider ─────────────────────────
+
+    /// Um `ProviderCheck` montado à mão: sem env, sem cofre, sem probe TCP.
+    fn provider_check(name: &str) -> ProviderCheck {
+        ProviderCheck {
+            name: name.to_string(),
+            kind: "openai".to_string(),
+            model: None,
+            keyless: false,
+            credential_source: Some("config.yml".to_string()),
+            probe: None,
+            probe_url: None,
+            gateway: None,
+        }
+    }
+
+    /// O caso da issue: o gateway já sobrepôs a recusa de credencial ao
+    /// check do OpenRouter; o doctor lê por nome e anexa só onde casa.
+    #[test]
+    fn saude_por_provider_le_os_checks_do_health_e_anexa_pelo_nome() {
+        let corpo = serde_json::json!({
+            "status": "degraded",
+            "checks": [
+                {"name": "openrouter", "ok": false, "latency_ms": 76,
+                 "error": "credencial recusada (401) em 2026-10-28T19:05:12Z"},
+                {"name": "ollama", "ok": true, "latency_ms": 4},
+                {"ok": true},
+                {"name": "sem-ok"}
+            ]
+        });
+        let saude = saude_por_provider(&corpo);
+        assert_eq!(saude.len(), 2, "check sem nome ou sem ok é ignorado");
+
+        let mut providers = vec![provider_check("anthropic"), provider_check("openrouter")];
+        anexar_saude_do_gateway(&mut providers, &saude);
+
+        assert_eq!(
+            providers[1].gateway,
+            Some(SaudeNoGateway {
+                ok: false,
+                latency_ms: Some(76),
+                error: Some("credencial recusada (401) em 2026-10-28T19:05:12Z".to_string()),
+            })
+        );
+        assert!(
+            providers[0].gateway.is_none(),
+            "sem check com esse nome no health, sem bloco — o doctor não inventa"
+        );
+    }
+
+    #[test]
+    fn saude_por_provider_sem_checks_e_vazia() {
+        assert!(saude_por_provider(&serde_json::json!({"status": "healthy"})).is_empty());
+        assert!(saude_por_provider(&serde_json::json!("lixo")).is_empty());
+    }
+
+    /// O JSON do doctor omite o bloco quando o daemon não respondeu, e o
+    /// inclui como veio quando respondeu — contrato do `--json`.
+    #[test]
+    fn bloco_gateway_so_entra_no_json_quando_existe() {
+        let sem = serde_json::to_value(provider_check("openrouter")).expect("json");
+        assert!(sem.get("gateway").is_none(), "{sem}");
+
+        let mut com = provider_check("openrouter");
+        com.gateway = Some(SaudeNoGateway {
+            ok: true,
+            latency_ms: None,
+            error: None,
+        });
+        let com = serde_json::to_value(com).expect("json");
+        assert_eq!(com["gateway"], serde_json::json!({"ok": true}), "{com}");
     }
 
     // ─── collect_termux_check ──────────────────────────────────────────────
