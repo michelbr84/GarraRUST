@@ -618,6 +618,38 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Apaga TODO o historico persistido de uma sessao: as mensagens e os
+    /// resumos (`chat_summaries`) dela, numa transacao so.
+    ///
+    /// E o que `/clear` precisa (#1723). Limpar so a copia em memoria nao
+    /// bastava: `hydrate_session_history` recarrega do banco sempre que a
+    /// memoria esta vazia, entao "limpei" vinha seguido do historico inteiro
+    /// de volta no turno seguinte — e tambem depois de um restart.
+    ///
+    /// A linha da sessao fica: modo, objetivo, projeto e tokens sao estado da
+    /// sessao, nao conversa. Devolve quantas mensagens foram apagadas.
+    #[instrument(skip(self), fields(session_id = %session_id), err)]
+    pub fn clear_session_messages(&self, session_id: &str) -> Result<usize> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| Error::Database(format!("failed to begin clear transaction: {e}")))?;
+        let apagadas = tx
+            .execute(
+                "DELETE FROM messages WHERE session_id = ?1",
+                params![session_id],
+            )
+            .map_err(|e| Error::Database(format!("failed to clear messages: {e}")))?;
+        tx.execute(
+            "DELETE FROM chat_summaries WHERE session_id = ?1",
+            params![session_id],
+        )
+        .map_err(|e| Error::Database(format!("failed to clear summaries: {e}")))?;
+        tx.commit()
+            .map_err(|e| Error::Database(format!("failed to commit clear: {e}")))?;
+        Ok(apagadas)
+    }
+
     /// Load recent messages for a session in chronological order.
     #[instrument(skip(self), fields(session_id = %session_id), err)]
     pub fn load_recent_messages(
@@ -2426,6 +2458,59 @@ mod tests {
             !src.contains(proibido),
             "regra 5: montar SQL via format! e vedado — SQL estatico + params! (#1247)"
         );
+    }
+
+    /// #1723: `clear_session_messages` apaga mensagens E resumos da sessao,
+    /// so dela, e deixa a linha da sessao (modo, objetivo...) no lugar.
+    #[test]
+    fn clear_session_messages_apaga_mensagens_e_resumos_so_da_sessao() {
+        let store = SessionStore::in_memory().expect("store");
+        for sid in ["alvo", "vizinha"] {
+            store
+                .upsert_session(sid, "api", "anonymous", &serde_json::json!({}))
+                .expect("sessao");
+            for texto in ["pergunta", "resposta"] {
+                store
+                    .append_message(
+                        sid,
+                        "user",
+                        texto,
+                        chrono::Utc::now(),
+                        &serde_json::json!({}),
+                    )
+                    .expect("mensagem");
+            }
+            store
+                .save_session_summary(sid, "resumo", 2)
+                .expect("resumo");
+        }
+        store.set_agent_mode("alvo", "search").expect("modo");
+
+        let apagadas = store.clear_session_messages("alvo").expect("clear");
+        assert_eq!(apagadas, 2, "devolve quantas mensagens saiu");
+        assert_eq!(store.get_message_count("alvo").expect("contar"), 0);
+        assert_eq!(
+            store.get_latest_session_summary("alvo").expect("resumo"),
+            None,
+            "o resumo da sessao vai junto: ele e conversa comprimida"
+        );
+        assert_eq!(
+            store.get_agent_mode("alvo").expect("modo"),
+            Some("search".to_string()),
+            "a linha da sessao fica: modo nao e conversa"
+        );
+
+        // A vizinha nao e tocada.
+        assert_eq!(store.get_message_count("vizinha").expect("contar"), 2);
+        assert!(
+            store
+                .get_latest_session_summary("vizinha")
+                .expect("resumo")
+                .is_some()
+        );
+
+        // Idempotente: limpar de novo nao e erro, so nao apaga nada.
+        assert_eq!(store.clear_session_messages("alvo").expect("clear"), 0);
     }
 
     #[test]
