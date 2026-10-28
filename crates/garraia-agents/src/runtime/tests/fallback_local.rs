@@ -12,6 +12,10 @@ pub(super) enum FalhaSimulada {
     /// O provider **respondeu** dizendo "agora nao". Fica no comportamento
     /// historico: retry com backoff no mesmo endereco antes do fallback.
     Sobrecarga,
+    /// #1735: chave invalida/expirada - o provider responde 401.
+    Credencial,
+    /// #1735: erro do PEDIDO (400) - outro provider nao o corrige.
+    PedidoInvalido,
 }
 
 impl FalhaSimulada {
@@ -29,6 +33,12 @@ impl FalhaSimulada {
             Self::Sobrecarga => {
                 Error::Agent("openai API error: status=429, body=rate limit".to_string())
             }
+            Self::Credencial => Error::Agent(
+                "openai API error: status=401 Unauthorized, body=User not found.".to_string(),
+            ),
+            Self::PedidoInvalido => Error::Agent(
+                "openai API error: status=400 Bad Request, body=not a valid model ID".to_string(),
+            ),
         }
     }
 }
@@ -462,5 +472,62 @@ pub(super) async fn modelo_que_nomeia_o_fallback_sobrevive() {
     assert_eq!(
         fallback.modelos_vistos(),
         vec!["ollama/qwen3.8:latest".to_string()]
+    );
+}
+
+// ─── #1735: credencial recusada (401/403) cai para o fallback ─────────
+
+/// 401 no primario: uma tentativa (nao e transitorio) e o local responde.
+#[tokio::test(start_paused = true)]
+pub(super) async fn credencial_recusada_cai_para_o_fallback_em_batch() {
+    let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Credencial);
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+
+    let (_, quem) = runtime
+        .complete_reportando_provider(&como_dyn, &pedido_simples())
+        .await
+        .expect("o fallback local tem de completar o turno");
+
+    assert_eq!(quem, "ollama");
+    assert_eq!(primario.completes(), 1, "401 nao e transitorio: sem retry");
+}
+
+#[tokio::test]
+pub(super) async fn credencial_recusada_cai_para_o_fallback_em_streaming() {
+    let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Credencial);
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+
+    let mut stream = runtime
+        .stream_complete_with_fallback(&como_dyn, &pedido_simples())
+        .await
+        .expect("o stream do fallback local tem de chegar");
+    let mut texto = String::new();
+    while let Some(evento) = stream.next().await {
+        if let StreamEvent::TextDelta(t) = evento.expect("o stream local nao falha") {
+            texto.push_str(&t);
+        }
+    }
+    assert_eq!(texto, RESPOSTA_LOCAL);
+}
+
+/// 400 e erro do pedido: propaga sem tocar no fallback.
+#[tokio::test]
+pub(super) async fn erro_do_pedido_nao_aciona_o_fallback() {
+    let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::PedidoInvalido);
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+
+    let erro = runtime
+        .complete_reportando_provider(&como_dyn, &pedido_simples())
+        .await
+        .expect_err("400 propaga");
+    assert!(erro.to_string().contains("status=400"), "veio: {erro}");
+    assert_eq!(primario.completes(), 1);
+
+    assert!(
+        runtime
+            .stream_complete_with_fallback(&como_dyn, &pedido_simples())
+            .await
+            .is_err(),
+        "400 em streaming tambem propaga"
     );
 }
