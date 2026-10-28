@@ -179,7 +179,7 @@ justifica o teste.
 
 ## 3. Bump do wasmtime: o piso de MSRV vem junto
 
-Já aconteceu **cinco vezes** (1.92, 1.93, 1.94, 1.95, 1.96). Um PR do Dependabot que
+Já aconteceu **seis vezes** (1.92, 1.93, 1.94, 1.95, 1.96, 1.97). Um PR do Dependabot que
 sobe `wasmtime` costuma trazer **dois** bloqueios independentes, e o segundo
 não aparece se você ler só o erro de compilação:
 
