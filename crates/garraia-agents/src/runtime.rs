@@ -489,6 +489,68 @@ fn com_objetivo(system: Option<String>, goal: Option<&str>) -> Option<String> {
     }
 }
 
+/// Data e hora do turno no system prompt (#1725).
+///
+/// O modelo nao sabe que dia e. Sem isto ele inventa datas — a auditoria de
+/// 2026-10-27 o pegou gravando "Registrado em 2025-11-14" — e nao tem base
+/// para "amanha", "esta semana", "ate sexta". Uma linha, no idioma da persona,
+/// com dia da semana, data, hora local e o deslocamento do fuso; o
+/// deslocamento e nao o nome porque e o que `chrono::Local` sabe sem tabela
+/// de fusos, e e o que o modelo precisa para converter.
+///
+/// Entra DEPOIS do objetivo (#983) e **so quando ja existe um system prompt**:
+/// `PersonaMode::Neutral` devolve `None` de proposito (contrato pre-0250,
+/// "nenhum system prompt"), e uma linha de data sozinha quebraria isso.
+///
+/// Vai no system prompt, nao na mensagem do usuario, pela mesma razao do
+/// objetivo: e enquadramento do turno, e sumiria da janela com a poda do
+/// historico se fosse texto da pessoa.
+fn com_contexto_temporal(system: Option<String>, lang: crate::persona::Lang) -> Option<String> {
+    system.map(|s| {
+        let linha = linha_de_data_hora(chrono::Local::now().fixed_offset(), lang);
+        format!("{s}\n\n{linha}")
+    })
+}
+
+/// A metade pura de [`com_contexto_temporal`]: a frase para um instante dado.
+///
+/// `pub(crate)` para o teste fixar o instante; o formato e contrato com o
+/// modelo, nao com codigo, entao nao e API publica da crate.
+pub(crate) fn linha_de_data_hora(
+    agora: chrono::DateTime<chrono::FixedOffset>,
+    lang: crate::persona::Lang,
+) -> String {
+    let dia = nome_do_dia(chrono::Datelike::weekday(&agora), lang);
+    let data = agora.format("%Y-%m-%d %H:%M");
+    let fuso = agora.format("%:z");
+    match lang {
+        crate::persona::Lang::Pt => format!("Data e hora atuais: {dia}, {data} (UTC{fuso})."),
+        crate::persona::Lang::En => format!("Current date and time: {dia}, {data} (UTC{fuso})."),
+    }
+}
+
+/// O dia da semana no idioma da persona. Tabela fixa, sem locale do SO: o
+/// texto vai para o modelo e tem de ser o mesmo em toda maquina.
+fn nome_do_dia(dia: chrono::Weekday, lang: crate::persona::Lang) -> &'static str {
+    use chrono::Weekday::*;
+    match (lang, dia) {
+        (crate::persona::Lang::Pt, Mon) => "segunda-feira",
+        (crate::persona::Lang::Pt, Tue) => "terça-feira",
+        (crate::persona::Lang::Pt, Wed) => "quarta-feira",
+        (crate::persona::Lang::Pt, Thu) => "quinta-feira",
+        (crate::persona::Lang::Pt, Fri) => "sexta-feira",
+        (crate::persona::Lang::Pt, Sat) => "sábado",
+        (crate::persona::Lang::Pt, Sun) => "domingo",
+        (crate::persona::Lang::En, Mon) => "Monday",
+        (crate::persona::Lang::En, Tue) => "Tuesday",
+        (crate::persona::Lang::En, Wed) => "Wednesday",
+        (crate::persona::Lang::En, Thu) => "Thursday",
+        (crate::persona::Lang::En, Fri) => "Friday",
+        (crate::persona::Lang::En, Sat) => "Saturday",
+        (crate::persona::Lang::En, Sun) => "Sunday",
+    }
+}
+
 /// O nome da tool de autoinspecao do gateway (#1347). Ela e registrada pelo
 /// `garraia-gateway`; o runtime so precisa do nome para saber se ela esta
 /// entre as oferecidas no turno.
@@ -1869,9 +1931,12 @@ impl AgentRuntime {
             .map(|s| s.to_string())
             .or_else(|| portao.system_prompt().map(|s| s.to_string()))
             .or_else(|| self.system_prompt.clone());
-        let effective_system_prompt = com_objetivo(
-            self.base_system_prompt(explicit_prompt.as_deref()),
-            exec.goal.as_deref(),
+        let effective_system_prompt = com_contexto_temporal(
+            com_objetivo(
+                self.base_system_prompt(explicit_prompt.as_deref()),
+                exec.goal.as_deref(),
+            ),
+            self.persona_lang,
         );
         let effective_model = model_override
             .map(str::trim)
@@ -2180,9 +2245,12 @@ impl AgentRuntime {
             .system_prompt()
             .map(|s| s.to_string())
             .or_else(|| self.system_prompt.clone());
-        let effective_system_prompt = com_objetivo(
-            self.base_system_prompt(prompt_do_modo.as_deref()),
-            exec.goal.as_deref(),
+        let effective_system_prompt = com_contexto_temporal(
+            com_objetivo(
+                self.base_system_prompt(prompt_do_modo.as_deref()),
+                exec.goal.as_deref(),
+            ),
+            self.persona_lang,
         );
         let system = match (&effective_system_prompt, memory_context) {
             (Some(prompt), Some(ctx)) => Some(format!("{prompt}\n\n{ctx}")),
@@ -2607,9 +2675,12 @@ impl AgentRuntime {
             .map(|s| s.to_string())
             .or_else(|| portao.system_prompt().map(|s| s.to_string()))
             .or_else(|| self.system_prompt.clone());
-        let effective_system_prompt = com_objetivo(
-            self.base_system_prompt(explicit_prompt.as_deref()),
-            exec.goal.as_deref(),
+        let effective_system_prompt = com_contexto_temporal(
+            com_objetivo(
+                self.base_system_prompt(explicit_prompt.as_deref()),
+                exec.goal.as_deref(),
+            ),
+            self.persona_lang,
         );
         let effective_model = model_override
             .map(str::trim)
