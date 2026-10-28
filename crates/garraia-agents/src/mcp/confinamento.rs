@@ -170,8 +170,37 @@ fn confinar_um(pedido: &str, jail: &FileJail, session_dir: Option<&str>) -> Resu
 /// As raizes de `list_allowed_directories` saem pelo mesmo caminho: e delas
 /// que o modelo copia o formato, e ensinar `\\?\` era ensinar o que o
 /// servidor recusa.
+///
+/// Segunda rodada (#1722, reteste real): tirar o prefixo nao bastou. Probe
+/// direto no servidor `2026.8.31`, com a raiz declarada em `\` como `garra
+/// init` escreve:
+///
+/// ```text
+/// list_directory  C:\ws              -> OK   (a raiz em si)
+/// read_text_file  C:\ws\notas.txt    -> Access denied - path outside allowed directories
+/// read_text_file  C:/ws/notas.txt    -> OK
+/// read_text_file  c:\ws\notas.txt    -> Access denied (drive minusculo)
+/// ```
+///
+/// Todo caminho-FILHO com `\` e recusado e todo caminho com `/` e aceito,
+/// independentemente de como a raiz foi escrita. Node aceita `/` em qualquer
+/// caminho Windows, entao a string entregue sai com `/` — e so no Windows:
+/// em POSIX `\` e caractere valido de nome de arquivo.
 pub(crate) fn caminho_para_o_servidor(resolvido: &Path) -> String {
-    sem_prefixo_verbatim(&resolvido.to_string_lossy())
+    let sem_prefixo = sem_prefixo_verbatim(&resolvido.to_string_lossy());
+    if cfg!(windows) {
+        com_barras_normais(&sem_prefixo)
+    } else {
+        sem_prefixo
+    }
+}
+
+/// `\` -> `/`, e nada mais. Chamada so no Windows, por
+/// [`caminho_para_o_servidor`]; publica na crate para o teste fixar a regra em
+/// todo SO. UNC `\\srv\share\x` vira `//srv/share/x`, que o Node tambem le
+/// como UNC.
+pub(crate) fn com_barras_normais(caminho: &str) -> String {
+    caminho.replace('\\', "/")
 }
 
 /// A metade pura de [`caminho_para_o_servidor`]: tira o prefixo verbatim do
@@ -269,6 +298,31 @@ mod tests {
         assert_eq!(sem_prefixo_verbatim(""), "");
     }
 
+    /// #1722, segunda rodada: a troca de separador e so isso — drive, UNC e
+    /// caminhos ja com `/` ficam como estao. Regra de string, em todo SO.
+    #[test]
+    fn com_barras_normais_troca_so_o_separador() {
+        assert_eq!(
+            com_barras_normais(r"C:\Users\x\ws\a.txt"),
+            "C:/Users/x/ws/a.txt"
+        );
+        assert_eq!(
+            com_barras_normais(r"\\srv\share\a.txt"),
+            "//srv/share/a.txt"
+        );
+        assert_eq!(
+            com_barras_normais("C:/Users/x/ws/a.txt"),
+            "C:/Users/x/ws/a.txt"
+        );
+        assert_eq!(com_barras_normais("/home/x/a.txt"), "/home/x/a.txt");
+        assert_eq!(com_barras_normais(""), "");
+        // Encadeada com a remocao do prefixo, e o que o Windows entrega.
+        assert_eq!(
+            com_barras_normais(&sem_prefixo_verbatim(r"\\?\C:\Users\x\ws\a.txt")),
+            "C:/Users/x/ws/a.txt"
+        );
+    }
+
     /// #1722, de ponta a ponta no SO que tem o prefixo: o caminho reescrito e
     /// as raizes de `list_allowed_directories` saem SEM `\\?\`, e o reescrito
     /// e exatamente o caminho que o servidor Node tem como raiz permitida.
@@ -296,7 +350,17 @@ mod tests {
         };
         let entregue = m["path"].as_str().expect("string");
         assert!(!entregue.starts_with(r"\\?\"), "verbatim vazou: {entregue}");
-        assert!(entregue.ends_with(r"\sessao-a"), "{entregue}");
+        // Segunda rodada da #1722: o servidor recusa caminho-filho com `\`;
+        // o que sai daqui e `C:/.../sessao-a`, sem barra invertida nenhuma.
+        assert!(
+            !entregue.contains('\\'),
+            "barra invertida vazou: {entregue}"
+        );
+        assert!(entregue.ends_with("/sessao-a"), "{entregue}");
+        assert!(
+            entregue.chars().nth(1) == Some(':'),
+            "drive letter preservada: {entregue}"
+        );
 
         let r = confinar_fs(
             LIST_ALLOWED_DIRECTORIES,
