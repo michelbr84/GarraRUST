@@ -2228,6 +2228,13 @@ impl AgentRuntime {
 
             // GAR-187: if a confirmation was requested, return the prompt immediately
             if let Some(confirmation_msg) = confirmation_response {
+                // #1733: a pausa tambem e um desfecho do turno. Sem gravar as
+                // stats aqui, `last_turn_stats` ficava com o turno ANTERIOR da
+                // sessao, e a resposta da API (`provider`/`model`, headers)
+                // nomeava um provider que nao serviu este turno.
+                turno.tool_calls = budget.chamadas_na_tarefa();
+                turno.latency_ms = inicio_do_turno.elapsed().as_millis() as u64;
+                self.record_turn_stats(session_id, turno);
                 return Ok(confirmation_msg);
             }
         }
@@ -3156,6 +3163,14 @@ impl AgentRuntime {
                     if let Some(confirmation_msg) = confirmation_response {
                         sink.text(confirmation_msg.clone()).await;
                         full_response.push_str(&confirmation_msg);
+                        // #1733: a pausa e um desfecho do turno (ver o braco
+                        // batch). Como no fim normal deste braco, o modelo e o
+                        // pedido — em streaming nao ha `LlmResponse`.
+                        turno.provider = provider.provider_id().to_string();
+                        turno.model = effective_model.clone();
+                        turno.tool_calls = budget.chamadas_na_tarefa();
+                        turno.latency_ms = inicio_do_turno.elapsed().as_millis() as u64;
+                        self.record_turn_stats(session_id, turno);
                         return Ok(full_response);
                     }
 
@@ -3328,6 +3343,11 @@ impl AgentRuntime {
                     if let Some(confirmation_msg) = confirmation_response {
                         sink.text(confirmation_msg.clone()).await;
                         full_response.push_str(&confirmation_msg);
+                        // #1733: a pausa e um desfecho do turno (ver o braco
+                        // batch); provider/modelo ja vieram da `LlmResponse`.
+                        turno.tool_calls = budget.chamadas_na_tarefa();
+                        turno.latency_ms = inicio_do_turno.elapsed().as_millis() as u64;
+                        self.record_turn_stats(session_id, turno);
                         return Ok(full_response);
                     }
                 }

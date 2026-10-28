@@ -256,6 +256,31 @@ pub(super) async fn sim_no_turno_seguinte_roda_o_pedido_uma_vez() {
     }
 }
 
+/// #1733: a pausa de confirmacao e um desfecho do turno e grava as stats
+/// dele, nos tres caminhos. Antes, `last_turn_stats` ficava com o turno
+/// ANTERIOR da sessao, e a resposta da API (`provider`/`model`, headers
+/// `X-AI-*`) nomeava um provider que nao serviu o turno pausado.
+#[tokio::test]
+pub(super) async fn pausa_de_confirmacao_grava_as_stats_do_turno() {
+    for caminho in CAMINHOS {
+        let mut c = Cenario::novo(caminho, &["x"]);
+        assert!(
+            c.rt.last_turn_stats("s1").is_none(),
+            "{caminho:?}: nada antes do primeiro turno"
+        );
+
+        let r1 = c
+            .turno("s1", "apaga x", escopo("web", "s1", "conn-a"))
+            .await;
+        assert!(e_pedido(&r1), "{caminho:?}: turno 1 pausa: {r1}");
+
+        let stats =
+            c.rt.last_turn_stats("s1")
+                .unwrap_or_else(|| panic!("{caminho:?}: a pausa grava as stats do turno"));
+        assert_eq!(stats.provider, "pede_alvos", "{caminho:?}");
+    }
+}
+
 /// Sem escopo, o comportamento de antes: historico em texto nunca
 /// aprova, a pausa e terminal.
 #[tokio::test]
