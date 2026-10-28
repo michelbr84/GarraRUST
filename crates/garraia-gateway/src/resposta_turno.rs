@@ -31,7 +31,9 @@ pub fn montar(session_id: String, content: String, stats: Option<TurnStats>) -> 
         session_id,
         content,
         provider: stats.as_ref().map(|t| t.provider.clone()),
-        model: stats.as_ref().map(|t| t.model.clone()),
+        model: stats
+            .as_ref()
+            .and_then(|t| modelo_do_turno(t).map(str::to_string)),
         fallback: stats.as_ref().map(|t| t.fallback),
     };
     let mut resposta = (StatusCode::OK, Json(corpo)).into_response();
@@ -50,11 +52,79 @@ pub fn montar(session_id: String, content: String, stats: Option<TurnStats>) -> 
 /// quando nenhum handler os pos (#1733).
 pub fn aplicar_headers_do_turno(resposta: &mut Response, stats: &TurnStats) {
     for (nome, valor) in [
-        ("X-AI-Provider", &stats.provider),
-        ("X-AI-Model", &stats.model),
+        ("X-AI-Provider", Some(stats.provider.as_str())),
+        ("X-AI-Model", modelo_do_turno(stats)),
     ] {
+        // Vazio nao e header: fica para o middleware do router preencher o
+        // default da config, como quando o handler nao sabe.
+        let Some(valor) = valor.filter(|v| !v.is_empty()) else {
+            continue;
+        };
         if let Ok(v) = HeaderValue::from_str(valor) {
             resposta.headers_mut().insert(nome, v);
         }
+    }
+}
+
+/// O modelo que o turno registrou, ou `None` quando o runtime nao soube dizer.
+///
+/// `TurnStats::model` copia o `model` da resposta do provider, e ha providers
+/// que devolvem a string vazia quando o pedido nao nomeou modelo (o cliente
+/// quer o default do servidor — #1541). Propagar `""` como "quem respondeu"
+/// seria mentir com cara de dado; quem chama decide o fallback: o rotulo
+/// pedido no OpenAI-compat, campo omitido no `POST /api/sessions/{id}/messages`.
+pub fn modelo_do_turno(stats: &TurnStats) -> Option<&str> {
+    let modelo = stats.model.trim();
+    (!modelo.is_empty()).then_some(modelo)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stats(model: &str) -> TurnStats {
+        TurnStats {
+            provider: "anota".to_string(),
+            model: model.to_string(),
+            ..TurnStats::default()
+        }
+    }
+
+    /// #1541 x #1733: provider que ecoa o pedido vazio nao vira `"model": ""`.
+    #[test]
+    fn modelo_vazio_e_desconhecido_nao_string_vazia() {
+        assert_eq!(modelo_do_turno(&stats("")), None);
+        assert_eq!(modelo_do_turno(&stats("   ")), None);
+        assert_eq!(modelo_do_turno(&stats("anota-1")), Some("anota-1"));
+    }
+
+    #[test]
+    fn headers_pulam_o_modelo_vazio_mas_poem_o_provider() {
+        let mut resposta = StatusCode::OK.into_response();
+        aplicar_headers_do_turno(&mut resposta, &stats(""));
+        assert_eq!(
+            resposta
+                .headers()
+                .get("X-AI-Provider")
+                .and_then(|v| v.to_str().ok()),
+            Some("anota")
+        );
+        assert!(
+            resposta.headers().get("X-AI-Model").is_none(),
+            "modelo vazio fica para o default do router"
+        );
+    }
+
+    #[test]
+    fn montar_omite_o_modelo_que_o_runtime_nao_soube() {
+        let resposta = montar("s".to_string(), "oi".to_string(), Some(stats("")));
+        assert!(resposta.headers().get("X-AI-Model").is_none());
+        assert_eq!(
+            resposta
+                .headers()
+                .get("X-AI-Provider")
+                .and_then(|v| v.to_str().ok()),
+            Some("anota")
+        );
     }
 }

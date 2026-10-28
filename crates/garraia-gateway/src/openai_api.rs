@@ -880,9 +880,13 @@ async fn handle_streaming(
                                     // fallback so se decide depois), por isso so
                                     // o chunk final carrega a verdade.
                                     let stats = state.agents.last_turn_stats(&session_id);
+                                    // Modelo vazio (provider que ecoa o pedido
+                                    // sem `model`, #1541) nao e "quem
+                                    // respondeu": fica o rotulo.
                                     let modelo_final = stats
                                         .as_ref()
-                                        .map(|s| s.model.clone())
+                                        .and_then(crate::resposta_turno::modelo_do_turno)
+                                        .map(str::to_string)
                                         .unwrap_or_else(|| model.clone());
                                     let chunk = ChatCompletionChunk {
                                         id: chunk_id.clone(),
@@ -1010,11 +1014,13 @@ async fn handle_non_streaming(
             // #1733: o `model` ecoado passa a ser quem de fato respondeu, nao o
             // rotulo pedido. Com fallback os dois divergem — o primario morto e
             // o modelo local que serviu. O runtime registrou as stats no fim do
-            // turno (ja concluido neste ponto); sem stats, mantem o rotulo.
+            // turno (ja concluido neste ponto); sem stats, ou com modelo vazio
+            // (provider que ecoa o pedido sem `model`, #1541), mantem o rotulo.
             let stats = state.agents.last_turn_stats(&session_id);
             let modelo_ecoado = stats
                 .as_ref()
-                .map(|s| s.model.clone())
+                .and_then(crate::resposta_turno::modelo_do_turno)
+                .map(str::to_string)
                 .unwrap_or_else(|| model.clone());
 
             let resp = ChatCompletionResponse {
