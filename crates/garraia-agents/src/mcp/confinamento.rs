@@ -147,9 +147,10 @@ pub fn confinar_argumentos(
 }
 
 /// Um caminho, confinado: o que o modelo pediu vira o resolvido dentro do
-/// jail, ou a recusa. Relativo sem diretorio de sessao e "sem raiz".
+/// jail, ou a recusa. Relativo nasce no diretorio da sessao; sem sessao, o
+/// jail o ancora na raiz declarada (#1724) — e sem raiz nenhuma e "sem raiz".
 fn confinar_um(pedido: &str, jail: &FileJail, session_dir: Option<&str>) -> Result<String, Denial> {
-    let caminho = caminho_pedido(pedido, session_dir).ok_or(Denial::NoRoots)?;
+    let caminho = caminho_pedido(pedido, session_dir);
     let resolvido = jail.confine(&caminho, session_dir)?;
     Ok(caminho_para_o_servidor(&resolvido))
 }
@@ -196,16 +197,18 @@ pub(crate) fn sem_prefixo_verbatim(caminho: &str) -> String {
     caminho.to_string()
 }
 
-/// Um caminho do modelo, absoluto ou relativo ao diretorio da sessao.
-fn caminho_pedido(pedido: &str, session_dir: Option<&str>) -> Option<PathBuf> {
+/// Um caminho do modelo: absoluto como veio; relativo ao diretorio da sessao
+/// quando ha um; e relativo cru quando nao ha — `FileJail::confine` o ancora
+/// na raiz declarada (#1724), com a mesma regra das tools nativas.
+fn caminho_pedido(pedido: &str, session_dir: Option<&str>) -> PathBuf {
     let p = Path::new(pedido);
     if p.is_absolute() {
-        return Some(p.to_path_buf());
+        return p.to_path_buf();
     }
-    session_dir
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| Path::new(s).join(p))
+    match session_dir.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => Path::new(s).join(p),
+        None => p.to_path_buf(),
+    }
 }
 
 #[cfg(test)]
@@ -411,6 +414,36 @@ mod tests {
             None,
         );
         assert!(matches!(r, Err(Denial::NoRoots)), "{r:?}");
+    }
+
+    /// #1724: sem diretorio de sessao mas com raiz declarada (o gateway com
+    /// `agent.file_roots`), o relativo resolve na raiz — antes era "sem raiz"
+    /// e o modelo, que pede `notas.txt` naturalmente, batia na recusa ate o
+    /// breaker. Continua confinado: `..` e caminho fora seguem recusados.
+    #[test]
+    fn relativo_sem_sessao_mas_com_raiz_declarada_resolve_na_raiz() {
+        let (_tmp, a, _b) = sessao();
+        let workspace = a.parent().expect("workspace");
+        let jail = FileJail::from_roots([workspace]);
+        let r = confinar_fs(
+            "read_file",
+            Some(args(&[("path", Value::String("sessao-a/meu.txt".into()))])),
+            &jail,
+            None,
+        )
+        .expect("relativo na raiz declarada");
+        let Confinado::Reescrito(m) = r else {
+            panic!("{r:?}")
+        };
+        assert_eq!(m["path"], Value::String(canon(&a.join("meu.txt"))));
+
+        let r = confinar_fs(
+            "read_file",
+            Some(args(&[("path", Value::String("../fora.txt".into()))])),
+            &jail,
+            None,
+        );
+        assert!(matches!(r, Err(Denial::Outside)), "{r:?}");
     }
 
     /// `..` e recusado como nas tools nativas.
