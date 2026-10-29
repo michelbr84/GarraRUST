@@ -27,7 +27,7 @@ Todos os benchmarks foram executados em condições idênticas:
 - Ferramentas: `hyperfine` (latência), `/proc/status` (memória), `perf` (CPU)
 
 **Versões alvo (a serem medidas pelo harness reprodutível):**
-- GarraIA: checkout atual da branch sob teste (`HEAD`), Rust 1.95 (MSRV do
+- GarraIA: checkout atual da branch sob teste (`HEAD`), Rust 1.97 (MSRV do
   workspace; ver `bash scripts/setup-toolchain.sh` em `CONTRIBUTING.md`),
   compilado em `--release`
 - OpenClaw v2.3.1 (Node.js 22.x) — pinado via `OPENCLAW_REF`

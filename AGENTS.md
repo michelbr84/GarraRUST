@@ -31,3 +31,4 @@ packages".
 - No external services (databases, Redis, etc.) are required for building or running tests; SQLite is bundled via `rusqlite` with the `bundled` feature.
 - The gateway integration tests start their own ephemeral HTTP/WS servers on random ports — no manual server startup is needed.
 - The `garraia-gateway` crate depends on many workspace crates; initial compilation can take ~45 s.
+- Changelog fragments live in `changelog.d/<section>/<issue>-<slug>.md`. Never invent the number: open the GitHub issue first and use its real number. A fragment once shipped as `1748-...` while #1748 was an unrelated, already-merged PR (#1750).
