@@ -5,9 +5,12 @@ on:
     branches: [main, develop, master]
   pull_request:
     branches: [main, develop, master]
-  # Merge queue: os 4 checks obrigatorios (Format Check, Clippy Linting,
-  # Test (ubuntu-latest), Test (windows-latest)) vivem todos neste workflow,
-  # entao ele precisa rodar tambem no ref temporario que a fila cria
+  # Merge queue: seis dos sete checks obrigatorios da ruleset (Format Check,
+  # Clippy Linting, Test (ubuntu-latest), Test (windows-latest), Auth
+  # Integration (test-support), Gateway Integration (Postgres)) vivem neste
+  # workflow -- o setimo, Security Gate (BOLA & Tenant Isolation), vive em
+  # security-gate-bola.yml, que tem o mesmo trigger. Entao ele precisa rodar
+  # tambem no ref temporario que a fila cria
   # (refs/heads/gh-readonly-queue/main/...). Sem este trigger a fila espera
   # para sempre por checks que nunca sao reportados.
   merge_group:
