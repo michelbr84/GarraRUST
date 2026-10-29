@@ -43,7 +43,7 @@ const ESPELHOS: &[(&str, &[&str])] = &[
         &[
             "name: MSRV check ({msrv})",
             "dtolnay/rust-toolchain@{msrv}",
-            "cargo +{msrv} check",
+            "run: cargo +{msrv} check --workspace",
         ],
     ),
     ("AGENTS.md", &[r#"rust-version = "{msrv}""#]),
