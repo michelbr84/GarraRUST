@@ -381,3 +381,36 @@ mesmo layout como a mesma unidade e reaproveita artefatos da outra. A verificaç
 foi refeita com os fontes "tocados"; o CI é o árbitro.
 
 Seguem abertas: #1697 (testes Windows), #1737 (follow-ups LOW/INFO) e os itens 5–9 da §10.
+
+## Adendo — 2026-10-29: rodada disparada por uma conversa real com o Garra instalado
+
+O dono conversou com o `garraia` 0.4.10 dentro deste repositório e encontrou dois defeitos; a
+investigação achou um terceiro. Mesmo fluxo: issue com número real → PR com testes de
+regressão → revisão independente em worktrees isoladas (lentes + 2 céticos por achado) →
+CI → merge só com os 7 checks obrigatórios verdes → reteste real.
+
+| Issue | Problema observado | Correção | PR |
+| --- | --- | --- | --- |
+| #1751 | Turno legítimo do `garra chat` (16 ferramentas + resposta longa) cortado aos 120 s; texto parcial e evidência das ferramentas descartados. | `--timeout-secs` vira opt-in (sem a flag não há teto de parede; Ctrl+C, 30 s por ferramenta e connect timeout continuam); no timeout ou Ctrl+C o parcial e a evidência ficam no histórico e no SQLite com o marcador; cartão e dica dizem o que ficou (`Preservado::{Nada, Evidencia, Texto}`). | #1755 |
+| #1752 | `/model z-ai/glm-5.3-flash@preset/z-ai-glm-5-3-flash` recusado: presets do OpenRouter não estão em `GET /models`; o roteamento também os desviava. | Parser puro `preset_do_openrouter`; `/model` valida a base no catálogo (grátis) e o preset com UMA chamada real mínima (`max_tokens: 1`), classificando 400/404 vs. teto baixo sem confundir o nome do modelo ecoado no erro; roteamento manda qualquer preset ao OpenRouter; whitelist do `/model` dos canais aceita `@` só em preset bem formado; allowlists do MCP intactas; log de erro HTTP do provider passa a usar o corpo sanitizado (#1726). | #1756 |
+| #1750 | MSRV 1.97 (#1731) não propagada: `scripts/setup-toolchain.sh` fazia `rustup override set 1.96` (quebra o build), READMEs, CONTRIBUTING, instalador, wiki e docs antigas em 1.96/1.95/1.92. | Tudo alinhado a 1.97 (sem tocar Dockerfile `rust:1.99` nem registros históricos); teste anti-drift `msrv_declarada_sem_drift` com 20 espelhos; regra em `AGENTS.md`/`changelog.d/README.md`: fragmento só com número de issue real (o Garra havia inventado `1748`). | #1753 |
+
+Reteste real (binário local integrado, instância de QA isolada, chave OpenRouter real, nenhum canal):
+turno de 176 s com 9 ferramentas sem corte; `--timeout-secs 5` mostra o cartão novo e o parcial no
+`/history`; `/model @preset/z-ai-glm-5-3-flash` aceito ("resolve hoje para z-ai/glm-5.3-flash"), forma
+combinada aceita, preset inexistente e base inexistente recusados; `garra ask --model @preset/…`
+responde "OK".
+
+Revisão independente: #1753 (2 lentes) → 1 P2 de cobertura do teste anti-drift, corrigido; #1755 (3
+lentes) → 1 P2 confirmado (texto do cartão vs. evidência preservada), corrigido; #1756 (3 lentes) → 1 P2
+confirmado (falso positivo da sonda com nome contendo `max_tokens`, reproduzido com teste vermelho),
+corrigido, mais 3 P3 de cobertura adicionados; segurança PASS nas três. Total de testes novos nesta
+rodada: 3 (#1753) + 11 (#1755) + 15 (#1756).
+
+Operação: a #1753 teve uma run cancelada por falta de runner e duas runs obsoletas do Desktop Installer
+canceladas à mão; a #1756 precisou de resolução manual de conflito na `wiki/Referencia-da-CLI.md`
+(as duas PRs editavam a mesma linha). Armadilhas registradas na memória: target dir por branch dentro
+do OneDrive chegou a 110 GB com vários agentes compilando (apagados; passam a ficar fora do OneDrive);
+`python -I` ignora `PYTHONIOENCODING`; nunca encadear commit atrás de `cargo test | grep`.
+
+Issue aberta nesta rodada para o dono: #1749 (job `Orphan-process guards (macos-latest)` cancelado sem log).
