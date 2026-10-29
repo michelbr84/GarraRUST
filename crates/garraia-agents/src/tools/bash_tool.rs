@@ -1552,8 +1552,14 @@ mod tests {
             "pipeline declarado tinha de rodar: {}",
             out.content
         );
+        // `echo garra | wc -c`: 6 bytes com LF; 7 quando o shell do host
+        // (PowerShell, no Windows) entrega CRLF ao `wc` (#1697).
+        let bytes = out
+            .content
+            .split_whitespace()
+            .find_map(|t| t.parse::<u32>().ok());
         assert!(
-            out.content.contains('6'),
+            matches!(bytes, Some(6 | 7)),
             "saida do pipeline: {}",
             out.content
         );

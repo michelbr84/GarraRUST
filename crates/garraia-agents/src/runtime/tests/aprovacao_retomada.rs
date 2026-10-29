@@ -167,6 +167,11 @@ impl LlmProvider for PedeBash {
 /// resposta do turno. Agora o texto que sai diz o comando e como
 /// aprovar, sem o marcador — e o "sim" seguinte continua retomando,
 /// porque a aprovacao nunca dependeu do marcador no texto.
+// `printenv PATH` e POSIX: no Windows o bash tool roda via PowerShell e, quando
+// ha um `printenv` do MSYS no PATH, a saida chega convertida (`/c/...`) e nao
+// casa com `std::env::var("PATH")` (#1697). A retomada em si e provada pelos
+// outros testes deste modulo em qualquer plataforma.
+#[cfg(unix)]
 #[tokio::test]
 pub(super) async fn pedido_do_bash_chega_sem_marcador_e_o_sim_ainda_retoma() {
     // Este teste OBSERVA o `PATH` do processo: ele compara a saida de

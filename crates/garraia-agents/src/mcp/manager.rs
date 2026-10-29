@@ -1909,8 +1909,12 @@ where
     // Same heuristic as `install.sh:detect_platform` and
     // `garraia-cli::doctor::detect_termux` — kept in lockstep deliberately.
     let prefix = prefix.filter(|p| p.contains("com.termux"))?;
-    let lib = Path::new(prefix).join(TERMUX_EXEC_LIB);
-    lib_exists(&lib).then(|| lib.to_string_lossy().into_owned())
+    // `LD_PRELOAD` e um caminho POSIX lido pelo loader do Android, nunca pelo
+    // host: montado com `/` literal, e nao com `Path::join`, que num host
+    // Windows poria `\` e quebraria a tabela de decisao que os testes
+    // afirmam em qualquer runner (#1697). Em Linux/Android a string e identica.
+    let lib = format!("{prefix}/{TERMUX_EXEC_LIB}");
+    lib_exists(Path::new(&lib)).then_some(lib)
 }
 
 /// Ask the kernel to signal the child when its parent (the gateway) dies.

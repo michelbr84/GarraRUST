@@ -135,6 +135,12 @@ fn flags_de_contencao(backend: &SandboxBackend) -> Vec<String> {
 }
 
 /// uid/gid reais do processo que vai chamar o `docker`.
+// #1697: os testes marcados `cfg(unix)` neste modulo exercitam o wrap de
+// docker/podman/ssh, que `plataforma_permite_wrap` recusa fora de Unix (o bash
+// tool do Windows roda via `powershell -Command`, que nao reparseia o quoting
+// POSIX do wrap), e passam `"/tmp"` como cwd, que em host Windows nem e
+// absoluto. Eles afirmam a semantica Unix do sandbox; no Windows a resposta
+// certa e o fail-closed, provado por `plataforma_nao_unix_falha_fechado`.
 #[cfg(unix)]
 fn uid_gid_do_processo() -> (u32, u32) {
     // SAFETY: getuid/getgid nao recebem ponteiro, nao falham e nao tem
@@ -923,6 +929,7 @@ mod tests {
         literal.find('"').map(|fim| &literal[..fim])
     }
 
+    #[cfg(unix)]
     #[test]
     fn fail_closed_sem_backend_configurado() {
         let p = SandboxPolicy {
@@ -934,6 +941,7 @@ mod tests {
         assert!(err.to_string().contains("nenhum backend"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn fail_closed_backend_ausente() {
         // backend impossível de existir num PATH real de teste:
@@ -974,6 +982,7 @@ mod tests {
         let _ = p; // disponibilidade de docker não é assertida (depende do host)
     }
 
+    #[cfg(unix)]
     #[test]
     fn wrap_docker_inclui_hardening_e_network_off() {
         let p = SandboxPolicy {
@@ -1000,6 +1009,7 @@ mod tests {
     /// um *operando*. Um host comecando com `-` fica antes do `--` e o `ssh`
     /// o le como flag; `-oProxyCommand=…` executaria no host LOCAL, que e o
     /// inverso exato do proposito do sandbox, e ja depois do `safety_gate`.
+    #[cfg(unix)]
     #[test]
     fn ssh_host_comecando_com_hifen_e_recusado_fail_closed() {
         let p = SandboxPolicy {
@@ -1029,6 +1039,7 @@ mod tests {
 
     /// Mesma classe, outro posicional: `image` fica antes do `sh -lc` na
     /// linha do `docker run`, entao um `-…` desloca todo o resto.
+    #[cfg(unix)]
     #[test]
     fn image_comecando_com_hifen_e_recusada_fail_closed() {
         let p = SandboxPolicy {
@@ -1053,6 +1064,7 @@ mod tests {
     /// num host com ssh, ou o erro de "backend nao encontrado" num host sem —
     /// nenhum dos dois contem a chave, entao o teste fica vermelho em
     /// qualquer maquina.
+    #[cfg(unix)]
     #[test]
     fn ssh_com_network_disabled_e_recusado_e_nao_monta_comando() {
         let p = SandboxPolicy {
@@ -1096,6 +1108,7 @@ mod tests {
     }
 
     /// Mesma regra para `mount_workdir`: o ssh nao monta nada.
+    #[cfg(unix)]
     #[test]
     fn ssh_com_mount_workdir_e_recusado() {
         let p = SandboxPolicy {
@@ -1122,6 +1135,7 @@ mod tests {
 
     /// O caso do operador que so escreveu `backend = ssh` e `ssh_host`: os
     /// DOIS defaults estao ligados, e a mensagem nomeia os dois.
+    #[cfg(unix)]
     #[test]
     fn ssh_com_os_dois_defaults_nomeia_as_duas_chaves() {
         let p = SandboxPolicy {
@@ -1154,6 +1168,7 @@ mod tests {
     /// da S3 nao dispara. O que sobra depende do host (cliente ssh instalado
     /// ou nao) e os dois desfechos legitimos sao assertados — o que NAO pode
     /// acontecer e o erro de "nao consegue honrar".
+    #[cfg(unix)]
     #[test]
     fn ssh_com_as_duas_em_false_explicito_passa_pela_recusa_da_s3() {
         let p = SandboxPolicy {
@@ -1317,6 +1332,7 @@ mod tests {
         assert!(!cmd.contains("--userns"), "{cmd}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn podman_leva_userns_keep_id_e_nao_user() {
         let p = SandboxPolicy {
@@ -1489,6 +1505,7 @@ mod tests {
 
     /// Review da #1272 (SANDBOX-6): a linha do bash leva `--name` e devolve o
     /// nome, para o `rm -f` do timeout.
+    #[cfg(unix)]
     #[test]
     fn linha_do_bash_leva_nome_do_container() {
         let l = docker_all()

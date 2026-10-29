@@ -423,18 +423,26 @@ mod tests {
     #[test]
     fn resolve_classifies_how_it_got_there() {
         let home = PathBuf::from("/home/u");
+        // "Absoluto" e decisao do host: `/etc/hosts` nao tem letra de drive e
+        // no Windows e relativo. Os dois absolutos do teste vem na forma
+        // nativa de cada plataforma (#1697).
+        let (etc_hosts, work) = if cfg!(windows) {
+            (r"C:\etc\hosts", r"C:\work\proj")
+        } else {
+            ("/etc/hosts", "/work/proj")
+        };
 
-        let r = resolve_tool_path("/etc/hosts", None, Some(&home)).unwrap();
+        let r = resolve_tool_path(etc_hosts, None, Some(&home)).unwrap();
         assert_eq!(r.origin, PathOrigin::Absolute);
-        assert_eq!(r.path, PathBuf::from("/etc/hosts"));
+        assert_eq!(r.path, PathBuf::from(etc_hosts));
 
         let r = resolve_tool_path("~/notes.md", None, Some(&home)).unwrap();
         assert_eq!(r.origin, PathOrigin::HomeExpanded);
         assert_eq!(r.path, home.join("notes.md"));
 
-        let r = resolve_tool_path("src/main.rs", Some("/work/proj"), Some(&home)).unwrap();
+        let r = resolve_tool_path("src/main.rs", Some(work), Some(&home)).unwrap();
         assert_eq!(r.origin, PathOrigin::JoinedWorkingDir);
-        assert_eq!(r.path, PathBuf::from("/work/proj/src/main.rs"));
+        assert_eq!(r.path, PathBuf::from(work).join("src/main.rs"));
 
         // O caso que mordeu na #923: relativo, sem working_dir.
         let r = resolve_tool_path("notes.md", None, Some(&home)).unwrap();
