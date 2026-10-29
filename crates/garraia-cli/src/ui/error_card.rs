@@ -145,17 +145,21 @@ impl ErrorCard {
     /// corte — e por isso o cartao e honesto sobre o que ficou no historico:
     /// o parcial e a evidencia entram marcados, em vez de sumir (#1751). A
     /// segunda acao lembra que omitir a flag tira o teto de vez.
-    pub fn timeout_local(timeout_secs: u64, parcial_preservada: bool) -> Self {
-        let detalhe = if parcial_preservada {
-            format!(
+    pub fn timeout_local(timeout_secs: u64, preservado: Preservado) -> Self {
+        let detalhe = match preservado {
+            Preservado::Texto => format!(
                 "A resposta passou de {timeout_secs}s e foi interrompida. O que ja chegou \
                  ficou no historico, marcado como parcial."
-            )
-        } else {
-            format!(
+            ),
+            Preservado::Evidencia => format!(
+                "A resposta passou de {timeout_secs}s e foi interrompida antes de chegar \
+                 qualquer texto; a evidencia das ferramentas ficou no historico, marcada \
+                 como interrompida."
+            ),
+            Preservado::Nada => format!(
                 "A resposta passou de {timeout_secs}s e foi interrompida antes de chegar \
                  qualquer texto. O historico continua intacto."
-            )
+            ),
         };
         Self {
             titulo: "Tempo esgotado".to_string(),
@@ -230,6 +234,34 @@ fn classificar(mensagem: &str) -> Classe {
 /// caminho que imprime texto de fora.
 fn sanear(mensagem: &str) -> String {
     AnsiFilter::sanitize_once(&garraia_security::redact_secrets(mensagem.trim()))
+}
+
+/// O que um turno interrompido (timeout ou Ctrl+C) deixou no historico (#1751).
+///
+/// Decide o texto do cartao e da dica, que tem de bater com o que `run_chat`
+/// gravou: um timeout sem texto mas com ferramentas executadas deixa o par
+/// User + marcador e a evidencia no history e no SQLite; dizer "o historico
+/// continua intacto" nesse caso seria falso.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preservado {
+    /// Nem texto nem evidencia: o historico fica como estava.
+    Nada,
+    /// Nenhum texto chegou, mas as ferramentas executadas deixaram evidencia.
+    Evidencia,
+    /// Chegou texto (com ou sem evidencia): fica como parcial.
+    Texto,
+}
+
+impl Preservado {
+    pub fn de(texto_parcial: bool, evidencia: bool) -> Self {
+        if texto_parcial {
+            Self::Texto
+        } else if evidencia {
+            Self::Evidencia
+        } else {
+            Self::Nada
+        }
+    }
 }
 
 #[cfg(test)]
@@ -352,17 +384,34 @@ mod tests {
     /// que omitir a flag tira o teto.
     #[test]
     fn timeout_local_diz_que_o_historico_sobrevive() {
-        let com = ErrorCard::timeout_local(120, true);
+        let com = ErrorCard::timeout_local(120, Preservado::Texto);
         assert!(com.detalhe.contains("120s"), "{}", com.detalhe);
         assert!(com.detalhe.contains("parcial"), "{}", com.detalhe);
         assert!(com.detalhe.contains("historico"), "{}", com.detalhe);
+
+        // Sem texto mas com ferramentas executadas: o historico NAO ficou
+        // intacto (par + evidencia), e o cartao tem de dizer isso.
+        let evidencia = ErrorCard::timeout_local(60, Preservado::Evidencia);
+        assert!(
+            evidencia.detalhe.contains("evidencia"),
+            "{}",
+            evidencia.detalhe
+        );
+        assert!(
+            !evidencia.detalhe.contains("intacto"),
+            "{}",
+            evidencia.detalhe
+        );
+        assert_eq!(Preservado::de(false, true), Preservado::Evidencia);
+        assert_eq!(Preservado::de(true, true), Preservado::Texto);
+        assert_eq!(Preservado::de(false, false), Preservado::Nada);
         assert!(
             com.acoes.iter().any(|a| a.contains("omita a flag")),
             "{:?}",
             com.acoes
         );
 
-        let sem = ErrorCard::timeout_local(30, false);
+        let sem = ErrorCard::timeout_local(30, Preservado::Nada);
         assert!(sem.detalhe.contains("30s"), "{}", sem.detalhe);
         assert!(
             sem.detalhe.contains("antes de chegar qualquer texto"),

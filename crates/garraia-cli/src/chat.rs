@@ -2399,7 +2399,13 @@ pub async fn run_chat(
 
         match &outcome {
             TurnOutcome::TimedOut { parcial, apos } => {
-                let cartao = ErrorCard::timeout_local(apos.as_secs(), !parcial.trim().is_empty());
+                let cartao = ErrorCard::timeout_local(
+                    apos.as_secs(),
+                    crate::ui::error_card::Preservado::de(
+                        !parcial.trim().is_empty(),
+                        evidencia.is_some(),
+                    ),
+                );
                 renderer.handle(
                     UiEvent::ErrorCard {
                         titulo: &cartao.titulo,
@@ -2413,10 +2419,19 @@ pub async fn run_chat(
                 // Ctrl+C aborta o turno, não a sessão: o histórico segue vivo.
                 // Quando chegou texto, ele ficou guardado como parcial — a dica
                 // diz isso para o usuario nao achar que o trabalho sumiu.
-                let hint = if parcial.trim().is_empty() {
-                    "Cancelado. Manda outra ou /exit para sair."
-                } else {
-                    "Cancelado. O que ja chegou ficou no historico, marcado como parcial. Manda outra ou /exit para sair."
+                let hint = match crate::ui::error_card::Preservado::de(
+                    !parcial.trim().is_empty(),
+                    evidencia.is_some(),
+                ) {
+                    crate::ui::error_card::Preservado::Texto => {
+                        "Cancelado. O que ja chegou ficou no historico, marcado como parcial. Manda outra ou /exit para sair."
+                    }
+                    crate::ui::error_card::Preservado::Evidencia => {
+                        "Cancelado antes de chegar texto; a evidencia das ferramentas ficou no historico, marcada como interrompida. Manda outra ou /exit para sair."
+                    }
+                    crate::ui::error_card::Preservado::Nada => {
+                        "Cancelado. Manda outra ou /exit para sair."
+                    }
                 };
                 renderer.handle(UiEvent::Hint(hint), &mut stdout);
             }
