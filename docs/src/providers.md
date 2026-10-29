@@ -220,6 +220,18 @@ garra chat --provider openrouter --model openrouter/auto
 Não existe upgrade automático para um modelo mais caro — tráfego acima
 do padrão sempre exige `--model` explícito.
 
+#### Presets (#1752)
+
+Um **preset** do OpenRouter é um recurso da conta, endereçado como
+`@preset/<slug>` (puro) ou `<autor>/<modelo>@preset/<slug>` (com base). Presets
+não aparecem em `GET /models`, então o `/model` os valida com **uma chamada real
+mínima** (`POST /chat/completions`, `max_tokens: 1`) — sujeita a custo mínimo e
+rate limit; com base, a base é checada no catálogo (grátis) antes de sondar. No
+`config.yml` cite com aspas (`model: "@preset/x"`): sem elas o `serde_norway`
+falha. A string vai **intacta** ao OpenRouter, e o `GARRAIA_MCP_MODEL_ALLOWLIST`
+compara a string inteira — liste o preset literal. Ver `docs/configuration.md`
+§"Presets".
+
 ---
 
 ## Sansa

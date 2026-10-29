@@ -143,4 +143,38 @@ pub(super) fn so_uma_barra_pode_ser_id_do_openrouter() {
 
     // Sem barra nao entra neste caminho de qualquer forma.
     assert!(!pode_ser_id_do_openrouter("glm53-flash"));
+
+    // #1752: um preset bem formado passa mesmo com duas barras — a regra de
+    // uma barra so nao se aplica a ele. `a/b/c` e `hf.co/...` continuam falsos
+    // (nao sao presets).
+    assert!(pode_ser_id_do_openrouter("z-ai/glm-5.3-flash@preset/foo"));
+    assert!(pode_ser_id_do_openrouter("@preset/foo"));
+}
+
+/// #1752: um preset do OpenRouter (`@preset/<slug>`) e sempre roteado para o
+/// OpenRouter, nas duas formas e inclusive com um prefixo de provider nativo.
+#[test]
+pub(super) fn preset_do_openrouter_roteia_para_o_openrouter() {
+    for preset in [
+        "@preset/z-ai-glm-5-3-flash",
+        "z-ai/glm-5.3-flash@preset/z-ai-glm-5-3-flash",
+        // Prefixo `openai` nativo nao importa: o preset so existe no OpenRouter.
+        "openai/gpt-4o@preset/x",
+    ] {
+        assert_eq!(
+            resolve_provider_from_model(preset).as_deref(),
+            Some("openrouter"),
+            "{preset} deve ir ao OpenRouter"
+        );
+        assert!(pode_ser_id_do_openrouter(preset), "{preset}");
+    }
+    assert!(pode_ser_id_do_openrouter("z-ai/x@preset/y"));
+
+    // Base de duas barras nao e um preset: cai no prefixo normal (`a`), e nao
+    // pode ser id do OpenRouter (tres barras).
+    assert_eq!(
+        resolve_provider_from_model("a/b/c@preset/y").as_deref(),
+        Some("a")
+    );
+    assert!(!pode_ser_id_do_openrouter("a/b/c@preset/y"));
 }

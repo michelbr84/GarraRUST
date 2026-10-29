@@ -54,6 +54,11 @@ enum EfeitoTrocaDeModelo {
     /// Provider sem catálogo (ex.: Anthropic): aplica, mas nunca como
     /// sucesso validado — a confirmação carrega a ressalva.
     AplicarSemValidacao,
+    /// #1752: preset do OpenRouter validado por uma chamada real mínima
+    /// (`max_tokens: 1`). Aplica, e a confirmação diz que a validação custou
+    /// uma chamada e qual modelo o preset resolve hoje (quando o OpenRouter
+    /// informou). O modelo ativo continua sendo o preset, não o resolvido.
+    AplicarComNotaDeSonda,
 }
 
 /// Política pura do `/model` (#1298): cada `ValidacaoDeModelo` tem um único
@@ -65,6 +70,7 @@ fn efeito_da_validacao(v: &ValidacaoDeModelo) -> EfeitoTrocaDeModelo {
         ValidacaoDeModelo::ListadoForaDaCurada => EfeitoTrocaDeModelo::AplicarComNotaDeCatalogo,
         ValidacaoDeModelo::Ausente => EfeitoTrocaDeModelo::RecusarEManterEstado,
         ValidacaoDeModelo::SemListagem => EfeitoTrocaDeModelo::AplicarSemValidacao,
+        ValidacaoDeModelo::ValidadoPorSonda { .. } => EfeitoTrocaDeModelo::AplicarComNotaDeSonda,
     }
 }
 
@@ -2156,9 +2162,9 @@ pub async fn run_chat(
                 // vive fora dela) ANTES de tocar o estado. Qualquer falha —
                 // modelo ausente, provider indisponível, erro de rede — recusa
                 // fail-closed e deixa o estado anterior intacto.
-                let efeito = match runtime.default_provider() {
+                let validacao = match runtime.default_provider() {
                     Some(p) => match p.validar_modelo(&resolved).await {
-                        Ok(v) => efeito_da_validacao(&v),
+                        Ok(v) => v,
                         Err(e) => {
                             renderer.handle(
                                 UiEvent::Warning(&format!(
@@ -2183,6 +2189,7 @@ pub async fn run_chat(
                         continue;
                     }
                 };
+                let efeito = efeito_da_validacao(&validacao);
                 let nota_de_catalogo = "  (encontrado no catalogo completo do OpenRouter, fora da lista curada de /models)";
                 let ressalva_sem_listagem =
                     "  (provider nao expoe catalogo — troca aplicada sem validacao)";
@@ -2201,6 +2208,17 @@ pub async fn run_chat(
                             ),
                             &mut io::stdout(),
                         );
+                        // #1752: preset recusado — a base `<autor>/<modelo>` nao
+                        // esta no catalogo (ou fora do OpenRouter nenhum preset
+                        // vale). Explica por que o nome com `@preset/` caiu aqui.
+                        if garraia_agents::preset_do_openrouter(&resolved).is_some() {
+                            renderer.handle(
+                                UiEvent::Hint(
+                                    "`@preset/<slug>` so existe no OpenRouter; se a base <autor>/<modelo> nao esta no catalogo, o preset tambem nao vale.",
+                                ),
+                                &mut io::stdout(),
+                            );
+                        }
                     }
                     EfeitoTrocaDeModelo::Aplicar => {
                         model_name = resolved;
@@ -2236,6 +2254,31 @@ pub async fn run_chat(
                             &mut io::stdout(),
                         );
                         renderer.handle(UiEvent::Hint(ressalva_sem_listagem), &mut io::stdout());
+                        renderer.handle(
+                            UiEvent::Hint(&format!(
+                                "  (o provider continua {provider_name} — para trocar, reinicie com --provider ou --model)"
+                            )),
+                            &mut io::stdout(),
+                        );
+                    }
+                    EfeitoTrocaDeModelo::AplicarComNotaDeSonda => {
+                        // #1752: o modelo ativo continua sendo o PRESET (vai
+                        // intacto ao OpenRouter); a nota so diz qual modelo ele
+                        // resolve hoje, quando o OpenRouter informou.
+                        model_name = resolved;
+                        renderer.handle(
+                            UiEvent::Hint(&format!("Modelo alterado para: {model_name}")),
+                            &mut io::stdout(),
+                        );
+                        let nota = match &validacao {
+                            ValidacaoDeModelo::ValidadoPorSonda {
+                                modelo_resolvido: Some(m),
+                            } => format!(
+                                "  (preset do OpenRouter validado com uma chamada real de 1 token; resolve hoje para {m})"
+                            ),
+                            _ => "  (preset do OpenRouter validado com uma chamada real de 1 token; o OpenRouter nao informou o modelo resolvido)".to_string(),
+                        };
+                        renderer.handle(UiEvent::Hint(&nota), &mut io::stdout());
                         renderer.handle(
                             UiEvent::Hint(&format!(
                                 "  (o provider continua {provider_name} — para trocar, reinicie com --provider ou --model)"
@@ -4625,6 +4668,20 @@ mod persist_tests {
         assert_eq!(
             efeito_da_validacao(&ValidacaoDeModelo::SemListagem),
             EfeitoTrocaDeModelo::AplicarSemValidacao
+        );
+        // #1752: preset validado por sonda — aplica com a nota da sonda, com
+        // ou sem o modelo resolvido.
+        assert_eq!(
+            efeito_da_validacao(&ValidacaoDeModelo::ValidadoPorSonda {
+                modelo_resolvido: Some("z-ai/glm-5.3-flash".to_string())
+            }),
+            EfeitoTrocaDeModelo::AplicarComNotaDeSonda
+        );
+        assert_eq!(
+            efeito_da_validacao(&ValidacaoDeModelo::ValidadoPorSonda {
+                modelo_resolvido: None
+            }),
+            EfeitoTrocaDeModelo::AplicarComNotaDeSonda
         );
     }
 

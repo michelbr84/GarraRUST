@@ -9,7 +9,7 @@ use tracing::{debug, info, instrument};
 
 use crate::providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
-    StreamEvent, Usage, ValidacaoDeModelo, erro_de_envio,
+    StreamEvent, Usage, ValidacaoDeModelo, erro_de_envio, preset_do_openrouter,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -384,9 +384,12 @@ impl LlmProvider for OpenAiProvider {
             let body = response.text().await.unwrap_or_default();
             // Log more details for debugging
             tracing::warn!(
-                "openai API error: status={}, body_truncated={}, endpoint={}",
+                "openai API error: status={}, body={}, endpoint={}",
                 status,
-                &body[..body.len().min(500)],
+                // #1726/#1752: o corpo cru do OpenRouter carrega o `user_id` da
+                // conta; a sonda de preset torna este caminho rotineiro, entao o
+                // log recebe a mesma redacao que o erro devolvido.
+                crate::providers::corpo_de_erro_sanitizado(&body),
                 self.endpoint()
             );
             // #1299: roteamento impossível é determinístico — sai classificado
@@ -674,9 +677,32 @@ impl LlmProvider for OpenAiProvider {
     /// #1298: valida contra o catálogo COMPLETO do OpenRouter. A curada de
     /// `/models` esconde namespaces válidos — o default `z-ai/glm-5.3-flash`
     /// da ADR 0022 não está nela — e não pode ser o gate do `/model`.
+    ///
+    /// #1752: um preset do OpenRouter (`@preset/<slug>`) não aparece em
+    /// `GET /models`, então o catálogo não serve de gate. Fora do OpenRouter o
+    /// preset é inválido (`Ausente`); no OpenRouter, com base `<autor>/<modelo>`
+    /// a base é checada no catálogo (grátis) antes de gastar uma chamada — base
+    /// ausente recusa sem sondar — e o preset puro vai direto à sonda mínima.
     async fn validar_modelo(&self, model: &str) -> Result<ValidacaoDeModelo> {
         if !self.is_openrouter {
+            // Preset só existe no OpenRouter; aqui é recusa, sem catálogo.
+            if preset_do_openrouter(model).is_some() {
+                return Ok(ValidacaoDeModelo::Ausente);
+            }
             return Ok(ValidacaoDeModelo::SemListagem);
+        }
+        if let Some(preset) = preset_do_openrouter(model) {
+            if let Some(base) = preset.base {
+                // Base `<autor>/<modelo>`: se o catálogo não a tem, o preset
+                // também não vale — recusa sem sondar (sem custo).
+                let completa = self.catalogo_openrouter().await?;
+                if classificar_no_catalogo(&curada_do_catalogo(&completa), &completa, base)
+                    == ValidacaoDeModelo::Ausente
+                {
+                    return Ok(ValidacaoDeModelo::Ausente);
+                }
+            }
+            return self.sondar_preset(model).await;
         }
         let completa = self.catalogo_openrouter().await?;
         Ok(classificar_no_catalogo(
@@ -684,6 +710,72 @@ impl LlmProvider for OpenAiProvider {
             &completa,
             model,
         ))
+    }
+}
+
+impl OpenAiProvider {
+    /// #1752: valida um preset do OpenRouter com uma chamada real mínima
+    /// (`POST /chat/completions`, `max_tokens: 1`), já que o preset não está no
+    /// catálogo. A string do modelo vai **intacta** — o preset é o
+    /// identificador, e o OpenRouter resolve qual modelo ele aponta. Sucesso
+    /// devolve `ValidadoPorSonda` com o modelo resolvido (campo `model` da
+    /// resposta, quando não vazio); a falha é classificada por
+    /// [`classificar_erro_da_sonda`]. Nunca loga a chave — `complete` já
+    /// sanitiza o corpo da resposta de erro.
+    async fn sondar_preset(&self, model: &str) -> Result<ValidacaoDeModelo> {
+        let request = LlmRequest {
+            model: model.to_string(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: MessagePart::Text("ping".into()),
+            }],
+            system: None,
+            max_tokens: Some(1),
+            temperature: None,
+            tools: vec![],
+        };
+        match self.complete(&request).await {
+            Ok(r) => Ok(ValidacaoDeModelo::ValidadoPorSonda {
+                modelo_resolvido: Some(r.model).filter(|m| !m.is_empty()),
+            }),
+            Err(e) => classificar_erro_da_sonda(model, e),
+        }
+    }
+}
+
+/// #1752: classifica o erro da sonda de preset num veredito transacional.
+///
+/// Função pura (o status sai do texto por [`crate::providers::status_http_do_erro`]).
+/// O OpenRouter ecoa o nome do modelo na mensagem (`<model> is not a valid
+/// model ID`), então o nome pedido é tirado do texto antes de procurar sinais:
+/// um preset inexistente chamado `@preset/max_tokens-x` não pode passar por
+/// "modelo existe, só o teto é baixo".
+/// - `400`/`404` cuja mensagem diz que o modelo não é válido ou não tem
+///   endpoint: o OpenRouter não reconhece o preset — recusa (`Ausente`);
+/// - `400` cuja mensagem (sem o nome do modelo) cita `max_tokens` /
+///   `max_completion_tokens`: o modelo existe, só o teto de 1 token é baixo
+///   demais — valida sem nome resolvido;
+/// - qualquer outro `400`/`404`: recusa;
+/// - o resto (401/403/429/5xx, `Error::Transport`, `Error::Config` do
+///   roteamento do #1299, ou erro sem `status=`): não dá para afirmar nada;
+///   propaga o erro, e o handler mantém o estado ("não consegui validar").
+fn classificar_erro_da_sonda(model: &str, e: Error) -> Result<ValidacaoDeModelo> {
+    let status = crate::providers::status_http_do_erro(&e);
+    let mensagem = e
+        .to_string()
+        .to_lowercase()
+        .replace(&model.to_lowercase(), "");
+    let modelo_invalido = mensagem.contains("not a valid model")
+        || mensagem.contains("no valid model")
+        || mensagem.contains("no endpoints found");
+    let teto_baixo = mensagem.contains("max_tokens") || mensagem.contains("max_completion_tokens");
+    match status {
+        Some(400) | Some(404) if modelo_invalido => Ok(ValidacaoDeModelo::Ausente),
+        Some(400) if teto_baixo => Ok(ValidacaoDeModelo::ValidadoPorSonda {
+            modelo_resolvido: None,
+        }),
+        Some(400) | Some(404) => Ok(ValidacaoDeModelo::Ausente),
+        _ => Err(e),
     }
 }
 
@@ -1644,5 +1736,320 @@ mod tests {
         assert!(
             erro_de_roteamento_openrouter(false, 404, &corpo_roteamento_1299(), model).is_none()
         );
+    }
+
+    /// #1752: o parser de preset aceita as duas formas (pura e com base) e
+    /// recusa tudo que nao for um `@preset/<slug>` bem formado.
+    #[test]
+    fn preset_do_openrouter_aceita_as_duas_formas_e_recusa_o_resto() {
+        let p = preset_do_openrouter("@preset/foo").expect("preset puro");
+        assert_eq!(p.base, None);
+        assert_eq!(p.slug, "foo");
+
+        let p = preset_do_openrouter("z-ai/glm-5.3-flash@preset/foo").expect("preset com base");
+        assert_eq!(p.base, Some("z-ai/glm-5.3-flash"));
+        assert_eq!(p.slug, "foo");
+
+        // Base com sufixo `:free` (um `:` e valido no id do OpenRouter).
+        let p = preset_do_openrouter("meta-llama/x:free@preset/y").expect("base com sufixo");
+        assert_eq!(p.base, Some("meta-llama/x:free"));
+        assert_eq!(p.slug, "y");
+
+        for ruim in [
+            "@preset/",           // slug vazio
+            "x@preset/y",         // base sem barra
+            "a/b/c@preset/y",     // base com duas barras
+            "@preset/x@preset/y", // dois marcadores
+            "@preset/a b",        // slug com espaco
+            "@PRESET/x",          // marcador maiusculo
+            "a@b",                // `@` fora de um preset
+        ] {
+            assert!(
+                preset_do_openrouter(ruim).is_none(),
+                "{ruim} deveria ser recusado"
+            );
+        }
+    }
+
+    /// #1752: a classificacao do erro da sonda, pura, por status e mensagem.
+    #[test]
+    fn classificar_erro_da_sonda_por_status_e_mensagem() {
+        // 400 "is not a valid model ID": o preset nao existe -> recusa.
+        assert_eq!(
+            classificar_erro_da_sonda("@preset/x", Error::Agent(
+                "openai API error: status=400 Bad Request, body=@preset/x is not a valid model ID"
+                    .into()
+            ))
+            .unwrap(),
+            ValidacaoDeModelo::Ausente
+        );
+        // 404 -> recusa.
+        assert_eq!(
+            classificar_erro_da_sonda(
+                "@preset/x",
+                Error::Agent("openai API error: status=404 Not Found, body=no such model".into())
+            )
+            .unwrap(),
+            ValidacaoDeModelo::Ausente
+        );
+        // Falso positivo que a revisao pegou: preset INEXISTENTE cujo nome
+        // contem "max_tokens". O OpenRouter ecoa o nome na mensagem, entao
+        // o nome e tirado do texto antes de procurar o sinal -> recusa.
+        assert_eq!(
+            classificar_erro_da_sonda(
+                "@preset/max_tokens-fantasma",
+                Error::Agent(
+                    "openai API error: status=400 Bad Request, body=@preset/max_tokens-fantasma is not a valid model ID"
+                        .into()
+                )
+            )
+            .unwrap(),
+            ValidacaoDeModelo::Ausente
+        );
+        // 400 citando max_tokens: o modelo existe, so o teto de 1 token e baixo
+        // demais -> validado, sem nome resolvido.
+        assert_eq!(
+            classificar_erro_da_sonda(
+                "@preset/x",
+                Error::Agent(
+                    "openai API error: status=400 Bad Request, body=max_tokens must be at least 16"
+                        .into()
+                )
+            )
+            .unwrap(),
+            ValidacaoDeModelo::ValidadoPorSonda {
+                modelo_resolvido: None
+            }
+        );
+        // 429, transporte e erro sem `status=` -> propaga (estado mantido).
+        assert!(
+            classificar_erro_da_sonda(
+                "@preset/x",
+                Error::Agent("openai API error: status=429, body=rate limit".into())
+            )
+            .is_err()
+        );
+        assert!(
+            classificar_erro_da_sonda(
+                "@preset/x",
+                Error::Transport("openai request failed: error sending request".into())
+            )
+            .is_err()
+        );
+        assert!(
+            classificar_erro_da_sonda("@preset/x", Error::Agent("sem status nenhum".into()))
+                .is_err()
+        );
+    }
+
+    /// #1752: a sonda de preset conta requisicoes e classifica 200/400/429 com
+    /// um servidor falso. Preset puro nao consulta o catalogo (0 GET + 1 POST);
+    /// com base listada consulta e sonda (1 GET + 1 POST); base ausente recusa
+    /// sem sondar (1 GET + 0 POST); fora do OpenRouter recusa sem request.
+    #[tokio::test]
+    async fn sonda_de_preset_conta_requisicoes_e_classifica_200_400_429() {
+        use axum::{
+            Json, Router,
+            extract::State,
+            http::StatusCode,
+            routing::{get, post},
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Estado {
+            gets: Arc<AtomicUsize>,
+            posts: Arc<AtomicUsize>,
+            corpos: Arc<Mutex<Vec<serde_json::Value>>>,
+        }
+
+        let estado = Estado {
+            gets: Arc::new(AtomicUsize::new(0)),
+            posts: Arc::new(AtomicUsize::new(0)),
+            corpos: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        let app = Router::new()
+            .route(
+                "/api/v1/models",
+                get(|State(st): State<Estado>| async move {
+                    st.gets.fetch_add(1, Ordering::SeqCst);
+                    Json(serde_json::json!({ "data": [ { "id": "z-ai/glm-5.3-flash" } ] }))
+                }),
+            )
+            .route(
+                "/api/v1/chat/completions",
+                post(
+                    |State(st): State<Estado>, Json(body): Json<serde_json::Value>| async move {
+                        st.posts.fetch_add(1, Ordering::SeqCst);
+                        st.corpos.lock().unwrap().push(body.clone());
+                        let modelo = body.get("model").and_then(|m| m.as_str()).unwrap_or_default();
+                        let slug = modelo.rsplit("@preset/").next().unwrap_or_default();
+                        match slug {
+                            "ok" => (
+                                StatusCode::OK,
+                                Json(serde_json::json!({
+                                    "choices": [ { "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" } ],
+                                    "model": "z-ai/glm-5.3-flash",
+                                    "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+                                })),
+                            ),
+                            "min-tokens" => (
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({ "error": { "message": "max_tokens must be at least 16", "code": 400 } })),
+                            ),
+                            "limite" => (
+                                StatusCode::TOO_MANY_REQUESTS,
+                                Json(serde_json::json!({ "error": { "message": "rate limited", "code": 429 } })),
+                            ),
+                            // Quirk do #1726: erro entregue com HTTP 200.
+                            "erro-no-200" => (
+                                StatusCode::OK,
+                                Json(serde_json::json!({ "error": { "message": format!("{modelo} is not a valid model ID"), "code": 400 }, "user_id": "user_x" })),
+                            ),
+                            // #1299: roteamento impossivel (404 deterministico).
+                            "roteamento-1299" => (
+                                StatusCode::NOT_FOUND,
+                                Json(serde_json::from_str::<serde_json::Value>(&corpo_roteamento_1299()).unwrap()),
+                            ),
+                            _ => (
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({ "error": { "message": format!("{modelo} is not a valid model ID"), "code": 400 }, "user_id": "user_x" })),
+                            ),
+                        }
+                    },
+                ),
+            )
+            .with_state(estado.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}");
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let servidor = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let provider = OpenAiProvider::new("sk-test", None, Some(format!("{url}/api/v1")))
+            .with_name("openrouter");
+
+        // Preset puro: 0 GET + 1 POST, validado com o modelo resolvido.
+        let g0 = estado.gets.load(Ordering::SeqCst);
+        let p0 = estado.posts.load(Ordering::SeqCst);
+        let v = provider.validar_modelo("@preset/ok").await.unwrap();
+        assert_eq!(
+            estado.gets.load(Ordering::SeqCst) - g0,
+            0,
+            "preset puro nao consulta o catalogo"
+        );
+        assert_eq!(
+            estado.posts.load(Ordering::SeqCst) - p0,
+            1,
+            "preset puro sonda uma vez"
+        );
+        assert_eq!(
+            v,
+            ValidacaoDeModelo::ValidadoPorSonda {
+                modelo_resolvido: Some("z-ai/glm-5.3-flash".to_string())
+            }
+        );
+        {
+            let corpos = estado.corpos.lock().unwrap();
+            let ultimo = corpos.last().expect("um corpo registrado");
+            assert_eq!(
+                ultimo["model"], "@preset/ok",
+                "a string do modelo vai intacta"
+            );
+            assert_eq!(ultimo["max_tokens"], 1, "a sonda pede 1 token");
+            let stream = ultimo.get("stream");
+            assert!(
+                stream.is_none() || stream == Some(&serde_json::json!(false)),
+                "a sonda nao faz streaming"
+            );
+        }
+
+        // Preset com base listada: 1 GET (catalogo) + 1 POST (sonda).
+        let g0 = estado.gets.load(Ordering::SeqCst);
+        let p0 = estado.posts.load(Ordering::SeqCst);
+        let v = provider
+            .validar_modelo("z-ai/glm-5.3-flash@preset/ok")
+            .await
+            .unwrap();
+        assert_eq!(estado.gets.load(Ordering::SeqCst) - g0, 1);
+        assert_eq!(estado.posts.load(Ordering::SeqCst) - p0, 1);
+        assert!(matches!(v, ValidacaoDeModelo::ValidadoPorSonda { .. }));
+
+        // Base ausente do catalogo: 1 GET + 0 POST -> Ausente, sem sondar.
+        let g0 = estado.gets.load(Ordering::SeqCst);
+        let p0 = estado.posts.load(Ordering::SeqCst);
+        let v = provider
+            .validar_modelo("vendor/inexistente@preset/ok")
+            .await
+            .unwrap();
+        assert_eq!(estado.gets.load(Ordering::SeqCst) - g0, 1);
+        assert_eq!(
+            estado.posts.load(Ordering::SeqCst) - p0,
+            0,
+            "base ausente nao sonda"
+        );
+        assert_eq!(v, ValidacaoDeModelo::Ausente);
+
+        // 400 "is not a valid model ID" -> recusa.
+        let v = provider.validar_modelo("@preset/nao-existe").await.unwrap();
+        assert_eq!(v, ValidacaoDeModelo::Ausente);
+
+        // 429 -> propaga (o handler mantem o estado).
+        assert!(provider.validar_modelo("@preset/limite").await.is_err());
+
+        // 400 citando max_tokens -> validado, sem nome resolvido.
+        let v = provider.validar_modelo("@preset/min-tokens").await.unwrap();
+        assert_eq!(
+            v,
+            ValidacaoDeModelo::ValidadoPorSonda {
+                modelo_resolvido: None
+            }
+        );
+
+        // Preset inexistente cujo nome contem "max_tokens" (o OpenRouter ecoa
+        // o nome no erro): continua recusa, nao "teto baixo".
+        let v = provider
+            .validar_modelo("@preset/max_tokens-fantasma")
+            .await
+            .unwrap();
+        assert_eq!(v, ValidacaoDeModelo::Ausente);
+
+        // Erro entregue com HTTP 200 (#1726): classificado pelo codigo do corpo.
+        let v = provider
+            .validar_modelo("@preset/erro-no-200")
+            .await
+            .unwrap();
+        assert_eq!(v, ValidacaoDeModelo::Ausente);
+
+        // 404 de roteamento (#1299): nao e "preset ausente", e erro de config
+        // -> propaga, estado mantido.
+        assert!(
+            provider
+                .validar_modelo("@preset/roteamento-1299")
+                .await
+                .is_err()
+        );
+
+        // Provider que NAO e OpenRouter: preset recusado sem request nenhuma.
+        let g0 = estado.gets.load(Ordering::SeqCst);
+        let p0 = estado.posts.load(Ordering::SeqCst);
+        let nativo = OpenAiProvider::new("sk-test", None, Some(format!("{url}/api/v1")));
+        let v = nativo.validar_modelo("@preset/ok").await.unwrap();
+        assert_eq!(v, ValidacaoDeModelo::Ausente);
+        assert_eq!(estado.gets.load(Ordering::SeqCst) - g0, 0);
+        assert_eq!(estado.posts.load(Ordering::SeqCst) - p0, 0);
+
+        let _ = tx.send(());
+        let _ = servidor.await;
     }
 }

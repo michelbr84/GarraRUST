@@ -405,6 +405,32 @@ garra chat --provider openrouter --model openrouter/auto
 There is no automatic upgrade to a pricier model — paid traffic above
 the default always requires an explicit `--model` flag.
 
+#### Presets
+
+An OpenRouter **preset** is an account resource addressed as `@preset/<slug>`,
+in two shapes: the pure form `@preset/<slug>` and the based form
+`<author>/<model>@preset/<slug>`. Presets do **not** appear in `GET /models`, so
+`/model` validates them differently from a catalog model (issue #1752):
+
+- In `config.yml` the value **must be quoted** —
+  `model: "@preset/z-ai-glm-5-3-flash"`. A bare leading `@` starts a YAML tag and
+  the parser (`serde_norway`) fails to load the file without the quotes.
+- The transactional `/model` validates a preset with **one real minimal call**
+  (`POST /chat/completions`, `max_tokens: 1`), since the preset is not in the
+  catalog. That call carries a small charge and is subject to rate limits; a
+  `429`/`5xx`/network error keeps the current model ("could not validate"). With a
+  based preset the base `<author>/<model>` is checked against the catalog first
+  (free), so a base that is absent is refused without spending the call.
+- The preset string is sent to OpenRouter **intact** — it is the identifier, and
+  OpenRouter resolves which model it points to. `/model` reports the resolved
+  model as a note, but the active model stays the preset.
+- `garra ask --model @preset/<slug>` routes to OpenRouter **without** the
+  validation call (it is one-shot). During streaming, `/stats` shows the
+  requested model (the preset), not a resolved name.
+- `GARRAIA_MCP_MODEL_ALLOWLIST` compares the **whole string**: to allow a preset
+  over MCP, list the literal preset (e.g. `z-ai/glm-5.3-flash@preset/x`) — the
+  base alone does not cover it, because a preset can change both model and cost.
+
 > GAR-579 — esta mesma precedência é consumida por
 > [`garra ask`](cli-ask.md), o comando não-interativo. Tanto `garra chat`
 > quanto `garra ask` compartilham `chat::select_explicit_provider` /
