@@ -192,6 +192,10 @@ Corrigir só o código deixa o job de MSRV vermelho. Subir o piso toca
 `Cargo.toml` (`rust-version`) **e** o `ci.yml` (nome do job, `dtolnay/rust-
 toolchain@X.YZ`, e as duas invocações `cargo +X.YZ`). Prove nos dois sentidos:
 o novo piso passa `--locked`, o antigo ainda recusa.
+Depois, os espelhos: README (en e pt-BR), `CONTRIBUTING.md`,
+`scripts/setup-toolchain.sh`, `scripts/build-installer.ps1`, docs, wiki e
+website — `cargo test -p garraia-config --test msrv_declarada_sem_drift` fica
+vermelho ate todos subirem juntos (#1750).
 
 Não confie na sugestão do compilador em migração de API do `wasmtime-wasi`: no
 bump 47→48 ele mandava trocar só `FilePerms` por `FsPerms` e **manter**

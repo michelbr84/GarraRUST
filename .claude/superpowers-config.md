@@ -2,7 +2,7 @@
 
 ## Project Context
 
-GarraRUST is a multi-crate Rust workspace (edition 2024, rust-version 1.92) with 22 crates
+GarraRUST is a multi-crate Rust workspace (edition 2024, rust-version 1.97) with 22 crates
 (live count: `grep -c '^    "crates/' Cargo.toml`).
 The primary binary is `garraia` (built from `garraia-cli`); the HTTP/WS gateway lives in
 `garraia-gateway`. Mobile client in Flutter, desktop app in Tauri v2.

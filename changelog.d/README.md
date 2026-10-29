@@ -21,6 +21,11 @@ Convenção de nome: `<numero-da-issue-ou-PR>-<slug-curto>.md`. O número é só
 para achar a origem depois; a ordem final é alfabética por nome de arquivo,
 então ela é determinística.
 
+O numero tem de ser de uma issue (ou PR) que **ja existe**: crie a issue antes
+de escrever o fragmento. Numero inventado ou "provavel" aponta para a origem
+errada depois (ja aconteceu com um `1748-...` quando #1748 era outra PR, ja
+mesclada; ver #1750).
+
 O conteúdo é o(s) bullet(s) markdown que iriam para o `CHANGELOG.md`, já no
 estilo da casa — primeira frase em negrito dizendo o que mudou, com o número
 da issue, e o resto explicando o porquê:
