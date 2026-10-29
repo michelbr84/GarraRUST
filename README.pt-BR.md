@@ -684,7 +684,7 @@ Consulte a [documentação completa de integração com Continue](docs/src/conti
 - **Reinicialização** - `garra restart` para graciosamente parar e iniciar o daemon
 - **Troca de provedor em runtime** - adicione ou troque provedores de LLM via interface webchat ou API REST sem reiniciar
 - **Fallback automático de providers** - em caso de erro 429/5xx, tenta automaticamente o próximo provider configurado em `fallback_providers` com backoff exponencial e circuit breaker
-- **Timeouts configuráveis** - timeouts por tipo (LLM: 30s, TTS: 120s, MCP: 60s, Health: 5s) via `config.yml`
+- **Timeouts configuráveis** - timeouts por tipo (LLM: 120s, TTS: 120s, MCP: 60s, Health: 5s) via `config.yml` (gateway); `garra chat --timeout-secs` e um teto opt-in a parte, sem default (#1751)
 - **Rate limiting por IP** - proteção automática configurável (`per_second`, `burst_size`) via `config.yml`
 - **Logs estruturados** - campos rastreáveis (`request_id`, `session_id`, `source`, `model`, `latency_ms`); JSON format via `GARRAIA_LOG_FORMAT=json`
 - **Ferramenta de migração** - `garra migrate openclaw` importa skills e canais (credenciais são reinseridas via `garra init`)

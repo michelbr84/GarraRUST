@@ -287,10 +287,14 @@ enum Commands {
         #[arg(long, short = 'u')]
         url: Option<String>,
 
-        /// Per-turn LLM call timeout in seconds. Default 120, range [1, 600].
-        /// On timeout the turn is discarded and the REPL keeps running.
-        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..=600))]
-        timeout_secs: u64,
+        /// Optional wall-clock ceiling over the WHOLE turn (LLM + tools), in
+        /// seconds, range [1, 600]. Without the flag there is no turn ceiling:
+        /// the turn runs until the model finishes. Ctrl+C still cancels it, and
+        /// the 30s per-tool limit and the providers' connect timeout stay in
+        /// force regardless. When the ceiling fires, the text already streamed
+        /// and the tool evidence stay in the history, marked as interrupted.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=600))]
+        timeout_secs: Option<u64>,
 
         /// Pull a missing Ollama model without asking first.
         #[arg(long, short = 'y')]
@@ -3925,6 +3929,37 @@ mod tests {
             }
             _ => panic!("expected the Chat subcommand"),
         }
+    }
+
+    /// #1751: sem a flag, `--timeout-secs` nao tem default — o turno roda sem
+    /// teto de parede. Antes o clap injetava 120 aqui, cortando turnos longos.
+    #[test]
+    fn chat_sem_timeout_secs_parseia_como_none() {
+        let cli = Cli::try_parse_from(["garra", "chat"]).expect("`garra chat` parses");
+        match cli.command {
+            Commands::Chat { timeout_secs, .. } => {
+                assert_eq!(timeout_secs, None, "sem a flag nao ha teto de parede");
+            }
+            _ => panic!("expected the Chat subcommand"),
+        }
+        let cli =
+            Cli::try_parse_from(["garra", "chat", "--timeout-secs", "300"]).expect("com a flag");
+        match cli.command {
+            Commands::Chat { timeout_secs, .. } => {
+                assert_eq!(timeout_secs, Some(300), "a flag ainda e aceita");
+            }
+            _ => panic!("expected the Chat subcommand"),
+        }
+    }
+
+    /// #1751: a faixa [1, 600] continua valendo quando a flag e dada — `0` e
+    /// recusado no parser, nunca vira "sem teto" por engano.
+    #[test]
+    fn chat_timeout_secs_zero_e_recusado() {
+        assert!(
+            Cli::try_parse_from(["garra", "chat", "--timeout-secs", "0"]).is_err(),
+            "0 esta fora da faixa [1, 600]"
+        );
     }
 
     /// The `garra desktop` surface is a script contract (#1181, M1), so pin
