@@ -470,10 +470,24 @@ fn persist_assistant_turn(
 /// resposta inventada pela ausencia.
 fn marcador_de_interrupcao<T, E>(outcome: &TurnOutcome<T, E>) -> Option<&'static str> {
     match outcome {
-        TurnOutcome::TimedOut => Some("[turno interrompido: timeout]"),
-        TurnOutcome::Cancelled => Some("[turno interrompido: cancelado]"),
+        TurnOutcome::TimedOut { .. } => Some("[turno interrompido: timeout]"),
+        TurnOutcome::Cancelled { .. } => Some("[turno interrompido: cancelado]"),
         TurnOutcome::Done(Err(_)) => Some("[turno interrompido: erro]"),
         TurnOutcome::Done(Ok(_)) => None,
+    }
+}
+
+/// O texto que fica no lugar da resposta quando o turno nao terminou: o
+/// parcial que chegou antes de parar, seguido do marcador de interrupcao. So
+/// o marcador quando nada chegou — nunca um `\n\n` solto na frente. Com
+/// `--persist` isto vai para o SQLite no lugar do marcador cru, e e o que o
+/// `--resume` seguinte hidrata (#1751).
+fn texto_preservado(parcial: &str, marcador: &str) -> String {
+    let p = parcial.trim_end();
+    if p.is_empty() {
+        marcador.to_string()
+    } else {
+        format!("{p}\n\n{marcador}")
     }
 }
 
@@ -1100,15 +1114,42 @@ async fn detect_provider_with_env(
 #[cfg_attr(test, derive(Debug, PartialEq))]
 enum TurnOutcome<T, E> {
     Done(std::result::Result<T, E>),
-    TimedOut,
-    Cancelled,
+    /// O teto de parede estourou (#1751). `parcial` e o texto que o modelo
+    /// chegou a transmitir antes do corte; `apos` e a janela excedida.
+    TimedOut {
+        parcial: String,
+        apos: std::time::Duration,
+    },
+    /// Ctrl+C abortou o turno em vez de matar o processo. `parcial` e o texto
+    /// que ja tinha chegado quando o cancelamento entrou.
+    Cancelled {
+        parcial: String,
+    },
 }
 
-/// Somente um turno concluido tem par User/Assistant no history da CLI.
-/// Nao anexar evidencia como Assistant isolado apos timeout, cancelamento
-/// ou erro: ela ficaria sem o turno de usuario correspondente.
-fn turno_pode_anexar_evidencias<T, E>(outcome: &TurnOutcome<T, E>) -> bool {
-    matches!(outcome, TurnOutcome::Done(Ok(_)))
+/// O texto que o turno chegou a transmitir antes de parar. So os fins com
+/// algo na tela carregam parcial: `Done(Ok)` tem a resposta inteira como
+/// resultado, e `Done(Err)` nao a expoe — o future do turno e dropado junto
+/// com o erro, entao o que saiu antes dele fica so no terminal (#1751).
+fn parcial_do_outcome<T, E>(outcome: &TurnOutcome<T, E>) -> &str {
+    match outcome {
+        TurnOutcome::TimedOut { parcial, .. } => parcial,
+        TurnOutcome::Cancelled { parcial } => parcial,
+        TurnOutcome::Done(_) => "",
+    }
+}
+
+/// Decide se o turno deixa um par User/Assistant no history da CLI. Um turno
+/// concluido sempre deixa. Um fim inacabado (timeout, Ctrl+C, erro) so deixa
+/// quando ha algo a preservar — parcial que chegou na tela ou evidencia de
+/// ferramenta — para o #1751 guardar o trabalho em vez de descarta-lo; sem
+/// nada a preservar, nao se inventa um par vazio. A evidencia nunca entra
+/// como Assistant isolado: ela segue este mesmo criterio (invariante #1300).
+fn turno_deixa_par_no_history<T, E>(outcome: &TurnOutcome<T, E>, tem_evidencia: bool) -> bool {
+    match outcome {
+        TurnOutcome::Done(Ok(_)) => true,
+        _ => !parcial_do_outcome(outcome).trim().is_empty() || tem_evidencia,
+    }
 }
 
 /// Await the streaming LLM call while concurrently draining `rx`, writing
@@ -1117,9 +1158,10 @@ fn turno_pode_anexar_evidencias<T, E>(outcome: &TurnOutcome<T, E>) -> bool {
 /// polled during the call — draining only after completion deadlocks the
 /// producer once the buffer fills (the original `garra chat` hang).
 ///
-/// Returns `TurnOutcome::TimedOut` on timeout. In every path the call future
-/// is dropped before the final drain, which closes the sender side so the
-/// drain terminates once buffered deltas are consumed.
+/// Returns `TurnOutcome::TimedOut` only when a `timeout` ceiling is given and
+/// it fires (`None` means no wall-clock ceiling — #1751). In every path the
+/// call future is dropped before the final drain, which closes the sender side
+/// so the drain terminates once buffered deltas are consumed.
 ///
 /// # Indicador de atividade
 ///
@@ -1142,7 +1184,7 @@ fn turno_pode_anexar_evidencias<T, E>(outcome: &TurnOutcome<T, E>) -> bool {
 async fn stream_turn<F, T, E>(
     call: F,
     mut rx: mpsc::Receiver<TurnEvent>,
-    timeout: std::time::Duration,
+    timeout: Option<std::time::Duration>,
     out: &mut (impl io::Write + ?Sized),
     renderer: &mut TerminalRenderer,
     tool_log: &mut ToolLog,
@@ -1151,8 +1193,29 @@ async fn stream_turn<F, T, E>(
 where
     F: Future<Output = std::result::Result<T, E>>,
 {
-    let mut call = Box::pin(tokio::time::timeout(timeout, call));
+    // #1751: o turno nao e mais embrulhado em `tokio::time::timeout`. O teto de
+    // parede, quando existe, entra como mais um braco do `select!` abaixo
+    // (`prazo`); sem a flag `--timeout-secs` nao ha teto e o turno roda ate o
+    // modelo terminar — so o Ctrl+C, o teto por ferramenta e o connect timeout
+    // do provider o interrompem. `Box::pin` segue necessario para o future (e
+    // seu sender) poder ser dropado antes da drenagem final.
+    let mut call = Box::pin(call);
     let mut rx_open = true;
+
+    // Teto de parede opcional: `sleep(d)` quando ha `--timeout-secs`, um future
+    // que nunca completa quando nao ha. Pinado para virar braco do `select!`.
+    let prazo = async move {
+        match timeout {
+            Some(d) => tokio::time::sleep(d).await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(prazo);
+
+    // Texto que o modelo transmitiu neste turno, acumulado a partir dos
+    // `TextDelta` tanto no `select!` quanto na drenagem pos-`drop`. Em timeout
+    // e Ctrl+C ele e preservado no outcome; em sucesso o resultado ja o traz.
+    let mut parcial = String::new();
 
     // O primeiro tick de `interval` dispara imediatamente; quem segura a
     // aparição é o próprio estado do spinner (#936): os primeiros ticks caem
@@ -1171,12 +1234,19 @@ where
     // própria: o canal é limitado e o produtor usa `send().await`, então um
     // receptor que só drena quando sobra tempo trava o runtime. Foi o
     // travamento original do `garra chat`, e é o invariante 1 da ADR 0017.
-    let result = loop {
+    let mut outcome = loop {
         tokio::select! {
-            r = &mut call => break match r {
-                Ok(inner) => TurnOutcome::Done(inner),
-                Err(_elapsed) => TurnOutcome::TimedOut,
-            },
+            // Sem o embrulho de `timeout`, o `call` resolve direto no resultado
+            // do turno; erro do provider segue intacto em `Done(Err)`.
+            r = &mut call => break TurnOutcome::Done(r),
+            // Teto de parede estourou (so quando `--timeout-secs` foi dado; sem
+            // ele `prazo` nunca completa). O parcial entra depois da drenagem.
+            _ = &mut prazo => {
+                break TurnOutcome::TimedOut {
+                    parcial: String::new(),
+                    apos: timeout.unwrap_or_default(),
+                };
+            }
             // Cancelamento do turno, sinalizado pelo vigia de SIGINT criado em
             // `run_chat`. Sem este braço o Ctrl+C matava o processo inteiro no
             // meio do stream, levando junto o histórico da sessão.
@@ -1185,12 +1255,17 @@ where
             // instala um handler para o resto da vida do processo, e um handler
             // sem ninguém escutando engoliria o Ctrl+C no prompt `voce >` — o
             // usuário ficaria sem como sair. Um dono único resolve os dois casos.
-            _ = cancel.notified() => break TurnOutcome::Cancelled,
+            _ = cancel.notified() => break TurnOutcome::Cancelled { parcial: String::new() },
             _ = ticker.tick(), if renderer.has_animation() => {
                 renderer.handle(UiEvent::ActivityTick, out);
             }
             maybe = rx.recv(), if rx_open => match maybe {
-                Some(evento) => render_turn_event(&evento, renderer, tool_log, out),
+                Some(evento) => {
+                    if let TurnEvent::TextDelta(t) = &evento {
+                        parcial.push_str(t);
+                    }
+                    render_turn_event(&evento, renderer, tool_log, out);
+                }
                 None => rx_open = false,
             },
         }
@@ -1201,6 +1276,9 @@ where
     drop(call);
     if rx_open {
         while let Some(evento) = rx.recv().await {
+            if let TurnEvent::TextDelta(t) = &evento {
+                parcial.push_str(t);
+            }
             render_turn_event(&evento, renderer, tool_log, out);
         }
     }
@@ -1212,7 +1290,20 @@ where
     // e garante que o rótulo saiu.
     renderer.handle(UiEvent::TurnFinished, out);
 
-    result
+    // O parcial so fica completo depois da drenagem pos-`drop`: deltas ja no
+    // buffer do canal ainda chegam depois do `break` (o teste de flush cobre
+    // isso). Por isso ele entra no outcome aqui, nao no braço do `select!`.
+    match &mut outcome {
+        TurnOutcome::TimedOut {
+            parcial: destino, ..
+        }
+        | TurnOutcome::Cancelled { parcial: destino } => {
+            *destino = std::mem::take(&mut parcial);
+        }
+        TurnOutcome::Done(_) => {}
+    }
+
+    outcome
 }
 
 /// Traduz o que o runtime **contou** para o que o terminal **desenha**.
@@ -1268,7 +1359,7 @@ pub async fn run_chat(
     provider_override: Option<String>,
     model_override: Option<String>,
     url_override: Option<String>,
-    timeout_secs: u64,
+    timeout_secs: Option<u64>,
     assume_yes: bool,
     persist: bool,
     resume: Option<String>,
@@ -2273,7 +2364,7 @@ pub async fn run_chat(
         let outcome = stream_turn(
             call,
             rx,
-            std::time::Duration::from_secs(timeout_secs),
+            timeout_secs.map(std::time::Duration::from_secs),
             &mut stdout,
             &mut renderer,
             &mut tool_log,
@@ -2282,13 +2373,23 @@ pub async fn run_chat(
         .await;
         turn_active.store(false, std::sync::atomic::Ordering::SeqCst);
 
-        // #1300: os tres fins inacabados gravam o marcador de interrupcao
-        // como mensagem do assistant, antes do cartao na tela. O
-        // `--resume` seguinte hidrata pergunta + marcador — o alvo do
-        // resume e a sessao desta conversa, nao uma antiga qualquer.
+        // A evidencia das ferramentas e lida uma vez: ela decide, junto com o
+        // parcial, se o turno deixa par no history, e e o mesmo texto anexado
+        // adiante. `resumo_desde` e leitura pura (#1751).
+        let evidencia = tool_log.resumo_desde(inicio_evidencias);
+        let deixa_par = turno_deixa_par_no_history(&outcome, evidencia.is_some());
+
+        // #1300 + #1751: os fins inacabados gravam, com `--persist`, o texto
+        // preservado (parcial + marcador) no lugar do marcador cru. O
+        // `--resume` seguinte hidrata pergunta + esse texto — o modelo retomado
+        // ve ate onde a resposta chegou e que ela NAO terminou. Gravar sempre
+        // que ha marcador (independe do par no history): o SQLite e a fonte do
+        // resume, e o par em memoria e outra decisao.
+        let texto_inacabado = marcador_de_interrupcao(&outcome)
+            .map(|marcador| texto_preservado(parcial_do_outcome(&outcome), marcador));
         if let Some(ref store) = store
-            && let Some(marcador) = marcador_de_interrupcao(&outcome)
-            && let Err(e) = persist_assistant_turn(store, &session_id, marcador)
+            && let Some(ref texto) = texto_inacabado
+            && let Err(e) = persist_assistant_turn(store, &session_id, texto)
         {
             renderer.handle(
                 UiEvent::Warning(&format!("Marcador de interrupcao nao gravado: {e}")),
@@ -2296,10 +2397,15 @@ pub async fn run_chat(
             );
         }
 
-        let turno_concluido = turno_pode_anexar_evidencias(&outcome);
-        match outcome {
-            TurnOutcome::TimedOut => {
-                let cartao = ErrorCard::timeout_local(timeout_secs);
+        match &outcome {
+            TurnOutcome::TimedOut { parcial, apos } => {
+                let cartao = ErrorCard::timeout_local(
+                    apos.as_secs(),
+                    crate::ui::error_card::Preservado::de(
+                        !parcial.trim().is_empty(),
+                        evidencia.is_some(),
+                    ),
+                );
                 renderer.handle(
                     UiEvent::ErrorCard {
                         titulo: &cartao.titulo,
@@ -2309,12 +2415,25 @@ pub async fn run_chat(
                     &mut stdout,
                 );
             }
-            TurnOutcome::Cancelled => {
+            TurnOutcome::Cancelled { parcial } => {
                 // Ctrl+C aborta o turno, não a sessão: o histórico segue vivo.
-                renderer.handle(
-                    UiEvent::Hint("Cancelado. Manda outra ou /exit para sair."),
-                    &mut stdout,
-                );
+                // Quando chegou texto, ele ficou guardado como parcial — a dica
+                // diz isso para o usuario nao achar que o trabalho sumiu.
+                let hint = match crate::ui::error_card::Preservado::de(
+                    !parcial.trim().is_empty(),
+                    evidencia.is_some(),
+                ) {
+                    crate::ui::error_card::Preservado::Texto => {
+                        "Cancelado. O que ja chegou ficou no historico, marcado como parcial. Manda outra ou /exit para sair."
+                    }
+                    crate::ui::error_card::Preservado::Evidencia => {
+                        "Cancelado antes de chegar texto; a evidencia das ferramentas ficou no historico, marcada como interrompida. Manda outra ou /exit para sair."
+                    }
+                    crate::ui::error_card::Preservado::Nada => {
+                        "Cancelado. Manda outra ou /exit para sair."
+                    }
+                };
+                renderer.handle(UiEvent::Hint(hint), &mut stdout);
             }
             TurnOutcome::Done(Ok(full_response)) => {
                 // Deltas were already printed live during streaming
@@ -2327,7 +2446,8 @@ pub async fn run_chat(
                 // `save_session_summary`: sem um resumidor no CLI (ele mora
                 // no gateway) nao ha resumo honesto para gravar.
                 if let Some(ref store) = store
-                    && let Err(e) = persist_assistant_turn(store, &session_id, &full_response)
+                    && let Err(e) =
+                        persist_assistant_turn(store, &session_id, full_response.as_str())
                 {
                     renderer.handle(
                         UiEvent::Warning(&format!("Resposta nao gravada: {e}")),
@@ -2341,7 +2461,7 @@ pub async fn run_chat(
                 });
                 history.push(ChatMessage {
                     role: ChatRole::Assistant,
-                    content: MessagePart::Text(full_response),
+                    content: MessagePart::Text(full_response.clone()),
                 });
             }
             TurnOutcome::Done(Err(e)) => {
@@ -2364,11 +2484,27 @@ pub async fn run_chat(
             }
         }
 
+        // #1751: um fim inacabado que deixa par (parcial na tela ou evidencia)
+        // entra agora no history, com o mesmo texto preservado que foi ao
+        // SQLite. O `Done(Ok)` ja empurrou o seu par no braço acima, e para ele
+        // `texto_inacabado` e `None`, entao nada se duplica.
+        if deixa_par && let Some(texto) = texto_inacabado {
+            history.push(ChatMessage {
+                role: ChatRole::User,
+                content: MessagePart::Text(input.clone()),
+            });
+            history.push(ChatMessage {
+                role: ChatRole::Assistant,
+                content: MessagePart::Text(texto),
+            });
+        }
+
         // A resposta do LLM e o registro de ferramentas possuem proveniencias
         // distintas. Nao misturar os dois textos e nem inferir que o sucesso
-        // anterior prova que o arquivo ainda existe neste instante.
-        // Somente o turno concluido entrou no history como User/Assistant.
-        if turno_concluido && let Some(evidence) = tool_log.resumo_desde(inicio_evidencias) {
+        // anterior prova que o arquivo ainda existe neste instante. A evidencia
+        // segue o mesmo criterio do par (nunca Assistant isolado — #1300): so
+        // entra quando o turno deixou par no history.
+        if deixa_par && let Some(evidence) = evidencia {
             let evidence = format!("turno {}:\n{evidence}", uuid::Uuid::new_v4());
             if let Some(ref store) = store
                 && let Err(e) = persist_tool_evidence(store, &session_id, &evidence)
@@ -3632,7 +3768,7 @@ mod tests {
             stream_turn(
                 call,
                 rx,
-                std::time::Duration::from_secs(30),
+                Some(std::time::Duration::from_secs(30)),
                 &mut out,
                 &mut test_renderer(test_spinner()),
                 &mut ToolLog::new(),
@@ -3657,9 +3793,10 @@ mod tests {
     }
 
     /// On timeout the call future must be dropped (closing the sender) and
-    /// already-buffered deltas must still be flushed before returning None.
+    /// already-buffered deltas must still be flushed — and kept as the
+    /// `parcial` of the outcome, so the post-turn can preserve them (#1751).
     #[tokio::test]
-    async fn stream_turn_times_out_and_flushes_buffered_deltas() {
+    async fn stream_turn_times_out_e_preserva_o_parcial() {
         let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
         let call = async move {
             tx.send(TurnEvent::TextDelta("partial ".to_string()))
@@ -3676,7 +3813,7 @@ mod tests {
             stream_turn(
                 call,
                 rx,
-                std::time::Duration::from_millis(50),
+                Some(std::time::Duration::from_millis(50)),
                 &mut out,
                 &mut test_renderer(None),
                 &mut ToolLog::new(),
@@ -3686,7 +3823,13 @@ mod tests {
         .await
         .expect("timeout path must not hang");
 
-        assert_eq!(outcome, TurnOutcome::TimedOut);
+        assert_eq!(
+            outcome,
+            TurnOutcome::TimedOut {
+                parcial: "partial ".into(),
+                apos: std::time::Duration::from_millis(50),
+            }
+        );
         assert_eq!(String::from_utf8(out).expect("utf8"), "partial ");
     }
 
@@ -3750,7 +3893,7 @@ mod tests {
             stream_turn(
                 call,
                 rx,
-                std::time::Duration::from_secs(5),
+                Some(std::time::Duration::from_secs(5)),
                 &mut out,
                 &mut TerminalRenderer::with_prefix(crate::ui::Capabilities::PLAIN, None, ""),
                 &mut ToolLog::new(),
@@ -3845,7 +3988,7 @@ mod tests {
         let outcome = stream_turn(
             call,
             rx,
-            std::time::Duration::from_secs(5),
+            Some(std::time::Duration::from_secs(5)),
             &mut out,
             &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
             &mut ToolLog::new(),
@@ -3887,7 +4030,7 @@ mod tests {
         let _ = stream_turn(
             call,
             rx,
-            std::time::Duration::from_secs(5),
+            Some(std::time::Duration::from_secs(5)),
             &mut out,
             &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
             &mut ToolLog::new(),
@@ -3928,7 +4071,7 @@ mod tests {
         let outcome = stream_turn(
             call,
             rx,
-            std::time::Duration::from_secs(5),
+            Some(std::time::Duration::from_secs(5)),
             &mut out,
             &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
             &mut ToolLog::new(),
@@ -3962,7 +4105,7 @@ mod tests {
             stream_turn(
                 call,
                 rx,
-                std::time::Duration::from_millis(700),
+                Some(std::time::Duration::from_millis(700)),
                 &mut out,
                 &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
                 &mut ToolLog::new(),
@@ -3972,7 +4115,13 @@ mod tests {
         .await
         .expect("timeout path must not hang");
 
-        assert_eq!(outcome, TurnOutcome::TimedOut);
+        assert_eq!(
+            outcome,
+            TurnOutcome::TimedOut {
+                parcial: String::new(),
+                apos: std::time::Duration::from_millis(700),
+            }
+        );
         let raw = String::from_utf8(out).expect("utf8");
         assert!(contains_spinner_frame(&raw), "girou durante a espera");
         assert!(raw.contains("\r\x1b[2K"), "limpou ao estourar o tempo");
@@ -4005,7 +4154,7 @@ mod tests {
             stream_turn(
                 call,
                 rx,
-                std::time::Duration::from_secs(30),
+                Some(std::time::Duration::from_secs(30)),
                 &mut out,
                 &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
                 &mut ToolLog::new(),
@@ -4015,12 +4164,110 @@ mod tests {
         .await
         .expect("cancelamento não pode travar");
 
-        assert_eq!(outcome, TurnOutcome::Cancelled);
+        assert_eq!(
+            outcome,
+            TurnOutcome::Cancelled {
+                parcial: String::new()
+            }
+        );
         let raw = String::from_utf8(out).expect("utf8");
         assert!(contains_spinner_frame(&raw), "girou antes de cancelar");
         assert!(raw.contains("\r\x1b[2K"), "limpou a linha ao cancelar");
         assert!(!raw.contains("\x1b[?25l"), "nunca esconde o cursor");
         assert!(raw.ends_with("\r\x1b[2Kgarra > "), "termina limpo: {raw:?}");
+    }
+
+    /// #1751: sem `--timeout-secs` (timeout `None`) nao ha teto de parede. Com
+    /// o relogio pausado, avancar duas horas virtuais nao produz `TimedOut`: o
+    /// unico fim e o Ctrl+C, que devolve `Cancelled`. A guarda externa e MAIOR
+    /// que as 2h de proposito — se `None` virasse teto por engano, o timeout
+    /// apareceria antes dela estourar.
+    #[tokio::test(start_paused = true)]
+    async fn stream_turn_sem_teto_nao_expira() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
+        let call = async move {
+            let _keep = tx;
+            std::future::pending::<()>().await;
+            Ok::<String, &'static str>("unreachable".to_string())
+        };
+
+        let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+        let signal = std::sync::Arc::clone(&cancel);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2 * 60 * 60)).await;
+            signal.notify_waiters();
+        });
+
+        let mut out: Vec<u8> = Vec::new();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(3 * 60 * 60),
+            stream_turn(
+                call,
+                rx,
+                None,
+                &mut out,
+                &mut test_renderer(None),
+                &mut ToolLog::new(),
+                &cancel,
+            ),
+        )
+        .await
+        .expect("sem teto, o turno so sai por cancelamento");
+
+        assert_eq!(
+            outcome,
+            TurnOutcome::Cancelled {
+                parcial: String::new()
+            },
+            "sem --timeout-secs, duas horas viram Cancelled, nunca TimedOut"
+        );
+    }
+
+    /// #1751: um delta chega antes do Ctrl+C; o parcial preservado no outcome
+    /// e exatamente esse texto. O relogio pausado garante que o delta e
+    /// consumido antes do cancelamento (auto-advance so entra na ociosidade).
+    #[tokio::test(start_paused = true)]
+    async fn stream_turn_cancelado_preserva_o_parcial() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
+        let call = async move {
+            tx.send(TurnEvent::TextDelta("ate aqui ".to_string()))
+                .await
+                .map_err(|_| "receiver dropped")?;
+            // Mantem o turno vivo ate o cancelamento chegar.
+            std::future::pending::<()>().await;
+            Ok::<String, &'static str>("unreachable".to_string())
+        };
+
+        let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+        let signal = std::sync::Arc::clone(&cancel);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            signal.notify_waiters();
+        });
+
+        let mut out: Vec<u8> = Vec::new();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream_turn(
+                call,
+                rx,
+                None,
+                &mut out,
+                &mut test_renderer(None),
+                &mut ToolLog::new(),
+                &cancel,
+            ),
+        )
+        .await
+        .expect("cancelamento com parcial nao pode travar");
+
+        assert_eq!(
+            outcome,
+            TurnOutcome::Cancelled {
+                parcial: "ate aqui ".into()
+            }
+        );
+        assert_eq!(String::from_utf8(out).expect("utf8"), "ate aqui ");
     }
 
     /// Superfície não-TTY (stdout redirecionado / pipe): `detect` devolve
@@ -4040,7 +4287,7 @@ mod tests {
         let _ = stream_turn(
             call,
             rx,
-            std::time::Duration::from_secs(5),
+            Some(std::time::Duration::from_secs(5)),
             &mut out,
             // exatamente o que `Capabilities::detect` devolve num pipe: sem animacao
             &mut TerminalRenderer::with_prefix(crate::ui::Capabilities::PLAIN, None, "garra > "),
@@ -4080,7 +4327,7 @@ mod tests {
         let _ = stream_turn(
             call,
             rx,
-            std::time::Duration::from_secs(5),
+            Some(std::time::Duration::from_secs(5)),
             &mut out,
             &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
             &mut ToolLog::new(),
@@ -4106,7 +4353,7 @@ mod tests {
         let outcome = stream_turn(
             call,
             rx,
-            std::time::Duration::from_secs(5),
+            Some(std::time::Duration::from_secs(5)),
             &mut out,
             &mut test_renderer(None),
             &mut ToolLog::new(),
@@ -4388,11 +4635,16 @@ mod persist_tests {
     fn marcador_de_interrupcao_cobre_os_tres_fins_inacabados() {
         use garraia_common::Error;
         assert_eq!(
-            marcador_de_interrupcao(&TurnOutcome::<String, Error>::TimedOut),
+            marcador_de_interrupcao(&TurnOutcome::<String, Error>::TimedOut {
+                parcial: String::new(),
+                apos: std::time::Duration::from_secs(1),
+            }),
             Some("[turno interrompido: timeout]")
         );
         assert_eq!(
-            marcador_de_interrupcao(&TurnOutcome::<String, Error>::Cancelled),
+            marcador_de_interrupcao(&TurnOutcome::<String, Error>::Cancelled {
+                parcial: String::new()
+            }),
             Some("[turno interrompido: cancelado]")
         );
         assert_eq!(
@@ -4407,6 +4659,26 @@ mod persist_tests {
             ))),
             None,
             "turno completo nao tem o que marcar"
+        );
+    }
+
+    /// #1751: `texto_preservado` junta o parcial (sem espaco a direita) ao
+    /// marcador com uma linha em branco; so o marcador quando o parcial e
+    /// vazio, sem `\n\n` solto na frente.
+    #[test]
+    fn texto_preservado_junta_parcial_e_marcador() {
+        assert_eq!(
+            texto_preservado("ate aqui ", "[turno interrompido: cancelado]"),
+            "ate aqui\n\n[turno interrompido: cancelado]"
+        );
+        assert_eq!(
+            texto_preservado("", "[turno interrompido: timeout]"),
+            "[turno interrompido: timeout]"
+        );
+        assert_eq!(
+            texto_preservado("   ", "[turno interrompido: erro]"),
+            "[turno interrompido: erro]",
+            "parcial so de espacos e tratado como vazio"
         );
     }
 
@@ -4427,12 +4699,17 @@ mod persist_tests {
         assert_eq!(msgs.len(), 1, "so a pergunta existe");
         assert_eq!(msgs[0].content, "ajuda no SOUL.md");
 
-        // Em vez do crash, o turno acabou em timeout: o marcador entra como
-        // mensagem do assistant e o historico hidratado conta a verdade.
-        let marcador =
-            marcador_de_interrupcao(&TurnOutcome::<String, garraia_common::Error>::TimedOut)
-                .expect("timeout tem marcador");
-        persist_assistant_turn(&store, "cli-crash", marcador).expect("marcador persistido");
+        // Em vez do crash, o turno acabou em timeout sem nada na tela: o
+        // marcador entra como mensagem do assistant e o historico hidratado
+        // conta a verdade. Com parcial vazio, `texto_preservado` e so o
+        // marcador — o mesmo texto que o pos-turno grava (#1751).
+        let outcome = TurnOutcome::<String, garraia_common::Error>::TimedOut {
+            parcial: String::new(),
+            apos: std::time::Duration::from_secs(120),
+        };
+        let marcador = marcador_de_interrupcao(&outcome).expect("timeout tem marcador");
+        let texto = texto_preservado(parcial_do_outcome(&outcome), marcador);
+        persist_assistant_turn(&store, "cli-crash", &texto).expect("marcador persistido");
         let msgs = store
             .load_recent_messages("cli-crash", 10)
             .expect("carrega apos marcador");
@@ -4441,6 +4718,29 @@ mod persist_tests {
             conteudos,
             vec!["ajuda no SOUL.md", "[turno interrompido: timeout]"],
             "o resume hidrata pergunta + marcador, na ordem em que aconteceram"
+        );
+
+        // #1751: outro turno, agora cancelado DEPOIS de transmitir texto. O
+        // parcial e preservado junto do marcador, e o `--resume` seguinte ve
+        // ate onde a resposta chegou — nao so que ela foi interrompida.
+        persist_user_turn(&store, "cli-parcial", "resume isso").expect("user persistido");
+        let outcome = TurnOutcome::<String, garraia_common::Error>::Cancelled {
+            parcial: "Ate aqui eu".into(),
+        };
+        let marcador = marcador_de_interrupcao(&outcome).expect("cancelado tem marcador");
+        let texto = texto_preservado(parcial_do_outcome(&outcome), marcador);
+        persist_assistant_turn(&store, "cli-parcial", &texto).expect("parcial persistido");
+        let msgs = store
+            .load_recent_messages("cli-parcial", 10)
+            .expect("carrega apos parcial");
+        let conteudos: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(
+            conteudos,
+            vec![
+                "resume isso",
+                "Ate aqui eu\n\n[turno interrompido: cancelado]"
+            ],
+            "o parcial fica no historico junto do marcador de cancelamento"
         );
     }
 
@@ -4648,19 +4948,45 @@ mod aprovacao_tests {
 mod testes_evidencia_por_resultado_do_turno {
     use super::*;
 
+    /// #1751: `turno_deixa_par_no_history` substitui o antigo
+    /// `turno_pode_anexar_evidencias`. Um turno concluido sempre deixa par; um
+    /// fim inacabado so deixa quando ha algo a preservar — parcial que chegou
+    /// na tela ou evidencia de ferramenta. A evidencia segue este mesmo
+    /// criterio, entao nunca entra como Assistant isolado (#1300).
     #[test]
-    fn nao_anexa_evidencia_sem_par_de_historico_concluido() {
-        assert!(turno_pode_anexar_evidencias(&TurnOutcome::<(), ()>::Done(
-            Ok(())
-        )));
-        assert!(!turno_pode_anexar_evidencias(&TurnOutcome::<(), ()>::Done(
-            Err(())
-        )));
-        assert!(!turno_pode_anexar_evidencias(
-            &TurnOutcome::<(), ()>::TimedOut
+    fn par_no_history_so_quando_ha_algo_a_preservar() {
+        // Concluido: sempre deixa par, independente de evidencia.
+        assert!(turno_deixa_par_no_history(
+            &TurnOutcome::<(), ()>::Done(Ok(())),
+            false
         ));
-        assert!(!turno_pode_anexar_evidencias(
-            &TurnOutcome::<(), ()>::Cancelled
+        // Erro sem parcial e sem evidencia: nada a preservar.
+        assert!(!turno_deixa_par_no_history(
+            &TurnOutcome::<(), ()>::Done(Err(())),
+            false
+        ));
+        // Timeout com parcial vazio e sem evidencia: nada a preservar.
+        assert!(!turno_deixa_par_no_history(
+            &TurnOutcome::<(), ()>::TimedOut {
+                parcial: String::new(),
+                apos: std::time::Duration::from_secs(1),
+            },
+            false
+        ));
+        // Timeout com parcial: preserva o texto que chegou.
+        assert!(turno_deixa_par_no_history(
+            &TurnOutcome::<(), ()>::TimedOut {
+                parcial: "meia resposta".into(),
+                apos: std::time::Duration::from_secs(1),
+            },
+            false
+        ));
+        // Cancelado sem parcial, mas com evidencia de ferramenta: preserva.
+        assert!(turno_deixa_par_no_history(
+            &TurnOutcome::<(), ()>::Cancelled {
+                parcial: String::new()
+            },
+            true
         ));
     }
 }

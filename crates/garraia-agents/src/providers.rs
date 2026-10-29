@@ -210,7 +210,9 @@ pub(crate) fn erro_de_envio(contexto: &str, e: &reqwest::Error) -> Error {
     let mut msg = format!("{contexto}: {e}");
     if e.is_timeout() {
         msg.push_str(
-            " — a resposta do LLM nao chegou dentro da janela de timeout e foi              descartada; aumente timeouts.llm.default_secs (global) ou declare              llm.<provider>.timeout_secs com uma janela maior para este provider",
+            " — a resposta do LLM nao chegou dentro da janela de timeout e foi \
+             descartada; aumente timeouts.llm.default_secs (global) ou declare \
+             llm.<provider>.timeout_secs com uma janela maior para este provider",
         );
     }
     if falha_de_transporte(e) {
