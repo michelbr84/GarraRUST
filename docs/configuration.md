@@ -188,10 +188,11 @@ mcp:
     env:
       GITHUB_TOKEN: "your-token"
 
-# Timeouts (in seconds)
+# Timeouts (in seconds) — gateway/server only. The interactive REPL has its
+# own, separate knob: see "Turn timeout in `garra chat`" under CLI Configuration.
 timeouts:
   llm:
-    default_secs: 30
+    default_secs: 120
   tts:
     default_secs: 120
   mcp:
@@ -417,6 +418,24 @@ Configuration changes in `config.yml` are applied automatically:
 3. No restart required
 
 ## CLI Configuration
+
+### Turn timeout in `garra chat`
+
+`garra chat --timeout-secs <N>` sets an optional wall-clock ceiling over the
+**whole turn** (the LLM call plus every tool it runs), range `[1, 600]`
+seconds. It is **opt-in and has no default** (#1751): without the flag the turn
+runs until the model finishes. Ctrl+C still cancels the turn, and the 30s
+per-tool limit (`GARRA_TOOL_TIMEOUT_SECS`) and the providers' connect timeout
+stay in force regardless.
+
+When the ceiling fires — or on Ctrl+C — the text already streamed and the tool
+evidence are kept in the conversation history (in memory, and in `sessions.db`
+with `--persist`) marked as interrupted, so the next turn and `--resume` see how
+far the answer got instead of losing it.
+
+This is a different knob from the gateway's `timeouts.llm.default_secs` (120s,
+server only) above. `garra ask --timeout-secs` (default 60s, exit 124) and the
+`garra_agent` MCP timeout (300s) are unchanged.
 
 ### Validate config
 

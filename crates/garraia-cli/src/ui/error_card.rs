@@ -83,10 +83,11 @@ impl ErrorCard {
                 ],
             ),
             Classe::Timeout => (
+                // #1751: sem sugerir `--timeout-secs` — este e o timeout do
+                // PROVIDER, e o teto da CLI nao o governa; a dica enganava.
                 format!("{quem} nao respondeu a tempo"),
                 vec![
                     "Tente de novo — pode ter sido carga momentanea".to_string(),
-                    "--timeout-secs <n> para esperar mais".to_string(),
                     "/provider ou /model para trocar".to_string(),
                 ],
             ),
@@ -139,17 +140,32 @@ impl ErrorCard {
         }
     }
 
-    /// O turno estourou o tempo do proprio GarraIA (nao do provedor).
-    pub fn timeout_local(timeout_secs: u64) -> Self {
+    /// O turno estourou o teto de parede opcional do GarraIA (nao o do
+    /// provedor). `parcial_preservada` diz se algum texto chegou antes do
+    /// corte — e por isso o cartao e honesto sobre o que ficou no historico:
+    /// o parcial e a evidencia entram marcados, em vez de sumir (#1751). A
+    /// segunda acao lembra que omitir a flag tira o teto de vez.
+    pub fn timeout_local(timeout_secs: u64, parcial_preservada: bool) -> Self {
+        let detalhe = if parcial_preservada {
+            format!(
+                "A resposta passou de {timeout_secs}s e foi interrompida. O que ja chegou \
+                 ficou no historico, marcado como parcial."
+            )
+        } else {
+            format!(
+                "A resposta passou de {timeout_secs}s e foi interrompida antes de chegar \
+                 qualquer texto. O historico continua intacto."
+            )
+        };
         Self {
             titulo: "Tempo esgotado".to_string(),
-            detalhe: format!(
-                "A resposta passou de {timeout_secs}s e foi descartada. O histórico da \
-                 conversa continua intacto."
-            ),
+            detalhe,
             acoes: vec![
                 "Tente de novo".to_string(),
-                format!("--timeout-secs <n> para esperar mais que {timeout_secs}s"),
+                format!(
+                    "--timeout-secs <n> maior que {timeout_secs}s, ou omita a flag: sem ela o \
+                     turno nao tem teto"
+                ),
             ],
         }
     }
@@ -330,12 +346,43 @@ mod tests {
         assert!(c.titulo.contains("O provedor"), "{}", c.titulo);
     }
 
+    /// #1751: o cartao de timeout e honesto sobre o que sobrou. Com parcial
+    /// preservada ele diz que o texto ficou marcado no historico; sem parcial,
+    /// que nada chegou e o historico esta intacto. A segunda acao sempre lembra
+    /// que omitir a flag tira o teto.
     #[test]
     fn timeout_local_diz_que_o_historico_sobrevive() {
-        let c = ErrorCard::timeout_local(120);
-        assert!(c.detalhe.contains("120s"), "{}", c.detalhe);
-        assert!(c.detalhe.contains("histórico"), "{}", c.detalhe);
-        assert!(c.acoes.iter().any(|a| a.contains("--timeout-secs")));
+        let com = ErrorCard::timeout_local(120, true);
+        assert!(com.detalhe.contains("120s"), "{}", com.detalhe);
+        assert!(com.detalhe.contains("parcial"), "{}", com.detalhe);
+        assert!(com.detalhe.contains("historico"), "{}", com.detalhe);
+        assert!(
+            com.acoes.iter().any(|a| a.contains("omita a flag")),
+            "{:?}",
+            com.acoes
+        );
+
+        let sem = ErrorCard::timeout_local(30, false);
+        assert!(sem.detalhe.contains("30s"), "{}", sem.detalhe);
+        assert!(
+            sem.detalhe.contains("antes de chegar qualquer texto"),
+            "{}",
+            sem.detalhe
+        );
+        assert!(sem.detalhe.contains("intacto"), "{}", sem.detalhe);
+    }
+
+    /// #1751: a classe `Timeout` do provider nao sugere mais `--timeout-secs` —
+    /// o teto da CLI nao governa o timeout do provider, entao a dica enganava.
+    #[test]
+    fn classe_timeout_nao_sugere_timeout_secs() {
+        let c = ErrorCard::from_error("request timed out", "openai");
+        assert!(c.titulo.contains("nao respondeu"), "{}", c.titulo);
+        assert!(
+            !c.acoes.iter().any(|a| a.contains("--timeout-secs")),
+            "a classe Timeout do provider nao pode sugerir a flag da CLI: {:?}",
+            c.acoes
+        );
     }
 
     #[test]

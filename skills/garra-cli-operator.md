@@ -17,7 +17,7 @@ Esta skill define como o Claude Code chama o Garra como **agente auxiliar local*
 Pré-condições empíricas (verificadas 2026-05-11; defaults revisados 2026-09-13, issue #1180):
 
 - `garra chat --provider openrouter` SEM `--model` resolve para `z-ai/glm-5.3-flash`, o default do projeto (flash-tier, barato) — desde a issue #1180 nenhuma superfície cai mais em `openrouter/auto` sozinha. **Ainda assim, sempre passar `--model` explicitamente:** um `model:` no `config.yml` do usuário vence o default, e o banner tem que bater com o pedido.
-- `garra chat` NÃO tem `--timeout-secs` próprio — só `timeout(1)` do shell.
+- `garra chat` tem `--timeout-secs` próprio (opt-in desde #861; **sem default desde #1751**): um teto de parede sobre o turno inteiro (LLM + ferramentas). Sem a flag o turno **não tem teto** e roda até o modelo terminar — num pipe/script, use ainda assim o `timeout(1)` do shell como guarda externa (ver §4).
 - REPL do `chat` termina com `/exit` ou `/quit` (banner anuncia `/exit`).
 
 ---
@@ -133,7 +133,7 @@ O comando `timeout` se comporta diferente conforme o shell:
   - Confiar na interrupção manual do usuário (último recurso).
 - **CMD legado:** evitar; usar Git Bash.
 
-Quando o ambiente não tem `timeout(1)` funcional, **prefira `garra ask` em vez de `garra chat`** sempre que possível — `garra ask` tem `--timeout-secs` próprio que funciona em qualquer shell.
+Quando o ambiente não tem `timeout(1)` funcional, **prefira `garra ask` em vez de `garra chat`** sempre que possível — `garra ask` tem `--timeout-secs` próprio (60s, exit 124) que funciona em qualquer shell. O `garra chat` também tem `--timeout-secs` (opt-in, #1751), mas sem a flag o turno **não tem teto de parede**; então num pipe sem `timeout(1)` passe sempre `--timeout-secs N` explicitamente.
 
 ---
 
