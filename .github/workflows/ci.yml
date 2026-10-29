@@ -861,23 +861,18 @@ jobs:
         #   Error: failed to initialize a docker client:
         #          Socket not found: /var/run/docker.sock
         # On those platforms we compile the entire test matrix (`--no-run`)
-        # so we still catch cross-platform compile regressions, and then
-        # EXECUTE the unit tests (`--lib`): testcontainers is only ever a
-        # dev-dependency of integration targets (`tests/`), never of a lib
-        # target, so the unit suites are Docker-free on every member of the
-        # workspace (#1697). Only the integration binaries stay compile-only
-        # off Linux. Cost: `--no-run` already built the artifacts, so this
-        # adds the unit tests' run time (minutes), not a build.
+        # so we still catch cross-platform compile regressions, but do not
+        # execute the Docker-dependent binaries. Pure unit tests on Linux
+        # provide the runtime coverage.
         run: |
           if [ "${{ runner.os }}" = "Linux" ]; then
             cargo test --workspace --exclude garraia-desktop
           else
             cargo test --workspace --exclude garraia-desktop --no-run
-            cargo test --workspace --exclude garraia-desktop --lib
           fi
         shell: bash
 
-      - name: Compile and unit-test cfg(windows) code under the mcp feature
+      - name: Compile cfg(windows) code under the mcp feature
         # Issue #1253. O job `mcp` (ubuntu) roda clippy+test com
         # `--features mcp`, mas o `#[cfg(windows)]` la dentro — o wrapper
         # `cmd /c` do manager.rs que resolve npx/uvx/.cmd no CreateProcess —
@@ -888,16 +883,76 @@ jobs:
         # medição: `cargo check --target x86_64-pc-windows-msvc` leva 8m30s
         # e falha no build script do `ring` sem toolchain C do alvo, e o
         # container de desenvolvimento nao tem root para instalar
-        # gcc-mingw-w64. O `clippy --all-targets` COMPILA todo o codigo
-        # cfg(windows), inclusive os alvos de integracao, que nao rodam aqui
-        # (um `cargo check` separado seria o mesmo trabalho duas vezes: check e
-        # clippy nao compartilham cache). Desde o #1697 a suite unitaria
-        # (`--lib`) tambem EXECUTA no Windows e o clippy a le com `-D warnings`:
-        # a evidencia que faltava para sair
-        # do "so compilar" e a suite inteira verde num host Windows 11 (PR B
-        # do #1697, que corrigiu as falhas POSIX pre-existentes). Os alvos de
-        # integracao do mcp seguem so compilados (spawn de filho; o padrao do
-        # #1236 — injecao — cobre a semantica em qualquer plataforma).
+        # gcc-mingw-w64. check, nao test: o alvo aqui e COMPILAR o codigo
+        # cfg(windows); rodar a suite mcp inteira no Windows fica para
+        # quando houver evidencia de que os testes de spawn de filho passam
+        # la (o padrao do #1236 — injecao — cobre a semantica em qualquer
+        # plataforma).
+        if: runner.os == 'Windows'
+        run: cargo check -p garraia-agents --features mcp --all-targets
+        shell: bash
+
+  # Testes unitarios EXECUTADOS fora do Linux (#1697, item 4). O job `test`
+  # acima so COMPILA a suite no Windows/macOS (`--no-run`): os runners nao tem
+  # Docker. Mas o testcontainers so e dev-dependency de alvos de integracao
+  # (`tests/`), nunca de um alvo lib, entao as suites unitarias do workspace
+  # inteiro sao Docker-free e podem rodar nos tres SOs. Foi a ausencia disto
+  # que deixou 19 falhas Windows-only invisiveis por semanas (PR #1760) e 3
+  # macOS-only (PR #1761).
+  #
+  # Job SEPARADO e NAO OBRIGATORIO de proposito (decisao do dono, 2026-10-29):
+  # vermelho aqui e sinal em toda PR, nao bloqueio, enquanto a higiene
+  # multiplataforma dos outros crates nao esta provada. Promocao a check
+  # obrigatorio do ruleset so com evidencia (ex.: 10 runs verdes consecutivas
+  # em `main`), registrada na #1697. Sem `continue-on-error` (higiene #1094):
+  # a falha fica vermelha, so nao trava merge.
+  #
+  # Reaproveita o cache de `target/` do job `test` (mesma chave), entao o
+  # custo e tempo de runner (gratis em repo publico), nao de espera.
+  unit-tests:
+    name: Unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Teto: o job `test` do Windows leva ~33 min so compilando (dados de
+    # 2026-10-29); 75 min cobre build frio + execucao e ainda corta um hang.
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run unit tests (--lib)
+        # So alvos lib: os binarios de integracao (testcontainers) seguem
+        # compilados-e-nao-executados pelo job `test`.
+        run: cargo test --workspace --exclude garraia-desktop --lib
+        shell: bash
+
+      - name: Unit tests and clippy of garraia-agents under the mcp feature (Windows)
+        # Issues #1253/#1697: o job `test` so faz `cargo check` deste codigo
+        # cfg(windows). Aqui ele EXECUTA (`--lib`) e passa pelo clippy com
+        # `-D warnings` -- e o que teria pego o dead_code que o #1697 apontou.
         if: runner.os == 'Windows'
         run: |
           cargo test -p garraia-agents --features mcp --lib
