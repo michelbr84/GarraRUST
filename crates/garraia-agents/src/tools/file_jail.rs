@@ -326,6 +326,16 @@ impl FileJail {
         // resultado passa pela mesma checagem de `starts_with(root)` abaixo.
         let ancorado;
         let path = if path.is_relative() {
+            // #1737 F3: `C:foo` (drive-relative) e `\foo` (root-relative) sao
+            // `is_relative()` no Windows, mas `join` descarta ou redireciona a
+            // ancora para eles. Recusa explicita em vez de depender da
+            // semantica do `join` (o `starts_with(root)` final ja continha).
+            if path
+                .components()
+                .any(|c| matches!(c, Component::Prefix(_) | Component::RootDir))
+            {
+                return Err(Denial::Outside);
+            }
             let cwd = std::env::current_dir()
                 .ok()
                 .and_then(|c| std::fs::canonicalize(c).ok());
@@ -442,7 +452,9 @@ pub(crate) fn process_home_dir() -> Option<PathBuf> {
 /// As duas recusam, mas so a guarda diz *por que*, e e o que
 /// `dotdot_depois_de_componente_inexistente_e_outside` fixa.
 fn resolve_nearest_existing(path: &Path) -> Result<PathBuf, Denial> {
-    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+    if path.components().any(|c| matches!(c, Component::ParentDir))
+        || tem_segmento_dotdot_de_windows(&path.to_string_lossy())
+    {
         return Err(Denial::Outside);
     }
 
@@ -498,6 +510,18 @@ fn resolve_nearest_existing(path: &Path) -> Result<PathBuf, Denial> {
         }
         atual = pai;
     }
+}
+
+/// #1737 F1: num caminho verbatim do Windows (`\\?\C:\...`) o
+/// `components()` NAO trata `/` como separador, entao `x/../../y` vira um unico
+/// componente `Normal` e a guarda de `ParentDir` nao dispara. Esta checagem de
+/// texto cobre esse furo: so no Windows, `/` e `\` separam segmentos; em POSIX
+/// `\` e caractere valido de nome e `components()` ja basta (retorna `false`).
+///
+/// Nao remover o passo de normalizacao (`components().collect()`) que vem
+/// depois: ele e quem achata `..` que esta guarda eventualmente nao veja.
+fn tem_segmento_dotdot_de_windows(texto: &str) -> bool {
+    cfg!(windows) && texto.split(['/', '\\']).any(|seg| seg == "..")
 }
 
 /// `true` quando o componente existe para o `lstat` mas nao canonicaliza —
@@ -934,6 +958,24 @@ mod tests {
             jail.confine(&root.join("naoexiste/../fora.txt"), None),
             Err(Denial::Outside)
         );
+    }
+
+    /// #1737 F1: a checagem de texto so atua no Windows; em POSIX `\` e nome.
+    #[test]
+    fn dotdot_com_barra_em_caminho_verbatim_e_detectado_so_no_windows() {
+        let verbatim = r"\\?\C:\ws\x/../../outra/segredo.txt";
+        assert_eq!(tem_segmento_dotdot_de_windows(verbatim), cfg!(windows));
+        assert!(!tem_segmento_dotdot_de_windows(r"C:\ws\a..b\c.txt"));
+    }
+
+    /// #1737 F3: drive-relative e root-relative sao recusados, nao ancorados.
+    #[cfg(windows)]
+    #[test]
+    fn relativo_com_prefixo_ou_raiz_e_outside() {
+        let (_t, root) = raiz();
+        let jail = FileJail::from_roots([&root]);
+        assert_eq!(jail.confine(Path::new("C:foo"), None), Err(Denial::Outside));
+        assert_eq!(jail.confine(Path::new(r"\foo"), None), Err(Denial::Outside));
     }
 
     // ─── #1244 rodada 2: raiz que desliga o jail ──────────────────────────

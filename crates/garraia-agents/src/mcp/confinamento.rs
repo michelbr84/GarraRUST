@@ -210,6 +210,10 @@ pub(crate) fn com_barras_normais(caminho: &str) -> String {
 /// - `\\?\UNC\srv\share\x` -> `\\srv\share\x`
 /// - qualquer outra coisa  -> inalterada (inclusive caminhos POSIX)
 ///
+/// Quirk (#1737 F6): sem o prefixo, o Win32 volta a normalizar a string
+/// entregue ao Node (nomes reservados `CON`/`NUL`, pontos/espacos finais,
+/// MAX_PATH). So afeta a folha dentro da raiz ja aprovada; nao e escape.
+///
 /// Nao e `dunce::simplified`: aquele tambem recusa tirar o prefixo de
 /// caminhos longos ou com componentes reservados, porque o alvo dele e a API
 /// Win32 legada. O alvo aqui e um processo Node, que aceita caminho longo
