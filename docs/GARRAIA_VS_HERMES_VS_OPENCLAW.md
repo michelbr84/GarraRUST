@@ -37,7 +37,7 @@
 
 | | **GarraIA (GarraRUST)** | **Hermes Agent** | **OpenClaw** |
 |---|---|---|---|
-| Linguagem | Rust (edition 2024, MSRV 1.95) | Python 3.11+ | TypeScript/Node 24 (22.19+), apps nativos Swift/Kotlin |
+| Linguagem | Rust (edition 2024, MSRV 1.97) | Python 3.11+ | TypeScript/Node 24 (22.19+), apps nativos Swift/Kotlin |
 | Identidade | Assistente pessoal **local-first** com persona própria (Garra/Hera, pt-BR), hardware/IoT nativo | Runtime de agente pessoal autônomo com gateway multiplataforma e learning loop de skills | Gateway self-hosted unificador de canais de chat com agentes de código |
 | Licença | Proprietária/privada (repo do mantenedor) | MIT (docs) | `Other`/NOASSERTION — **não é licença OSI padrão**; verificar LICENSE antes de uso corporativo |
 | Modelo padrão | OpenRouter (fallback Ollama local) | Provider-agnostic (Nous Portal, OpenRouter, OpenAI/Anthropic/compat) | Anthropic/OpenAI/etc. — LLM tipicamente em nuvem |

@@ -89,7 +89,7 @@ For each iteration (up to 5):
 
 - `gh` CLI authenticated.
 - `git` working in the PR's checked-out worktree.
-- `cargo` toolchain matching `rust-toolchain` (currently 1.92).
+- `cargo` toolchain >= the workspace `rust-version` in `Cargo.toml` (currently 1.97; `bash scripts/setup-toolchain.sh` installs and pins it).
 - `python3` or `py` with `pytest` for local script verification.
 
 ## Cross-references
