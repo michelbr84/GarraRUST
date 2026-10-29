@@ -888,17 +888,18 @@ jobs:
         # medição: `cargo check --target x86_64-pc-windows-msvc` leva 8m30s
         # e falha no build script do `ring` sem toolchain C do alvo, e o
         # container de desenvolvimento nao tem root para instalar
-        # gcc-mingw-w64. O `check --all-targets` COMPILA todo o codigo
-        # cfg(windows), inclusive os alvos de integracao, que nao rodam aqui.
-        # Desde o #1697 a suite unitaria (`--lib`) tambem EXECUTA no Windows
-        # e o clippy a le com `-D warnings`: a evidencia que faltava para sair
+        # gcc-mingw-w64. O `clippy --all-targets` COMPILA todo o codigo
+        # cfg(windows), inclusive os alvos de integracao, que nao rodam aqui
+        # (um `cargo check` separado seria o mesmo trabalho duas vezes: check e
+        # clippy nao compartilham cache). Desde o #1697 a suite unitaria
+        # (`--lib`) tambem EXECUTA no Windows e o clippy a le com `-D warnings`:
+        # a evidencia que faltava para sair
         # do "so compilar" e a suite inteira verde num host Windows 11 (PR B
         # do #1697, que corrigiu as falhas POSIX pre-existentes). Os alvos de
         # integracao do mcp seguem so compilados (spawn de filho; o padrao do
         # #1236 — injecao — cobre a semantica em qualquer plataforma).
         if: runner.os == 'Windows'
         run: |
-          cargo check -p garraia-agents --features mcp --all-targets
           cargo test -p garraia-agents --features mcp --lib
           cargo clippy -p garraia-agents --features mcp --all-targets -- -D warnings
         shell: bash

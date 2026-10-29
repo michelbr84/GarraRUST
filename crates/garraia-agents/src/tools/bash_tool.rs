@@ -1331,10 +1331,12 @@ mod tests {
             .execute(&c, serde_json::json!({"command": "pwd"}))
             .await
             .unwrap();
-        let pwd = output.content.trim();
+        // `pwd` devolve o caminho fisico; no macOS o tempdir e um symlink
+        // (`/var/...` -> `/private/var/...`), entao compara-se o canonico (#1697).
+        let pwd = std::fs::canonicalize(output.content.trim()).expect("pwd canonico");
         assert_eq!(
             pwd,
-            dir.to_string_lossy().as_ref(),
+            std::fs::canonicalize(&dir).expect("dir canonico"),
             "bash must run in working_dir"
         );
         let _ = std::fs::remove_dir(&dir);

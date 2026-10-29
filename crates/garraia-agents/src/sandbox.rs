@@ -1662,8 +1662,10 @@ mod shell_injection_regression {
             ..Default::default()
         };
         for comando in ["$(id)", "`id`", "ls; id", "echo 'oi'"] {
+            // Sonda do binario injetada: o runner macOS nao tem docker, e o
+            // que se prova aqui e a linha montada, nao a presenca dele (#1697).
             let wrapped = p
-                .wrap_command("bash", comando, "/tmp")
+                .wrap_command_com(true, |_| true, "bash", comando, "/tmp")
                 .expect("wrap")
                 .expect("sandbox aplicado");
             let palavras = palavras_do_shell(&wrapped);
@@ -1686,13 +1688,20 @@ mod shell_injection_regression {
             ..Default::default()
         };
         let wrapped = p
-            .wrap_command("bash", "ls", cwd)
+            .wrap_command_com(true, |_| true, "bash", "ls", cwd)
             .expect("wrap")
             .expect("aplicado");
         let palavras = palavras_do_shell(&wrapped);
+        // O mount sai do caminho CANONICO (`fonte_do_mount`): no macOS o tempdir
+        // e symlink (`/var/...` -> `/private/var/...`), entao a palavra esperada
+        // tambem e a canonica (#1697).
+        let canonico = std::fs::canonicalize(&dir).expect("canonicalize");
+        let canonico = canonico.to_str().expect("utf8");
         // O mount chega como UMA palavra "<cwd>:<cwd>", com espaco e ';' dentro.
         assert!(
-            palavras.iter().any(|w| w == &format!("{cwd}:{cwd}")),
+            palavras
+                .iter()
+                .any(|w| w == &format!("{canonico}:{canonico}")),
             "mount deveria ser uma palavra so; wrapped={wrapped}"
         );
         assert!(
