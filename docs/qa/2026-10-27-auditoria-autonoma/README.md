@@ -418,4 +418,6 @@ Acompanhamento (PR #1758): itens 1 e 2 da #1749 entregues — teto de 45 min no 
 (pior caso 22,4 min no leg Windows com cache frio; a sugestão de 20 min da issue derrubaria builds legítimos),
 e a assinatura no `steward` com o diferencial que a issue não tinha: dos 37 legs `cancelled` nas mesmas 100
 runs, 29 eram `cancel-in-progress` por push novo, 7 cancelamentos manuais da run inteira e só 1 era a
-plataforma (macOS). O item 3 (manter ou mover o leg macOS) segue como decisão do dono na issue.
+plataforma (macOS). Item 3 decidido pelo dono em 2026-10-29: manter o leg macOS em toda PR, não obrigatório
+(repositório público, minutos macOS gratuitos; o leg é a única prova em macOS real da vigia de pai e do
+`kill(-pgid)`, e workflow agendado já escondeu regressão por 16 semanas aqui); #1749 fechada como concluída.
