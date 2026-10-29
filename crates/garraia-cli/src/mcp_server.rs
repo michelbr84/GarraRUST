@@ -1246,6 +1246,21 @@ mod tests {
         assert!(err.contains("server default"), "{err}");
     }
 
+    /// #1752: a allowlist de modelos compara a string INTEIRA — um preset do
+    /// OpenRouter (`<base>@preset/<slug>`) nao ganha excecao. Com a allowlist
+    /// restrita, so o preset literal passa; a base sozinha nao basta.
+    #[test]
+    fn preset_do_openrouter_passa_so_quando_listado_literal() {
+        let preset = "z-ai/glm-5.3-flash@preset/z-ai-glm-5-3-flash";
+        let policy = ServerPolicy::from_values(Some(preset), None, None);
+        let cfg = AppConfig::default();
+        assert!(validate_policy(&cfg, &policy, "openrouter", preset, 60).is_ok());
+        // A base sozinha nao esta na lista: a comparacao e da string inteira.
+        let err = validate_policy(&cfg, &policy, "openrouter", "z-ai/glm-5.3-flash", 60)
+            .expect_err("a base sozinha nao e o preset listado");
+        assert!(err.contains("GARRAIA_MCP_MODEL_ALLOWLIST"), "{err}");
+    }
+
     #[test]
     fn policy_timeout_cap_rejects_above_and_lowers_default() {
         let policy = ServerPolicy::from_values(None, Some("30"), None);

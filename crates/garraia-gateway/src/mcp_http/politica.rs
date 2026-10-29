@@ -796,6 +796,26 @@ mod tests {
         );
     }
 
+    /// #1752: a allowlist de modelos compara a string INTEIRA — um preset do
+    /// OpenRouter (`<base>@preset/<slug>`) nao ganha excecao. Com a politica
+    /// padrao (sem lista) o preset e recusado; so listar a string literal
+    /// libera, e a base sozinha nao basta (o preset troca modelo e custo).
+    #[test]
+    fn ask_trata_preset_como_string_literal() {
+        let preset = "z-ai/glm-5.3-flash@preset/z-ai-glm-5-3-flash";
+        // Ligado sem lista: so o default do projeto. O preset nao e o default.
+        let p = com_destino(false, &[]).com_ask(&[]);
+        assert_eq!(p.decidir_ask(preset), Err(RecusaAsk::ModeloNaoPermitido));
+        // Listar a string inteira libera exatamente ela.
+        let p = com_destino(false, &[]).com_ask(&[preset]);
+        assert_eq!(p.decidir_ask(preset), Ok(()));
+        // A base sozinha nao esta na lista: a comparacao e da string inteira.
+        assert_eq!(
+            p.decidir_ask("z-ai/glm-5.3-flash"),
+            Err(RecusaAsk::ModeloNaoPermitido)
+        );
+    }
+
     /// A recusa de modelo nao depende do canal de envio: `allow_send` nao
     /// destrava `garra_ask` e `allow_ask` nao destrava envio.
     #[test]

@@ -1529,6 +1529,11 @@ mod slash_dispatch_tests {
             "/etc/passwd",
             "gpt-4o;id",
             long.as_str(),
+            // #1752: `@` so num `@preset/<slug>` bem formado — o resto segue recusado.
+            "a@b",           // `@` fora de um preset
+            "@preset/",      // slug vazio
+            "@preset/a/b",   // slug com barra
+            "x@preset/../y", // `..` continua barrado
         ] {
             let bad =
                 dispatch_slash_command(&st, "s1", &format!("/model {junk}")).expect("capturado");
@@ -1539,7 +1544,14 @@ mod slash_dispatch_tests {
             );
             assert!(st.channel_models.get("s1").is_none(), "{junk} foi aceito");
         }
-        for good in ["openrouter/auto", "claude-3.5-sonnet", "llama3.1:8b"] {
+        for good in [
+            "openrouter/auto",
+            "claude-3.5-sonnet",
+            "llama3.1:8b",
+            // #1752: presets do OpenRouter, puro e com base.
+            "@preset/x",
+            "z-ai/x@preset/y",
+        ] {
             let ok =
                 dispatch_slash_command(&st, "s1", &format!("/model {good}")).expect("capturado");
             assert!(ok.content.contains(good), "{}", ok.content);

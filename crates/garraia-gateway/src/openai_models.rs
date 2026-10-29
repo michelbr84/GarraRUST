@@ -168,6 +168,12 @@ mod tests {
         );
         assert_eq!(lista, cfg(&[("openai/gpt-4o", "openai")]));
 
+        // #1752: um preset do OpenRouter configurado sob o openrouter e
+        // servivel — o roteamento manda preset ao openrouter, e o prefixo bate
+        // com o proprio provider.
+        let lista = servable_models(Some("openrouter"), &cfg(&[("openrouter", "@preset/x")]));
+        assert_eq!(lista, cfg(&[("@preset/x", "openrouter")]));
+
         // Sem provider nenhum, lista vazia — nao a lista fixa de antes.
         assert!(servable_models(None, &[]).is_empty());
     }

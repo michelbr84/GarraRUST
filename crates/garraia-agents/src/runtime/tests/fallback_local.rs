@@ -482,6 +482,26 @@ pub(super) async fn modelo_que_nomeia_o_fallback_sobrevive() {
     );
 }
 
+/// #1752: um preset do OpenRouter sobrevive no fallback apenas quando o
+/// fallback E o OpenRouter (o preset nomeia o proprio fallback); para qualquer
+/// outro fallback ele zera, a mesma regra estreita da #1541.
+#[test]
+pub(super) fn preset_sobrevive_so_quando_o_fallback_e_o_openrouter() {
+    let mut pedido = pedido_simples();
+    pedido.model = "z-ai/x@preset/y".to_string();
+
+    assert_eq!(
+        requisicao_para_o_fallback(&pedido, "openrouter").model,
+        "z-ai/x@preset/y",
+        "o preset roteia para o openrouter, entao sobrevive intacto"
+    );
+    assert_eq!(
+        requisicao_para_o_fallback(&pedido, "ollama").model,
+        "",
+        "o preset e do openrouter, nao do ollama: zera para o modelo configurado"
+    );
+}
+
 // ─── #1735: credencial recusada (401/403) cai para o fallback ─────────
 
 /// 401 no primario: uma tentativa (nao e transitorio) e o local responde.

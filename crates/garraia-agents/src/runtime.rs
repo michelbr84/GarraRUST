@@ -25,7 +25,7 @@ use crate::observabilidade::Desfecho;
 use crate::provider_resilience::ResilienceManager;
 use crate::providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
-    StreamEvent, ToolDefinition,
+    StreamEvent, ToolDefinition, preset_do_openrouter,
 };
 use crate::tools::approval::{ApprovalFingerprint, ToolApproval};
 use crate::tools::{Tool, ToolContext, ToolOutput};
@@ -217,6 +217,14 @@ pub fn resolve_provider_from_model(model: &str) -> Option<String> {
         return None;
     }
 
+    // #1752: um preset do OpenRouter (`@preset/<slug>`, puro ou com base
+    // `<autor>/<modelo>`) é sempre servido pelo OpenRouter — inclusive
+    // `openai/gpt-4o@preset/x`, que vai ao OpenRouter mesmo havendo um provider
+    // `openai` nativo registrado, porque o preset é um recurso que só existe lá.
+    if preset_do_openrouter(model).is_some() {
+        return Some("openrouter".to_string());
+    }
+
     // Check for provider prefix (e.g., "openrouter/auto", "anthropic/claude-3")
     if let Some((provider, _)) = model.split_once('/') {
         let provider = provider.to_lowercase();
@@ -266,7 +274,10 @@ pub fn resolve_provider_from_model(model: &str) -> Option<String> {
 /// provider default e estritamente melhor. A regra nao tira nenhum id real do
 /// openrouter do caminho.
 fn pode_ser_id_do_openrouter(model: &str) -> bool {
-    model.matches('/').count() == 1
+    // #1752: um preset bem formado (`@preset/<slug>`) é sempre do OpenRouter,
+    // inclusive `z-ai/x@preset/y` (duas barras), que a regra de uma barra só
+    // deixaria cair no provider default.
+    preset_do_openrouter(model).is_some() || model.matches('/').count() == 1
 }
 
 /// #1541 (defeito 3): o pedido que vai para um provider de **fallback**.

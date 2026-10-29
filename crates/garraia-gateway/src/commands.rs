@@ -6,15 +6,22 @@ use garraia_channels::commands::{
 
 /// A model id as every provider spells it: `gpt-4o`, `qwen2.5:7b-instruct`,
 /// `openrouter/auto`, `claude-3.5`. Anything else is not a model name.
+///
+/// #1752: `@` is allowed in exactly one shape — a well-formed OpenRouter
+/// preset `@preset/<slug>` (pure, or `<author>/<model>@preset/<slug>`). The
+/// other rules (non-empty, <= 128, no leading `/`, no `..`) hold in both
+/// cases; outside a preset, `@` is still rejected by the char whitelist.
 fn valid_model_name(s: &str) -> bool {
     // `/` is a namespace separator here (`openrouter/auto`), never a root,
     // and `..` is not a segment any provider has — so nothing path-shaped.
-    !s.is_empty()
-        && s.len() <= 128
-        && !s.starts_with('/')
-        && !s.contains("..")
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-'))
+    if s.is_empty() || s.len() > 128 || s.starts_with('/') || s.contains("..") {
+        return false;
+    }
+    if s.contains('@') {
+        return garraia_agents::preset_do_openrouter(s).is_some();
+    }
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-'))
 }
 /// A sessao sobre a qual um comando age.
 ///

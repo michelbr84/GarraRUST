@@ -22,6 +22,88 @@ pub enum ValidacaoDeModelo {
     /// O provider não expõe catálogo — a validação é impossível por design;
     /// quem decide a política é o chamador.
     SemListagem,
+    /// #1752: o modelo é um preset do OpenRouter (`@preset/<slug>`), que não
+    /// aparece no catálogo de `GET /models`, e por isso foi validado por uma
+    /// chamada real mínima (`POST /chat/completions`, `max_tokens: 1`) que o
+    /// OpenRouter aceitou. `modelo_resolvido` é o modelo que o preset resolveu
+    /// nessa chamada, quando o OpenRouter o informou (campo `model` da
+    /// resposta); é `None` quando a sonda validou sem um nome resolvido (ex.:
+    /// 400 por `max_tokens` baixo demais, que já prova que o preset existe).
+    ValidadoPorSonda { modelo_resolvido: Option<String> },
+}
+
+/// #1752: um preset do OpenRouter reconhecido numa string de modelo.
+///
+/// Preset é um recurso da conta OpenRouter (`@preset/<slug>`) que **não**
+/// aparece em `GET /models`, mas que o `POST /chat/completions` aceita. Duas
+/// formas:
+/// - puro: `@preset/<slug>` — sem base, `base` é `None`;
+/// - com base: `<autor>/<modelo>@preset/<slug>` — `base` é
+///   `Some("<autor>/<modelo>")`.
+///
+/// `base` e `slug` apontam para dentro da string original (sem alocar); a
+/// string inteira continua sendo o identificador que vai intacto ao OpenRouter
+/// e o que as allowlists comparam por igualdade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PresetDoOpenRouter<'a> {
+    /// A base `<autor>/<modelo>` antes do `@preset/`, ou `None` no preset puro.
+    pub base: Option<&'a str>,
+    /// O slug do preset, depois do `@preset/`.
+    pub slug: &'a str,
+}
+
+/// #1752: reconhece um preset do OpenRouter numa string de modelo.
+///
+/// Aceita exatamente **um** `@preset/` (sensível a maiúscula: `@PRESET/` não
+/// conta), com slug não vazio em `[A-Za-z0-9._-]`. A base (o que vem antes do
+/// `@preset/`) é vazia (preset puro) ou um id simples do OpenRouter: exatamente
+/// uma `/`, os dois segmentos não vazios, sem `@`, no mesmo conjunto de
+/// caracteres de um nome de modelo (pode trazer sufixo `:free`). Qualquer outra
+/// forma devolve `None` — e fora do OpenRouter um preset nunca é válido.
+pub fn preset_do_openrouter(model: &str) -> Option<PresetDoOpenRouter<'_>> {
+    const MARCADOR: &str = "@preset/";
+    let mut ocorrencias = model.match_indices(MARCADOR);
+    let (idx, _) = ocorrencias.next()?;
+    // Mais de um `@preset/` não é um preset bem formado.
+    if ocorrencias.next().is_some() {
+        return None;
+    }
+    let base = &model[..idx];
+    let slug = &model[idx + MARCADOR.len()..];
+    if slug.is_empty() || !slug.bytes().all(eh_byte_de_slug) {
+        return None;
+    }
+    if base.is_empty() {
+        return Some(PresetDoOpenRouter { base: None, slug });
+    }
+    if !base_e_id_simples_do_openrouter(base) {
+        return None;
+    }
+    Some(PresetDoOpenRouter {
+        base: Some(base),
+        slug,
+    })
+}
+
+/// Byte válido no slug de um preset: `[A-Za-z0-9._-]`. Exclui `/` e `@`, então
+/// um slug nunca esconde uma segunda `/` nem um segundo `@preset/`.
+fn eh_byte_de_slug(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')
+}
+
+/// A base de um preset com base é um id simples do OpenRouter: exatamente uma
+/// `/`, os dois segmentos não vazios, e só caracteres de nome de modelo
+/// (`[A-Za-z0-9._:/-]`, o que já exclui `@`). O sufixo `:free` passa.
+fn base_e_id_simples_do_openrouter(base: &str) -> bool {
+    let Some((autor, modelo)) = base.split_once('/') else {
+        return false;
+    };
+    // Exatamente uma `/`: o lado direito não pode trazer outra.
+    if autor.is_empty() || modelo.is_empty() || modelo.contains('/') {
+        return false;
+    }
+    base.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'/' | b'-'))
 }
 
 /// Trait para integrações com provedores de LLM (Anthropic, OpenAI, Ollama, etc.).
@@ -64,6 +146,12 @@ pub trait LlmProvider: Send + Sync {
     /// ausente vira `Ausente`. Só quem tem dois níveis de catálogo (OpenRouter,
     /// com a curada de populares e a lista completa) precisa sobrescrever.
     async fn validar_modelo(&self, model: &str) -> Result<ValidacaoDeModelo> {
+        // #1752: `@preset/<slug>` é um recurso exclusivo do OpenRouter. Fora
+        // dele (Anthropic, Ollama, llama.cpp herdam este default) um preset
+        // nunca é um modelo válido — recusa antes de consultar o catálogo.
+        if preset_do_openrouter(model).is_some() {
+            return Ok(ValidacaoDeModelo::Ausente);
+        }
         let modelos = self.available_models().await?;
         if modelos.is_empty() {
             return Ok(ValidacaoDeModelo::SemListagem);
