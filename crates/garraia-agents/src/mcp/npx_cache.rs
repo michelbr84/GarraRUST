@@ -201,9 +201,19 @@ pub(crate) fn is_npx_command(command: &str) -> bool {
 /// `npm_config_cache` disagree. A cache moved by `.npmrc` is invisible here,
 /// which only means its stderr path will not match and nothing is deleted.
 pub(crate) fn npm_cache_root(child_env: &[(String, String)], windows: bool) -> Option<PathBuf> {
+    // "Absoluto" segue a plataforma do FILHO (`windows`), nao a do host: um
+    // valor POSIX (`/x`) e absoluto quando `windows == false` mesmo num host
+    // Windows, onde `Path::is_absolute` exigiria letra de drive. Em producao
+    // `windows == cfg!(windows)`, entao nada muda; e o que deixa a ordem de
+    // resolucao ser testada em qualquer runner (#1697).
     let absolute = |v: &str| {
         let p = PathBuf::from(v);
-        (p.is_absolute() || (windows && looks_like_windows_absolute(v))).then_some(p)
+        let abs = if windows {
+            p.is_absolute() || looks_like_windows_absolute(v)
+        } else {
+            p.is_absolute() || v.starts_with('/')
+        };
+        abs.then_some(p)
     };
     let explicit: Vec<&str> = child_env
         .iter()

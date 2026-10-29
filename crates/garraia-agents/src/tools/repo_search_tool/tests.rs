@@ -80,6 +80,9 @@ async fn test_repo_search_missing_query() {
 /// canal remoto, gateway sem projeto selecionado). Vem do helper que o
 /// `repo_dir` ja expoe aos testes, para nao haver duas nocoes de
 /// "contexto sem diretorio" na crate.
+// So os testes `cfg(not(windows))` abaixo usam este helper; sem o mesmo cfg o
+// clippy do Windows (`-D warnings`) o acusa de dead_code (#1697).
+#[cfg(not(windows))]
 fn ctx_sem_working_dir() -> ToolContext {
     crate::tools::repo_dir::contexto_de_teste(None)
 }

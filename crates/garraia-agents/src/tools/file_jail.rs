@@ -954,10 +954,17 @@ mod tests {
     fn dotdot_depois_de_componente_inexistente_e_outside() {
         let (_t, root) = raiz();
         let jail = FileJail::from_roots([&root]);
-        assert_eq!(
-            jail.confine(&root.join("naoexiste/../fora.txt"), None),
-            Err(Denial::Outside)
-        );
+        // Montado como texto, nao com `join`: no Windows a raiz canonica e
+        // verbatim (`\\?\C:\...`) e `PathBuf::push` sobre base verbatim
+        // normaliza `.` e `..` lexicamente antes de o jail ver o caminho
+        // (#1697). O que se prova aqui e a guarda, entao o `..` tem de chegar
+        // ate ela.
+        let sep = std::path::MAIN_SEPARATOR;
+        let pedido = PathBuf::from(format!(
+            "{}{sep}naoexiste{sep}..{sep}fora.txt",
+            root.display()
+        ));
+        assert_eq!(jail.confine(&pedido, None), Err(Denial::Outside));
     }
 
     /// #1737 F1: a checagem de texto so atua no Windows; em POSIX `\` e nome.
@@ -1028,10 +1035,18 @@ mod tests {
     #[test]
     fn barra_ponto_e_acusada_como_raiz_do_sistema() {
         let jail = FileJail::from_roots(["/."]);
-        assert_eq!(jail.roots(), [PathBuf::from("/")]);
+        // No Windows `/.` canonicaliza para a raiz do drive atual, em forma
+        // verbatim (`\\?\C:\`): e a mesma "raiz do sistema" (sem pai) e tem
+        // de ser acusada igual (#1697).
+        let raiz_do_sistema = if cfg!(windows) {
+            std::fs::canonicalize("/").expect("raiz do drive atual")
+        } else {
+            PathBuf::from("/")
+        };
+        assert_eq!(jail.roots(), std::slice::from_ref(&raiz_do_sistema));
         let perigosas = jail.raizes_perigosas();
         assert_eq!(perigosas.len(), 1, "{perigosas:?}");
-        assert_eq!(perigosas[0].0, Path::new("/"));
+        assert_eq!(perigosas[0].0, raiz_do_sistema.as_path());
     }
 
     #[test]
