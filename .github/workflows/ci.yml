@@ -909,6 +909,17 @@ jobs:
   orphan-processes:
     name: Orphan-process guards (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Teto de execucao explicito (#1749). Sem ele vale o default de 360 min: um
+    # leg que trava depois de comecar so cai pela plataforma, e um hang no macOS
+    # custa minutos 10x ate la. O valor vem dos dados de 100 runs (2026-10-26 a
+    # 2026-10-29): pior caso 22,4 min no leg Windows com cache frio (p95 19,3),
+    # 10,1 min no Ubuntu, 5,7 min no macOS; 45 min e 2x o pior caso, o mesmo teto
+    # que o job `coverage` adotou quando o trem da v0.4.5 passou dos 30
+    # (adfb3462). Estourado, o leg falha com "exceeded the maximum execution
+    # time", motivo claro. O teto NAO cobre a fila: um leg que nunca recebe
+    # runner continua terminando `cancelled` sem passos nem log -- a assinatura
+    # do #1749; ver `.claude/skills/steward/SKILL.md` secao 2.
+    timeout-minutes: 45
     permissions:
       contents: read
     strategy:
