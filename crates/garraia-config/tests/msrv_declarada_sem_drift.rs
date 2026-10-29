@@ -61,6 +61,10 @@ const ESPELHOS: &[(&str, &[&str])] = &[
         &["Requires Rust {msrv}+"],
     ),
     (".claude/superpowers-config.md", &["rust-version {msrv}"]),
+    (".claude/commands/quality-babysit.md", &["currently {msrv}"]),
+    ("docs/src/benchmarks.md", &["Rust {msrv} (MSRV do"]),
+    ("docs/GARRAIA_VS_HERMES_VS_OPENCLAW.md", &["MSRV {msrv})"]),
+    ("docs/src/getting_started.md", &["{msrv} ou superior"]),
 ];
 
 fn raiz() -> PathBuf {
@@ -89,6 +93,25 @@ fn msrv_do_workspace() -> String {
         .map(|(_, v)| v.trim().trim_matches('"'))
         .expect("rust-version = \"X.Y\"");
     valor.to_string()
+}
+
+/// Versoes que um espelho esquecido poderia estar citando: a serie `1.9x`
+/// inteira (todos os pisos que o repo ja teve) e os doze minors em volta da
+/// MSRV atual, no mesmo major — assim o teste nao cega quando a MSRV passar
+/// de 1.99 (1.100, 2.x). A propria MSRV fica de fora.
+fn versoes_vizinhas(msrv: &str) -> Vec<String> {
+    let (major, minor) = msrv
+        .split_once('.')
+        .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)))
+        .expect("rust-version X.Y numerico");
+    let mut versoes: Vec<String> = (0..=9).map(|x| format!("1.9{x}")).collect();
+    for m in minor.saturating_sub(12)..=minor + 12 {
+        versoes.push(format!("{major}.{m}"));
+    }
+    versoes.sort();
+    versoes.dedup();
+    versoes.retain(|v| v != msrv);
+    versoes
 }
 
 #[test]
@@ -128,8 +151,9 @@ fn todo_espelho_da_msrv_bate_com_o_cargo_toml() {
     );
 }
 
-/// O caso do #1750: o trecho certo com o numero errado. `1.9x` cobre toda a
-/// serie de pisos ja vistos (1.92 a 1.97) e os proximos.
+/// O caso do #1750: o trecho certo com o numero errado. As candidatas vem de
+/// [`versoes_vizinhas`]: a serie `1.9x` inteira (pisos ja vistos, 1.92 a 1.97)
+/// e uma faixa em volta da MSRV atual, para continuar acusando depois de 1.99.
 #[test]
 fn nenhum_espelho_cita_outra_versao_no_mesmo_lugar() {
     let msrv = msrv_do_workspace();
@@ -137,11 +161,7 @@ fn nenhum_espelho_cita_outra_versao_no_mesmo_lugar() {
     for (arquivo, trechos) in ESPELHOS {
         let conteudo = ler(arquivo);
         for trecho in trechos.iter() {
-            for x in 0..=9 {
-                let outra = format!("1.9{x}");
-                if outra == msrv {
-                    continue;
-                }
+            for outra in versoes_vizinhas(&msrv) {
                 let errado = trecho.replace("{msrv}", &outra);
                 if conteudo.contains(&errado) {
                     sobras.push(format!("{arquivo}: ainda diz {errado:?}"));
