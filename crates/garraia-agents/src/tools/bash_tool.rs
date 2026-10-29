@@ -1559,7 +1559,7 @@ mod tests {
             .split_whitespace()
             .find_map(|t| t.parse::<u32>().ok());
         assert!(
-            matches!(bytes, Some(6 | 7)),
+            bytes == Some(6) || (cfg!(windows) && bytes == Some(7)),
             "saida do pipeline: {}",
             out.content
         );

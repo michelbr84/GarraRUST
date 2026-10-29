@@ -5,6 +5,8 @@
   resolucao de `npm_cache_root` tratava "absoluto" pela plataforma do host em vez da do
   filho simulado; os testes do sandbox que passam `"/tmp"` como cwd (semantica Unix de
   montar o cwd num container, fail-closed por desenho em host Windows) ganham
-  `cfg(not(windows))`; e um helper de teste usado so por testes `cfg(not(windows))` ganha
-  o mesmo cfg, zerando o `dead_code` que o clippy do Windows apontava. Comportamento em
+  `cfg(unix)`, assim como um teste que depende de `printenv PATH`; e um helper usado so
+  por testes `cfg(not(windows))` ganha o mesmo cfg, zerando o `dead_code` que o clippy do
+  Windows apontava. Asserts de `bash_tool`, `file_jail` e `tool_context` ficam portaveis
+  (CRLF do PowerShell, raiz verbatim, absoluto por plataforma). Comportamento em
   Linux inalterado. Prepara o CI a executar `--lib` no Windows/macOS.

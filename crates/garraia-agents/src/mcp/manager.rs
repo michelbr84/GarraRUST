@@ -1912,8 +1912,9 @@ where
     // `LD_PRELOAD` e um caminho POSIX lido pelo loader do Android, nunca pelo
     // host: montado com `/` literal, e nao com `Path::join`, que num host
     // Windows poria `\` e quebraria a tabela de decisao que os testes
-    // afirmam em qualquer runner (#1697). Em Linux/Android a string e identica.
-    let lib = format!("{prefix}/{TERMUX_EXEC_LIB}");
+    // afirmam em qualquer runner (#1697). Em Linux/Android a string e identica
+    // (o `trim` cobre um `$PREFIX` com barra final, que o `join` colapsava).
+    let lib = format!("{}/{TERMUX_EXEC_LIB}", prefix.trim_end_matches('/'));
     lib_exists(Path::new(&lib)).then_some(lib)
 }
 
