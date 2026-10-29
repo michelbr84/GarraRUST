@@ -861,18 +861,23 @@ jobs:
         #   Error: failed to initialize a docker client:
         #          Socket not found: /var/run/docker.sock
         # On those platforms we compile the entire test matrix (`--no-run`)
-        # so we still catch cross-platform compile regressions, but do not
-        # execute the Docker-dependent binaries. Pure unit tests on Linux
-        # provide the runtime coverage.
+        # so we still catch cross-platform compile regressions, and then
+        # EXECUTE the unit tests (`--lib`): testcontainers is only ever a
+        # dev-dependency of integration targets (`tests/`), never of a lib
+        # target, so the unit suites are Docker-free on every member of the
+        # workspace (#1697). Only the integration binaries stay compile-only
+        # off Linux. Cost: `--no-run` already built the artifacts, so this
+        # adds the unit tests' run time (minutes), not a build.
         run: |
           if [ "${{ runner.os }}" = "Linux" ]; then
             cargo test --workspace --exclude garraia-desktop
           else
             cargo test --workspace --exclude garraia-desktop --no-run
+            cargo test --workspace --exclude garraia-desktop --lib
           fi
         shell: bash
 
-      - name: Compile cfg(windows) code under the mcp feature
+      - name: Compile and unit-test cfg(windows) code under the mcp feature
         # Issue #1253. O job `mcp` (ubuntu) roda clippy+test com
         # `--features mcp`, mas o `#[cfg(windows)]` la dentro — o wrapper
         # `cmd /c` do manager.rs que resolve npx/uvx/.cmd no CreateProcess —
@@ -883,13 +888,19 @@ jobs:
         # medição: `cargo check --target x86_64-pc-windows-msvc` leva 8m30s
         # e falha no build script do `ring` sem toolchain C do alvo, e o
         # container de desenvolvimento nao tem root para instalar
-        # gcc-mingw-w64. check, nao test: o alvo aqui e COMPILAR o codigo
-        # cfg(windows); rodar a suite mcp inteira no Windows fica para
-        # quando houver evidencia de que os testes de spawn de filho passam
-        # la (o padrao do #1236 — injecao — cobre a semantica em qualquer
-        # plataforma).
+        # gcc-mingw-w64. O `check --all-targets` COMPILA todo o codigo
+        # cfg(windows), inclusive os alvos de integracao, que nao rodam aqui.
+        # Desde o #1697 a suite unitaria (`--lib`) tambem EXECUTA no Windows
+        # e o clippy a le com `-D warnings`: a evidencia que faltava para sair
+        # do "so compilar" e a suite inteira verde num host Windows 11 (PR B
+        # do #1697, que corrigiu as falhas POSIX pre-existentes). Os alvos de
+        # integracao do mcp seguem so compilados (spawn de filho; o padrao do
+        # #1236 — injecao — cobre a semantica em qualquer plataforma).
         if: runner.os == 'Windows'
-        run: cargo check -p garraia-agents --features mcp --all-targets
+        run: |
+          cargo check -p garraia-agents --features mcp --all-targets
+          cargo test -p garraia-agents --features mcp --lib
+          cargo clippy -p garraia-agents --features mcp --all-targets -- -D warnings
         shell: bash
 
   # Guardas de processo orfao (#1636). O job `test` acima roda os testes de
