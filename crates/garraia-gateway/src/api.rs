@@ -1524,11 +1524,14 @@ mod slash_dispatch_tests {
     fn model_name_is_validated() {
         let st = state_with_commands();
         let long = "x".repeat(129);
+        // #1752: preset BEM FORMADO acima do teto de 128 — o teto vence o aceite.
+        let longo_preset = format!("z-ai/x@preset/{}", "y".repeat(130));
         for junk in [
             "../../etc/passwd",
             "/etc/passwd",
             "gpt-4o;id",
             long.as_str(),
+            longo_preset.as_str(),
             // #1752: `@` so num `@preset/<slug>` bem formado — o resto segue recusado.
             "a@b",           // `@` fora de um preset
             "@preset/",      // slug vazio

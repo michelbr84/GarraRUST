@@ -384,9 +384,12 @@ impl LlmProvider for OpenAiProvider {
             let body = response.text().await.unwrap_or_default();
             // Log more details for debugging
             tracing::warn!(
-                "openai API error: status={}, body_truncated={}, endpoint={}",
+                "openai API error: status={}, body={}, endpoint={}",
                 status,
-                &body[..body.len().min(500)],
+                // #1726/#1752: o corpo cru do OpenRouter carrega o `user_id` da
+                // conta; a sonda de preset torna este caminho rotineiro, entao o
+                // log recebe a mesma redacao que o erro devolvido.
+                crate::providers::corpo_de_erro_sanitizado(&body),
                 self.endpoint()
             );
             // #1299: roteamento impossível é determinístico — sai classificado
@@ -735,32 +738,42 @@ impl OpenAiProvider {
             Ok(r) => Ok(ValidacaoDeModelo::ValidadoPorSonda {
                 modelo_resolvido: Some(r.model).filter(|m| !m.is_empty()),
             }),
-            Err(e) => classificar_erro_da_sonda(e),
+            Err(e) => classificar_erro_da_sonda(model, e),
         }
     }
 }
 
 /// #1752: classifica o erro da sonda de preset num veredito transacional.
 ///
-/// Função pura (o status sai do texto por [`crate::providers::status_http_do_erro`]):
-/// - `400` cuja mensagem cita `max_tokens`/`max_completion_tokens`: o modelo
-///   existe, só o teto de 1 token é baixo demais — valida sem nome resolvido;
-/// - `400` ou `404`: o OpenRouter não reconhece o preset — recusa (`Ausente`);
-/// - qualquer outro (401/403/429/5xx, `Error::Transport`, `Error::Config` do
+/// Função pura (o status sai do texto por [`crate::providers::status_http_do_erro`]).
+/// O OpenRouter ecoa o nome do modelo na mensagem (`<model> is not a valid
+/// model ID`), então o nome pedido é tirado do texto antes de procurar sinais:
+/// um preset inexistente chamado `@preset/max_tokens-x` não pode passar por
+/// "modelo existe, só o teto é baixo".
+/// - `400`/`404` cuja mensagem diz que o modelo não é válido ou não tem
+///   endpoint: o OpenRouter não reconhece o preset — recusa (`Ausente`);
+/// - `400` cuja mensagem (sem o nome do modelo) cita `max_tokens` /
+///   `max_completion_tokens`: o modelo existe, só o teto de 1 token é baixo
+///   demais — valida sem nome resolvido;
+/// - qualquer outro `400`/`404`: recusa;
+/// - o resto (401/403/429/5xx, `Error::Transport`, `Error::Config` do
 ///   roteamento do #1299, ou erro sem `status=`): não dá para afirmar nada;
 ///   propaga o erro, e o handler mantém o estado ("não consegui validar").
-fn classificar_erro_da_sonda(e: Error) -> Result<ValidacaoDeModelo> {
-    match crate::providers::status_http_do_erro(&e) {
-        Some(400)
-            if {
-                let m = e.to_string().to_lowercase();
-                m.contains("max_tokens") || m.contains("max_completion_tokens")
-            } =>
-        {
-            Ok(ValidacaoDeModelo::ValidadoPorSonda {
-                modelo_resolvido: None,
-            })
-        }
+fn classificar_erro_da_sonda(model: &str, e: Error) -> Result<ValidacaoDeModelo> {
+    let status = crate::providers::status_http_do_erro(&e);
+    let mensagem = e
+        .to_string()
+        .to_lowercase()
+        .replace(&model.to_lowercase(), "");
+    let modelo_invalido = mensagem.contains("not a valid model")
+        || mensagem.contains("no valid model")
+        || mensagem.contains("no endpoints found");
+    let teto_baixo = mensagem.contains("max_tokens") || mensagem.contains("max_completion_tokens");
+    match status {
+        Some(400) | Some(404) if modelo_invalido => Ok(ValidacaoDeModelo::Ausente),
+        Some(400) if teto_baixo => Ok(ValidacaoDeModelo::ValidadoPorSonda {
+            modelo_resolvido: None,
+        }),
         Some(400) | Some(404) => Ok(ValidacaoDeModelo::Ausente),
         _ => Err(e),
     }
@@ -1763,7 +1776,7 @@ mod tests {
     fn classificar_erro_da_sonda_por_status_e_mensagem() {
         // 400 "is not a valid model ID": o preset nao existe -> recusa.
         assert_eq!(
-            classificar_erro_da_sonda(Error::Agent(
+            classificar_erro_da_sonda("@preset/x", Error::Agent(
                 "openai API error: status=400 Bad Request, body=@preset/x is not a valid model ID"
                     .into()
             ))
@@ -1772,19 +1785,37 @@ mod tests {
         );
         // 404 -> recusa.
         assert_eq!(
-            classificar_erro_da_sonda(Error::Agent(
-                "openai API error: status=404 Not Found, body=no such model".into()
-            ))
+            classificar_erro_da_sonda(
+                "@preset/x",
+                Error::Agent("openai API error: status=404 Not Found, body=no such model".into())
+            )
+            .unwrap(),
+            ValidacaoDeModelo::Ausente
+        );
+        // Falso positivo que a revisao pegou: preset INEXISTENTE cujo nome
+        // contem "max_tokens". O OpenRouter ecoa o nome na mensagem, entao
+        // o nome e tirado do texto antes de procurar o sinal -> recusa.
+        assert_eq!(
+            classificar_erro_da_sonda(
+                "@preset/max_tokens-fantasma",
+                Error::Agent(
+                    "openai API error: status=400 Bad Request, body=@preset/max_tokens-fantasma is not a valid model ID"
+                        .into()
+                )
+            )
             .unwrap(),
             ValidacaoDeModelo::Ausente
         );
         // 400 citando max_tokens: o modelo existe, so o teto de 1 token e baixo
         // demais -> validado, sem nome resolvido.
         assert_eq!(
-            classificar_erro_da_sonda(Error::Agent(
-                "openai API error: status=400 Bad Request, body=max_tokens must be at least 16"
-                    .into()
-            ))
+            classificar_erro_da_sonda(
+                "@preset/x",
+                Error::Agent(
+                    "openai API error: status=400 Bad Request, body=max_tokens must be at least 16"
+                        .into()
+                )
+            )
             .unwrap(),
             ValidacaoDeModelo::ValidadoPorSonda {
                 modelo_resolvido: None
@@ -1792,18 +1823,23 @@ mod tests {
         );
         // 429, transporte e erro sem `status=` -> propaga (estado mantido).
         assert!(
-            classificar_erro_da_sonda(Error::Agent(
-                "openai API error: status=429, body=rate limit".into()
-            ))
+            classificar_erro_da_sonda(
+                "@preset/x",
+                Error::Agent("openai API error: status=429, body=rate limit".into())
+            )
             .is_err()
         );
         assert!(
-            classificar_erro_da_sonda(Error::Transport(
-                "openai request failed: error sending request".into()
-            ))
+            classificar_erro_da_sonda(
+                "@preset/x",
+                Error::Transport("openai request failed: error sending request".into())
+            )
             .is_err()
         );
-        assert!(classificar_erro_da_sonda(Error::Agent("sem status nenhum".into())).is_err());
+        assert!(
+            classificar_erro_da_sonda("@preset/x", Error::Agent("sem status nenhum".into()))
+                .is_err()
+        );
     }
 
     /// #1752: a sonda de preset conta requisicoes e classifica 200/400/429 com
@@ -1866,6 +1902,16 @@ mod tests {
                             "limite" => (
                                 StatusCode::TOO_MANY_REQUESTS,
                                 Json(serde_json::json!({ "error": { "message": "rate limited", "code": 429 } })),
+                            ),
+                            // Quirk do #1726: erro entregue com HTTP 200.
+                            "erro-no-200" => (
+                                StatusCode::OK,
+                                Json(serde_json::json!({ "error": { "message": format!("{modelo} is not a valid model ID"), "code": 400 }, "user_id": "user_x" })),
+                            ),
+                            // #1299: roteamento impossivel (404 deterministico).
+                            "roteamento-1299" => (
+                                StatusCode::NOT_FOUND,
+                                Json(serde_json::from_str::<serde_json::Value>(&corpo_roteamento_1299()).unwrap()),
                             ),
                             _ => (
                                 StatusCode::BAD_REQUEST,
@@ -1968,6 +2014,30 @@ mod tests {
             ValidacaoDeModelo::ValidadoPorSonda {
                 modelo_resolvido: None
             }
+        );
+
+        // Preset inexistente cujo nome contem "max_tokens" (o OpenRouter ecoa
+        // o nome no erro): continua recusa, nao "teto baixo".
+        let v = provider
+            .validar_modelo("@preset/max_tokens-fantasma")
+            .await
+            .unwrap();
+        assert_eq!(v, ValidacaoDeModelo::Ausente);
+
+        // Erro entregue com HTTP 200 (#1726): classificado pelo codigo do corpo.
+        let v = provider
+            .validar_modelo("@preset/erro-no-200")
+            .await
+            .unwrap();
+        assert_eq!(v, ValidacaoDeModelo::Ausente);
+
+        // 404 de roteamento (#1299): nao e "preset ausente", e erro de config
+        // -> propaga, estado mantido.
+        assert!(
+            provider
+                .validar_modelo("@preset/roteamento-1299")
+                .await
+                .is_err()
         );
 
         // Provider que NAO e OpenRouter: preset recusado sem request nenhuma.
