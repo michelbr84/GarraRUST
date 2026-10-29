@@ -175,6 +175,60 @@ aponta para `/usr/bin/git`, é ambiente. **Não** relaxe a asserção para "não
 contém STDERR exceto ...": ela perde exatamente o poder de detecção que
 justifica o teste.
 
+### Leg `macos-latest` do `orphan-processes` cancelado sem passos nem log (#1749)
+
+```
+Orphan-process guards (macos-latest)   cancelled   steps: []   runner_name: ""
+GET /actions/jobs/<job_id>/logs  ->  BlobNotFound
+```
+
+O job `Orphan-process guards` roda em matriz (ubuntu, windows, macos) e **não
+é check obrigatório** do ruleset. A assinatura: o leg `macos-latest` fecha
+`cancelled` **sem executar nenhum passo** (`steps: []`, `runner_name` vazio,
+log inexistente), os dois legs irmãos passam, e o mesmo leg está verde nas
+runs recentes de `main`. É runner macOS que nunca foi atribuído (fila, ou teto
+de minutos macOS — que custam 10x) e foi cancelado pela plataforma. O teste
+nunca começou, então não há o que depurar no código. Na PR #1747 o leg ficou
+15 min na fila e caiu assim enquanto os sete obrigatórios passavam; 27 min
+depois do cancelamento, na `main` (`ea8a68af`), o mesmo leg passou em 1,5 min.
+
+Antes de concluir isso, descarte a causa comum: **um push novo na mesma
+branch**. A `concurrency` do workflow tem `cancel-in-progress` em
+`pull_request`, e o push cancela só o que ainda está na fila ou rodando — os
+irmãos que já terminaram ficam `success`, e o leg atrasado aparece exatamente
+assim, `cancelled` com zero passos. Nesse caso existe uma run mais nova para a
+branch, criada no instante do cancelamento, e não há nada a re-executar.
+
+Confirme em três comandos:
+
+```bash
+gh run list --workflow ci.yml --branch <branch> --limit 5      # há run mais nova criada na hora do cancel?
+gh api "repos/michelbr84/GarraRUST/actions/runs/<run_id>/jobs?per_page=100" \
+  --jq '.jobs[] | select(.name|startswith("Orphan-process")) | "\(.id) \(.name): \(.conclusion) steps=\(.steps|length) runner=\(.runner_name)"'
+gh api repos/michelbr84/GarraRUST/actions/jobs/<job_id>/logs    # BlobNotFound = nenhum passo rodou
+```
+
+O primeiro campo da segunda saída é o `<job_id>` dos comandos seguintes (o
+`per_page=100` importa: a run já tem 28 jobs e o padrão da API é 30). Sem run
+mais nova, irmãos `success` e `steps=0` no leg macOS: é ambiente. O remédio é
+re-executar **só esse leg, depois que a run inteira terminar** —
+enquanto ela roda, a API devolve `403 The workflow run containing this job is
+already running`:
+
+```bash
+gh run rerun --job <job_id>      # só o leg cancelado
+```
+
+Como o job não é obrigatório, o merge pelo ruleset não depende dele; a run
+vermelha com os sete obrigatórios verdes é ruído, não bloqueio — diga isso no
+PR em vez de afirmar que "o CI passou". O `timeout-minutes` do job (45, #1749)
+só começa a contar **depois** que o leg recebe runner: um leg que trava em
+execução falha com "exceeded the maximum execution time", e essa falha é sua
+para investigar; um leg que nunca recebeu runner continua terminando
+`cancelled` sem passos. **Não** use `continue-on-error` para esconder o leg
+(higiene #1094) e não tire o leg macOS da matriz por conta própria: manter ou
+mover para o workflow agendado é decisão do dono, registrada na #1749.
+
 ---
 
 ## 3. Bump do wasmtime: o piso de MSRV vem junto
