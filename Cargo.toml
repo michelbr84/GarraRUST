@@ -144,6 +144,21 @@ jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_r
 # 1.97.0, so `rust-version` goes 1.96 → 1.97 together with the
 # `MSRV check (1.97)` job in ci.yml. Sixth MSRV raise in seven bumps; no
 # runtime.rs migration was needed (API unchanged for garraia-plugins).
+# 50.0.0→50.0.1 (PR #1774, 2026-10-30): security patch — four advisories of the 50.0.0
+# line, which turned the `cargo-deny` job red on PR CI the day the advisory
+# DB was refreshed (also red on clean main: the advisories were published
+# after main's own CI ran). wasmtime: RUSTSEC-2026-0422 (typed functions with
+# `i31`/`nullref` arguments may panic on insufficient type check),
+# RUSTSEC-2026-0423 (cross-engine type confusion with host-created
+# struct-types-with-supertypes) and RUSTSEC-2026-0424 (unchecked memory usage
+# when transferring borrowed resources between components). wasmtime-wasi:
+# RUSTSEC-2026-0420 (wasip3 UDP `send` can deliver a datagram to an address
+# only allowed for receiving). Lockfile-only: the `"50"` requirements above
+# already admitted 50.0.1, so no manifest edit and no runtime.rs migration.
+# MSRV unchanged: the 50.0.1 tree (cranelift 0.137.1, pulley/wiggle 50.0.1)
+# still declares rustc 1.97.0 — `rust-version` and the `MSRV check (1.97)`
+# job stay put. Second lockfile-only bump in a row; the MSRV series break
+# of #1559 holds.
 #
 # `cache` fica DESLIGADO (RUSTSEC-2026-0391/0395..0406/0410, zstd 0.13 / zstd-safe 7.2 /
 # zstd-sys 2.0.16, publicados em 2026-10-16): `wasmtime-internal-cache` fixa
