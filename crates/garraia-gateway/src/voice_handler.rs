@@ -30,6 +30,16 @@ pub struct SynthesizeQuery {
     pub fallback: Option<String>,
 }
 
+/// Resume `texto` ao limite de `max` CARACTERES (nao bytes) para log.
+///
+/// Cortar por byte (`&texto[..n]`) pode cair no meio de um code point
+/// multibyte — um acento pt-BR ou um emoji na fronteira — e entrar em panico.
+/// Como o gateway nao tem `CatchPanicLayer`, esse panico derrubava a conexao
+/// do `POST /api/tts`. `chars().take()` respeita a fronteira de caractere.
+fn resumo_do_texto(texto: &str, max: usize) -> String {
+    texto.chars().take(max).collect()
+}
+
 /// POST /api/tts — synthesize speech from text using Chatterbox TTS.
 ///
 /// Returns WAV audio bytes with `Content-Type: audio/wav` on success.
@@ -105,8 +115,9 @@ pub async fn synthesize(
         };
     }
 
+    let text_preview = resumo_do_texto(&body.text, 80);
     info!(
-        text_preview = %&body.text[..body.text.len().min(80)],
+        text_preview = %text_preview,
         "🔊 TTS synthesis started"
     );
     let start = std::time::Instant::now();
@@ -302,5 +313,47 @@ pub async fn transcribe(
                 }),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resumo_do_texto;
+
+    #[test]
+    fn resumo_nao_panica_no_byte_que_cairia_no_meio_de_char() {
+        // Reproduz o panico antigo: 79 'a' + 'ç' = 81 bytes. O corte por byte
+        // em `min(80)` caia dentro do 'ç' (bytes 79..81) e entrava em panico.
+        // Por caractere, pega os 80 primeiros inteiros sem quebrar.
+        let texto = format!("{}ç", "a".repeat(79));
+        let resumo = resumo_do_texto(&texto, 80);
+        assert_eq!(resumo.chars().count(), 80);
+        assert!(resumo.ends_with('ç'), "resumo: {resumo}");
+    }
+
+    #[test]
+    fn resumo_com_acento_dentro_do_limite_e_identico() {
+        let texto = "ação da garra";
+        assert_eq!(resumo_do_texto(texto, 80), texto);
+    }
+
+    #[test]
+    fn resumo_com_emoji_na_fronteira_nao_panica() {
+        // Emoji sao 4 bytes cada; 40 emojis = 160 bytes, 40 caracteres. Pedir
+        // 80 caracteres devolve todos; cortar por byte cairia no meio de um.
+        let texto = "🔊".repeat(40);
+        let resumo = resumo_do_texto(&texto, 80);
+        assert_eq!(resumo.chars().count(), 40);
+        assert_eq!(resumo, texto);
+    }
+
+    #[test]
+    fn resumo_trunca_em_caracteres_quando_excede() {
+        // 100 'á' = 200 bytes, 100 caracteres; o corte em 80 devolve 80
+        // caracteres inteiros (160 bytes), nunca um byte solto.
+        let texto = "á".repeat(100);
+        let resumo = resumo_do_texto(&texto, 80);
+        assert_eq!(resumo.chars().count(), 80);
+        assert_eq!(resumo, "á".repeat(80));
     }
 }

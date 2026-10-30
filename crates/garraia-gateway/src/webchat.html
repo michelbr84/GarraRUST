@@ -3059,7 +3059,7 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
       <div style="margin-bottom:16px;">
         <h4 style="font-size:13px;margin-bottom:8px;">Voice</h4>
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
-          <input type="checkbox" id="tts-toggle" /> Read AI responses aloud (TTS)
+          <input type="checkbox" id="tts-toggle" data-testid="tts-toggle" /> Read AI responses aloud (TTS)
         </label>
       </div>
       <div style="margin-bottom:16px;">
@@ -3209,6 +3209,11 @@ const rightPanel = $('right-panel');
 const stopBtnContainer = $('stop-btn-container');
 const attachedFiles = [];
 let ttsEnabled = localStorage.getItem('garraia.tts_enabled') === 'true';
+// Reproducao TTS corrente: um unico <audio> por vez. Guardamos o elemento e a
+// blob URL para poder interromper e revogar quando uma nova fala comeca ou o
+// usuario desliga o TTS — sem isso cada resposta vazava uma blob URL.
+let currentTtsAudio = null;
+let currentTtsUrl = null;
 
 // ─── Marked Configuration ─────────────────────────────────────────────
 const renderer = new marked.Renderer();
@@ -4768,7 +4773,7 @@ $('skin-editor-btn').addEventListener('click', () => { openModal('skin-modal'); 
 $('reconnect-btn').addEventListener('click', reconnectFresh);
 $('refresh-status').addEventListener('click', refreshStatus);
 const ttsToggle = $('tts-toggle');
-if (ttsToggle) { ttsToggle.checked = localStorage.getItem('garraia.tts_enabled') === 'true'; ttsToggle.addEventListener('change', () => { ttsEnabled = ttsToggle.checked; localStorage.setItem('garraia.tts_enabled', String(ttsToggle.checked)); }); }
+if (ttsToggle) { ttsToggle.checked = localStorage.getItem('garraia.tts_enabled') === 'true'; ttsToggle.addEventListener('change', () => { ttsEnabled = ttsToggle.checked; localStorage.setItem('garraia.tts_enabled', String(ttsToggle.checked)); if (!ttsEnabled) stopTTS(); }); }
 
 // Theme presets
 document.querySelectorAll('.skin-preset-btn[data-theme]').forEach(btn => {
@@ -5386,21 +5391,87 @@ function stopRecording() {
 }
 
 // ─── TTS Playback Helper ───────────────────────────────────────────
+// Para a reproducao TTS corrente e libera a blob URL. Idempotente: chamar sem
+// nada tocando nao faz nada. revokeObjectURL e seguro de repetir.
+function stopTTS() {
+  if (currentTtsAudio) {
+    try { currentTtsAudio.pause(); currentTtsAudio.src = ''; } catch {}
+  }
+  if (currentTtsUrl) {
+    try { URL.revokeObjectURL(currentTtsUrl); } catch {}
+  }
+  currentTtsAudio = null;
+  currentTtsUrl = null;
+}
+
 async function playTTS(text) {
   if (!ttsEnabled || !text) return;
+  let r;
   try {
-    const r = await fetch('/api/tts', {
+    r = await fetch('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: text.substring(0, 500) })
     });
-    const j = await r.json();
-    if (j.audio) {
-      const audio = new Audio('data:audio/wav;base64,' + j.audio);
-      audio.play().catch(() => {});
+  } catch (e) {
+    console.warn('[tts] falha ao chamar /api/tts:', e);
+    return;
+  }
+
+  const contentType = r.headers.get('content-type') || '';
+  // Sucesso: o gateway devolve os bytes WAV crus (Content-Type: audio/*). Em
+  // qualquer outra coisa (o fallback JSON do handler, um erro) nao ha audio.
+  if (!contentType.startsWith('audio/')) {
+    let msg = 'resposta sem audio (content-type ' + (contentType || 'ausente') + ')';
+    try {
+      const j = await r.json();
+      msg = j.error || j.text || msg;
+    } catch {}
+    console.warn('[tts] nao tocou:', msg);
+    return;
+  }
+
+  let blob;
+  try {
+    blob = await r.blob();
+  } catch (e) {
+    console.warn('[tts] falha ao ler o audio:', e);
+    return;
+  }
+
+  // Interrompe a fala anterior antes de comecar a nova.
+  stopTTS();
+
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  currentTtsAudio = audio;
+  currentTtsUrl = url;
+
+  // Limpeza: revoga a URL no fim e no erro, so se ainda for a fala corrente
+  // (uma fala mais nova ja pode ter tomado o lugar).
+  const limpar = () => {
+    try { URL.revokeObjectURL(url); } catch {}
+    if (currentTtsUrl === url) {
+      currentTtsAudio = null;
+      currentTtsUrl = null;
     }
-  } catch {}
+  };
+  audio.addEventListener('ended', limpar);
+  audio.addEventListener('error', limpar);
+
+  audio.play().catch((e) => {
+    // play() rejeita quando o autoplay esta bloqueado pelo navegador.
+    console.warn('[tts] reproducao bloqueada (autoplay?):', e);
+    limpar();
+  });
 }
+
+// Seam de teste (#1754): o script inteiro vive numa IIFE, entao `playTTS` e
+// `stopTTS` nao sao globais. O spec Playwright `tests/playwright/webchat-tts.spec.ts`
+// chama por aqui. Nao e API publica — e um contrato de teste estavel, no mesmo
+// espirito dos `data-testid` (plan 0052). Congelado para o spec nao poder
+// substituir a implementacao por engano.
+window.__garraTts = Object.freeze({ playTTS, stopTTS });
 
 // ─── File Tree in Right Panel ──────────────────────────────────────
 async function loadFileTree() {
