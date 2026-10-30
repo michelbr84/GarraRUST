@@ -945,8 +945,10 @@ jobs:
 
       - name: Run unit tests (--lib)
         # So alvos lib: os binarios de integracao (testcontainers) seguem
-        # compilados-e-nao-executados pelo job `test`.
-        run: cargo test --workspace --exclude garraia-desktop --lib
+        # compilados-e-nao-executados pelo job `test`. `--no-fail-fast`: sem
+        # ele o cargo para no primeiro crate com falha e esconde os demais (a
+        # primeira run desta PR so mostrou o gateway depois de o agents passar).
+        run: cargo test --workspace --exclude garraia-desktop --lib --no-fail-fast
         shell: bash
 
       - name: Unit tests and clippy of garraia-agents under the mcp feature (Windows)
@@ -955,7 +957,7 @@ jobs:
         # `-D warnings` -- e o que teria pego o dead_code que o #1697 apontou.
         if: runner.os == 'Windows'
         run: |
-          cargo test -p garraia-agents --features mcp --lib
+          cargo test -p garraia-agents --features mcp --lib --no-fail-fast
           cargo clippy -p garraia-agents --features mcp --all-targets -- -D warnings
         shell: bash
 

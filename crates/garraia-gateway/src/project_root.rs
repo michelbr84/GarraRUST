@@ -173,8 +173,11 @@ mod tests {
     #[test]
     fn rejects_absolute_path_outside_the_root() {
         let (_tmp, root, _child) = root_with("projeto");
+        // O pai da raiz existe em qualquer plataforma e esta fora dela; `/etc`
+        // nao existe no Windows e viraria `Unresolvable` (#1697).
+        let fora = root.parent().expect("tempdir tem pai").to_path_buf();
         assert_eq!(
-            confine_within("/etc", &[root]),
+            confine_within(fora.to_str().unwrap(), &[root]),
             Err(ProjectPathError::OutsideAllowedRoots)
         );
     }
@@ -184,7 +187,12 @@ mod tests {
     #[test]
     fn rejects_dotdot_traversal_out_of_the_root() {
         let (_tmp, root, child) = root_with("projeto");
-        let escape = format!("{}/../../../../etc", child.display());
+        // `child/../..` e o pai da raiz: existe em qualquer plataforma e esta
+        // fora dela. Quatro `..` ate `/etc` presumiam a profundidade do `/tmp`
+        // do Linux; no macOS (`/private/var/folders/...`) paravam no meio e
+        // viravam `Unresolvable` (#1697).
+        let sep = std::path::MAIN_SEPARATOR;
+        let escape = format!("{}{sep}..{sep}..", child.display());
         assert_eq!(
             confine_within(&escape, &[root]),
             Err(ProjectPathError::OutsideAllowedRoots)

@@ -403,7 +403,12 @@ mod tests {
     #[tokio::test]
     async fn seleciona_por_nome_ou_id_grava_no_banco_e_da_working_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let raiz = dir.path().join("projetos");
+        // Canonica, como `allowed_roots()` entrega em producao: no macOS o
+        // tempdir e symlink (`/var/...` -> `/private/var/...`) e uma raiz crua
+        // nunca casaria com o projeto resolvido (#1697).
+        let raiz = std::fs::canonicalize(dir.path())
+            .expect("canon")
+            .join("projetos");
         std::fs::create_dir_all(raiz.join("garra")).expect("mkdir");
         let (st, store) = estado_com_banco(dir.path());
         let id = cria_projeto(&store, "Garra", &raiz.join("garra")).await;
@@ -457,7 +462,10 @@ mod tests {
     #[tokio::test]
     async fn restaura_apos_restart_e_limpar_apaga_nos_dois_lugares() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let raiz = dir.path().join("projetos");
+        // Canonica, como `allowed_roots()` em producao (ver teste acima).
+        let raiz = std::fs::canonicalize(dir.path())
+            .expect("canon")
+            .join("projetos");
         std::fs::create_dir_all(raiz.join("site")).expect("mkdir");
         let sid = "telegram-42";
         let id;
