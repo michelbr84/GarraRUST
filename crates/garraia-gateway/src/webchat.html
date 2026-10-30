@@ -5466,6 +5466,13 @@ async function playTTS(text) {
   });
 }
 
+// Seam de teste (#1754): o script inteiro vive numa IIFE, entao `playTTS` e
+// `stopTTS` nao sao globais. O spec Playwright `tests/playwright/webchat-tts.spec.ts`
+// chama por aqui. Nao e API publica — e um contrato de teste estavel, no mesmo
+// espirito dos `data-testid` (plan 0052). Congelado para o spec nao poder
+// substituir a implementacao por engano.
+window.__garraTts = Object.freeze({ playTTS, stopTTS });
+
 // ─── File Tree in Right Panel ──────────────────────────────────────
 async function loadFileTree() {
   const section = $('file-tree-section');

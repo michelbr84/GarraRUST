@@ -7,6 +7,9 @@
  * entao o `r.json()` quebrava sobre o binario e o erro morria num `catch {}`
  * vazio — o TTS nunca tocava.
  *
+ * O script do webchat vive numa IIFE, entao o spec chama `playTTS` pelo seam
+ * `window.__garraTts` (congelado), exposto so para teste.
+ *
  * O spec nao precisa do `--with-voice`: o `page.route` intercepta `/api/tts`
  * no browser e devolve bytes `audio/wav`. Ele troca `HTMLMediaElement.play`
  * por um stub que resolve (nenhum audio real toca no CI) e conta as chamadas a
@@ -49,7 +52,7 @@ async function abrirComSonda(page: Page) {
   );
 
   await page.goto('/');
-  await page.waitForFunction(() => typeof (window as unknown as { playTTS?: unknown }).playTTS === 'function', null, {
+  await page.waitForFunction(() => typeof (window as unknown as { __garraTts?: { playTTS?: unknown } }).__garraTts?.playTTS === 'function', null, {
     timeout: 10_000,
   });
   // Zera o que o boot possa ter registrado antes de medir.
@@ -65,7 +68,7 @@ test.describe('#1754 — TTS da Web toca o blob e interrompe a fala anterior', (
   test('sucesso audio/wav toca um <audio> com src blob:', async ({ page }) => {
     await abrirComSonda(page);
 
-    await page.evaluate(() => (window as unknown as { playTTS: (t: string) => Promise<void> }).playTTS('oi'));
+    await page.evaluate(() => (window as unknown as { __garraTts: { playTTS: (t: string) => Promise<void> } }).__garraTts.playTTS('oi'));
 
     const playCalls = await page.evaluate(() => (window as unknown as { __ttsProbe: { playCalls: string[] } }).__ttsProbe.playCalls);
     expect(playCalls.length, 'playTTS deveria ter chamado play() uma vez').toBe(1);
@@ -75,11 +78,11 @@ test.describe('#1754 — TTS da Web toca o blob e interrompe a fala anterior', (
   test('uma segunda fala interrompe a primeira e revoga a blob URL anterior', async ({ page }) => {
     await abrirComSonda(page);
 
-    await page.evaluate(() => (window as unknown as { playTTS: (t: string) => Promise<void> }).playTTS('oi'));
+    await page.evaluate(() => (window as unknown as { __garraTts: { playTTS: (t: string) => Promise<void> } }).__garraTts.playTTS('oi'));
     const primeiraUrl = (await page.evaluate(() => (window as unknown as { __ttsProbe: { playCalls: string[] } }).__ttsProbe.playCalls))[0];
     expect(primeiraUrl).toMatch(/^blob:/);
 
-    await page.evaluate(() => (window as unknown as { playTTS: (t: string) => Promise<void> }).playTTS('tchau'));
+    await page.evaluate(() => (window as unknown as { __garraTts: { playTTS: (t: string) => Promise<void> } }).__garraTts.playTTS('tchau'));
 
     const playCalls = await page.evaluate(() => (window as unknown as { __ttsProbe: { playCalls: string[] } }).__ttsProbe.playCalls);
     expect(playCalls.length, 'as duas falas deveriam ter tocado').toBe(2);
