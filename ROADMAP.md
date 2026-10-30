@@ -1069,7 +1069,7 @@ estático proibido (quebra DNS).
 - [x] **v1 (primeiro corte, v0.4.0)** — decisão revista no amendment 2026-09-07 da ADR 0016:
   a interface é o Flutter existente, não um app Compose novo. Entregue: `RuntimeConnection`
   (local 127.0.0.1:3888 / LAN / Cloud), onboarding sem login, capabilities negociadas,
-  APK no CI. Pendente para v0.5.x: ponte Kotlin `RUN_COMMAND`, pairing por token local,
+  APK no CI. Pendente para v0.6.x: ponte Kotlin `RUN_COMMAND`, pairing por token local,
   foreground service.
 - [ ] **v1 (fechamento) — bridge Kotlin**: `com.termux.permission.RUN_COMMAND` + `<queries>` com.termux, setup guiado de `allow-external-apps=true`, stdout/exit via
   `RUN_COMMAND_PENDING_INTENT` (cap 100KB), detecção do fork Play do Termux

@@ -1,6 +1,6 @@
 {
   "schema": "garra.funcionalidades/v1",
-  "catalog_version": "0.4.10",
+  "catalog_version": "0.5.0",
   "language": "pt-BR",
   "notes": "Catálogo versionado de funcionalidades (#1670). Chaves estáveis em inglês (machine-readable), valores em pt-BR. availability: 'disponivel' = funciona numa instalação limpa; 'configuravel' = existe nesta versão mas exige configuração (prerequisites); 'opcional' = só existe atrás de feature de compilação ou interruptor de config (campo gate). Nada aqui descreve funcionalidade futura: só o que ESTA versão entrega. O estado da instalação (ativo/offline/agora) vem do runtime — garra_status — nunca deste arquivo.",
   "categories": [
@@ -63,6 +63,44 @@
       ],
       "availability": "configuravel",
       "gate": "config:provedor de voz (tts/stt)"
+    },
+    {
+      "id": "model-routing",
+      "name": "Seleção de modelo e roteamento (/model)",
+      "category": "chat",
+      "summary": "O /model troca o modelo da sessão de forma transacional e aceita modelos do catálogo do provider, presets do OpenRouter (@preset/<slug>, puro ou <autor>/<modelo>@preset/<slug>) e variantes de roteamento do OpenRouter (<autor>/<modelo>:floor, :nitro, :online, :exacto).",
+      "prerequisites": [
+        "presets e variantes de roteamento exigem o provider OpenRouter (em outros providers o /model só aceita o que o catálogo lista)"
+      ],
+      "limitations": [
+        "preset e variante não aparecem em GET /models, então são validados por uma chamada real mínima (max_tokens 1) — uma por /model, nunca por turno",
+        "base ausente no catálogo ou sufixo fora da lista fechada (:floor, :nitro, :online, :exacto) é recusado sem chamada; :free/:thinking/:extended são ids do catálogo, não sufixos de roteamento",
+        ":online cobra busca web já na sonda de validação",
+        "garra ask --model <modelo>:floor roteia sem validar; a allowlist do MCP (GARRAIA_MCP_MODEL_ALLOWLIST) compara a string inteira"
+      ],
+      "availability": "configuravel"
+    },
+    {
+      "id": "response-provenance",
+      "name": "Resposta diz quem respondeu",
+      "category": "chat",
+      "summary": "As respostas de POST /api/sessions/{id}/messages e de /v1/chat/completions trazem provider, model e fallback do turno, e os headers X-AI-Provider/X-AI-Model refletem quem de fato atendeu — inclusive quando o fallback_providers assumiu.",
+      "prerequisites": [],
+      "limitations": [
+        "o fallback_providers é acionado quando o provider primário recusa a credencial (401/403), em batch e em streaming, sem retry no primário; erros do pedido (400/404/413/422) não acionam fallback e voltam como 4xx sanitizado"
+      ],
+      "availability": "disponivel"
+    },
+    {
+      "id": "datetime-awareness",
+      "name": "Agente sabe a data e a hora",
+      "category": "chat",
+      "summary": "O runtime injeta no system prompt de cada turno a data, a hora local e o fuso horário, no idioma da persona, para o agente responder corretamente sobre hoje, amanhã ou prazos.",
+      "prerequisites": [],
+      "limitations": [
+        "o modo neutral não tem system prompt por contrato e segue sem a linha de data e hora"
+      ],
+      "availability": "disponivel"
     },
     {
       "id": "file_read",
@@ -651,6 +689,19 @@
       ],
       "availability": "disponivel",
       "tool": "garra_capabilities"
+    },
+    {
+      "id": "cli_inspect",
+      "name": "Autodiagnóstico da CLI (cli_inspect)",
+      "category": "diagnostics-admin",
+      "summary": "Ferramenta somente leitura do agente interativo da CLI: versão do binário em execução, provider e modelo selecionados (atualizados após /model), evidências do último turno e inventário paginado das ferramentas do runtime com origem e disponibilidade.",
+      "prerequisites": [],
+      "limitations": [
+        "só existe no agente interativo da CLI (garra chat), não no gateway nem nos canais",
+        "estado de gateway/MCP/integrações opcionais fica como desconhecido (sem sondagem); nenhuma credencial ou log administrativo é exposto"
+      ],
+      "availability": "disponivel",
+      "tool": "cli_inspect"
     },
     {
       "id": "garra_diagnostics",

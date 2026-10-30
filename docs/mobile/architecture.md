@@ -121,7 +121,7 @@ a usa. Deep links `garraia://chat/<id>` e `garraia://session/<id>`.
   `FontVariation('wght', …)` — ver `garraText()` em `lib/theme/garra_theme.dart`.
   Nada é buscado em runtime, para o app renderizar igual offline.
 
-## O que a v0.5.x precisa (Fase 1 da estratégia, fechamento)
+## O que a v0.6.x precisa (Fase 1 da estratégia, fechamento; era v0.5.x até 2026-10-30)
 
 1. `TermuxBridge.kt` (`com.termux.permission.RUN_COMMAND`, `<queries>`
    com.termux, detecção do fork Play) — instalar/iniciar/parar o runtime sem

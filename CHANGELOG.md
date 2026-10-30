@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0-rc1] - 2026-10-30
+
+Candidato a release da v0.5.0, publicado como pre-release: nao e servido por `/releases/latest`, nao e oferecido pelo `garra update` nem pelo updater do desktop, e a imagem Docker sai sem a tag `latest`. Instalacao com pin — Windows: `$env:GARRAIA_VERSION='v0.5.0-rc1'; irm https://github.com/michelbr84/GarraRUST/releases/download/v0.5.0-rc1/install.ps1 | iex`; Linux/macOS: `GARRAIA_VERSION=v0.5.0-rc1 curl -fsSL https://github.com/michelbr84/GarraRUST/releases/download/v0.5.0-rc1/install.sh | bash`.
+
+O que muda de comportamento desde a v0.4.10 (os fragmentos em `changelog.d/` viram o changelog completo na estavel): `garra chat` deixa de ter teto de parede de 120 s por padrao, `--timeout-secs` vira opt-in e o texto ja transmitido fica no historico marcado como parcial (#1751); o `/model` aceita presets do OpenRouter `@preset/<slug>` (#1752) e variantes de roteamento `:floor`/`:nitro`/`:online`/`:exacto` (#1764), validados por uma chamada minima de 1 token; a API diz quem respondeu (`provider`/`model`/`fallback` no corpo e headers `X-AI-Provider`/`X-AI-Model`, #1733) e modelo invalido vira 4xx sanitizado em vez de 500 com o corpo cru (#1726); `fallback_providers` entra quando o primario recusa a credencial (#1735) e o `/api/health` deixa de mostrar verde com chave recusada (#1743); o agente sabe a data e a hora atuais (#1725) e ganha a ferramenta somente leitura `cli_inspect` (#1712); o TTS da Web volta a tocar (#1754); `/clear` apaga o historico persistido (#1723); no Windows, o MCP `filesystem` (#1722), o `file_jail` (#1737), o `garraia rollback` (#1720) e o diagnostico de voz (#1697) foram corrigidos. Supply chain: wasmtime 50.0.0 com MSRV 1.97 (#1714) e sem a feature `cache`, tirando o zstd vulneravel do lockfile (#1719); excecoes de advisories renovadas ate 2026-12-31 e ignores mortos removidos (#1667); todos os caminhos de erro do provider passam pelo sanitizador (#1737). CI: a suite unitaria roda tambem em Windows e macOS (#1697, #1762).
+
 ## [0.4.10] - 2026-10-25
 
 ### Added
