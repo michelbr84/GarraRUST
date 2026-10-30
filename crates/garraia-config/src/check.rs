@@ -1536,7 +1536,15 @@ fn validate_auth(
     // vault fallback since #824), but the near-identical names are a trap,
     // so nudge operators toward the canonical pair. Presence only — the
     // value comparison below never reaches any output.
-    let legacy_set = std::env::var_os("GarraIA_VAULT_PASSPHRASE").is_some();
+    //
+    // #1762: no Windows as variaveis de ambiente sao case-insensitive, entao
+    // `GarraIA_VAULT_PASSPHRASE` e `GARRAIA_VAULT_PASSPHRASE` sao a MESMA
+    // variavel: ler a grafia legada devolve o valor da canonica e os dois
+    // avisos abaixo sairiam espurios (`--strict` viraria exit 2 numa config
+    // correta). La as grafias nao sao distinguiveis, e o check nao opina.
+    let grafias_distinguiveis = !cfg!(windows);
+    let legacy_set =
+        grafias_distinguiveis && std::env::var_os("GarraIA_VAULT_PASSPHRASE").is_some();
     let canonical_set = std::env::var_os("GARRAIA_VAULT_PASSPHRASE").is_some();
     if legacy_set {
         push_warn(
@@ -5031,6 +5039,34 @@ mod tests {
         assert!(hit.message.contains("deprecated"));
         // Redaction invariant: presence only, never the value.
         assert!(!hit.message.contains("some-legacy-secret-value"));
+
+        restore_passphrase_env(snapshot);
+    }
+
+    /// #1762: no Windows as duas grafias sao a mesma variavel; com so a
+    /// canonica definida, `config check` nao pode acusar grafia deprecated
+    /// (era o que acontecia, e `--strict` saia com exit 2 numa config correta).
+    #[cfg(windows)]
+    #[test]
+    fn no_windows_so_a_canonica_nao_gera_aviso_de_grafia() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let snapshot = passphrase_env_snapshot();
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            std::env::remove_var("GarraIA_VAULT_PASSPHRASE");
+            std::env::set_var("GARRAIA_VAULT_PASSPHRASE", "canonical-secret-value");
+        }
+
+        let findings = validate(&AppConfig::default());
+        assert!(
+            !findings.iter().any(|f| f.field.starts_with("env.G")),
+            "nenhum aviso de grafia no Windows: {findings:?}"
+        );
+        for f in &findings {
+            assert!(!f.message.contains("canonical-secret-value"));
+        }
 
         restore_passphrase_env(snapshot);
     }
