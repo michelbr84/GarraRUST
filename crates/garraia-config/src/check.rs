@@ -3901,12 +3901,21 @@ mod tests {
         cfg.agent.sandbox.mode = SandboxMode::All;
         cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
         let findings = validate(&cfg);
-        assert!(
-            !findings
-                .iter()
-                .any(|f| f.field.starts_with("agent.sandbox")),
-            "findings = {findings:?}"
-        );
+        let do_sandbox: Vec<_> = findings
+            .iter()
+            .filter(|f| f.field.starts_with("agent.sandbox"))
+            .collect();
+        if cfg!(windows) {
+            // Fora de Unix a secao coerente E um Error, de proposito: o sandbox
+            // nao funciona com `powershell -Command` e `wrap_command` falha
+            // fechado. O check tem de dizer isso, e so isso (#1762).
+            assert_eq!(do_sandbox.len(), 1, "findings = {findings:?}");
+            assert_eq!(do_sandbox[0].field, "agent.sandbox.mode");
+            assert!(matches!(do_sandbox[0].severity, Severity::Error));
+            assert!(do_sandbox[0].message.contains("unix-only"));
+        } else {
+            assert!(do_sandbox.is_empty(), "findings = {findings:?}");
+        }
 
         // SSH com os dois flags desligados: o operador reconheceu que eles
         // nao valem, entao o Error das flags (S3) some. O aviso de que SSH
@@ -3926,10 +3935,15 @@ mod tests {
                     || f.field == "agent.sandbox.mount_workdir"),
             "com os flags desligados o Error das flags some: {findings:?}"
         );
+        // No Windows o unico Error legitimo e o "unix-only" ja afirmado no
+        // bloco anterior; aqui o que se prova e que o Error das flags sumiu.
+        let e_unix_only = |f: &Finding| {
+            cfg!(windows) && f.field == "agent.sandbox.mode" && f.message.contains("unix-only")
+        };
         assert!(
-            !findings
-                .iter()
-                .any(|f| f.severity == Severity::Error && f.field.starts_with("agent.sandbox")),
+            !findings.iter().any(|f| f.severity == Severity::Error
+                && f.field.starts_with("agent.sandbox")
+                && !e_unix_only(f)),
             "config ssh coerente nao tem Error: {findings:?}"
         );
         let remoto = findings
@@ -4992,6 +5006,10 @@ mod tests {
         }
     }
 
+    // #1762: variaveis de ambiente sao case-insensitive no Windows, entao
+    // `GarraIA_VAULT_PASSPHRASE` e `GARRAIA_VAULT_PASSPHRASE` sao a MESMA variavel
+    // la e a premissa deste teste (duas grafias com valores distintos) nao existe.
+    #[cfg(not(windows))]
     #[test]
     fn legacy_passphrase_spelling_yields_deprecation_warning() {
         let _guard = crate::ENV_TEST_LOCK
@@ -5017,6 +5035,7 @@ mod tests {
         restore_passphrase_env(snapshot);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn divergent_passphrase_spellings_yield_split_warning() {
         let _guard = crate::ENV_TEST_LOCK
@@ -6744,6 +6763,15 @@ mod tests {
         ExecutionConfig::new(profile, pod_root.map(PathBuf::from))
     }
 
+    /// Um `pod_root` absoluto na forma nativa: `/workspace` nao tem letra de
+    /// drive e no Windows e relativo, o que acrescentaria o aviso de "not an
+    /// absolute path" aos testes que so querem o aviso de perfil (#1762).
+    const POD_ROOT_ABSOLUTO: &str = if cfg!(windows) {
+        r"C:\workspace"
+    } else {
+        "/workspace"
+    };
+
     fn canal_linked_com_owners(owners: serde_json::Value) -> HashMap<String, ChannelConfig> {
         let mut settings = HashMap::new();
         settings.insert("owners".to_string(), owners);
@@ -6788,7 +6816,7 @@ mod tests {
     #[test]
     fn execution_pod_root_em_standard_avisa() {
         let achados = validate_execution(
-            &execucao(None, Some("/workspace")),
+            &execucao(None, Some(POD_ROOT_ABSOLUTO)),
             &Ok(None),
             &HashMap::new(),
         );
@@ -6804,13 +6832,13 @@ mod tests {
         // O gemeo: em isolated-pod (por arquivo ou por env) o mesmo pod_root
         // absoluto e limpo.
         let por_arquivo = validate_execution(
-            &execucao(Some(ExecutionProfile::IsolatedPod), Some("/workspace")),
+            &execucao(Some(ExecutionProfile::IsolatedPod), Some(POD_ROOT_ABSOLUTO)),
             &Ok(None),
             &HashMap::new(),
         );
         assert!(por_arquivo.is_empty(), "{por_arquivo:?}");
         let por_env = validate_execution(
-            &execucao(None, Some("/workspace")),
+            &execucao(None, Some(POD_ROOT_ABSOLUTO)),
             &Ok(Some(ExecutionProfile::IsolatedPod)),
             &HashMap::new(),
         );
@@ -6822,7 +6850,7 @@ mod tests {
     #[test]
     fn execution_env_standard_vence_arquivo_isolated_pod() {
         let achados = validate_execution(
-            &execucao(Some(ExecutionProfile::IsolatedPod), Some("/workspace")),
+            &execucao(Some(ExecutionProfile::IsolatedPod), Some(POD_ROOT_ABSOLUTO)),
             &Ok(Some(ExecutionProfile::Standard)),
             &HashMap::new(),
         );

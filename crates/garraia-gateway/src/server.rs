@@ -2426,7 +2426,9 @@ mod tests {
     /// `run_scheduler` e usa `concat!` para nao casar consigo mesmo.
     #[test]
     fn scheduler_reivindica_em_vez_de_pollar() {
-        let src = include_str!("server.rs");
+        // Fins de linha normalizados: o checkout do Windows e CRLF e o scan
+        // procura `"\n}\n"` (#1762).
+        let src = include_str!("server.rs").replace("\r\n", "\n");
         let assinatura = concat!("async fn run_", "scheduler(");
         let inicio = src
             .find(assinatura)

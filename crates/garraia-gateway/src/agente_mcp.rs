@@ -533,6 +533,10 @@ mod tests {
     /// Prova de fiação ponta a ponta pela função de PRODUÇÃO (`build_tools_com`):
     /// a policy do config chega ao `BashTool`. Com sandbox docker exigido e sessão
     /// sem `working_dir`, todo comando é recusado fail-closed.
+    // #1762: o sandbox (docker/podman/ssh) e recusado fora de Unix por desenho
+    // (`plataforma_permite_wrap`: o bash tool do Windows roda via `powershell`),
+    // entao estes testes afirmam a fiacao do config so onde o wrap existe. O
+    // fail-closed do Windows e provado em `garraia-agents` (`plataforma_nao_unix_falha_fechado`).
     #[cfg(unix)]
     #[tokio::test]
     async fn sandbox_do_config_chega_ao_bash_tool_pelo_build_tools() {
@@ -562,6 +566,7 @@ mod tests {
     }
 
     /// #1225 S2: o `git_diff` do `garra_agent` recebe a policy do config.
+    #[cfg(unix)]
     #[tokio::test]
     async fn sandbox_do_config_chega_ao_git_diff_pelo_build_tools() {
         let mut config = AppConfig::default();

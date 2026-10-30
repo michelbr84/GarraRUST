@@ -180,7 +180,15 @@ fn relative_skill_path(name: &str, opts: &VersioningOptions) -> Result<String> {
             opts.repo_root.display()
         ))
     })?;
-    Ok(rel.to_string_lossy().into_owned())
+    // Pathspec de git: sempre `/`. O git do Windows aceita `\`, mas a saida
+    // de `git log -- <path>` e os consumidores (inclusive os testes) esperam
+    // a forma POSIX; em Unix nada muda (#1762).
+    let rel = rel.to_string_lossy().into_owned();
+    Ok(if cfg!(windows) {
+        rel.replace('\\', "/")
+    } else {
+        rel
+    })
 }
 
 // ─────────────────────────────────────────────────────────

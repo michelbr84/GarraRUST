@@ -559,6 +559,10 @@ mod tests {
         snapshot.restore();
     }
 
+    // #1762: variaveis de ambiente sao case-insensitive no Windows, entao
+    // `GarraIA_VAULT_PASSPHRASE` e `GARRAIA_VAULT_PASSPHRASE` sao a MESMA variavel
+    // la e a premissa deste teste (duas grafias com valores distintos) nao existe.
+    #[cfg(not(windows))]
     #[test]
     fn from_env_prefers_legacy_alias_over_canonical_vault_passphrase() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

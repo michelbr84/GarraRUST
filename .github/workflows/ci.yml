@@ -907,8 +907,11 @@ jobs:
   # em `main`), registrada na #1697. Sem `continue-on-error` (higiene #1094):
   # a falha fica vermelha, so nao trava merge.
   #
-  # Reaproveita o cache de `target/` do job `test` (mesma chave), entao o
-  # custo e tempo de runner (gratis em repo publico), nao de espera.
+  # Cache com chave PROPRIA (`-cargo-unit-`) e fallback de LEITURA na chave do
+  # job `test`: assim ele parte quente, mas nunca grava sobre a chave do check
+  # obrigatorio um `target/` sem os binarios de integracao (quem salva
+  # primeiro fica dono da chave ate o `Cargo.lock` mudar). Custo: tempo de
+  # runner (gratis em repo publico), nao de espera.
   unit-tests:
     name: Unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -939,8 +942,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-unit-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
+            ${{ runner.os }}-cargo-unit-
             ${{ runner.os }}-cargo-
 
       - name: Run unit tests (--lib)
