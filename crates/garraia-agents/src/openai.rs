@@ -10,6 +10,7 @@ use tracing::{debug, info, instrument};
 use crate::providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
     StreamEvent, Usage, ValidacaoDeModelo, erro_de_envio, preset_do_openrouter,
+    variante_do_openrouter,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -680,9 +681,17 @@ impl LlmProvider for OpenAiProvider {
     /// preset é inválido (`Ausente`); no OpenRouter, com base `<autor>/<modelo>`
     /// a base é checada no catálogo (grátis) antes de gastar uma chamada — base
     /// ausente recusa sem sondar — e o preset puro vai direto à sonda mínima.
+    ///
+    /// #1764: os sufixos de roteamento (`:floor`/`:nitro`/`:online`/`:exacto`)
+    /// também não aparecem em `GET /models`. A igualdade no catálogo vem
+    /// primeiro (mantém `:free`/`:thinking`/`:extended` sem custo); só um
+    /// `Ausente` entra no parser de variante: base ausente recusa sem POST,
+    /// base presente é validada por uma sonda da string inteira.
     async fn validar_modelo(&self, model: &str) -> Result<ValidacaoDeModelo> {
         if !self.is_openrouter {
-            // Preset só existe no OpenRouter; aqui é recusa, sem catálogo.
+            // Preset só existe no OpenRouter; aqui é recusa, sem catálogo. Uma
+            // variante de roteamento não é recusada (o default `SemListagem`
+            // deixa o `:` passar, como nas tags do Ollama).
             if preset_do_openrouter(model).is_some() {
                 return Ok(ValidacaoDeModelo::Ausente);
             }
@@ -691,35 +700,55 @@ impl LlmProvider for OpenAiProvider {
         if let Some(preset) = preset_do_openrouter(model) {
             if let Some(base) = preset.base {
                 // Base `<autor>/<modelo>`: se o catálogo não a tem, o preset
-                // também não vale — recusa sem sondar (sem custo).
+                // também não vale — recusa sem sondar (sem custo). A base pode
+                // trazer uma variante de roteamento (`...:floor`): o catálogo
+                // tem o id-base, não a string com sufixo, então descasca antes.
+                let base_no_catalogo = variante_do_openrouter(base).map(|v| v.base).unwrap_or(base);
                 let completa = self.catalogo_openrouter().await?;
-                if classificar_no_catalogo(&curada_do_catalogo(&completa), &completa, base)
-                    == ValidacaoDeModelo::Ausente
+                if classificar_no_catalogo(
+                    &curada_do_catalogo(&completa),
+                    &completa,
+                    base_no_catalogo,
+                ) == ValidacaoDeModelo::Ausente
                 {
                     return Ok(ValidacaoDeModelo::Ausente);
                 }
             }
-            return self.sondar_preset(model).await;
+            return self.sondar_modelo(model).await;
         }
         let completa = self.catalogo_openrouter().await?;
-        Ok(classificar_no_catalogo(
-            &curada_do_catalogo(&completa),
-            &completa,
-            model,
-        ))
+        let por_catalogo =
+            classificar_no_catalogo(&curada_do_catalogo(&completa), &completa, model);
+        if por_catalogo != ValidacaoDeModelo::Ausente {
+            return Ok(por_catalogo);
+        }
+        // #1764: não está no catálogo por igualdade. Se for `<base>:<variante>`
+        // com sufixo de roteamento conhecido, a base decide: ausente recusa sem
+        // POST, presente valida com uma sonda da string inteira. Sufixo fora da
+        // lista (ou sem base válida) não casa e o veredito segue `Ausente`.
+        if let Some(variante) = variante_do_openrouter(model) {
+            if classificar_no_catalogo(&curada_do_catalogo(&completa), &completa, variante.base)
+                == ValidacaoDeModelo::Ausente
+            {
+                return Ok(ValidacaoDeModelo::Ausente);
+            }
+            return self.sondar_modelo(model).await;
+        }
+        Ok(ValidacaoDeModelo::Ausente)
     }
 }
 
 impl OpenAiProvider {
-    /// #1752: valida um preset do OpenRouter com uma chamada real mínima
-    /// (`POST /chat/completions`, `max_tokens: 1`), já que o preset não está no
-    /// catálogo. A string do modelo vai **intacta** — o preset é o
-    /// identificador, e o OpenRouter resolve qual modelo ele aponta. Sucesso
+    /// #1752/#1764: valida com uma chamada real mínima (`POST /chat/completions`,
+    /// `max_tokens: 1`) uma string que o catálogo não tem — um preset do
+    /// OpenRouter (`@preset/<slug>`) ou uma variante de roteamento
+    /// (`<base>:floor`). A string do modelo vai **intacta** — ela é o
+    /// identificador, e o OpenRouter resolve qual modelo ela aponta. Sucesso
     /// devolve `ValidadoPorSonda` com o modelo resolvido (campo `model` da
     /// resposta, quando não vazio); a falha é classificada por
     /// [`classificar_erro_da_sonda`]. Nunca loga a chave — `complete` já
     /// sanitiza o corpo da resposta de erro.
-    async fn sondar_preset(&self, model: &str) -> Result<ValidacaoDeModelo> {
+    async fn sondar_modelo(&self, model: &str) -> Result<ValidacaoDeModelo> {
         let request = LlmRequest {
             model: model.to_string(),
             messages: vec![ChatMessage {
@@ -1193,10 +1222,9 @@ fn erro_de_roteamento_openrouter(
         msg.push_str(&format!("\nProviders compatíveis: {compativeis}"));
     }
     msg.push_str(
-        "\n\nTente:\n  /model <outro-modelo> — troca o modelo no mesmo turno \
-         (ou escolha um slug sem sufixo `:provider`)\n  ajuste a preferência de \
-         providers (`provider.only`) na sua conta OpenRouter — o Garra não \
-         altera essa preferência por conta própria",
+        "\n\nTente:\n  /model <outro-modelo> — troca o modelo no mesmo turno\n  \
+         ajuste a preferência de providers (`provider.only`) na sua conta \
+         OpenRouter — o Garra não altera essa preferência por conta própria",
     );
     Some(Error::Agent(msg))
 }
@@ -2112,6 +2140,180 @@ mod tests {
         let nativo = OpenAiProvider::new("sk-test", None, Some(format!("{url}/api/v1")));
         let v = nativo.validar_modelo("@preset/ok").await.unwrap();
         assert_eq!(v, ValidacaoDeModelo::Ausente);
+        assert_eq!(estado.gets.load(Ordering::SeqCst) - g0, 0);
+        assert_eq!(estado.posts.load(Ordering::SeqCst) - p0, 0);
+
+        let _ = tx.send(());
+        let _ = servidor.await;
+    }
+
+    /// #1764: a sonda de variante de roteamento conta requisicoes com um
+    /// servidor falso. Variante valida (`:floor`) sobre base listada: 1 GET
+    /// (catalogo) + 1 POST (sonda), string intacta e `max_tokens` 1. Base
+    /// ausente: 1 GET + 0 POST. Sufixo fora da lista: 0 POST (so o catalogo).
+    /// Id de catalogo com `:` (`:free` listado): pelo catalogo, 0 POST. Fora do
+    /// OpenRouter: `SemListagem` sem request.
+    #[tokio::test]
+    async fn sonda_de_variante_conta_requisicoes_e_respeita_o_catalogo() {
+        use axum::{
+            Json, Router,
+            extract::State,
+            http::StatusCode,
+            routing::{get, post},
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Estado {
+            gets: Arc<AtomicUsize>,
+            posts: Arc<AtomicUsize>,
+            corpos: Arc<Mutex<Vec<serde_json::Value>>>,
+        }
+
+        let estado = Estado {
+            gets: Arc::new(AtomicUsize::new(0)),
+            posts: Arc::new(AtomicUsize::new(0)),
+            corpos: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        let app = Router::new()
+            .route(
+                "/api/v1/models",
+                get(|State(st): State<Estado>| async move {
+                    st.gets.fetch_add(1, Ordering::SeqCst);
+                    Json(serde_json::json!({ "data": [
+                        { "id": "z-ai/glm-5.3-flash" },
+                        { "id": "meta-llama/x:free" }
+                    ] }))
+                }),
+            )
+            .route(
+                "/api/v1/chat/completions",
+                post(
+                    |State(st): State<Estado>, Json(body): Json<serde_json::Value>| async move {
+                        st.posts.fetch_add(1, Ordering::SeqCst);
+                        st.corpos.lock().unwrap().push(body.clone());
+                        let modelo =
+                            body.get("model").and_then(|m| m.as_str()).unwrap_or_default();
+                        // So a variante sobre a base listada e aceita; o OpenRouter
+                        // informa o modelo resolvido (a base, sem o sufixo).
+                        if modelo == "z-ai/glm-5.3-flash:floor" {
+                            (
+                                StatusCode::OK,
+                                Json(serde_json::json!({
+                                    "choices": [ { "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" } ],
+                                    "model": "z-ai/glm-5.3-flash",
+                                    "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+                                })),
+                            )
+                        } else {
+                            (
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({ "error": { "message": format!("{modelo} is not a valid model ID"), "code": 400 }, "user_id": "user_x" })),
+                            )
+                        }
+                    },
+                ),
+            )
+            .with_state(estado.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}");
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let servidor = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let provider = OpenAiProvider::new("sk-test", None, Some(format!("{url}/api/v1")))
+            .with_name("openrouter");
+
+        // Variante valida sobre base listada: 1 GET + 1 POST, string intacta.
+        let g0 = estado.gets.load(Ordering::SeqCst);
+        let p0 = estado.posts.load(Ordering::SeqCst);
+        let v = provider
+            .validar_modelo("z-ai/glm-5.3-flash:floor")
+            .await
+            .unwrap();
+        assert_eq!(
+            estado.gets.load(Ordering::SeqCst) - g0,
+            1,
+            "1 GET do catalogo"
+        );
+        assert_eq!(
+            estado.posts.load(Ordering::SeqCst) - p0,
+            1,
+            "1 POST da sonda"
+        );
+        assert_eq!(
+            v,
+            ValidacaoDeModelo::ValidadoPorSonda {
+                modelo_resolvido: Some("z-ai/glm-5.3-flash".to_string())
+            }
+        );
+        {
+            let corpos = estado.corpos.lock().unwrap();
+            let ultimo = corpos.last().expect("um corpo registrado");
+            assert_eq!(
+                ultimo["model"], "z-ai/glm-5.3-flash:floor",
+                "a string da variante vai intacta"
+            );
+            assert_eq!(ultimo["max_tokens"], 1, "a sonda pede 1 token");
+        }
+
+        // Base ausente do catalogo: 1 GET + 0 POST -> Ausente, sem sondar.
+        let g0 = estado.gets.load(Ordering::SeqCst);
+        let p0 = estado.posts.load(Ordering::SeqCst);
+        let v = provider
+            .validar_modelo("vendor-inexistente/x:nitro")
+            .await
+            .unwrap();
+        assert_eq!(estado.gets.load(Ordering::SeqCst) - g0, 1);
+        assert_eq!(
+            estado.posts.load(Ordering::SeqCst) - p0,
+            0,
+            "base ausente nao sonda"
+        );
+        assert_eq!(v, ValidacaoDeModelo::Ausente);
+
+        // Sufixo fora da lista fechada: 0 POST (nao e variante, so o catalogo).
+        let p0 = estado.posts.load(Ordering::SeqCst);
+        let v = provider
+            .validar_modelo("z-ai/glm-5.3-flash:bogus")
+            .await
+            .unwrap();
+        assert_eq!(
+            estado.posts.load(Ordering::SeqCst) - p0,
+            0,
+            "sufixo desconhecido nao sonda"
+        );
+        assert_eq!(v, ValidacaoDeModelo::Ausente);
+
+        // Id de catalogo com `:` (`:free` listado): validado pelo catalogo, 0 POST.
+        let p0 = estado.posts.load(Ordering::SeqCst);
+        let v = provider.validar_modelo("meta-llama/x:free").await.unwrap();
+        assert_eq!(
+            estado.posts.load(Ordering::SeqCst) - p0,
+            0,
+            ":free vem do catalogo, sem sonda"
+        );
+        assert_eq!(v, ValidacaoDeModelo::ListadoForaDaCurada);
+
+        // Provider que NAO e OpenRouter: `:floor` nao e recusado nem sondado.
+        let g0 = estado.gets.load(Ordering::SeqCst);
+        let p0 = estado.posts.load(Ordering::SeqCst);
+        let nativo = OpenAiProvider::new("sk-test", None, Some(format!("{url}/api/v1")));
+        let v = nativo
+            .validar_modelo("z-ai/glm-5.3-flash:floor")
+            .await
+            .unwrap();
+        assert_eq!(v, ValidacaoDeModelo::SemListagem);
         assert_eq!(estado.gets.load(Ordering::SeqCst) - g0, 0);
         assert_eq!(estado.posts.load(Ordering::SeqCst) - p0, 0);
 
