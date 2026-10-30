@@ -74,6 +74,59 @@ fn efeito_da_validacao(v: &ValidacaoDeModelo) -> EfeitoTrocaDeModelo {
     }
 }
 
+/// #1752/#1764: a nota que acompanha uma troca validada por sonda. O modelo
+/// ativo continua sendo a string pedida (vai intacta ao OpenRouter); a nota só
+/// diz que a validação custou uma chamada de 1 token e qual modelo ela resolve
+/// hoje, quando o OpenRouter informou. Um preset (`@preset/<slug>`) e uma
+/// variante de roteamento (`<base>:floor`) ganham textos distintos — a variante
+/// nomeia o sufixo. Função pura para o teste fixar sem provider de verdade.
+fn nota_de_sonda(model: &str, validacao: &ValidacaoDeModelo) -> String {
+    let resolvido = match validacao {
+        ValidacaoDeModelo::ValidadoPorSonda { modelo_resolvido } => modelo_resolvido.as_deref(),
+        _ => None,
+    };
+    if let Some(variante) = garraia_agents::variante_do_openrouter(model) {
+        match resolvido {
+            Some(m) => format!(
+                "  (variante `:{}` do OpenRouter validada com uma chamada real de 1 token; resolve hoje para {m})",
+                variante.sufixo
+            ),
+            None => format!(
+                "  (variante `:{}` do OpenRouter validada com uma chamada real de 1 token; o OpenRouter nao informou o modelo resolvido)",
+                variante.sufixo
+            ),
+        }
+    } else {
+        match resolvido {
+            Some(m) => format!(
+                "  (preset do OpenRouter validado com uma chamada real de 1 token; resolve hoje para {m})"
+            ),
+            None => "  (preset do OpenRouter validado com uma chamada real de 1 token; o OpenRouter nao informou o modelo resolvido)".to_string(),
+        }
+    }
+}
+
+/// #1764: a string recusada parece uma variante de roteamento com sufixo
+/// desconhecido? So faz sentido no OpenRouter — nao nas tags do Ollama
+/// (`qwen3:8b`) nem no llama.cpp. Verdadeiro quando a string nao e um preset,
+/// nao e uma variante conhecida, e tem um `:<sufixo>` sobre uma base em forma de
+/// id do OpenRouter (`<autor>/<modelo>`, com uma barra e sem `@`). Função pura
+/// para o teste fixar.
+fn sufixo_de_roteamento_desconhecido(provider_name: &str, model: &str) -> bool {
+    if provider_name.contains("ollama") || provider_name.contains("llamacpp") {
+        return false;
+    }
+    if garraia_agents::preset_do_openrouter(model).is_some()
+        || garraia_agents::variante_do_openrouter(model).is_some()
+    {
+        return false;
+    }
+    model
+        .rsplit_once(':')
+        .map(|(base, _)| base.contains('/') && !base.contains('@'))
+        .unwrap_or(false)
+}
+
 /// ANSI color helpers
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
@@ -2218,6 +2271,18 @@ pub async fn run_chat(
                                 ),
                                 &mut io::stdout(),
                             );
+                        } else if sufixo_de_roteamento_desconhecido(&provider_name, &resolved) {
+                            // #1764: a string tem um `:<sufixo>` sobre uma base
+                            // em forma de id do OpenRouter, mas o sufixo nao e
+                            // uma variante de roteamento conhecida. Diz quais
+                            // sao, e que `:free`/`:thinking`/`:extended` sao ids
+                            // do catalogo (nao sufixos de roteamento).
+                            renderer.handle(
+                                UiEvent::Hint(
+                                    "sufixos de roteamento aceitos: :floor, :nitro, :online, :exacto; :free/:thinking/:extended vem do catalogo",
+                                ),
+                                &mut io::stdout(),
+                            );
                         }
                     }
                     EfeitoTrocaDeModelo::Aplicar => {
@@ -2262,22 +2327,16 @@ pub async fn run_chat(
                         );
                     }
                     EfeitoTrocaDeModelo::AplicarComNotaDeSonda => {
-                        // #1752: o modelo ativo continua sendo o PRESET (vai
-                        // intacto ao OpenRouter); a nota so diz qual modelo ele
-                        // resolve hoje, quando o OpenRouter informou.
+                        // #1752/#1764: o modelo ativo continua sendo a string
+                        // pedida (preset ou variante, vai intacta ao
+                        // OpenRouter); a nota so diz qual modelo ela resolve
+                        // hoje, quando o OpenRouter informou.
+                        let nota = nota_de_sonda(&resolved, &validacao);
                         model_name = resolved;
                         renderer.handle(
                             UiEvent::Hint(&format!("Modelo alterado para: {model_name}")),
                             &mut io::stdout(),
                         );
-                        let nota = match &validacao {
-                            ValidacaoDeModelo::ValidadoPorSonda {
-                                modelo_resolvido: Some(m),
-                            } => format!(
-                                "  (preset do OpenRouter validado com uma chamada real de 1 token; resolve hoje para {m})"
-                            ),
-                            _ => "  (preset do OpenRouter validado com uma chamada real de 1 token; o OpenRouter nao informou o modelo resolvido)".to_string(),
-                        };
                         renderer.handle(UiEvent::Hint(&nota), &mut io::stdout());
                         renderer.handle(
                             UiEvent::Hint(&format!(
@@ -4683,6 +4742,73 @@ mod persist_tests {
             }),
             EfeitoTrocaDeModelo::AplicarComNotaDeSonda
         );
+    }
+
+    /// #1764: a nota da sonda distingue preset de variante. A variante nomeia o
+    /// sufixo e, com `modelo_resolvido`, diz para onde resolve hoje; sem ele,
+    /// diz que o OpenRouter nao informou. O preset mantem o texto do #1752.
+    #[test]
+    fn nota_de_sonda_distingue_preset_de_variante() {
+        let resolvido = ValidacaoDeModelo::ValidadoPorSonda {
+            modelo_resolvido: Some("z-ai/glm-5.3-flash".to_string()),
+        };
+        let sem_nome = ValidacaoDeModelo::ValidadoPorSonda {
+            modelo_resolvido: None,
+        };
+
+        // Variante: nomeia o sufixo e o modelo resolvido.
+        let nota = nota_de_sonda("z-ai/glm-5.3-flash:floor", &resolvido);
+        assert!(nota.contains("variante `:floor`"), "{nota}");
+        assert!(
+            nota.contains("resolve hoje para z-ai/glm-5.3-flash"),
+            "{nota}"
+        );
+
+        // Variante sem nome resolvido.
+        let nota = nota_de_sonda("z-ai/glm-5.3-flash:nitro", &sem_nome);
+        assert!(nota.contains("variante `:nitro`"), "{nota}");
+        assert!(nota.contains("nao informou o modelo resolvido"), "{nota}");
+
+        // Preset: texto do #1752, sem "variante".
+        let nota = nota_de_sonda("z-ai/glm-5.3-flash@preset/x", &resolvido);
+        assert!(nota.contains("preset do OpenRouter validado"), "{nota}");
+        assert!(!nota.contains("variante"), "{nota}");
+    }
+
+    /// #1764: a dica de recusa so aparece para uma base em forma de id do
+    /// OpenRouter com sufixo desconhecido — nunca para preset, variante
+    /// conhecida, tag do Ollama, ou base sem barra.
+    #[test]
+    fn dica_de_sufixo_de_roteamento_so_para_variante_desconhecida() {
+        assert!(sufixo_de_roteamento_desconhecido(
+            "openrouter",
+            "z-ai/glm-5.3-flash:bogus"
+        ));
+        // `:free` e id do catalogo — se a base falhar, a dica ainda ajuda.
+        assert!(sufixo_de_roteamento_desconhecido(
+            "openrouter",
+            "meta-llama/x:free"
+        ));
+
+        // Variante conhecida nao dispara a dica (ela so chega aqui se a base
+        // estiver ausente, e ai a dica generica basta).
+        assert!(!sufixo_de_roteamento_desconhecido(
+            "openrouter",
+            "z-ai/glm-5.3-flash:floor"
+        ));
+        // Preset tem a propria dica.
+        assert!(!sufixo_de_roteamento_desconhecido(
+            "openrouter",
+            "z-ai/x@preset/y"
+        ));
+        // Tag do Ollama usa `:` e nao e id do OpenRouter.
+        assert!(!sufixo_de_roteamento_desconhecido("ollama", "qwen3:8b"));
+        assert!(!sufixo_de_roteamento_desconhecido("openrouter", "qwen3:8b"));
+        // Sem `:` nenhum.
+        assert!(!sufixo_de_roteamento_desconhecido(
+            "openrouter",
+            "openai/gpt-4o"
+        ));
     }
 
     // ── #1300: /resume volta ao ultimo turno interrompido ──────────────────

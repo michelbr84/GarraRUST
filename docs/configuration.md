@@ -431,6 +431,34 @@ in two shapes: the pure form `@preset/<slug>` and the based form
   over MCP, list the literal preset (e.g. `z-ai/glm-5.3-flash@preset/x`) — the
   base alone does not cover it, because a preset can change both model and cost.
 
+#### Routing variants
+
+OpenRouter also accepts **routing suffixes** on a catalog model —
+`<author>/<model>:<variant>` — that steer which provider serves the request:
+`:floor` (cheapest provider), `:nitro` (highest throughput), `:online` (web
+search) and `:exacto` (exact provider). Like presets, they do **not** appear in
+`GET /models`, so `/model` validates them separately (issue #1764):
+
+- The list is **closed** — only `:floor`, `:nitro`, `:online`, `:exacto`. A
+  suffix outside it is refused with a hint. `:free`, `:thinking` and `:extended`
+  are **not** routing variants: they are catalog ids, validated by plain
+  equality against `GET /models` (no extra call).
+- `/model` checks the **base** `<author>/<model>` against the catalog first
+  (free): a base that is absent is refused **without** any POST. A present base
+  is validated with **one real minimal call** (`POST /chat/completions`,
+  `max_tokens: 1`) of the **whole** string, exactly like a preset — one probe
+  per `/model`, never per turn.
+- **Cost**: the probe carries a small charge and is subject to rate limits; a
+  `429`/`5xx`/network error keeps the current model. `:online` in particular
+  bills a **web search** on that probe, so validating `<model>:online` costs a
+  search even though only one token is requested.
+- `garra ask --model <model>:floor` routes to OpenRouter **without** the
+  validation call (it is one-shot) — the base already has a single `/`, so the
+  router treats it as an ordinary OpenRouter id.
+- `GARRAIA_MCP_MODEL_ALLOWLIST` compares the **whole string**: to allow a variant
+  over MCP, list the literal `<model>:<variant>` — the base alone does not cover
+  it, because the suffix changes routing (and, for `:online`, cost).
+
 > GAR-579 — esta mesma precedência é consumida por
 > [`garra ask`](cli-ask.md), o comando não-interativo. Tanto `garra chat`
 > quanto `garra ask` compartilham `chat::select_explicit_provider` /

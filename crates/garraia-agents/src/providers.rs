@@ -106,6 +106,54 @@ fn base_e_id_simples_do_openrouter(base: &str) -> bool {
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'/' | b'-'))
 }
 
+/// #1764: uma variante de roteamento do OpenRouter reconhecida numa string de
+/// modelo. São atalhos que o OpenRouter resolve em tempo de requisição e que
+/// **não** aparecem em `GET /models`: `:floor` (provider mais barato), `:nitro`
+/// (maior throughput), `:online` (busca web) e `:exacto` (provider exato). A
+/// base `<autor>/<modelo>` é um id simples do OpenRouter.
+///
+/// `base` e `sufixo` apontam para dentro da string original (sem alocar); a
+/// string inteira continua sendo o identificador que vai intacto ao OpenRouter
+/// e o que as allowlists comparam por igualdade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VarianteDoOpenRouter<'a> {
+    /// A base `<autor>/<modelo>` antes do `:<sufixo>` de roteamento.
+    pub base: &'a str,
+    /// O sufixo de roteamento (sem o `:`): `floor`/`nitro`/`online`/`exacto`.
+    pub sufixo: &'a str,
+}
+
+/// #1764: reconhece uma variante de roteamento do OpenRouter numa string de
+/// modelo (`<autor>/<modelo>:<sufixo>`).
+///
+/// Separa pelo **último** `:` (`rsplit_once`), aceita o sufixo só se estiver na
+/// lista fechada `["floor", "nitro", "online", "exacto"]`, e exige que a base
+/// seja um id simples do OpenRouter ([`base_e_id_simples_do_openrouter`]:
+/// exatamente uma `/`, segmentos não vazios, sem `@`). Qualquer `@` na string
+/// devolve `None` — um preset (`...@preset/<slug>`) nunca é uma variante.
+///
+/// Como a base pode trazer um `:` próprio (ex.: `meta-llama/x:free`), a divisão
+/// pelo último `:` deixa `:free`/`:thinking`/`:extended` **na base**: eles são
+/// ids do catálogo, não sufixos de roteamento. Por isso `meta-llama/x:free`
+/// sozinho devolve `None` (o `/model` o valida por igualdade no catálogo),
+/// enquanto `meta-llama/x:free:floor` é a variante `:floor` sobre a base
+/// `meta-llama/x:free`.
+pub fn variante_do_openrouter(model: &str) -> Option<VarianteDoOpenRouter<'_>> {
+    const SUFIXOS: [&str; 4] = ["floor", "nitro", "online", "exacto"];
+    // Um preset (`@preset/`) — e qualquer outro `@` — nunca é uma variante.
+    if model.contains('@') {
+        return None;
+    }
+    let (base, sufixo) = model.rsplit_once(':')?;
+    if !SUFIXOS.contains(&sufixo) {
+        return None;
+    }
+    if !base_e_id_simples_do_openrouter(base) {
+        return None;
+    }
+    Some(VarianteDoOpenRouter { base, sufixo })
+}
+
 /// Trait para integrações com provedores de LLM (Anthropic, OpenAI, Ollama, etc.).
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
@@ -379,6 +427,41 @@ pub fn status_http_do_erro(err: &Error) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1764: o parser de variante aceita as 4 variantes com base simples,
+    /// peela so o ultimo `:` (um `:free` fica na base), e recusa sufixo fora da
+    /// lista, base ausente/invalida e qualquer `@`.
+    #[test]
+    fn variante_do_openrouter_aceita_a_lista_fechada_e_recusa_o_resto() {
+        for sufixo in ["floor", "nitro", "online", "exacto"] {
+            let model = format!("z-ai/glm-5.3-flash:{sufixo}");
+            let v = variante_do_openrouter(&model).expect("variante com base simples");
+            assert_eq!(v.base, "z-ai/glm-5.3-flash");
+            assert_eq!(v.sufixo, sufixo);
+        }
+
+        // `rsplit_once(':')` peela so o ultimo `:` — um `:free` na base e a
+        // variante `:floor` sobre `meta-llama/x:free`.
+        let v = variante_do_openrouter("meta-llama/x:free:floor").expect("variante sobre :free");
+        assert_eq!(v.base, "meta-llama/x:free");
+        assert_eq!(v.sufixo, "floor");
+
+        for ruim in [
+            "z-ai/glm-5.3-flash:bogus",      // sufixo fora da lista fechada
+            "meta-llama/x:free",             // id do catalogo, nao e variante
+            ":floor",                        // sufixo sem base
+            "a/b/c:floor",                   // base com duas barras
+            "glm-flash:floor",               // base sem barra
+            "z-ai/glm-5.3-flash",            // sem sufixo nenhum
+            "x:floor@preset/y",              // `@` nunca e variante (e um preset mal formado)
+            "z-ai/glm-5.3-flash@preset/foo", // preset com base
+        ] {
+            assert!(
+                variante_do_openrouter(ruim).is_none(),
+                "{ruim} deveria ser recusado"
+            );
+        }
+    }
 
     /// #1726: o `user_id` do OpenRouter nao sobrevive a sanitizacao; a frase
     /// do provider e o `code` sobrevivem.

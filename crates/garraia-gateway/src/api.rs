@@ -1554,6 +1554,9 @@ mod slash_dispatch_tests {
             // #1752: presets do OpenRouter, puro e com base.
             "@preset/x",
             "z-ai/x@preset/y",
+            // #1764: variante de roteamento do OpenRouter (o `:` ja era aceito
+            // pelo charset; regressao para garantir que segue passando).
+            "z-ai/x:floor",
         ] {
             let ok =
                 dispatch_slash_command(&st, "s1", &format!("/model {good}")).expect("capturado");
