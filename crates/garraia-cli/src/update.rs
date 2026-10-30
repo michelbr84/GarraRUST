@@ -130,8 +130,19 @@ pub async fn run_update(yes: bool) -> Result<bool> {
     let latest = strip_v(&release.tag_name);
     let current = current_version();
 
-    if latest == current {
-        println!("Already up to date (v{current}).");
+    // #1772: o #1320 corrigiu o convite para rebaixar no AVISO
+    // (`check_for_update_notice`), mas o `update` em si continuou comparando
+    // por igualdade — um binario a frente do canal (`0.5.0` contra `latest`
+    // `0.4.10`, o caso do rc1) recebia "Update to v0.4.10? [Y/n]" com
+    // default(true). Mesmo gate do aviso: so `latest > current` oferece.
+    if !release_is_newer(current, latest) {
+        if latest == current {
+            println!("Already up to date (v{current}).");
+        } else {
+            println!(
+                "You are running v{current}, which is newer than the stable channel (v{latest}). Nothing to do."
+            );
+        }
         save_check_cache(latest, release.body.as_deref().unwrap_or(""));
         return Ok(false);
     }
@@ -567,6 +578,40 @@ mod update_notice_tests {
         assert_eq!(parse_release("0.4.3.1"), None);
         assert_eq!(parse_release("0.4.x"), None);
         assert_eq!(parse_release("0.5.0-rc1"), None);
+    }
+
+    /// #1772: o `run_update` compartilha o gate do aviso — o caso real do rc1
+    /// (`0.5.0` instalado, canal em `0.4.10`) nao pode chegar ao prompt
+    /// "Update to v0.4.10? [Y/n]". O corpo de `run_update` tem de citar
+    /// `release_is_newer` antes de qualquer oferta; a igualdade so decide a
+    /// frase ("Already up to date" vs "Nothing to do").
+    #[test]
+    fn run_update_sofre_o_mesmo_gate_do_aviso_antes_do_prompt() {
+        let source = include_str!("update.rs");
+        let corpo: String = source
+            .split("pub async fn run_update")
+            .nth(1)
+            .and_then(|r| r.split("pub async fn run_check_binaries").next())
+            .expect("corpo de run_update delimitado no fonte")
+            .lines()
+            // Comentarios fora da varredura (o texto acima cita o prompt).
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let pos_gate = corpo
+            .find("release_is_newer")
+            .expect("run_update deve chamar release_is_newer");
+        let pos_prompt = corpo
+            .find("Update to v")
+            .expect("o prompt de confirmacao deve existir");
+        assert!(
+            pos_gate < pos_prompt,
+            "o gate release_is_newer tem de preceder o prompt de oferta"
+        );
+        assert!(
+            !corpo[..pos_prompt].contains("Update to v"),
+            "nenhuma frase de oferta antes do gate"
+        );
     }
 }
 
