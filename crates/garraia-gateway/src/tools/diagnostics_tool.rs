@@ -1495,10 +1495,12 @@ mod tests {
             achar(&json, "canais.telegram").expect("telegram")["estado"],
             "degradado"
         );
-        // iMessage fora de macOS.
+        // iMessage: fora de macOS nao existe nesta plataforma; no macOS ele e
+        // suportado e, declarado sem adapter no ar, e `degradado` como o
+        // Telegram acima (`estado_do_canal("imessage", "offline")`) (#1697).
         let imessage = achar(&json, "canais.imessage").expect("imessage");
         if cfg!(target_os = "macos") {
-            assert_eq!(imessage["estado"], "nao_configurado");
+            assert_eq!(imessage["estado"], "degradado");
         } else {
             assert_eq!(imessage["estado"], "nao_suportado");
         }

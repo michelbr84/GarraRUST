@@ -229,6 +229,27 @@ para investigar; um leg que nunca recebeu runner continua terminando
 (higiene #1094) e não tire o leg macOS da matriz por conta própria: manter ou
 mover para o workflow agendado é decisão do dono, registrada na #1749.
 
+### `Unit tests (windows-latest|macos-latest)` vermelho (#1697)
+
+Este job **não é check obrigatório**: ele executa os testes unitários (`--lib`)
+fora do Linux, coisa que o `Test (windows|macos)` não faz (só compila). Vermelho
+ali não trava o merge, mas **é seu**: quase sempre é um teste novo com premissa
+POSIX. Padrões e remédios já vistos:
+
+- `"/tmp"`, `/etc/...` como caminho absoluto: no Windows é relativo. Use a forma
+  nativa de cada plataforma ou `cfg(unix)` quando o que se prova é Unix.
+- Separador em asserção de string: compare `PathBuf` (componentes), não `String`.
+- `wc -c` e afins: o PowerShell entrega CRLF ao filho.
+- Tempdir do macOS é symlink (`/var/...` → `/private/var/...`): compare canônicos.
+- `wrap_command` do sandbox sonda `docker` no host (o runner macOS não tem):
+  injete a sonda com `wrap_command_com(true, |_| true, ...)`, como os irmãos.
+- `PathBuf::push` sobre base verbatim do Windows normaliza `..` antes do jail
+  ver o caminho: monte o caminho como texto se o `..` precisa chegar à guarda.
+
+Não marque `cfg(unix)` o que a produção executa no Windows; só o que é Unix por
+natureza (sandbox, `printenv`, symlink). A promoção do job a obrigatório é
+decisão do dono, registrada na #1697.
+
 ---
 
 ## 3. Bump do wasmtime: o piso de MSRV vem junto

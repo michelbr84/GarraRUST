@@ -1331,10 +1331,12 @@ mod tests {
             .execute(&c, serde_json::json!({"command": "pwd"}))
             .await
             .unwrap();
-        let pwd = output.content.trim();
+        // `pwd` devolve o caminho fisico; no macOS o tempdir e um symlink
+        // (`/var/...` -> `/private/var/...`), entao compara-se o canonico (#1697).
+        let pwd = std::fs::canonicalize(output.content.trim()).expect("pwd canonico");
         assert_eq!(
             pwd,
-            dir.to_string_lossy().as_ref(),
+            std::fs::canonicalize(&dir).expect("dir canonico"),
             "bash must run in working_dir"
         );
         let _ = std::fs::remove_dir(&dir);
@@ -1552,17 +1554,21 @@ mod tests {
             "pipeline declarado tinha de rodar: {}",
             out.content
         );
-        // `echo garra | wc -c`: 6 bytes com LF; 7 quando o shell do host
-        // (PowerShell, no Windows) entrega CRLF ao `wc` (#1697).
+        // `echo garra | wc -c`: 6 bytes com LF. No Windows o bash tool roda via
+        // PowerShell, que entrega ao `wc` o que a codificacao de saida do host
+        // mandar: CRLF (7) ou BOM UTF-8 + CRLF (10, no runner do GitHub). O que
+        // se prova e que o pipeline declarado RODOU e produziu uma contagem;
+        // o valor exato so e estavel em Unix (#1697).
         let bytes = out
             .content
             .split_whitespace()
             .find_map(|t| t.parse::<u32>().ok());
-        assert!(
-            bytes == Some(6) || (cfg!(windows) && bytes == Some(7)),
-            "saida do pipeline: {}",
-            out.content
-        );
+        let contagem_plausivel = if cfg!(windows) {
+            bytes.is_some_and(|n| n >= 6)
+        } else {
+            bytes == Some(6)
+        };
+        assert!(contagem_plausivel, "saida do pipeline: {}", out.content);
 
         let negado = tool
             .execute(
