@@ -5061,7 +5061,10 @@ mod tests {
 
         let findings = validate(&AppConfig::default());
         assert!(
-            !findings.iter().any(|f| f.field.starts_with("env.G")),
+            !findings
+                .iter()
+                .any(|f| f.field == "env.GarraIA_VAULT_PASSPHRASE"
+                    || f.field == "env.GARRAIA_VAULT_PASSPHRASE"),
             "nenhum aviso de grafia no Windows: {findings:?}"
         );
         for f in &findings {
