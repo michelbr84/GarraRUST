@@ -271,7 +271,7 @@ Pré-voo, inventário das 64 issues e diário de execução em
 | #1462 | decisão de produto sobre a leitura `GET /api/sessions/{id}/history` (console × isolamento) |
 | #1461 | provável não-procede (`cache_roomnames` é o id da sala); confirmar num `chat.db` real |
 | #1390, #1429, #1387 | atendidas em parte; o restante é o épico Access Policy v2 (#1388) |
-| 43 issues de v0.5.0 | três épicos (Policy v2, Capability Registry, WhatsApp no Web Console) + onboarding desktop (plan 0363) — milestone a criar pelo dono |
+| 43 issues de v0.6.0 | três épicos (Policy v2, Capability Registry, WhatsApp no Web Console) + onboarding desktop (plan 0363) — renumerados de v0.5.0 para v0.6.0 em 2026-10-30 (a v0.5.0 saiu como release de comportamento + correções + CI); milestone a criar pelo dono |
 | Release | tag pelo dono depois da tabela de dogfood D1–D9 preenchida (§1.5 do runbook) |
 
 ## Concluído em 2026-09-22 — release v0.4.5: bash fail-closed, aprovação nos canais, onboarding do WhatsApp
@@ -662,7 +662,7 @@ amendment da ADR 0016. Detalhe em `docs/mobile/architecture.md`.
 | `/api/capabilities` anuncia `memory`/`learning-skills`/`projects`/`modes` | **entregue** (`capabilities.rs::feature_flags`, teste trava o contrato) |
 | APK no CI (`mobile.yml`) e na release (`build-android-apk`, best-effort) | **entregue**; assinatura de release depende dos secrets `ANDROID_KEYSTORE_*` (**ação manual do dono**) |
 | Swagger UI pre-baixado em todo job que compila o gateway (composite action) | **entregue** — o E2E de `main` caiu por isso no dia do corte da v0.3.9 |
-| Ponte Kotlin `RUN_COMMAND`, pairing por token local, foreground service | **v0.5.x** (estratégia §Fase 1, fechamento) |
+| Ponte Kotlin `RUN_COMMAND`, pairing por token local, foreground service | **v0.6.x** (estratégia §Fase 1, fechamento; era v0.5.x até 2026-10-30) |
 | Trocar `flutter_markdown` (descontinuado) por fork mantido | dívida 0.4.x |
 | Validar o APK em aparelho real (`docs/mobile-qa-checklist.md` §8) | **pendente — dono** |
 
@@ -1417,9 +1417,10 @@ foram mergeados (ver `plans/README.md` para hash e data de cada um).
 
 ## Próximos passos recomendados
 
-1. Promover `Auth Integration (test-support)` a required check do ruleset
-   (tracker interno #164): sem flakes conhecidos e o `cargo-mutants` semanal
-   está verde desde 2026-08-24 (runs #21/#22) — manter o monitoramento.
+1. ~~Promover `Auth Integration (test-support)` a required check do ruleset
+   (tracker interno #164)~~ — **feito**: é um dos 7 checks obrigatórios do
+   ruleset `Protect main` (confirmado em 2026-10-30; o `cargo-mutants` semanal
+   segue verde).
 2. Retomar o salto **rmcp 2.2→3.x** quando houver janela (tracker interno
    #163). `Cargo.lock` está em 2.2.0; o 3.x mantém
    `ContentBlock`/`Role`/`PromptMessage` e as features que usamos, mas adiciona
@@ -1428,9 +1429,10 @@ foram mergeados (ver `plans/README.md` para hash e data de cada um).
    comentário em PR, não pelo `.github/dependabot.yml`. lopdf fica em 0.44 com a
    feature `time` desligada até um release > 0.44.0 trazer o fix do upstream
    #518.
-3. Re-triage do RUSTSEC-2026-0253 (`lru` via aws-sdk-s3) até 2026-11-14 —
-   o ignore em `deny.toml`/`.cargo/audit.toml` expira em 2026-11-15 e ainda
-   cita o owner antigo (`#812 / GAR-896`; hoje tracker interno #162).
+3. ~~Re-triage do RUSTSEC-2026-0253 (`lru` via aws-sdk-s3) até 2026-11-14~~ —
+   **fechado em 2026-09-12**: `lru` 0.18.4 no `Cargo.lock`, ignore removido dos
+   dois arquivos (NOTE em `deny.toml`); as exceções vivas estão na #1667
+   (renovadas até 2026-12-31 em 2026-10-30).
 4. ~~Limpar o bloco `KNOWN_PRE_PS1_TAG` do `install-endpoints.yml` e ajustar
    `.claude/commands/garra-routine.md` para o tracker interno~~ — **feito
    2026-09-11** (ver bloco de conclusão no topo).

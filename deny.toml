@@ -149,7 +149,7 @@ ignore = [
     # nenhuma versao do notify-rust saiu de zbus 5; o gate nao pode ficar vermelho
     # no meio do release v0.5.0). O cargo-deny 0.20.2 NAO suporta chave
     # de expiracao por entrada (erro `unexpected-keys`), entao o prazo fica no
-    # `reason` e e verificado por scripts/check_deny_exceptions_expiry.py.
+    # `reason` e e verificado por scripts/security/check_deny_exceptions_expiry.py.
     # Ao vencer, renovar com nova justificativa ou remover a entrada.
     { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-12-31 (renovado 2026-10-30: notify-rust 4.18.2 segue a mais nova e ainda em zbus 5; sem upstream). Acompanhamento: #1667." },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-12-31 (renovado 2026-10-30: notify-rust 4.18.2 segue a mais nova e ainda em zbus 5; sem upstream). Acompanhamento: #1667." },

@@ -1,6 +1,6 @@
 {
   "schema": "garra.funcionalidades/v1",
-  "catalog_version": "0.4.10",
+  "catalog_version": "0.5.0",
   "language": "pt-BR",
   "notes": "Catálogo versionado de funcionalidades (#1670). Chaves estáveis em inglês (machine-readable), valores em pt-BR. availability: 'disponivel' = funciona numa instalação limpa; 'configuravel' = existe nesta versão mas exige configuração (prerequisites); 'opcional' = só existe atrás de feature de compilação ou interruptor de config (campo gate). Nada aqui descreve funcionalidade futura: só o que ESTA versão entrega. O estado da instalação (ativo/offline/agora) vem do runtime — garra_status — nunca deste arquivo.",
   "categories": [
