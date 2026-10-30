@@ -8,8 +8,9 @@
 #   * `deny.toml` controls advisories flagged by `cargo deny check
 #     advisories`. Now invoked in CI via `cargo-deny-action` default
 #     `command: check` (since GAR-458 enabled the advisories category).
-#   * **Mandatory sync (remaining mirrored IDs): RUSTSEC-2023-0071 (rsa /
-#     GAR-456). Closed history: wasmtime-wasi ×1 (GAR-685 / PR #472),
+#   * **Mandatory sync (remaining mirrored IDs): nenhum ID de vulnerabilidade; os
+#     4 unmaintained do #1667 (zbus x3, webpki-roots) sao espelhados. rsa
+#     RUSTSEC-2023-0071 (GAR-456) REMOVIDO 2026-10-30 (fora do Cargo.lock). Closed history: wasmtime-wasi ×1 (GAR-685 / PR #472),
 #     wasmtime ×15 (GAR-454), webpki ×4
 #     (GAR-455 / PR #295), lru ×1 (GAR-593 / health/202605121530),
 #     lru ×1 (GAR-896 / RUSTSEC-2026-0253, 2026-09-12 — aws-sdk-s3 1.146.1),
@@ -21,9 +22,9 @@
 #     rand RUSTSEC-2026-0097 ×1 FULLY CLOSED 2026-06-05 (health run 82 /
 #     GAR-789 plan 0262) — rand 0.7.3 gone from Cargo.lock; removed from
 #     audit.toml. deny.toml already clean since 2026-05-23.**
-#   * The 18 unmaintained-only IDs (3 directly named: derivative,
+#   * The 13 unmaintained-only IDs (3 directly named: derivative,
 #     proc-macro-error, proc-macro-error2
-#     + 10× gtk-rs + 5× unic-*) are intentionally NOT
+#     + 10× gtk-rs; the 5× unic-* left Cargo.lock 2026-10-30) are intentionally NOT
 #     mirrored in `audit.toml`. `cargo audit` auto-classifies them as
 #     "allowed warnings" and does NOT require explicit ignore.
 #     Mirroring them here in `deny.toml` is required because `cargo
@@ -73,7 +74,7 @@ ignore = [
     # Pulled transitively via: aquamarine 0.6.0 → teloxide 0.17.0 → garraia-channels,
     # and validator_derive 0.20.0 → validator 0.20.0 → garraia-auth/config/telemetry/workspace.
     # Alternatives (manyhow, proc-macro2-diagnostics) require upstream crate updates.
-    # Owner: GAR-817. Expiry: 2026-11-15. Re-evaluate when teloxide/validator upgrade.
+    # Owner: GAR-817. Expiry: 2026-12-31 (renovado 2026-10-30, #1667). Re-evaluate when teloxide/validator upgrade.
     "RUSTSEC-2026-0173", # proc-macro-error2 (transitive via teloxide+validator, no fix)
     # NOTE: RUSTSEC-2025-0052 (async-std unmaintained) CLOSED 2026-06-01.
     # Resolution: opentelemetry_sdk 0.26 → 0.32 (garraia-telemetry plan 0252 / GAR-711).
@@ -84,20 +85,9 @@ ignore = [
     # rustls-pki-types, removing rustls-pemfile entirely from the lockfile.
     # Removed from BOTH deny.toml and audit.toml per SYNC NOTE invariant.
 
-    # --- audit.toml mirrors that cargo-deny ALSO requires (vuln + unsound) ---
-    # These IDs are in `.cargo/audit.toml` but cargo-deny categorizes them
-    # differently than cargo-audit — `unsound` is deny-by-default in
-    # cargo-deny, so we must mirror them here even though `cargo audit
-    # --deny unsound` already covers them in the PR-time Security gate.
-    # Local `cargo deny --offline check` does NOT reproduce these failures
-    # because the local cargo-deny version's severity mapping differs from
-    # the cargo-deny-action@v2 used in CI; the IDs are added defensively
-    # to cover the empirical CI behavior.
-    #
-    # rsa 0.9.10 — Marvin Attack timing sidechannel. Mirror of audit.toml
-    # under GAR-456. Pulled via sqlx-mysql lockfile leak (defense-in-depth
-    # in PR-4 prevented runtime use). Expires 2026-11-15.
-    "RUSTSEC-2023-0071",
+    # NOTE: RUSTSEC-2023-0071 (rsa 0.9.10, Marvin Attack) REMOVED 2026-10-30 (#1667, trem
+    # v0.5.0): `rsa` saiu do Cargo.lock (#1703) e o ignore virava advisory-not-detected.
+    # Removido de AMBOS os arquivos no mesmo commit (SYNC NOTE).
     # NOTE: RUSTSEC-2026-0253 (lru 0.16.4 pop() panic safety, unsound) CLOSED
     # 2026-09-12 (GAR-896 / issue #812, hoje issue #162 do tracker interno).
     # Resolution: aws-sdk-s3 bumped 1.135.0 → 1.146.1; a cadeia aws-smithy
@@ -123,7 +113,7 @@ ignore = [
     # — rand 0.7.3 gone from Cargo.lock (phf_generator switched to fastrand).
     # GAR-513 glib portion remains in audit.toml. Owner: GAR-513, expiry 2026-07-31.
 
-    # --- gtk-rs unmaintained — desktop-only (10 IDs, expires 2026-11-15) ---
+    # --- gtk-rs unmaintained — desktop-only (10 IDs, expires 2026-12-31, renovado 2026-10-30 / #1667) ---
     # Pulled via tauri-runtime-wry → wry 0.54 → gtk 0.18 → atk/gdk/gtk3-macros
     # → garraia-desktop. CI excludes garraia-desktop (`--exclude garraia-desktop`)
     # so runtime risk on Linux server deploys is zero, but `cargo deny` walks
@@ -140,16 +130,9 @@ ignore = [
     "RUSTSEC-2024-0419", # gtk3-macros
     "RUSTSEC-2024-0420", # gtk-sys
 
-    # --- unic-* unmaintained — open-i18n/rust-unic discontinued (5 IDs) ---
-    # Pulled via tauri-utils 2.8 → urlpattern 0.3 → unic-ucd-ident → unic-*.
-    # Tauri 2.x uses urlpattern for permission scope matching; replacement
-    # depends on a Tauri or urlpattern crate update. Owner: GAR-430.
-    # Expires 2026-11-15.
-    "RUSTSEC-2025-0075", # unic-char-range
-    "RUSTSEC-2025-0080", # unic-common
-    "RUSTSEC-2025-0081", # unic-char-property
-    "RUSTSEC-2025-0098", # unic-ucd-version
-    "RUSTSEC-2025-0100", # unic-ucd-ident
+    # NOTE: unic-* (RUSTSEC-2025-0075/0080/0081/0098/0100) REMOVED 2026-10-30 (#1667):
+    # as cinco crates unic-* sairam do Cargo.lock e os ignores viravam
+    # advisory-not-detected. Removido de AMBOS os arquivos no mesmo commit (SYNC NOTE).
 
     # --- Excecao TEMPORARIA — issue #1662 (zip) follow-up (autorizada 19/10/2026) ---
     # Os tres abaixo sao SOMENTE `unmaintained`: as crates `zbus_names`,
@@ -162,19 +145,21 @@ ignore = [
     # corrigivel existe no major atual: notify-rust 4.18.2 (a mais nova) ainda
     # depende de zbus 5. Caminho definitivo: migrar a cadeia para zbus >= 6 quando
     # notify-rust publicar essa versao (ou trocar o backend), registrado no roadmap.
-    # PRAZO: 30 dias (ate 2026-11-18). O cargo-deny 0.20.2 NAO suporta chave
+    # PRAZO: 30 dias (ate 2026-11-18), RENOVADO em 2026-10-30 ate 2026-12-31 (#1667:
+    # nenhuma versao do notify-rust saiu de zbus 5; o gate nao pode ficar vermelho
+    # no meio do release v0.5.0). O cargo-deny 0.20.2 NAO suporta chave
     # de expiracao por entrada (erro `unexpected-keys`), entao o prazo fica no
     # `reason` e e verificado por scripts/check_deny_exceptions_expiry.py.
     # Ao vencer, renovar com nova justificativa ou remover a entrada.
-    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-11-18. Acompanhamento: #1667." },
-    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-11-18. Acompanhamento: #1667." },
-    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-11-18. Acompanhamento: #1667." },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-12-31 (renovado 2026-10-30: notify-rust 4.18.2 segue a mais nova e ainda em zbus 5; sem upstream). Acompanhamento: #1667." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-12-31 (renovado 2026-10-30: notify-rust 4.18.2 segue a mais nova e ainda em zbus 5; sem upstream). Acompanhamento: #1667." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-12-31 (renovado 2026-10-30: notify-rust 4.18.2 segue a mais nova e ainda em zbus 5; sem upstream). Acompanhamento: #1667." },
 
     # --- webpki-roots 0.26.11 (RUSTSEC-2026-0381): falso positivo do shim ---
     # 0.26.11 so reexporta webpki-roots 1.0.x (lock: `webpki-roots 1.0.10`, que
     # ja remove a raiz emSign). Sem 0.26.x corrigido; tokio-tungstenite 0.29/0.30
     # ainda o puxam. Remover quando migrarem para 1.0.x.
-    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26.11 is a shim re-exporting webpki-roots 1.0.10 (patched); no unpatched 0.26.x exists; pulled by tokio-tungstenite 0.29/0.30. EXPIRA 2026-11-20. Acompanhamento: #1667." },
+    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26.11 is a shim re-exporting webpki-roots 1.0.10 (patched); no unpatched 0.26.x exists; pulled by tokio-tungstenite 0.29/0.30. EXPIRA 2026-12-31 (renovado 2026-10-30: tokio-tungstenite 0.29/0.30 ainda puxam 0.26.11; sem 0.26.x corrigido). Acompanhamento: #1667." },
 ]
 
 [licenses]

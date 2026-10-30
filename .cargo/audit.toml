@@ -27,8 +27,9 @@
 #     rand) PLUS 19 `unmaintained-only` advisories that `cargo audit`
 #     auto-classifies as "allowed warnings" and does NOT require
 #     explicit ignore here.
-#   * **Mandatory sync (remaining mirrored IDs): RUSTSEC-2023-0071 (rsa /
-#     GAR-456). Drop atomically from BOTH files when the upstream fix lands.
+#   * **Mandatory sync (remaining mirrored IDs): nenhum ID de vulnerabilidade; os
+#     4 unmaintained do #1667 (zbus x3, webpki-roots) sao espelhados. rsa
+#     RUSTSEC-2023-0071 (GAR-456) REMOVIDO 2026-10-30 (fora do Cargo.lock desde #1703).
 #     Closed history: wasmtime ×15 (GAR-454),
 #     webpki ×4 (GAR-455 / PR #295), lru ×1 (GAR-593 / this PR),
 #     lru ×1 (GAR-896 / RUSTSEC-2026-0253, 2026-09-12 — aws-sdk-s3 1.146.1),
@@ -57,35 +58,9 @@
 
 [advisories]
 ignore = [
-    # =========================================================================
-    # GAR-456 — sqlx-mysql lockfile leak (rsa Marvin Attack timing sidechannel)
-    # =========================================================================
-    # rsa 0.9.10 — Marvin Attack (timing sidechannel on RSA decrypt).
-    # Status: ignore RETIDO honestamente. Defense-in-depth aplicado em
-    # plan 0053 PR-4 (GAR-450, 2026-04-25): `default-features = false` em
-    # todas as 5 declarações de sqlx, removendo `mysql` feature do active
-    # tree. Mas o meta-crate upstream `sqlx 0.8.6` declara `sqlx-mysql`
-    # como `optional = true` na sua dep section, então `cargo audit` walks
-    # `Cargo.lock` e continua vendo `rsa 0.9.10` (transitivo).
-    #
-    # AMENDMENT 2026-04-30 (plan personal-api-key-revogada-vectorized-
-    # matsumoto §Step 3): `jsonwebtoken 10 + rust_crypto` foi adotado para
-    # destravar Dependabot PR #103. O backend `rust_crypto` traz `rsa
-    # 0.9.10` para a árvore de produção do `garraia-auth` (segundo path de
-    # entrada além do sqlx). A invariante de segurança permanece: o
-    # GarraRUST emite e verifica APENAS HS256 (`Algorithm::HS256` em
-    # crates/garraia-auth/src/jwt.rs), que usa hmac+sha2 do RustCrypto e
-    # NÃO chama nenhum código RSA — o Marvin code path continua
-    # não-reachable. Antes era "HS256 via ring"; agora é "HS256 via
-    # hmac+sha2 RustCrypto". Mesma invariante, novo backend.
-    #
-    # Fix estrutural (em ordem de preferência):
-    #   1. `jsonwebtoken` upstream isolar `rsa` atrás de uma feature
-    #      "asymmetric" (não-default) — emitir issue lá quando relevante.
-    #   2. Refactor para `sqlx-postgres` direto OU sqlx 0.9 (fecha o path
-    #      sqlx-mysql).
-    # Tracked by: GAR-456. Expires: 2026-11-15.
-    "RUSTSEC-2023-0071",
+    # NOTE: RUSTSEC-2023-0071 (rsa 0.9.10, Marvin Attack) REMOVED 2026-10-30 (#1667, trem
+    # v0.5.0): `rsa` saiu do Cargo.lock (#1703) e o ignore virava advisory-not-detected.
+    # Removido de AMBOS os arquivos no mesmo commit (SYNC NOTE).
 
     # =========================================================================
     # GAR-454 (CLOSED 2026-04-27) — wasmtime 28 → 44 bump fechou os 15 IDs
@@ -140,7 +115,8 @@ ignore = [
     # glib 0.18.5 — `VariantStrIter` unsound Iterator impls. Pulled via
     # Tauri surface (garraia-desktop), excluded from CI builds. Zero
     # runtime risk in server deployments. Fix path: gtk-rs GTK4 migration
-    # (Tauri-side decision). Tracked by: GAR-513. Expires: 2026-11-15.
+    # (Tauri-side decision). Tracked by: GAR-513. Expires: 2026-12-31 (renovado
+    # 2026-10-30, #1667).
     "RUSTSEC-2024-0429",
 
     # NOTE: RUSTSEC-2026-0253 (lru 0.16.4 — unsound pop() panic safety) CLOSED
@@ -191,29 +167,18 @@ ignore = [
     # Pulled transitively via darling -> proc-macro-error-attr2 chain (used in
     # garraia-workspace macro derives). Zero runtime impact. Fix path: upstream
     # darling migration to proc-macro-error2 fork or direct replacement.
-    # Tracked by: GAR-817. Expires: 2026-11-15.
+    # Tracked by: GAR-817. Expires: 2026-12-31 (renovado 2026-10-30, #1667).
     "RUSTSEC-2026-0173",
 
-    # unic-char-range 0.9.0 -- unmaintained (UNIC project abandoned).
-    # unic-common 0.9.0 -- unmaintained (same).
-    # unic-char-property 0.9.0 -- unmaintained (same).
-    # unic-ucd-version 0.9.0 -- unmaintained (same).
-    # unic-ucd-ident 0.9.0 -- unmaintained (same).
-    # Pulled transitively via tauri-utils -> selectors -> cssparser -> unic chain
-    # (garraia-desktop / Tauri v2 build only, excluded from CI server builds).
-    # Zero runtime impact on server deployments. Fix path: Tauri upstream to
-    # replace unic-* with icu4x or similar; pending upstream decision.
-    # Tracked by: GAR-430. Expires: 2026-11-15.
-    "RUSTSEC-2025-0075",
-    "RUSTSEC-2025-0080",
-    "RUSTSEC-2025-0081",
-    "RUSTSEC-2025-0098",
-    "RUSTSEC-2025-0100",
+    # NOTE: unic-* (RUSTSEC-2025-0075/0080/0081/0098/0100) REMOVED 2026-10-30 (#1667):
+    # as cinco crates unic-* sairam do Cargo.lock e os ignores viravam
+    # advisory-not-detected. Removido de AMBOS os arquivos no mesmo commit (SYNC NOTE).
 
     # --- Excecao TEMPORARIA — #1667 (autorizada 19/10/2026), espelho do deny.toml ---
     # zvariant / zbus_names / zvariant_derive: SOMENTE `unmaintained` (incorporadas
     # ao zbus 6.0.0). Via tauri-plugin-notification -> notify-rust -> zbus 5
-    # (desktop apenas). EXPIRA 2026-11-18. Acompanhamento: #1667.
+    # (desktop apenas). EXPIRA 2026-12-31 (renovado 2026-10-30, espelho do
+    # deny.toml: notify-rust 4.18.2 segue em zbus 5; sem upstream). Acompanhamento: #1667.
     "RUSTSEC-2026-0370",
     "RUSTSEC-2026-0371",
     "RUSTSEC-2026-0372",
@@ -223,6 +188,7 @@ ignore = [
     # 1.0.x (Cargo.lock: depende de `webpki-roots 1.0.10`, que remove a raiz
     # emSign afetada). Nao existe 0.26.x corrigido; tokio-tungstenite 0.29 e 0.30
     # ainda o puxam. Remover quando o tokio-tungstenite migrar para 1.0.x.
+    # EXPIRA 2026-12-31 (espelho do deny.toml, renovado 2026-10-30). Acompanhamento: #1667.
     "RUSTSEC-2026-0381",
 
 ]
