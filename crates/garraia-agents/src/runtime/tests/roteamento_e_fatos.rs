@@ -149,6 +149,18 @@ pub(super) fn so_uma_barra_pode_ser_id_do_openrouter() {
     // (nao sao presets).
     assert!(pode_ser_id_do_openrouter("z-ai/glm-5.3-flash@preset/foo"));
     assert!(pode_ser_id_do_openrouter("@preset/foo"));
+
+    // #1764: uma variante de roteamento (`:floor`) nao muda a contagem de
+    // barras — `vendor/modelo:floor` segue sendo id de uma barra, roteado ao
+    // OpenRouter como qualquer outro id (o `/model` e quem valida a variante).
+    for variante in [
+        "z-ai/glm-5.3-flash:floor",
+        "vendor/x:nitro",
+        "meta-llama/x:online",
+        "a/b:exacto",
+    ] {
+        assert!(pode_ser_id_do_openrouter(variante), "{variante}");
+    }
 }
 
 /// #1752: um preset do OpenRouter (`@preset/<slug>`) e sempre roteado para o

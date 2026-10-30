@@ -232,6 +232,19 @@ falha. A string vai **intacta** ao OpenRouter, e o `GARRAIA_MCP_MODEL_ALLOWLIST`
 compara a string inteira — liste o preset literal. Ver `docs/configuration.md`
 §"Presets".
 
+#### Variantes de roteamento (#1764)
+
+O OpenRouter aceita **sufixos de roteamento** sobre um modelo do catálogo —
+`<autor>/<modelo>:<variante>` — que escolhem o provider: `:floor` (mais barato),
+`:nitro` (maior throughput), `:online` (busca web) e `:exacto` (provider exato).
+A lista é **fechada**; `:free`/`:thinking`/`:extended` **não** entram (são ids do
+catálogo, validados por igualdade). O `/model` checa a base no catálogo (grátis)
+e, se presente, valida a variante com **uma chamada real mínima** (`max_tokens`
+1) da string inteira — uma sonda por `/model`, nunca por turno. Cuidado com o
+custo: `:online` cobra **busca web** nessa sonda. `garra ask --model
+<modelo>:floor` roteia sem validar, e o `GARRAIA_MCP_MODEL_ALLOWLIST` compara a
+string inteira. Ver `docs/configuration.md` §"Routing variants".
+
 ---
 
 ## Sansa
