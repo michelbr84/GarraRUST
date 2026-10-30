@@ -115,3 +115,69 @@ async fn tts_falha_com_fallback_false_propaga_500() {
     let erro = json["error"].as_str().expect("erro presente");
     assert!(erro.starts_with("TTS synthesis failed"), "erro: {erro}");
 }
+
+/// Mock de sintetizador que SEMPRE devolve bytes: força o caminho de sucesso.
+struct TtsQueFunciona;
+
+/// Bytes crus que o mock devolve. O handler nao inspeciona o conteudo, so
+/// repassa, entao qualquer sequencia serve para pinnar o contrato de que o
+/// corpo da resposta e o WAV cru — e nao JSON com audio em base64.
+const WAV_FIXO: &[u8] = b"RIFF\x24\x00\x00\x00WAVEfmt ";
+
+#[async_trait::async_trait]
+impl garraia_voice::TtsSynthesizer for TtsQueFunciona {
+    async fn synthesize_bytes(
+        &self,
+        _text: &str,
+        _language: &str,
+    ) -> Result<Vec<u8>, garraia_voice::VoiceError> {
+        Ok(WAV_FIXO.to_vec())
+    }
+}
+
+/// Mesma montagem de `router_com_tts_que_falha`, so trocando o mock.
+fn router_com_tts_que_funciona() -> axum::Router {
+    let mut st = AppState::new(
+        AppConfig::default(),
+        Arc::new(AgentRuntime::new()),
+        ChannelRegistry::new(),
+    );
+    st.voice_client = Some(Arc::new(TtsQueFunciona));
+    let admin_store = Arc::new(Mutex::new(
+        AdminStore::in_memory().expect("in-memory admin store"),
+    ));
+    build_router(
+        Arc::new(st),
+        PushChannelStates::empty(),
+        admin_store,
+        Arc::new(vec![0u8; 32]),
+    )
+}
+
+/// Contrato de SUCESSO: a sintese bem-sucedida devolve os bytes WAV crus com
+/// `Content-Type: audio/wav` — nao um JSON com `audio` em base64. O cliente
+/// web (webchat.html `playTTS`) conta com esse content-type para tocar o blob;
+/// se a rota voltasse a mandar JSON no sucesso, o TTS da Web pararia de tocar.
+#[tokio::test]
+async fn tts_sucesso_devolve_wav_cru_com_content_type_audio() {
+    let app = router_com_tts_que_funciona();
+    let resp = app
+        .oneshot(request_base("/api/tts"))
+        .await
+        .expect("resposta do router");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .expect("content-type presente")
+        .to_str()
+        .expect("content-type ascii");
+    assert_eq!(content_type, "audio/wav");
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("corpo legivel");
+    assert_eq!(bytes.as_ref(), WAV_FIXO);
+}
