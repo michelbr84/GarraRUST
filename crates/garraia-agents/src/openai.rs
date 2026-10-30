@@ -452,27 +452,21 @@ impl LlmProvider for OpenAiProvider {
                     if let Some(data) = trimmed.strip_prefix("data: ")
                         && !data.is_empty()
                         && data != "[DONE]"
+                        && let Some(frase) = erro_no_corpo_sse(data)
                     {
-                        // Try to extract error message from JSON
-                        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(data) {
-                            let err = json_val
-                                .get("error")
-                                .or_else(|| json_val.get("message"))
-                                .and_then(|e| e.as_str())
-                                .map(|s| s.to_string());
-                            if let Some(err_msg) = err {
-                                tracing::warn!(
-                                    "openai API returned SSE error: status={}, error={}, endpoint={}",
-                                    status_code,
-                                    &err_msg[..err_msg.len().min(200)],
-                                    self.endpoint()
-                                );
-                                return Err(Error::Agent(format!(
-                                    "openai API error (SSE): status={}, error={}",
-                                    status_code, err_msg
-                                )));
-                            }
-                        }
+                        // `frase` ja vem sanitizada e truncada por caractere:
+                        // nem `user_id` do OpenRouter, nem panico em fronteira
+                        // multibyte (#1737 F5).
+                        tracing::warn!(
+                            "openai API returned SSE error: status={}, error={}, endpoint={}",
+                            status_code,
+                            frase,
+                            self.endpoint()
+                        );
+                        return Err(Error::Agent(format!(
+                            "openai API error (SSE): status={}, error={}",
+                            status_code, frase
+                        )));
                     }
                 }
             }
@@ -499,7 +493,10 @@ impl LlmProvider for OpenAiProvider {
         match serde_json::from_slice::<OpenAiResponse>(&body_bytes) {
             Ok(resp) => Ok(from_openai_response(resp)),
             Err(e) => {
-                let truncated_body = &body_str[..body_str.len().min(1000)];
+                // Corte por caractere, nunca por byte: o corpo pode terminar
+                // numa fronteira multibyte e `&s[..n]` entraria em panico
+                // (#1737 F5).
+                let truncated_body = crate::providers::truncar(&body_str, 1000);
                 tracing::warn!(
                     "failed to parse openai response: {}\nstatus={}, content-type={}, body_preview={}",
                     e,
@@ -1204,6 +1201,31 @@ fn erro_de_roteamento_openrouter(
     Some(Error::Agent(msg))
 }
 
+/// Frase de erro de um evento SSE `data:` JSON, ja sanitizada (#1737 F5).
+///
+/// Devolve `None` quando `data` nao e JSON ou nao carrega erro (nem `error`
+/// string/objeto, nem `message` no topo) — o evento nao e um erro e o loop
+/// de parsing segue para a proxima linha.
+///
+/// `{"error":{"message":..}}` e `{"error":"texto"}` passam por
+/// [`crate::providers::corpo_de_erro_sanitizado`], que extrai so a frase do
+/// provider (fora o `user_id` do OpenRouter) e trunca por caractere. Era por
+/// aqui que o objeto `{"error":{..}}` escapava sem ser reconhecido e o corpo
+/// cru acabava no `warn!` de fallback. So `{"message":".."}` no topo trunca
+/// direto com [`crate::providers::truncar`].
+fn erro_no_corpo_sse(data: &str) -> Option<String> {
+    let json_val = serde_json::from_str::<serde_json::Value>(data).ok()?;
+    match json_val.get("error") {
+        Some(e) if e.is_string() || e.is_object() => {
+            Some(crate::providers::corpo_de_erro_sanitizado(data))
+        }
+        _ => {
+            let message = json_val.get("message")?.as_str()?;
+            Some(crate::providers::truncar(message, 200))
+        }
+    }
+}
+
 /// Mensagem para um objeto de erro entregue com HTTP 200 (#1726).
 ///
 /// O OpenRouter responde `200` com `{"error":{"message":..,"code":400}}` em
@@ -1213,10 +1235,15 @@ fn erro_de_roteamento_openrouter(
 /// mesma do caminho nao-200 — antes, um modelo invalido entregue assim
 /// continuava virando 500. So a frase do provider entra; nunca o corpo.
 fn mensagem_de_erro_no_corpo_200(error: &serde_json::Value) -> String {
-    let msg = error
+    // `error` pode ser o objeto `{"message":..}` ou uma string crua
+    // (`{"error":"texto"}`). Em ambos os casos truncamos por caractere para
+    // nao repassar um corpo arbitrariamente longo (#1737 F5).
+    let bruto = error
         .get("message")
         .and_then(|m| m.as_str())
+        .or_else(|| error.as_str())
         .unwrap_or("unknown error");
+    let msg = crate::providers::truncar(bruto, 200);
     match error
         .get("code")
         .and_then(|c| c.as_u64())
@@ -1265,6 +1292,45 @@ mod tests {
             mensagem_de_erro_no_corpo_200(&serde_json::json!({})),
             "openai API error: unknown error"
         );
+    }
+
+    /// #1737 F5: erro SSE entregue como objeto `{"error":{...}}` agora e
+    /// reconhecido e sai sanitizado. Antes o `.as_str()` sobre o objeto dava
+    /// `None`, o evento passava batido, e o corpo cru — com o `user_id` do
+    /// OpenRouter — vazava no `warn!` de fallback.
+    #[test]
+    fn erro_sse_com_objeto_e_user_id_sai_sanitizado() {
+        let data = r#"{"error":{"message":"bad","code":400},"user_id":"user_30DUSuPezaeY1jmnFqymmg2ApXf"}"#;
+        let frase = erro_no_corpo_sse(data).expect("erro reconhecido");
+        assert_eq!(frase, "bad (code=400)");
+        assert!(!frase.contains("user_"), "{frase}");
+    }
+
+    /// #1737 F5: erro SSE com `error` string de caracteres multibyte nao entra
+    /// em panico — o corte por byte (`&s[..200]`) quebrava na fronteira do `é`
+    /// — e sai truncado por caractere.
+    #[test]
+    fn erro_sse_multibyte_nao_entra_em_panico() {
+        let valor = format!("a{}", "é".repeat(300));
+        let data = format!(r#"{{"error":"{valor}"}}"#);
+        let frase = erro_no_corpo_sse(&data).expect("erro reconhecido");
+        assert_eq!(frase.chars().count(), 201, "200 + o marcador: {frase}");
+        assert!(frase.ends_with('…'), "{frase}");
+    }
+
+    /// #1737 F5: `message` longa no corpo com HTTP 200 e truncada, e o
+    /// contrato `status=` que `status_http_do_erro` le continua intacto.
+    #[test]
+    fn corpo_200_com_message_longa_e_truncado_e_mantem_status() {
+        let erro = serde_json::json!({"message": "m".repeat(300), "code": 400});
+        let msg = mensagem_de_erro_no_corpo_200(&erro);
+        assert_eq!(
+            crate::providers::status_http_do_erro(&Error::Agent(msg.clone())),
+            Some(400)
+        );
+        let corpo = msg.split_once("body=").expect("prefixo body=").1;
+        assert_eq!(corpo.chars().count(), 201, "200 + o marcador: {corpo}");
+        assert!(corpo.ends_with('…'), "{msg}");
     }
 
     #[derive(Debug)]

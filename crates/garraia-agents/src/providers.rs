@@ -346,7 +346,7 @@ pub(crate) fn corpo_de_erro_sanitizado(body: &str) -> String {
 
 /// Corta em `max` caracteres (nao bytes: o corpo pode ter acento ou emoji),
 /// marcando o corte.
-fn truncar(texto: &str, max: usize) -> String {
+pub(crate) fn truncar(texto: &str, max: usize) -> String {
     if texto.chars().count() <= max {
         return texto.to_string();
     }
