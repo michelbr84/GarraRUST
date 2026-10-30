@@ -4938,8 +4938,9 @@ Corpo do skill de teste.
     /// `filesystem` (raiz = pai de todo diretorio de sessao).
     #[test]
     fn o_boot_entrega_o_jail_das_file_tools_ao_manager_mcp() {
-        // Fins de linha normalizados: o checkout do Windows e CRLF e o scan
-        // procura `"\n}\n"` (#1762).
+        // Fins de linha normalizados por coerencia com o scan irmao abaixo (que
+        // procura `"\n}\n"`); aqui o `split_once("\nmod tests {")` ja casaria
+        // sob CRLF (#1762).
         let fonte = include_str!("mod.rs").replace("\r\n", "\n");
         let producao = fonte
             .split_once("\nmod tests {")
