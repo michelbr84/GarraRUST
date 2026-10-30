@@ -1982,15 +1982,19 @@ hardware:
 
     #[test]
     fn hardware_automations_dir_absoluto_vence() {
-        let raw = r#"
-hardware:
-  automations:
-    dir: "/etc/garraia/regras"
-"#;
-        let config: AppConfig = serde_norway::from_str(raw).expect("yaml should parse");
+        // Absoluto na forma nativa: `/etc/...` nao tem letra de drive e no
+        // Windows e relativo (viraria `<data_dir>/etc/...`). Aspas simples no
+        // YAML para o `\` do Windows nao virar escape (#1762).
+        let dir = if cfg!(windows) {
+            r"C:\etc\garraia\regras"
+        } else {
+            "/etc/garraia/regras"
+        };
+        let raw = format!("hardware:\n  automations:\n    dir: '{dir}'\n");
+        let config: AppConfig = serde_norway::from_str(&raw).expect("yaml should parse");
         assert_eq!(
             config.automations_dir(),
-            Some(std::path::PathBuf::from("/etc/garraia/regras"))
+            Some(std::path::PathBuf::from(dir))
         );
     }
 

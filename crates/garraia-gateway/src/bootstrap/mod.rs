@@ -2809,6 +2809,10 @@ mod tests {
     }
 
     /// Symlink dentro da raiz apontando para fora, pelo runtime de producao.
+    // #1762: o sandbox (docker/podman/ssh) e recusado fora de Unix por desenho
+    // (`plataforma_permite_wrap`: o bash tool do Windows roda via `powershell`),
+    // entao estes testes afirmam a fiacao do config so onde o wrap existe. O
+    // fail-closed do Windows e provado em `garraia-agents` (`plataforma_nao_unix_falha_fechado`).
     #[cfg(unix)]
     #[tokio::test]
     async fn file_read_do_runtime_recusa_symlink_que_sai_da_raiz() {
@@ -3108,6 +3112,7 @@ mod tests {
         assert!(texto.contains("nenhum backend"), "{}: {texto}", tool.name());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn sandbox_do_config_chega_as_tools_de_programa_do_gateway() {
         let mut config = AppConfig::default();
@@ -3950,6 +3955,7 @@ mod tests {
     /// Fail-closed: `backend = ssh` sem host NAO vira docker, nao vira host,
     /// nao vira `mode = off`. Fica sem backend, e `wrap_command` recusa cada
     /// comando. Um fallback silencioso aqui seria pior do que o bug da #1225.
+    #[cfg(unix)]
     #[test]
     fn sandbox_ssh_sem_host_nao_constroi_backend_e_falha_fechado() {
         let mut config = AppConfig::default();
@@ -3972,6 +3978,7 @@ mod tests {
     /// `garra mcp-agent` passam. Nada aqui rebaixa a policy nem desliga as
     /// flags por conta propria: quem reconhece que ssh nao isola e o
     /// operador, com `false` explicito.
+    #[cfg(unix)]
     #[test]
     fn sandbox_ssh_com_flags_no_default_e_recusado_no_wrap() {
         let mut config = AppConfig::default();
@@ -4008,6 +4015,7 @@ mod tests {
     /// da S3 nao dispara. O que sobra depende do host (cliente ssh instalado
     /// ou nao) e os dois desfechos legitimos sao assertados — o que NAO pode
     /// acontecer e o erro de "nao consegue honrar".
+    #[cfg(unix)]
     #[test]
     fn sandbox_ssh_com_flags_em_false_explicito_passa_pela_recusa_da_s3() {
         let mut config = AppConfig::default();
@@ -4055,6 +4063,7 @@ mod tests {
     /// o token como flag (o host fica ANTES do `--`), e `-oProxyCommand=…`
     /// executaria no host LOCAL, pulando o `safety_gate`. Recusar e a
     /// resposta certa: nenhum host de verdade comeca com `-`.
+    #[cfg(unix)]
     #[test]
     fn sandbox_ssh_host_que_parece_opcao_nao_vira_backend() {
         for hostil in [
@@ -4929,7 +4938,9 @@ Corpo do skill de teste.
     /// `filesystem` (raiz = pai de todo diretorio de sessao).
     #[test]
     fn o_boot_entrega_o_jail_das_file_tools_ao_manager_mcp() {
-        let fonte = include_str!("mod.rs");
+        // Fins de linha normalizados: o checkout do Windows e CRLF e o scan
+        // procura `"\n}\n"` (#1762).
+        let fonte = include_str!("mod.rs").replace("\r\n", "\n");
         let producao = fonte
             .split_once("\nmod tests {")
             .map(|(antes, _)| antes)
@@ -4961,7 +4972,9 @@ Corpo do skill de teste.
     /// permissao e do `mkdir` (#1463).
     #[test]
     fn o_boot_cria_o_workspace_pela_funcao_compartilhada() {
-        let fonte = include_str!("mod.rs");
+        // Fins de linha normalizados: o checkout do Windows e CRLF e o scan
+        // procura `"\n}\n"` (#1762).
+        let fonte = include_str!("mod.rs").replace("\r\n", "\n");
         let producao = fonte
             .split_once("\nmod tests {")
             .map(|(antes, _)| antes)

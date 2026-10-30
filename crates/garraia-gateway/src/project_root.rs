@@ -191,8 +191,14 @@ mod tests {
         // fora dela. Quatro `..` ate `/etc` presumiam a profundidade do `/tmp`
         // do Linux; no macOS (`/private/var/folders/...`) paravam no meio e
         // viravam `Unresolvable` (#1697).
+        // No Windows a raiz canonica e verbatim (`\\?\C:\...`) e o Win32 NAO
+        // normaliza `..` em caminho verbatim: `canonicalize` falharia
+        // (`Unresolvable`). Quem digita um caminho usa a forma comum, entao o
+        // teste tambem (#1762).
+        let base = child.display().to_string();
+        let base = base.strip_prefix(r"\\?\").unwrap_or(&base).to_string();
         let sep = std::path::MAIN_SEPARATOR;
-        let escape = format!("{}{sep}..{sep}..", child.display());
+        let escape = format!("{base}{sep}..{sep}..");
         assert_eq!(
             confine_within(&escape, &[root]),
             Err(ProjectPathError::OutsideAllowedRoots)
