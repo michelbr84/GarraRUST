@@ -769,7 +769,8 @@ impl OpenAiProvider {
     }
 }
 
-/// #1752: classifica o erro da sonda de preset num veredito transacional.
+/// #1752/#1764: classifica o erro da sonda (preset ou variante de roteamento)
+/// num veredito transacional.
 ///
 /// Função pura (o status sai do texto por [`crate::providers::status_http_do_erro`]).
 /// O OpenRouter ecoa o nome do modelo na mensagem (`<model> is not a valid
@@ -777,7 +778,7 @@ impl OpenAiProvider {
 /// um preset inexistente chamado `@preset/max_tokens-x` não pode passar por
 /// "modelo existe, só o teto é baixo".
 /// - `400`/`404` cuja mensagem diz que o modelo não é válido ou não tem
-///   endpoint: o OpenRouter não reconhece o preset — recusa (`Ausente`);
+///   endpoint: o OpenRouter não reconhece o preset/variante — recusa (`Ausente`);
 /// - `400` cuja mensagem (sem o nome do modelo) cita `max_tokens` /
 ///   `max_completion_tokens`: o modelo existe, só o teto de 1 token é baixo
 ///   demais — valida sem nome resolvido;
