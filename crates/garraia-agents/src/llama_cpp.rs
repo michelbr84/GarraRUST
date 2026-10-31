@@ -151,6 +151,16 @@ impl LlamaCppProvider {
         self
     }
 
+    /// #1778: o cliente montado a partir de `timeouts` — o mesmo
+    /// `with_client` que os outros tres providers ja expunham, e que faltava
+    /// justamente no unico cujo `::new()` nao tem teto nenhum
+    /// (`Client::new()`: sem janela total e sem connect timeout). Sem ele nem
+    /// o gateway conseguia aplicar a config a este provider.
+    pub fn with_client(mut self, client: Client) -> Self {
+        self.client = client;
+        self
+    }
+
     /// Build from the `extra` field of an `LlmProviderConfig`.
     pub fn from_extra(
         model: Option<String>,
