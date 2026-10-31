@@ -139,6 +139,18 @@ impl LlmProvider for AnthropicProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            // #1779: 3xx nao explica no corpo (que e vazio) e sim no
+            // `Location`. Citado, nunca seguido (regra 14).
+            if status.is_redirection() {
+                return Err(Error::Agent(format!(
+                    "erro na API da Anthropic: {}",
+                    crate::providers::diagnostico_de_redirecionamento(
+                        status,
+                        response.headers(),
+                        "a base_url do provider",
+                    )
+                )));
+            }
             let body = response.text().await.unwrap_or_default();
             // #1726: so a frase do provider, nunca o corpo inteiro.
             return Err(Error::Agent(format!(
@@ -181,6 +193,17 @@ impl LlmProvider for AnthropicProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            // #1779: idem no braco de streaming.
+            if status.is_redirection() {
+                return Err(Error::Agent(format!(
+                    "erro na API da Anthropic: {}",
+                    crate::providers::diagnostico_de_redirecionamento(
+                        status,
+                        response.headers(),
+                        "a base_url do provider",
+                    )
+                )));
+            }
             let body = response.text().await.unwrap_or_default();
             // #1726: so a frase do provider, nunca o corpo inteiro.
             return Err(Error::Agent(format!(

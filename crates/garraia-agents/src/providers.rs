@@ -402,6 +402,60 @@ pub(crate) fn truncar(texto: &str, max: usize) -> String {
     format!("{inicio}…")
 }
 
+/// Diagnostico de uma resposta **3xx** de um endpoint remoto (#1779).
+///
+/// Redirect nao e seguido em lugar nenhum do projeto (regra 14: `vet_url` +
+/// `pinned_client` resolvem o host UMA vez e `Policy::none()` fecha o
+/// encadeamento), entao um 3xx chega aos ramos de erro escritos para 4xx/5xx —
+/// onde quem explica e o CORPO. So que corpo de 3xx e vazio e a explicacao
+/// esta no header `Location`, que ninguem lia: o operador com um `base_url`
+/// errado recebia `status=308 Permanent Redirect, body=` e nao tinha o que
+/// agir.
+///
+/// O texto comeca em `status={status}` de proposito: e o contrato que
+/// [`status_http_do_erro`] le, e cada chamador so prefixa o proprio rotulo de
+/// provider. `alvo` e o que o operador tem de corrigir ("a base_url do
+/// provider", "a URL pedida").
+///
+/// **Nao segue o redirect e nao emite requisicao nenhuma** — e so formatacao
+/// sobre headers que ja chegaram.
+pub(crate) fn diagnostico_de_redirecionamento(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    alvo: &str,
+) -> String {
+    let location = headers
+        .get(reqwest::header::LOCATION)
+        .map(|v| location_sanitizado(v.as_bytes()))
+        .unwrap_or_else(|| "<ausente>".to_string());
+    format!(
+        "status={status}, location={location}; redirects desligados por seguranca - corrija {alvo}"
+    )
+}
+
+/// O `Location` reduzido ao que pode sair do processo.
+///
+/// E dado remoto influenciavel: quem escolhe o destino e o servidor, que pode
+/// mandar controle de terminal (#995), uma credencial embutida
+/// (`https://user:senha@host`) ou um valor arbitrariamente longo. A ordem
+/// redigir -> tirar controle -> truncar e a mesma de `turn_events::sanear`, e
+/// pela mesma razao: truncar antes deixaria meia sequencia (ou meio segredo)
+/// passar sem casar. O corte e por CARACTERE — um `Location` com multibyte
+/// quebraria `&s[..n]` (#1735).
+fn location_sanitizado(bruto: &[u8]) -> String {
+    const MAX_CHARS: usize = 200;
+    // Lossy, e nao `to_str()`: um header com byte invalido ainda tem de
+    // aparecer no diagnostico, e o `\u{fffd}` nao e controle.
+    let texto = String::from_utf8_lossy(bruto);
+    let redigido = garraia_security::redact_secrets(texto.trim());
+    let limpo = crate::turn_events::sanear_controles(&redigido, false);
+    let limpo = limpo.trim();
+    if limpo.is_empty() {
+        return "<vazio>".to_string();
+    }
+    truncar(limpo, MAX_CHARS)
+}
+
 /// O status HTTP que o provider respondeu, lido da mensagem de `Error::Agent`
 /// (`"... status=400 Bad Request, ..."`). `None` para erro sem status (rede,
 /// parse, texto de outra origem) e para `Error::Transport`.
@@ -532,6 +586,78 @@ mod tests {
             )),
             None
         );
+    }
+
+    /// #1779: o diagnostico de 3xx cita o `Location` no formato que
+    /// `status_http_do_erro` le, e trata a ausencia do header.
+    #[test]
+    fn diagnostico_de_redirecionamento_cita_o_location_e_mantem_o_status() {
+        use reqwest::header::{HeaderMap, HeaderValue, LOCATION};
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            LOCATION,
+            HeaderValue::from_static("https://host/caminho?user_id=user_x&token=segredo"),
+        );
+        let msg = diagnostico_de_redirecionamento(
+            reqwest::StatusCode::PERMANENT_REDIRECT,
+            &headers,
+            "a base_url do provider",
+        );
+        assert_eq!(
+            msg,
+            "status=308 Permanent Redirect, \
+             location=https://host/caminho?user_id=user_x&token=segredo; \
+             redirects desligados por seguranca - corrija a base_url do provider"
+        );
+        // O contrato de leitura por texto continua valendo para 3xx.
+        assert_eq!(
+            status_http_do_erro(&Error::Agent(format!("openai API error: {msg}"))),
+            Some(308)
+        );
+
+        // Sem o header (3xx malformado) o diagnostico ainda diz o que fazer.
+        let msg = diagnostico_de_redirecionamento(
+            reqwest::StatusCode::MOVED_PERMANENTLY,
+            &HeaderMap::new(),
+            "a URL pedida",
+        );
+        assert!(
+            msg.starts_with("status=301 Moved Permanently, location=<ausente>;"),
+            "{msg}"
+        );
+        assert!(msg.ends_with("corrija a URL pedida"), "{msg}");
+    }
+
+    /// #1779: o `Location` e escolhido pelo servidor remoto — controle de
+    /// terminal (#995), credencial embutida e tamanho sao tratados antes de o
+    /// texto sair do processo, e o corte e por caractere (#1735).
+    #[test]
+    fn location_sanitizado_tira_controle_segredo_e_trunca_por_caractere() {
+        // Controle de terminal nao sobrevive: nem o `ESC`, nem o `\r`.
+        let limpo = location_sanitizado(b"https://host/\x1b[2J\x1b[?25lx\ry");
+        assert!(!limpo.contains('\u{1b}'), "{limpo}");
+        assert!(!limpo.contains('\r'), "{limpo}");
+        assert!(!limpo.contains("[2J"), "{limpo}");
+        assert!(!limpo.contains("?25l"), "{limpo}");
+
+        // Credencial embutida na URL e redigida.
+        let limpo = location_sanitizado(b"https://user:senha-longa@host/x");
+        assert!(!limpo.contains("senha-longa"), "{limpo}");
+        assert!(limpo.contains("[REDACTED]"), "{limpo}");
+
+        // Multibyte: corte por caractere, com marcador — nunca panico.
+        let longo = format!("https://host/{}", "é".repeat(500));
+        let limpo = location_sanitizado(longo.as_bytes());
+        assert_eq!(limpo.chars().count(), 201, "200 + o marcador");
+        assert!(limpo.ends_with('…'), "{limpo}");
+
+        // Header presente e vazio nao vira string solta no meio da frase.
+        assert_eq!(location_sanitizado(b"   "), "<vazio>");
+
+        // Byte invalido em UTF-8 ainda aparece (lossy), sem panico.
+        let limpo = location_sanitizado(&[b'h', b't', b't', b'p', b':', b'/', b'/', 0xff]);
+        assert!(limpo.starts_with("http://"), "{limpo}");
     }
 
     /// Porta fechada em loopback: o unico erro de rede que um teste pode

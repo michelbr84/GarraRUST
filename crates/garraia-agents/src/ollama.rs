@@ -69,6 +69,19 @@ pub struct OllamaProvider {
 async fn erro_de_status(res: reqwest::Response) -> Error {
     const TETO: usize = 200;
     let status = res.status();
+    // #1779: 3xx nao tem corpo para explicar — a explicacao e o `Location`, que
+    // sai citado e nunca seguido (regra 14: o client tem `Policy::none()`). O
+    // caso real e um `base_url` que responde 308 para a forma com barra final.
+    if status.is_redirection() {
+        return Error::Agent(format!(
+            "ollama error: {}",
+            crate::providers::diagnostico_de_redirecionamento(
+                status,
+                res.headers(),
+                "a base_url do provider",
+            )
+        ));
+    }
     let corpo = res.text().await.unwrap_or_default();
     let motivo = serde_json::from_str::<serde_json::Value>(&corpo)
         .ok()
