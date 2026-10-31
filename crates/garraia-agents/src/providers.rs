@@ -404,13 +404,16 @@ pub(crate) fn truncar(texto: &str, max: usize) -> String {
 
 /// Diagnostico de uma resposta **3xx** de um endpoint remoto (#1779).
 ///
-/// Redirect nao e seguido em lugar nenhum do projeto (regra 14: `vet_url` +
-/// `pinned_client` resolvem o host UMA vez e `Policy::none()` fecha o
-/// encadeamento), entao um 3xx chega aos ramos de erro escritos para 4xx/5xx —
-/// onde quem explica e o CORPO. So que corpo de 3xx e vazio e a explicacao
-/// esta no header `Location`, que ninguem lia: o operador com um `base_url`
-/// errado recebia `status=308 Permanent Redirect, body=` e nao tinha o que
-/// agir.
+/// O diagnostico NAO segue o `Location`: so formata headers ja recebidos. Os
+/// clientes principais destes providers rodam com redirect desligado
+/// (`Policy::none()` — regra 14: `vet_url` + `pinned_client` resolvem o host
+/// UMA vez e o encadeamento fica fechado), e um 3xx deles chega aos ramos de
+/// erro escritos para 4xx/5xx — onde quem explica e o CORPO. So que corpo de
+/// 3xx e vazio e a explicacao esta no header `Location`, que ninguem lia: o
+/// operador com um `base_url` errado recebia `status=308 Permanent Redirect,
+/// body=` e nao tinha o que agir. (Clientes fora deste caminho que usam
+/// client sem policy seguem o default do reqwest — gap pre-existente,
+/// follow-up fora do escopo da #1779.)
 ///
 /// O texto comeca em `status={status}` de proposito: e o contrato que
 /// [`status_http_do_erro`] le, e cada chamador so prefixa o proprio rotulo de
@@ -463,7 +466,8 @@ fn location_sanitizado(bruto: &[u8]) -> String {
 /// Texto, e nao tipo, porque e o contrato que ja existe: `is_retryable_error`
 /// no runtime classifica 429/5xx pela mesma substring, e os providers
 /// escrevem `status={status}` ha varias versoes. Le o PRIMEIRO `status=` da
-/// mensagem; o corpo sanitizado vem depois e nao carrega outro. E o que o
+/// mensagem; o que vem depois (corpo sanitizado ou, desde a #1779, o
+/// `Location`) nao pode sequestrar a leitura. E o que o
 /// gateway usa para responder 400 em vez de 500 quando o erro e do pedido
 /// (#1726).
 pub fn status_http_do_erro(err: &Error) -> Option<u16> {
