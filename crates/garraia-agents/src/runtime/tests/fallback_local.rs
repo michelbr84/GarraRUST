@@ -177,7 +177,11 @@ pub(super) async fn transporte_no_primario_cai_para_o_fallback_em_batch() {
     let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Transporte);
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (resposta, quem) = runtime
+    let RespostaDoCircuito {
+        resp: resposta,
+        provider: quem,
+        ..
+    } = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback local tem de completar o turno");
@@ -268,7 +272,7 @@ pub(super) async fn transporte_nao_queima_o_orcamento_de_retry() {
     let tentativas = |falha| async move {
         let (runtime, primario) = runtime_com_fallback_local(falha);
         let como_dyn: Arc<dyn LlmProvider> = primario.clone();
-        let (_, quem) = runtime
+        let RespostaDoCircuito { provider: quem, .. } = runtime
             .complete_reportando_provider(&como_dyn, &pedido_simples())
             .await
             .expect("as duas classes acabam no fallback local");
@@ -432,7 +436,7 @@ pub(super) async fn fallback_nao_herda_o_modelo_do_primario_em_batch() {
     let (runtime, primario, fallback) = runtime_com_fallback_que_anota();
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (_resposta, quem) = runtime
+    let RespostaDoCircuito { provider: quem, .. } = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback completa o turno");
@@ -510,7 +514,7 @@ pub(super) async fn credencial_recusada_cai_para_o_fallback_em_batch() {
     let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Credencial);
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (_, quem) = runtime
+    let RespostaDoCircuito { provider: quem, .. } = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback local tem de completar o turno");
@@ -677,6 +681,11 @@ pub(super) async fn credencial_recusada_fica_anotada_para_o_health_em_streaming(
     assert!(runtime.recusa_de_credencial("ollama").is_none());
 }
 
+// ─── #1776: 200 vazio nao e sucesso ─────────────────────────────────────
+//
+// Os testes deste tema vivem em `ok_vazio.rs`, ao lado (o ratchet acusa o
+// contrário no PR: um arquivo por tema, teto de 700 linhas).
+
 /// Criterio de aceitacao da #1743: um turno que passa expira a recusa - nos
 /// dois caminhos.
 #[tokio::test(start_paused = true)]
@@ -688,7 +697,7 @@ pub(super) async fn turno_que_passa_expira_a_recusa_de_credencial() {
     runtime.set_fallback_providers(vec!["ollama".to_string()]);
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (_, quem) = runtime
+    let RespostaDoCircuito { provider: quem, .. } = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback local completa o turno");
@@ -696,7 +705,7 @@ pub(super) async fn turno_que_passa_expira_a_recusa_de_credencial() {
     assert!(runtime.recusa_de_credencial("openai").is_some());
 
     primario.aceitar();
-    let (_, quem) = runtime
+    let RespostaDoCircuito { provider: quem, .. } = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("com a chave nova o primario responde");
@@ -749,7 +758,7 @@ pub(super) async fn recusa_403_fica_anotada_com_o_proprio_status() {
     let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Permissao);
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (_, quem) = runtime
+    let RespostaDoCircuito { provider: quem, .. } = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback local completa o turno");
