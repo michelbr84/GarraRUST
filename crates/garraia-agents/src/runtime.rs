@@ -3773,7 +3773,16 @@ impl AgentRuntime {
                         portao.restringe_por_whitelist(),
                         execucao,
                     );
-                    match timeout(budget.timeout(), execucao).await {
+                    // #1780: ferramenta que declara teto proprio (LLM por
+                    // dentro, p.ex. o `code_review`) nao morre no teto do
+                    // modo antes do bound que ela mesma respeita — ver
+                    // `teto_efetivo`. Sem teto declarado, vale o do modo,
+                    // como sempre.
+                    let teto = crate::execution_budget::teto_efetivo(
+                        budget.timeout(),
+                        tool.teto_proprio(),
+                    );
+                    match timeout(teto, execucao).await {
                         Ok(result) => result.unwrap_or_else(|e| ToolOutput::error(e.to_string())),
                         // #1417: o prefixo e o que o breaker reconhece
                         // como falha transitoria.
