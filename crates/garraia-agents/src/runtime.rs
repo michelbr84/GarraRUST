@@ -4283,8 +4283,8 @@ impl AgentRuntime {
         let mut ultima_vazia: Option<(LlmResponse, String)> = None;
         let mut uso_descartado: Option<Usage> = None;
         // Contagem de vazias no laco do primario, para a decisao de re-tentar
-        // (um vazio pode ser transitorio; o segundo vazio seguido cai direto
-        // no fallback).
+        // (um vazio pode ser transitorio; o segundo vazio no laco — mesmo com
+        // erro reintentavel no meio — cai direto no fallback).
         let mut vazias_no_primario: u32 = 0;
         // #1776: o breaker do primario recebe UMA falha por TURNO de vazias,
         // nao uma por tentativa — o registro acontece uma unica vez, depois do
@@ -4313,7 +4313,7 @@ impl AgentRuntime {
                         vazio_no_primario = true;
                         vazias_no_primario += 1;
                         // Um vazio pode ser transitorio (provedor "pensando"
-                        // demais). O segundo vazio seguido e deterministico o
+                        // demais). O segundo vazio no laco e deterministico o
                         // bastante para nao queimar o orcamento inteiro —
                         // precedente do #1249 para transporte: repetir o que
                         // nao muda queima chamadas faturadas e segundos de
