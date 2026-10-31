@@ -5,6 +5,9 @@ pub mod mcp;
 pub mod a2a;
 pub mod anthropic;
 pub mod auto_router;
+/// #1778: o cliente HTTP dos providers a partir de `timeouts`, compartilhado
+/// entre o bootstrap do gateway e a CLI.
+pub mod cliente_llm;
 pub mod context_policy;
 #[cfg(feature = "dev-echo-provider")]
 pub mod echo;
