@@ -135,6 +135,23 @@ pub const ENV_TOOL_TIMEOUT: &str = "GARRA_TOOL_TIMEOUT_SECS";
 /// Acima disto o valor quase certamente é engano — ver [`timeout_configurado`].
 const TIMEOUT_SUSPEITO_SECS: u64 = 3600;
 
+/// O teto que o wrap externo do runtime usa para uma ferramenta (#1780).
+///
+/// Sem teto proprio (o default de `Tool::teto_proprio`), e o teto do modo —
+/// que o clamp de [`ExecutionBudget::com_limites_do_modo`] so baixa, nunca
+/// levanta. Com teto proprio declarado (uma ferramenta que se auto-limita,
+/// p.ex. o `code_review`, cujo bound cobre o diff **e** o LLM de dentro),
+/// vale o **maior** dos dois: o modo nao levanta o teto de ninguem, mas
+/// tambem nao mata uma ferramenta dentro do proprio bound que ela declarou —
+/// o mesmo principio do [`timeout_configurado`] (#981: 30s fixos matam
+/// ferramenta que chama LLM por dentro), so que por ferramenta, nao global.
+pub fn teto_efetivo(
+    teto_do_modo: std::time::Duration,
+    teto_proprio: Option<std::time::Duration>,
+) -> std::time::Duration {
+    teto_proprio.map_or(teto_do_modo, |proprio| proprio.max(teto_do_modo))
+}
+
 /// O timeout efetivo: a variável de ambiente quando válida, senão o padrão.
 ///
 /// # Por que existe (#981)
@@ -244,10 +261,21 @@ impl ExecutionBudget {
     /// levaria o pior caso de ~25 para ~100 minutos.
     ///
     /// Entao o teto do padrao (que ja e configuravel pelo operador, via
-    /// `GARRAIA_TOOL_TIMEOUT_SECS` no caso do timeout) e o limite superior, e o
+    /// `GARRA_TOOL_TIMEOUT_SECS` no caso do timeout) e o limite superior, e o
     /// modo so encurta a partir dali. Quem **quer** um orcamento maior passa
     /// `max_tool_calls` explicito no runtime, que continua vencendo tudo — e
     /// esse e um knob de quem sobe o processo, nao de quem manda mensagem.
+    ///
+    /// # A excecao declarada pela propria ferramenta (#1780)
+    ///
+    /// O clamp acima vale para o teto que o runtime aplica por fora. Uma
+    /// ferramenta que se auto-limita (`Tool::teto_proprio`) declara o bound
+    /// **total** que ela respeita — diff + LLM, no caso do `code_review` — e
+    /// o wrap externo usa [`teto_efetivo`]: o maior entre o teto do modo e o
+    /// declarado. Isso nao levanta o teto do modo (o seletor do usuario segue
+    /// mandando nas outras ferramentas); so deixa de matar, antes do proprio
+    /// bound, uma ferramenta que se compromete a terminar ate la. Sem teto
+    /// proprio declarado, nada muda.
     ///
     /// O `max_per_turn` acompanha o teto da tarefa quando o modo pede menos que
     /// os 10 do padrao — um modo que so permite 3 chamadas na tarefa inteira
@@ -472,6 +500,30 @@ impl ExecutionBudget {
 
 #[cfg(test)]
 mod tests {
+
+    /// #1780: o teto efetivo — sem teto proprio vale o do modo; com teto
+    /// proprio, o maior dos dois (o modo nao levanta, mas tambem nao mata a
+    /// ferramenta dentro do bound que ela mesma respeita).
+    #[test]
+    fn teto_efetivo_nao_levanta_o_modo_nem_mata_o_bound_da_tool() {
+        use super::teto_efetivo;
+        let modo = std::time::Duration::from_secs(20);
+
+        // Default da trait: o teto do modo, como sempre.
+        assert_eq!(teto_efetivo(modo, None), modo);
+        // Tool que declara MENOS que o modo: vale o do modo — o teto proprio
+        // nunca encurta ninguem.
+        assert_eq!(
+            teto_efetivo(modo, Some(std::time::Duration::from_secs(5))),
+            modo
+        );
+        // O caso do #1780: bound total do code_review (diff + LLM) contra o
+        // teto de 20s do modo review.
+        assert_eq!(
+            teto_efetivo(modo, Some(std::time::Duration::from_secs(195))),
+            std::time::Duration::from_secs(195)
+        );
+    }
 
     /// Os limites do modo alimentam o orcamento (#979).
     ///

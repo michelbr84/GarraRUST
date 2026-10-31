@@ -116,6 +116,22 @@ pub trait Tool: Send + Sync {
     fn disponibilidade(&self) -> Disponibilidade {
         Disponibilidade::Disponivel
     }
+
+    /// #1780: o teto **total** que esta ferramenta se compromete a respeitar,
+    /// quando ela tem um. O wrap externo do runtime mata toda ferramenta no
+    /// teto do modo (`ExecutionBudget::timeout`) — e isso matava o
+    /// `code_review`, que chama um LLM por dentro e leva 30-120s de rotina
+    /// contra um teto de modo de 20s. Quem se auto-limita declara aqui o
+    /// bound completo (todas as etapas somadas) e o runtime usa o **maior**
+    /// entre o teto do modo e este — ver
+    /// `execution_budget::teto_efetivo`. O default e `None`: sem teto
+    /// proprio, vale o do modo, como sempre.
+    ///
+    /// Sync e barata por contrato (como [`Tool::disponibilidade`]): le campos
+    /// da ferramenta, nunca faz I/O.
+    fn teto_proprio(&self) -> Option<std::time::Duration> {
+        None
+    }
 }
 
 /// O que [`Tool::disponibilidade`] responde.
