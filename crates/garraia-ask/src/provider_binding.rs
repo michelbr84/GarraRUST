@@ -156,6 +156,12 @@ pub struct ProviderBinding {
     base_url: Option<String>,
     api_key: Option<String>,
     model: Option<String>,
+    /// #1778: a janela de timeout DESSA MESMA entrada
+    /// (`llm.<nome>.timeout_secs`), pelo mesmo motivo que o endpoint e a
+    /// credencial saem dela: o teto de tempo descreve aquele host, nao o
+    /// tipo. `None` quando nenhuma entrada descreve o provider — ai vale a
+    /// janela global.
+    timeout_secs: Option<u64>,
 }
 
 /// `Debug` a mao: a credencial nunca aparece, nem num `{:?}` de teste que
@@ -168,6 +174,7 @@ impl fmt::Debug for ProviderBinding {
             .field("base_url", &self.base_url)
             .field("api_key_set", &self.api_key.is_some())
             .field("model", &self.model)
+            .field("timeout_secs", &self.timeout_secs)
             .finish()
     }
 }
@@ -195,6 +202,12 @@ impl ProviderBinding {
 
     pub fn model(&self) -> Option<&str> {
         self.model.as_deref()
+    }
+
+    /// #1778: a janela propria da entrada, para o chamador afirmar qual teto
+    /// este vinculo leva ao cliente HTTP.
+    pub fn timeout_secs(&self) -> Option<u64> {
+        self.timeout_secs
     }
 
     /// Credencial exposta so para os testes afirmarem QUAL chave foi
@@ -239,6 +252,8 @@ impl ProviderBinding {
             base_url: None,
             api_key: env_credential(kind, env),
             model: None,
+            // Sem entrada nao ha janela propria: vale a global.
+            timeout_secs: None,
         }
     }
 }
@@ -264,6 +279,7 @@ pub fn bind_entry(key: &str, cfg: &LlmProviderConfig, env: Env<'_>) -> ProviderB
         base_url,
         api_key,
         model: non_empty(cfg.model.as_deref()),
+        timeout_secs: cfg.timeout_secs(),
     }
 }
 
@@ -350,25 +366,42 @@ pub fn bind_autodetect(config: &AppConfig, kind: &str, env: Env<'_>) -> Option<P
 /// * `url_override` e o `--url` da linha de comando e so vale para o
 ///   `llamacpp`, que nao tem credencial: aplicado a um tipo com chave, ele
 ///   mandaria a chave da entrada para um endereco avulso.
+/// * `cliente` e o cliente compartilhado de
+///   [`garraia_agents::cliente_llm::cliente_compartilhado`], montado pelo
+///   chamador a partir de `config.timeouts.llm.default_secs` (#1778). Todo
+///   arm o entrega por `with_client`, ja com a janela propria da entrada
+///   aplicada: antes disso a CLI montava os providers com `::new()` cru e
+///   `timeouts` nao chegava a nenhum deles — contra Ollama e llama.cpp nao
+///   havia teto de tempo em lugar nenhum.
 pub fn build_provider(
     binding: &ProviderBinding,
     model: &str,
     provider_id: Option<&str>,
     url_override: Option<&str>,
+    cliente: &reqwest::Client,
 ) -> Result<Arc<dyn LlmProvider>> {
     let model = Some(model.to_string());
     let base_url = binding.base_url.clone();
+    // A janela propria da entrada vence a global, como no bootstrap do
+    // gateway; sem `timeout_secs` na entrada, isto e um clone do compartilhado.
+    let cliente = garraia_agents::cliente_llm::cliente_do_llm(cliente, binding.timeout_secs);
     match binding.kind.as_str() {
-        "ollama" => Ok(Arc::new(OllamaProvider::new(model, base_url))),
+        "ollama" => Ok(Arc::new(
+            OllamaProvider::new(model, base_url).with_client(cliente),
+        )),
         "llamacpp" => {
             let base = non_empty(url_override).or(base_url);
-            Ok(Arc::new(LlamaCppProvider::new(model, base, None)))
+            Ok(Arc::new(
+                LlamaCppProvider::new(model, base, None).with_client(cliente),
+            ))
         }
         "anthropic" => {
             let Some(key) = binding.api_key.as_deref() else {
                 return Err(binding.missing_key_error());
             };
-            Ok(Arc::new(AnthropicProvider::new(key, model, base_url)))
+            Ok(Arc::new(
+                AnthropicProvider::new(key, model, base_url).with_client(cliente),
+            ))
         }
         "openai" => {
             // Backend OpenAI-compativel local (LM Studio, vLLM) costuma nao
@@ -384,7 +417,7 @@ pub fn build_provider(
                 None if custom_endpoint => KEYLESS_PLACEHOLDER.to_string(),
                 None => return Err(binding.missing_key_error()),
             };
-            let mut provider = OpenAiProvider::new(key, model, base_url);
+            let mut provider = OpenAiProvider::new(key, model, base_url).with_client(cliente);
             if let Some(id) = provider_id {
                 provider = provider.with_name(id);
             }
@@ -396,6 +429,7 @@ pub fn build_provider(
             };
             let base = base_url.unwrap_or_else(|| OPENROUTER_BASE_URL.to_string());
             let provider = OpenAiProvider::new(key, model, Some(base))
+                .with_client(cliente)
                 .with_name(provider_id.unwrap_or("openrouter"));
             Ok(Arc::new(provider))
         }
@@ -645,6 +679,14 @@ mod tests {
         None
     }
 
+    /// #1778: `build_provider` agora recebe o cliente HTTP montado a partir de
+    /// `timeouts`. Estes testes sao sobre vinculacao de credencial/modelo/base,
+    /// nao sobre a janela de tempo — um cliente cru basta aqui; a janela nova
+    /// tem os testes proprios de socket em `garraia_agents::cliente_llm`.
+    fn cliente_de_teste() -> reqwest::Client {
+        reqwest::Client::new()
+    }
+
     fn request() -> LlmRequest {
         LlmRequest {
             model: String::new(),
@@ -762,7 +804,7 @@ mod tests {
     #[test]
     fn build_refuses_a_kind_the_cli_cannot_build() {
         let b = bind_entry("sansa", &entry("sansa", Some("k"), None), &no_env);
-        let Err(err) = build_provider(&b, "m", None, None) else {
+        let Err(err) = build_provider(&b, "m", None, None, &cliente_de_teste()) else {
             panic!("tipo desconhecido deve falhar");
         };
         let msg = format!("{err}");
@@ -777,7 +819,7 @@ mod tests {
         for kind in ["anthropic", "openrouter", "openai"] {
             let b = bind_named(&AppConfig::default(), kind, &no_env).expect("tipo");
             assert!(
-                build_provider(&b, "m", None, None).is_err(),
+                build_provider(&b, "m", None, None, &cliente_de_teste()).is_err(),
                 "{kind} sem chave"
             );
         }
@@ -871,7 +913,7 @@ mod tests {
             let base = format!("{}{suffix}", mock.uri());
             let cfg = config(&[(kind, entry(kind, None, Some(&base)))]);
             let b = bind_named(&cfg, kind, &env_of(kind)).expect("entrada");
-            match build_provider(&b, "m", None, None) {
+            match build_provider(&b, "m", None, None, &cliente_de_teste()) {
                 Ok(provider) => {
                     assert_eq!(kind, "openai", "{kind} sem chave tinha de falhar fechado");
                     assert_eq!(call(&provider).await, SENTINEL);
@@ -906,7 +948,7 @@ mod tests {
             entry("openai", None, Some("https://api.openai.com/v1")),
         )]);
         let b = bind_named(&cfg, "openai", &no_env).expect("entrada");
-        let Err(err) = build_provider(&b, "m", None, None) else {
+        let Err(err) = build_provider(&b, "m", None, None, &cliente_de_teste()) else {
             panic!("api.openai.com sem chave deve falhar");
         };
         assert!(format!("{err}").contains("OPENAI_API_KEY not set"), "{err}");
@@ -1055,8 +1097,8 @@ mod tests {
             let base = format!("{}{}", mock.uri(), row.base_suffix);
             let cfg = config(&[(row.kind, entry(row.kind, row.key, Some(&base)))]);
             let b = bind_named(&cfg, row.kind, &no_env).expect("entrada");
-            let provider =
-                build_provider(&b, "m", None, None).unwrap_or_else(|e| panic!("{}: {e}", row.kind));
+            let provider = build_provider(&b, "m", None, None, &cliente_de_teste())
+                .unwrap_or_else(|e| panic!("{}: {e}", row.kind));
             let text = call(&provider).await;
             assert_eq!(
                 text, SENTINEL,

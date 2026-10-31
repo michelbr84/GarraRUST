@@ -39,13 +39,30 @@ fn fetch_policy() -> UrlPolicy {
 /// que fecha a janela de DNS rebinding.
 pub struct WebFetchTool {
     dominios_bloqueados: Vec<String>,
+    /// Override da politica de saida, **so em teste**. `IpScope::PublicOnly`
+    /// recusa loopback de proposito (e esse e o ponto da tool), entao um teste
+    /// que precise de servidor proprio nao tem como alcanca-lo sem isto. Em
+    /// producao o campo nem existe: a politica e sempre [`fetch_policy`].
+    #[cfg(test)]
+    politica: Option<UrlPolicy>,
 }
 
 impl WebFetchTool {
     pub fn new(dominios_bloqueados: Option<Vec<String>>) -> Self {
         Self {
             dominios_bloqueados: dominios_bloqueados.unwrap_or_default(),
+            #[cfg(test)]
+            politica: None,
         }
+    }
+
+    /// A politica desta chamada: [`fetch_policy`], exceto no override de teste.
+    fn politica(&self) -> UrlPolicy {
+        #[cfg(test)]
+        if let Some(p) = &self.politica {
+            return p.clone();
+        }
+        fetch_policy()
     }
 
     fn esta_bloqueado(&self, url: &str) -> bool {
@@ -104,11 +121,12 @@ impl Tool for WebFetchTool {
         // Roda ANTES de qualquer conexão. O cliente pinado também não segue
         // redirects — senão um host permitido redirecionaria para um bloqueado
         // depois da checagem.
-        let vetted = match ssrf::vet_url(url, &fetch_policy()) {
+        let politica = self.politica();
+        let vetted = match ssrf::vet_url(url, &politica) {
             Ok(v) => v,
             Err(e) => return Ok(ToolOutput::error(format!("URL recusada: {e}"))),
         };
-        let client = match ssrf::pinned_client(&vetted, &fetch_policy()) {
+        let client = match ssrf::pinned_client(&vetted, &politica) {
             Ok(c) => c,
             Err(e) => return Ok(ToolOutput::error(format!("URL recusada: {e}"))),
         };
@@ -121,6 +139,20 @@ impl Tool for WebFetchTool {
 
         let status = response.status();
         if !status.is_success() {
+            // #1779: o literal `HTTP 308` nao dizia ao modelo o que fazer. O
+            // destino sai CITADO (sanitizado, porque e escolhido pelo servidor
+            // remoto) e nunca seguido: o cliente pinado tem
+            // `Policy::none()` justamente para o redirect nao escapar do
+            // `vet_url` que validou esta URL (regra 14).
+            if status.is_redirection() {
+                return Ok(ToolOutput::error(
+                    crate::providers::diagnostico_de_redirecionamento(
+                        status,
+                        response.headers(),
+                        "a URL pedida",
+                    ),
+                ));
+            }
             return Ok(ToolOutput::error(format!("HTTP {status}")));
         }
 
@@ -197,6 +229,108 @@ mod tests {
         let tool = WebFetchTool::new(Some(vec!["evil.com".to_string()]));
         assert!(tool.esta_bloqueado("https://evil.com/path"));
         assert!(!tool.esta_bloqueado("https://good.com/path"));
+    }
+
+    /// #1779: um 3xx chegava ao modelo como o literal `HTTP 308` — sem o
+    /// destino, que e a unica informacao util. Agora o `Location` sai citado e
+    /// sanitizado, e o contador do servidor falso prova que ele **nao** foi
+    /// seguido: o cliente pinado tem `Policy::none()` justamente para o
+    /// redirect nao escapar do `vet_url` que aprovou esta URL (regra 14).
+    #[tokio::test]
+    async fn redirect_cita_o_location_sem_seguir() {
+        use axum::{
+            Router,
+            extract::State,
+            http::{StatusCode, header},
+            routing::get,
+        };
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const LOCATION: &str = "https://destino.test/pagina?user_id=user_x&token=segredo";
+
+        #[derive(Clone)]
+        struct Estado {
+            requests: Arc<AtomicUsize>,
+        }
+
+        let estado = Estado {
+            requests: Arc::new(AtomicUsize::new(0)),
+        };
+
+        let app = Router::new()
+            .route(
+                "/pagina",
+                get(|State(st): State<Estado>| async move {
+                    st.requests.fetch_add(1, Ordering::SeqCst);
+                    // Corpo vazio, como todo 3xx de verdade.
+                    (
+                        StatusCode::PERMANENT_REDIRECT,
+                        [(header::LOCATION, LOCATION)],
+                        "",
+                    )
+                }),
+            )
+            .with_state(estado.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let servidor = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        // `IpScope::PublicOnly` recusaria o proprio servidor do teste antes de
+        // qualquer conexao — e esse e o trabalho dele. So o escopo muda; o
+        // resto da politica e o de producao.
+        let tool = WebFetchTool {
+            dominios_bloqueados: Vec::new(),
+            politica: Some(UrlPolicy {
+                ip_scope: ssrf::IpScope::AllowPrivate,
+                ..fetch_policy()
+            }),
+        };
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            user_id: None,
+            is_heartbeat: false,
+            approval: crate::tools::approval::ToolApproval::None,
+            working_dir: None,
+            project_id: None,
+        };
+
+        let out = tool
+            .execute(
+                &ctx,
+                serde_json::json!({ "url": format!("http://{addr}/pagina") }),
+            )
+            .await
+            .expect("3xx e observacao soft, nao Err");
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("status=308"), "{}", out.content);
+        assert!(
+            out.content.contains(LOCATION),
+            "o destino tem de ser citado: {}",
+            out.content
+        );
+        assert!(
+            out.content.contains("corrija a URL pedida"),
+            "{}",
+            out.content
+        );
+        assert_eq!(
+            estado.requests.load(Ordering::SeqCst),
+            1,
+            "o redirect nao pode ter sido seguido"
+        );
+
+        let _ = tx.send(());
+        let _ = servidor.await;
     }
 
     /// #1296: url ausente é observação soft (`Ok` + `is_error`), não `Err`.

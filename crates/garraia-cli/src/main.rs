@@ -289,10 +289,13 @@ enum Commands {
 
         /// Optional wall-clock ceiling over the WHOLE turn (LLM + tools), in
         /// seconds, range [1, 600]. Without the flag there is no turn ceiling:
-        /// the turn runs until the model finishes. Ctrl+C still cancels it, and
-        /// the 30s per-tool limit and the providers' connect timeout stay in
-        /// force regardless. When the ceiling fires, the text already streamed
-        /// and the tool evidence stay in the history, marked as interrupted.
+        /// the turn runs until the model finishes — but each individual LLM
+        /// call is still capped by `timeouts.llm.default_secs` from config.yml
+        /// (120s by default, `0` to disable), overridable per provider with
+        /// `llm.<name>.timeout_secs`. Ctrl+C still cancels the turn, and the
+        /// 30s per-tool limit and the providers' connect timeout stay in force
+        /// regardless. When the ceiling fires, the text already streamed and
+        /// the tool evidence stay in the history, marked as interrupted.
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..=600))]
         timeout_secs: Option<u64>,
 
@@ -347,7 +350,10 @@ enum Commands {
         json: bool,
 
         /// LLM call timeout in seconds. Default 60, range [1, 600].
-        /// Exceeding the timeout returns exit code 124.
+        /// Exceeding the timeout returns exit code 124. Each provider call is
+        /// also capped by `timeouts.llm.default_secs` from the config (#1778);
+        /// when the config window fires first, the error surfaces as
+        /// provider_error (exit 69), not 124.
         #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=600))]
         timeout_secs: u64,
 

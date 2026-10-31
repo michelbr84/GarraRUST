@@ -158,6 +158,12 @@ pub fn select_explicit_provider_with_env(
     // (the MCP agent) therefore ask for `provider.provider_id()`, never for
     // the name that was typed.
     let provider_id = (!provider_binding::is_buildable_kind(name)).then_some(name);
-    let provider = provider_binding::build_provider(&binding, &model, provider_id, url_override)?;
+    // #1778: o cliente HTTP sai de `config.timeouts.llm`, como no bootstrap
+    // do gateway. Sem isto o provider vinha com o cliente padrao do `::new()`
+    // e a janela declarada no config nao valia para `garra ask`/`-p`.
+    let cliente =
+        garraia_agents::cliente_llm::cliente_compartilhado(config.timeouts.llm.default_secs);
+    let provider =
+        provider_binding::build_provider(&binding, &model, provider_id, url_override, &cliente)?;
     Ok((name.to_string(), model, provider))
 }
