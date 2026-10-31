@@ -177,7 +177,11 @@ pub(super) async fn transporte_no_primario_cai_para_o_fallback_em_batch() {
     let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Transporte);
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (resposta, quem, _) = runtime
+    let RespostaDoCircuito {
+        resp: resposta,
+        provider: quem,
+        ..
+    } = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback local tem de completar o turno");
@@ -268,7 +272,7 @@ pub(super) async fn transporte_nao_queima_o_orcamento_de_retry() {
     let tentativas = |falha| async move {
         let (runtime, primario) = runtime_com_fallback_local(falha);
         let como_dyn: Arc<dyn LlmProvider> = primario.clone();
-        let (_, quem, _) = runtime
+        let RespostaDoCircuito { provider: quem, .. } = runtime
             .complete_reportando_provider(&como_dyn, &pedido_simples())
             .await
             .expect("as duas classes acabam no fallback local");
@@ -432,7 +436,7 @@ pub(super) async fn fallback_nao_herda_o_modelo_do_primario_em_batch() {
     let (runtime, primario, fallback) = runtime_com_fallback_que_anota();
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (_resposta, quem, _) = runtime
+    let RespostaDoCircuito { provider: quem, .. } = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback completa o turno");
@@ -510,7 +514,7 @@ pub(super) async fn credencial_recusada_cai_para_o_fallback_em_batch() {
     let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Credencial);
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (_, quem, _) = runtime
+    let RespostaDoCircuito { provider: quem, .. } = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback local tem de completar o turno");
@@ -678,319 +682,9 @@ pub(super) async fn credencial_recusada_fica_anotada_para_o_health_em_streaming(
 }
 
 // ─── #1776: 200 vazio nao e sucesso ─────────────────────────────────────
-
-/// Consumo fixo de cada turno 200-vazio que o mock devolve.
-const USO_DO_TURNO_VAZIO: (u32, u32) = (7, 3);
-
-/// Provider que devolve 200 vazio (com uso fixo) nas N primeiras chamadas e
-/// depois responde texto; com N gigante, nunca responde.
-pub(super) struct VazioDepoisTexto {
-    id: &'static str,
-    vazias_restantes: std::sync::atomic::AtomicUsize,
-    chamadas_complete: std::sync::atomic::AtomicUsize,
-}
-
-impl VazioDepoisTexto {
-    pub(super) fn novo(id: &'static str, vazias: usize) -> Self {
-        Self {
-            id,
-            vazias_restantes: std::sync::atomic::AtomicUsize::new(vazias),
-            chamadas_complete: std::sync::atomic::AtomicUsize::new(0),
-        }
-    }
-
-    pub(super) fn completes(&self) -> usize {
-        self.chamadas_complete
-            .load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-#[async_trait::async_trait]
-impl LlmProvider for VazioDepoisTexto {
-    fn provider_id(&self) -> &str {
-        self.id
-    }
-
-    async fn complete(&self, _request: &LlmRequest) -> Result<LlmResponse> {
-        self.chamadas_complete
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let restantes = self
-            .vazias_restantes
-            .load(std::sync::atomic::Ordering::SeqCst);
-        if restantes > 0 {
-            self.vazias_restantes
-                .store(restantes - 1, std::sync::atomic::Ordering::SeqCst);
-            return Ok(LlmResponse {
-                content: Vec::new(),
-                model: "gpt-4o".to_string(),
-                stop_reason: None,
-                usage: Some(Usage {
-                    input_tokens: USO_DO_TURNO_VAZIO.0,
-                    output_tokens: USO_DO_TURNO_VAZIO.1,
-                }),
-            });
-        }
-        Ok(LlmResponse {
-            content: vec![ContentBlock::Text {
-                text: "respondi da nuvem".to_string(),
-            }],
-            model: "gpt-4o".to_string(),
-            stop_reason: None,
-            usage: Some(Usage {
-                input_tokens: 11,
-                output_tokens: 5,
-            }),
-        })
-    }
-
-    async fn stream_complete(
-        &self,
-        _request: &LlmRequest,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
-        Ok(Box::pin(futures::stream::iter(vec![
-            Ok(StreamEvent::TextDelta("respondi da nuvem".to_string())),
-            Ok(StreamEvent::MessageStop),
-        ])))
-    }
-
-    async fn health_check(&self) -> Result<bool> {
-        Ok(true)
-    }
-}
-
-/// Runtime com o primario dado e o Ollama local no fallback - o cenario do
-/// wizard, so que com o primario controlado pelo teste.
-pub(super) fn runtime_com_primario_e_fallback_local(
-    primario: std::sync::Arc<dyn LlmProvider>,
-) -> AgentRuntime {
-    let runtime = AgentRuntime::new();
-    runtime.register_provider(primario);
-    runtime.register_provider(std::sync::Arc::new(LocalQueResponde));
-    runtime.set_fallback_providers(vec!["ollama".to_string()]);
-    runtime
-}
-
-/// #1776, caminho batch: o primeiro 200 vazio re-tenta no proprio primario e
-/// a segunda tentativa responde - o fallback local nem e consultado. O gasto
-/// da vazia descartada volta no terceiro elemento; o `usage` da resposta e o
-/// dela propria, porque o medidor de contexto do shim `/v1/messages` so pode
-/// ver quem de fato serviu.
-#[tokio::test(start_paused = true)]
-pub(super) async fn ok_vazio_no_primario_reintenta_e_responde_sem_fallback() {
-    let primario = std::sync::Arc::new(VazioDepoisTexto::novo("openai", 1));
-    let runtime = runtime_com_primario_e_fallback_local(primario.clone());
-    let como_dyn: std::sync::Arc<dyn LlmProvider> = primario.clone();
-
-    let (resp, quem, uso_vazio) = runtime
-        .complete_reportando_provider(&como_dyn, &pedido_simples())
-        .await
-        .expect("a segunda tentativa do primario responde");
-
-    assert_eq!(quem, "openai", "o fallback nem e consultado");
-    assert_eq!(primario.completes(), 2, "1 vazia + 1 com texto");
-    let texto = resp
-        .content
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert_eq!(texto, "respondi da nuvem");
-    let uso = resp.usage.expect("a resposta final traz o usage dela");
-    assert_eq!(
-        (uso.input_tokens, uso.output_tokens),
-        (11, 5),
-        "o usage da resposta nao embute a vazia descartada"
-    );
-    assert_eq!(
-        (uso_vazio.input_tokens, uso_vazio.output_tokens),
-        USO_DO_TURNO_VAZIO,
-        "o gasto da vazia nao desaparece - vai no terceiro elemento"
-    );
-}
-
-/// #1776: o primario so devolve 200 vazio. Um vazio re-tenta UMA vez; o
-/// segundo vazio seguido e deterministico o bastante para nao queimar o
-/// orcamento de retry inteiro (precedente do #1249) - o turno vai para o
-/// fallback local, que responde. E um unico turno de vazias NAO abre o
-/// breaker do primario.
-#[tokio::test(start_paused = true)]
-pub(super) async fn ok_vazio_esgota_o_orcamento_e_cai_para_o_fallback_local() {
-    let primario = std::sync::Arc::new(VazioDepoisTexto::novo("openai", usize::MAX));
-    let runtime = runtime_com_primario_e_fallback_local(primario.clone());
-    let como_dyn: std::sync::Arc<dyn LlmProvider> = primario.clone();
-
-    let (resp, quem, uso_vazio) = runtime
-        .complete_reportando_provider(&como_dyn, &pedido_simples())
-        .await
-        .expect("o fallback local responde depois do vazio seguido");
-
-    assert_eq!(
-        quem, "ollama",
-        "o vazio do primario empurra o turno ao fallback"
-    );
-    assert_eq!(
-        primario.completes(),
-        2,
-        "1 vazia re-tentada + 1 vazia que decide o break; orcamento inteiro preservado"
-    );
-    assert_eq!(
-        resp.content.last().and_then(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        }),
-        Some(RESPOSTA_LOCAL)
-    );
-    assert!(
-        resp.usage.is_none(),
-        "o local responde sem usage: nada e fabricado para a resposta"
-    );
-    assert_eq!(
-        (uso_vazio.input_tokens, uso_vazio.output_tokens),
-        (USO_DO_TURNO_VAZIO.0 * 2, USO_DO_TURNO_VAZIO.1 * 2),
-        "o gasto das duas vazias vai no terceiro elemento"
-    );
-    // Um turno so de vazias (2 falhas) nao abre o breaker do primario
-    // (limiar 5 em producao): vivo-porem-inutil nao e tratado como morto por
-    // um turno so.
-    assert!(
-        runtime
-            .resilience
-            .circuit_breaker("openai")
-            .await
-            .allow_request()
-            .await,
-        "o breaker do primario nao abre por um unico turno vazio"
-    );
-}
-
-/// #1776: primario e fallback so devolvem 200 vazio. Nada de erro: a ultima
-/// resposta vazia volta vazia de verdade (usage None — o medidor de contexto
-/// do shim nao ve numero fabricado), marcada com quem serviu, e o gasto de
-/// todas as tentativas vai no terceiro elemento.
-#[tokio::test(start_paused = true)]
-pub(super) async fn ok_vazio_em_todos_volta_vazio_com_o_uso_de_todas_as_tentativas() {
-    let runtime = AgentRuntime::new();
-    let primario = std::sync::Arc::new(VazioDepoisTexto::novo("openai", usize::MAX));
-    let fallback = std::sync::Arc::new(VazioDepoisTexto::novo("ollama", usize::MAX));
-    runtime.register_provider(primario.clone());
-    runtime.register_provider(fallback.clone());
-    runtime.set_fallback_providers(vec!["ollama".to_string()]);
-    let como_dyn: std::sync::Arc<dyn LlmProvider> = primario.clone();
-
-    let (resp, quem, uso_vazio) = runtime
-        .complete_reportando_provider(&como_dyn, &pedido_simples())
-        .await
-        .expect("a resposta vazia de alguem volta - nunca erro");
-
-    assert_eq!(quem, "ollama", "a ultima vazia e a do fallback");
-    assert!(
-        resp.content.is_empty(),
-        "o turno volta vazio, como hoje, para o guarda do chamador"
-    );
-    assert_eq!(
-        primario.completes(),
-        2,
-        "1 re-tentativa no primario, nada mais"
-    );
-    assert_eq!(fallback.completes(), 1, "o fallback recebe a vez");
-    assert!(
-        resp.usage.is_none(),
-        "o usage da resposta final nao e fabricado"
-    );
-    assert_eq!(
-        (uso_vazio.input_tokens, uso_vazio.output_tokens),
-        (USO_DO_TURNO_VAZIO.0 * 3, USO_DO_TURNO_VAZIO.1 * 3),
-        "2 vazias do primario + 1 do fallback"
-    );
-}
-
-/// #1776: turno so-de-ferramenta (o modelo pediu a execucao) e saudavel -
-/// nada de retry, nada de fallback, o bloco volta intacto de primeira.
-#[tokio::test(start_paused = true)]
-pub(super) async fn turno_so_de_ferramenta_nao_e_vazio() {
-    pub(super) struct SoFerramenta {
-        chamadas_complete: std::sync::atomic::AtomicUsize,
-    }
-
-    impl SoFerramenta {
-        fn completes(&self) -> usize {
-            self.chamadas_complete
-                .load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl LlmProvider for SoFerramenta {
-        fn provider_id(&self) -> &str {
-            "openai"
-        }
-
-        async fn complete(&self, _request: &LlmRequest) -> Result<LlmResponse> {
-            self.chamadas_complete
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(LlmResponse {
-                content: vec![ContentBlock::ToolUse {
-                    id: "call_1".to_string(),
-                    name: "busca".to_string(),
-                    input: serde_json::json!({ "q": "garraia" }),
-                }],
-                model: "gpt-4o".to_string(),
-                stop_reason: None,
-                usage: Some(Usage {
-                    input_tokens: 9,
-                    output_tokens: 4,
-                }),
-            })
-        }
-
-        async fn stream_complete(
-            &self,
-            _request: &LlmRequest,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
-            Ok(Box::pin(futures::stream::iter(vec![
-                Ok(StreamEvent::TextDelta(String::new())),
-                Ok(StreamEvent::MessageStop),
-            ])))
-        }
-
-        async fn health_check(&self) -> Result<bool> {
-            Ok(true)
-        }
-    }
-
-    let primario = std::sync::Arc::new(SoFerramenta {
-        chamadas_complete: std::sync::atomic::AtomicUsize::new(0),
-    });
-    let runtime = runtime_com_primario_e_fallback_local(primario.clone());
-    let como_dyn: std::sync::Arc<dyn LlmProvider> = primario.clone();
-
-    let (resp, quem, uso_vazio) = runtime
-        .complete_reportando_provider(&como_dyn, &pedido_simples())
-        .await
-        .expect("o turno so-de-ferramenta e sucesso de primeira");
-
-    assert_eq!(quem, "openai");
-    assert_eq!(
-        primario.completes(),
-        1,
-        "ferramenta nao e tratada como vazio"
-    );
-    assert!(
-        resp.content
-            .iter()
-            .any(|b| matches!(b, ContentBlock::ToolUse { .. })),
-        "o bloco de ferramenta volta intacto"
-    );
-    let uso = resp.usage.expect("o turno saudavel traz o usage dele");
-    assert_eq!((uso.input_tokens, uso.output_tokens), (9, 4));
-    assert!(
-        uso_vazio.e_zero(),
-        "nenhuma vazia descartada: o terceiro elemento e zero"
-    );
-}
+//
+// Os testes deste tema vivem em `ok_vazio.rs`, ao lado (o ratchet acusa o
+// contrário no PR: um arquivo por tema, teto de 700 linhas).
 
 /// Criterio de aceitacao da #1743: um turno que passa expira a recusa - nos
 /// dois caminhos.
@@ -1003,7 +697,7 @@ pub(super) async fn turno_que_passa_expira_a_recusa_de_credencial() {
     runtime.set_fallback_providers(vec!["ollama".to_string()]);
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (_, quem, _) = runtime
+    let RespostaDoCircuito { provider: quem, .. } = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback local completa o turno");
@@ -1011,7 +705,7 @@ pub(super) async fn turno_que_passa_expira_a_recusa_de_credencial() {
     assert!(runtime.recusa_de_credencial("openai").is_some());
 
     primario.aceitar();
-    let (_, quem, _) = runtime
+    let RespostaDoCircuito { provider: quem, .. } = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("com a chave nova o primario responde");
@@ -1064,7 +758,7 @@ pub(super) async fn recusa_403_fica_anotada_com_o_proprio_status() {
     let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Permissao);
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (_, quem, _) = runtime
+    let RespostaDoCircuito { provider: quem, .. } = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback local completa o turno");

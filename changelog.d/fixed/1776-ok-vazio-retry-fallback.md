@@ -5,10 +5,12 @@
   quando o circuito inteiro ja tinha sido pulado. Agora o 200 vazio recebe o
   mesmo tratamento de um erro reintentavel: uma re-tentativa no primario, e o
   segundo vazio seguido vai direto para os fallbacks sem queimar o orcamento
-  de retry inteiro (mesmo criterio do #1249 para transporte); no esgotamento,
-  a ultima resposta vazia volta e os guardas de turno existentes seguem
-  valendo. O gasto faturado das tentativas descartadas nao se perde: sai no
-  retorno, separado da resposta - o `usage` dela segue o valor proprio de
-  quem serviu, porque o shim `POST /v1/messages` repassa esse campo como
-  medidor de janela de contexto do cliente. Turno so-de-ferramenta continua
-  sendo sucesso.
+  de retry inteiro (mesmo criterio do #1249 para transporte); o breaker do
+  primario recebe UMA falha por turno de vazias, nao uma por tentativa; no
+  esgotamento, a ultima resposta vazia volta e os guardas de turno existentes
+  seguem valendo. O gasto faturado das tentativas descartadas nao se perde:
+  sai em campo proprio (`RespostaDoCircuito.uso_descartado`), enquanto o
+  `usage` da resposta devolvida segue intocado - o valor de origem de quem
+  serviu, que e o que o shim `POST /v1/messages` repassa como medidor de
+  janela de contexto do cliente. Turno so-de-ferramenta continua sendo
+  sucesso.
