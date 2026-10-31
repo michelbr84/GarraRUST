@@ -177,7 +177,7 @@ pub(super) async fn transporte_no_primario_cai_para_o_fallback_em_batch() {
     let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Transporte);
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (resposta, quem) = runtime
+    let (resposta, quem, _) = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback local tem de completar o turno");
@@ -268,7 +268,7 @@ pub(super) async fn transporte_nao_queima_o_orcamento_de_retry() {
     let tentativas = |falha| async move {
         let (runtime, primario) = runtime_com_fallback_local(falha);
         let como_dyn: Arc<dyn LlmProvider> = primario.clone();
-        let (_, quem) = runtime
+        let (_, quem, _) = runtime
             .complete_reportando_provider(&como_dyn, &pedido_simples())
             .await
             .expect("as duas classes acabam no fallback local");
@@ -432,7 +432,7 @@ pub(super) async fn fallback_nao_herda_o_modelo_do_primario_em_batch() {
     let (runtime, primario, fallback) = runtime_com_fallback_que_anota();
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (_resposta, quem) = runtime
+    let (_resposta, quem, _) = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback completa o turno");
@@ -510,7 +510,7 @@ pub(super) async fn credencial_recusada_cai_para_o_fallback_em_batch() {
     let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Credencial);
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (_, quem) = runtime
+    let (_, quem, _) = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback local tem de completar o turno");
@@ -771,15 +771,17 @@ pub(super) fn runtime_com_primario_e_fallback_local(
 }
 
 /// #1776, caminho batch: o primeiro 200 vazio re-tenta no proprio primario e
-/// a segunda tentativa responde - o fallback local nem e consultado. O
-/// consumo do turno vazio descartado vai embutido no `usage` final.
+/// a segunda tentativa responde - o fallback local nem e consultado. O gasto
+/// da vazia descartada volta no terceiro elemento; o `usage` da resposta e o
+/// dela propria, porque o medidor de contexto do shim `/v1/messages` so pode
+/// ver quem de fato serviu.
 #[tokio::test(start_paused = true)]
 pub(super) async fn ok_vazio_no_primario_reintenta_e_responde_sem_fallback() {
     let primario = std::sync::Arc::new(VazioDepoisTexto::novo("openai", 1));
     let runtime = runtime_com_primario_e_fallback_local(primario.clone());
     let como_dyn: std::sync::Arc<dyn LlmProvider> = primario.clone();
 
-    let (resp, quem) = runtime
+    let (resp, quem, uso_vazio) = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("a segunda tentativa do primario responde");
@@ -796,34 +798,44 @@ pub(super) async fn ok_vazio_no_primario_reintenta_e_responde_sem_fallback() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_eq!(texto, "respondi da nuvem");
-    let uso = resp.usage.expect("o turno final traz usage");
+    let uso = resp.usage.expect("a resposta final traz o usage dela");
     assert_eq!(
         (uso.input_tokens, uso.output_tokens),
-        (7 + 11, 3 + 5),
-        "o consumo do turno vazio descartado nao desaparece"
+        (11, 5),
+        "o usage da resposta nao embute a vazia descartada"
+    );
+    assert_eq!(
+        (uso_vazio.input_tokens, uso_vazio.output_tokens),
+        USO_DO_TURNO_VAZIO,
+        "o gasto da vazia nao desaparece - vai no terceiro elemento"
     );
 }
 
-/// #1776: o primario so devolve 200 vazio. O orcamento de retry e gasto
-/// inteiro, o fallback local entra e responde - e o consumo de TODAS as
-/// tentativas vazias aparece no `usage` da resposta do fallback.
+/// #1776: o primario so devolve 200 vazio. Um vazio re-tenta UMA vez; o
+/// segundo vazio seguido e deterministico o bastante para nao queimar o
+/// orcamento de retry inteiro (precedente do #1249) - o turno vai para o
+/// fallback local, que responde. E um unico turno de vazias NAO abre o
+/// breaker do primario.
 #[tokio::test(start_paused = true)]
 pub(super) async fn ok_vazio_esgota_o_orcamento_e_cai_para_o_fallback_local() {
     let primario = std::sync::Arc::new(VazioDepoisTexto::novo("openai", usize::MAX));
     let runtime = runtime_com_primario_e_fallback_local(primario.clone());
     let como_dyn: std::sync::Arc<dyn LlmProvider> = primario.clone();
 
-    let (resp, quem) = runtime
+    let (resp, quem, uso_vazio) = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
-        .expect("o fallback local responde depois do esgotamento");
+        .expect("o fallback local responde depois do vazio seguido");
 
     assert_eq!(
         quem, "ollama",
         "o vazio do primario empurra o turno ao fallback"
     );
-    let teto = crate::RetryPolicy::default().max_retries as usize + 1;
-    assert_eq!(primario.completes(), teto, "orcamento de retry respeitado");
+    assert_eq!(
+        primario.completes(),
+        2,
+        "1 vazia re-tentada + 1 vazia que decide o break; orcamento inteiro preservado"
+    );
     assert_eq!(
         resp.content.last().and_then(|b| match b {
             ContentBlock::Text { text } => Some(text.as_str()),
@@ -831,18 +843,33 @@ pub(super) async fn ok_vazio_esgota_o_orcamento_e_cai_para_o_fallback_local() {
         }),
         Some(RESPOSTA_LOCAL)
     );
-    let teto = teto as u32;
-    let uso = resp.usage.expect("o consumo das vazias nao se perde");
+    assert!(
+        resp.usage.is_none(),
+        "o local responde sem usage: nada e fabricado para a resposta"
+    );
     assert_eq!(
-        (uso.input_tokens, uso.output_tokens),
-        (USO_DO_TURNO_VAZIO.0 * teto, USO_DO_TURNO_VAZIO.1 * teto),
-        "o local respondeu sem usage: o usage final e so das vazias"
+        (uso_vazio.input_tokens, uso_vazio.output_tokens),
+        (USO_DO_TURNO_VAZIO.0 * 2, USO_DO_TURNO_VAZIO.1 * 2),
+        "o gasto das duas vazias vai no terceiro elemento"
+    );
+    // Um turno so de vazias (2 falhas) nao abre o breaker do primario
+    // (limiar 5 em producao): vivo-porem-inutil nao e tratado como morto por
+    // um turno so.
+    assert!(
+        runtime
+            .resilience
+            .circuit_breaker("openai")
+            .await
+            .allow_request()
+            .await,
+        "o breaker do primario nao abre por um unico turno vazio"
     );
 }
 
 /// #1776: primario e fallback so devolvem 200 vazio. Nada de erro: a ultima
-/// resposta vazia volta, marcada com quem serviu, e o consumo de todas as
-/// tentativas (primario + fallback) vai no `usage`.
+/// resposta vazia volta vazia de verdade (usage None — o medidor de contexto
+/// do shim nao ve numero fabricado), marcada com quem serviu, e o gasto de
+/// todas as tentativas vai no terceiro elemento.
 #[tokio::test(start_paused = true)]
 pub(super) async fn ok_vazio_em_todos_volta_vazio_com_o_uso_de_todas_as_tentativas() {
     let runtime = AgentRuntime::new();
@@ -853,7 +880,7 @@ pub(super) async fn ok_vazio_em_todos_volta_vazio_com_o_uso_de_todas_as_tentativ
     runtime.set_fallback_providers(vec!["ollama".to_string()]);
     let como_dyn: std::sync::Arc<dyn LlmProvider> = primario.clone();
 
-    let (resp, quem) = runtime
+    let (resp, quem, uso_vazio) = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("a resposta vazia de alguem volta - nunca erro");
@@ -863,14 +890,20 @@ pub(super) async fn ok_vazio_em_todos_volta_vazio_com_o_uso_de_todas_as_tentativ
         resp.content.is_empty(),
         "o turno volta vazio, como hoje, para o guarda do chamador"
     );
-    let teto = crate::RetryPolicy::default().max_retries as usize + 1;
-    assert_eq!(primario.completes(), teto);
-    assert_eq!(fallback.completes(), 1, "o fallback recebe a vez");
-    let teto = teto as u32 + 1;
-    let uso = resp.usage.expect("o consumo de todos os turnos vazios");
     assert_eq!(
-        (uso.input_tokens, uso.output_tokens),
-        (USO_DO_TURNO_VAZIO.0 * teto, USO_DO_TURNO_VAZIO.1 * teto)
+        primario.completes(),
+        2,
+        "1 re-tentativa no primario, nada mais"
+    );
+    assert_eq!(fallback.completes(), 1, "o fallback recebe a vez");
+    assert!(
+        resp.usage.is_none(),
+        "o usage da resposta final nao e fabricado"
+    );
+    assert_eq!(
+        (uso_vazio.input_tokens, uso_vazio.output_tokens),
+        (USO_DO_TURNO_VAZIO.0 * 3, USO_DO_TURNO_VAZIO.1 * 3),
+        "2 vazias do primario + 1 do fallback"
     );
 }
 
@@ -934,7 +967,7 @@ pub(super) async fn turno_so_de_ferramenta_nao_e_vazio() {
     let runtime = runtime_com_primario_e_fallback_local(primario.clone());
     let como_dyn: std::sync::Arc<dyn LlmProvider> = primario.clone();
 
-    let (resp, quem) = runtime
+    let (resp, quem, uso_vazio) = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o turno so-de-ferramenta e sucesso de primeira");
@@ -951,6 +984,12 @@ pub(super) async fn turno_so_de_ferramenta_nao_e_vazio() {
             .any(|b| matches!(b, ContentBlock::ToolUse { .. })),
         "o bloco de ferramenta volta intacto"
     );
+    let uso = resp.usage.expect("o turno saudavel traz o usage dele");
+    assert_eq!((uso.input_tokens, uso.output_tokens), (9, 4));
+    assert!(
+        uso_vazio.e_zero(),
+        "nenhuma vazia descartada: o terceiro elemento e zero"
+    );
 }
 
 /// Criterio de aceitacao da #1743: um turno que passa expira a recusa - nos
@@ -964,7 +1003,7 @@ pub(super) async fn turno_que_passa_expira_a_recusa_de_credencial() {
     runtime.set_fallback_providers(vec!["ollama".to_string()]);
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (_, quem) = runtime
+    let (_, quem, _) = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback local completa o turno");
@@ -972,7 +1011,7 @@ pub(super) async fn turno_que_passa_expira_a_recusa_de_credencial() {
     assert!(runtime.recusa_de_credencial("openai").is_some());
 
     primario.aceitar();
-    let (_, quem) = runtime
+    let (_, quem, _) = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("com a chave nova o primario responde");
@@ -1025,7 +1064,7 @@ pub(super) async fn recusa_403_fica_anotada_com_o_proprio_status() {
     let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::Permissao);
     let como_dyn: Arc<dyn LlmProvider> = primario.clone();
 
-    let (_, quem) = runtime
+    let (_, quem, _) = runtime
         .complete_reportando_provider(&como_dyn, &pedido_simples())
         .await
         .expect("o fallback local completa o turno");

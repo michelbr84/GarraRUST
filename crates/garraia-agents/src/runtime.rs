@@ -2183,7 +2183,7 @@ impl AgentRuntime {
                 tools: tool_defs.clone(),
             };
 
-            let (response, provider_usado) = self
+            let (response, provider_usado, uso_vazio) = self
                 .complete_reportando_provider(&provider, &request)
                 .await?;
             // #984: o modelo vem da **resposta**, e nao do pedido — e o unico
@@ -2193,10 +2193,21 @@ impl AgentRuntime {
             turno.provider = provider_usado;
             turno.model = response.model.clone();
             turno.model_confirmado = true;
+            // #1776: o gasto das tentativas 200-vazio descartadas e real (foi
+            // faturado) e entra na contagem do turno; a resposta final mantem
+            // o `usage` proprio — o mesmo campo e o medidor de janela de
+            // contexto do shim `/v1/messages`, que nao pode ver a soma.
+            turno.input_tokens = turno.input_tokens.saturating_add(uso_vazio.input_tokens);
+            turno.output_tokens = turno.output_tokens.saturating_add(uso_vazio.output_tokens);
             if let Some(u) = &response.usage {
                 turno.tokens_conhecidos = true;
                 turno.input_tokens = turno.input_tokens.saturating_add(u.input_tokens);
                 turno.output_tokens = turno.output_tokens.saturating_add(u.output_tokens);
+            }
+            if !uso_vazio.e_zero() {
+                // So ha numeros reais no turno (o gasto faturado das vazias);
+                // o /stats pode conta-los como conhecidos.
+                turno.tokens_conhecidos = true;
             }
 
             let has_tool_use = response
@@ -3267,17 +3278,26 @@ impl AgentRuntime {
                     // ainda" depois de um turno inteiro — em todo provider
                     // que nao faz streaming. Achado rodando o binario com o
                     // `EchoProvider`, que cai exatamente aqui.
-                    let (response, provider_usado) = self
+                    let (response, provider_usado, uso_vazio) = self
                         .complete_reportando_provider(&provider, &request)
                         .await?;
                     turno.fallback = provider_usado != provider.provider_id();
                     turno.provider = provider_usado;
                     turno.model = response.model.clone();
                     turno.model_confirmado = true;
+                    // #1776: o gasto das vazias descartadas e real e entra no
+                    // turno; o `usage` da resposta segue o valor proprio (ver o
+                    // comentario no caminho autonomo).
+                    turno.input_tokens = turno.input_tokens.saturating_add(uso_vazio.input_tokens);
+                    turno.output_tokens =
+                        turno.output_tokens.saturating_add(uso_vazio.output_tokens);
                     if let Some(u) = &response.usage {
                         turno.tokens_conhecidos = true;
                         turno.input_tokens = turno.input_tokens.saturating_add(u.input_tokens);
                         turno.output_tokens = turno.output_tokens.saturating_add(u.output_tokens);
+                    }
+                    if !uso_vazio.e_zero() {
+                        turno.tokens_conhecidos = true;
                     }
 
                     let tool_calls_count = response
@@ -4231,9 +4251,14 @@ impl AgentRuntime {
         primary: &Arc<dyn LlmProvider>,
         request: &LlmRequest,
     ) -> Result<LlmResponse> {
+        // O uso das vazias descartadas (#1776) nao interessa aqui: este metodo
+        // serve o shim `POST /v1/messages`, cujo `usage` e o medidor de janela
+        // de contexto do cliente (ver `non_zero_or` em
+        // garraia-gateway/src/anthropic_api.rs) — so o valor da resposta que de
+        // fato serviu pode passar.
         self.complete_reportando_provider(primary, request)
             .await
-            .map(|(resp, _)| resp)
+            .map(|(resp, _, _)| resp)
     }
 
     /// Igual, mas diz **quem** serviu (#984).
@@ -4242,11 +4267,17 @@ impl AgentRuntime {
     /// e um fallback respondeu", e a `LlmResponse` sozinha nao conta essa
     /// historia: ela traz o modelo, nao o provider. Sem isto, "provider
     /// efetivo" seria um palpite.
+    ///
+    /// O terceiro elemento e o uso das tentativas 200-vazio descartadas
+    /// (#1776): gasto real, faturado, que viaja **fora** da `LlmResponse` de
+    /// proposito — o campo `usage` dela tem dois consumidores com semantica
+    /// oposta (ver [`UsoDescartado`]). Cabe ao chamador somar; quem nao se
+    /// importa ignora o terceiro elemento.
     pub async fn complete_reportando_provider(
         &self,
         primary: &Arc<dyn LlmProvider>,
         request: &LlmRequest,
-    ) -> Result<(LlmResponse, String)> {
+    ) -> Result<(LlmResponse, String, UsoDescartado)> {
         let primary_id = primary.provider_id().to_string();
         let retry_policy = &self.resilience.retry_policy;
 
@@ -4258,10 +4289,11 @@ impl AgentRuntime {
         // e fallback) e, se ninguem devolver nada melhor, e essa resposta vazia
         // que volta: os guardas de turno do chamador (redo do streaming #1048,
         // erro explicito do batch #1648) seguem enxergando "turno vazio" como
-        // antes, e o consumo das tentativas descartadas vai embutido no
-        // `usage` final para a telemetria nao esconder gasto.
+        // antes. O gasto das vazias sai no terceiro elemento do retorno, nunca
+        // embutido no `usage` da resposta (ver `UsoDescartado`).
         let mut ultima_vazia: Option<(LlmResponse, String)> = None;
-        let mut uso_descartado: (u32, u32) = (0, 0);
+        let mut uso_descartado = UsoDescartado::default();
+        let mut vazias_no_primario: u32 = 0;
 
         if primary_cb.allow_request().await {
             let mut last_err: Option<Error> = None;
@@ -4277,13 +4309,26 @@ impl AgentRuntime {
                             attempt + 1
                         );
                         self.anotar_credencial_aceita(&primary_id);
-                        guarda_uso_descartado(&resp, &mut uso_descartado);
+                        uso_descartado.acumular(resp.usage.as_ref());
                         let mut resp = resp;
-                        // O consumo dele ja esta em `uso_descartado`: zera para
-                        // nao contar duas vezes no merge final.
+                        // O total ja esta em `uso_descartado`: zerar evita dupla
+                        // contagem quando o chamador soma os dois - e deixa o
+                        // `non_zero_or` do shim /v1/messages voltar ao estimate
+                        // se a vazia for a resposta final.
                         resp.usage = None;
                         ultima_vazia = Some((resp, primary_id.clone()));
                         primary_cb.record_failure().await;
+                        vazias_no_primario += 1;
+                        // Um vazio pode ser transitorio (provedor "pensando"
+                        // demais). O segundo vazio seguido e deterministico o
+                        // bastante para nao queimar o orcamento inteiro —
+                        // precedente do #1249 para transporte: repetir o que
+                        // nao muda queima chamadas faturadas e segundos de
+                        // backoff antes de chegar ao fallback, que era a
+                        // resposta desde o inicio.
+                        if vazias_no_primario >= 2 {
+                            break;
+                        }
                         if attempt < retry_policy.max_retries {
                             tokio::time::sleep(retry_policy.delay_for_attempt(attempt)).await;
                         }
@@ -4291,9 +4336,11 @@ impl AgentRuntime {
                     Ok(resp) => {
                         primary_cb.record_success().await;
                         self.anotar_credencial_aceita(&primary_id);
-                        let mut resp = resp;
-                        embutir_uso_descartado(&mut resp, uso_descartado);
-                        return Ok((resp, primary_id.clone()));
+                        // `resp.usage` segue intocado: o gasto das vazias vai
+                        // pelo terceiro elemento, e o `usage` da resposta que
+                        // de fato serviu e o unico valor que o medidor de
+                        // contexto do shim /v1/messages pode ver.
+                        return Ok((resp, primary_id.clone(), uso_descartado));
                     }
                     // #1249: rede caida. Uma tentativa e cai para o fallback,
                     // sem gastar o orcamento de retry: repetir 4 vezes um
@@ -4339,6 +4386,10 @@ impl AgentRuntime {
                         }
                         last_err = Some(e);
                     }
+                    // #1776: as vazias acumuladas (ultima_vazia, uso_descartado)
+                    // morrem aqui de proposito: um erro nao-reintentavel (400
+                    // etc.) aborta o turno inteiro e e o que o chamador ve — a
+                    // resposta vazia nao e o que relatar por cima de um 400.
                     Err(e) => return Err(e),
                 }
             }
@@ -4373,7 +4424,7 @@ impl AgentRuntime {
                         fallback_id
                     );
                     self.anotar_credencial_aceita(fallback_id);
-                    guarda_uso_descartado(&resp, &mut uso_descartado);
+                    uso_descartado.acumular(resp.usage.as_ref());
                     let mut resp = resp;
                     // Consumo ja contabilizado em `uso_descartado`.
                     resp.usage = None;
@@ -4383,9 +4434,8 @@ impl AgentRuntime {
                 Ok(resp) => {
                     cb.record_success().await;
                     self.anotar_credencial_aceita(fallback_id);
-                    let mut resp = resp;
-                    embutir_uso_descartado(&mut resp, uso_descartado);
-                    return Ok((resp, fallback_id.clone()));
+                    // `resp.usage` intocado — mesmo motivo do braco do primario.
+                    return Ok((resp, fallback_id.clone(), uso_descartado));
                 }
                 Err(e) => {
                     warn!("fallback '{}' failed: {}", fallback_id, e);
@@ -4400,11 +4450,11 @@ impl AgentRuntime {
         // #1776: o circuito inteiro falhou (ou so devolveu 200 vazio). Se
         // alguma tentativa chegou a responder vazio, e essa resposta que
         // volta: o guarda de turno do chamador decide o que mostrar (o batch
-        // da o erro explicito do #1648, o streaming ja passou pelo redo) e o
-        // consumo de todas as tentativas vazias vai no `usage`.
-        if let Some((mut resp, provider)) = ultima_vazia {
-            embutir_uso_descartado(&mut resp, uso_descartado);
-            return Ok((resp, provider));
+        // da o erro explicito do #1648, o streaming ja passou pelo redo). O
+        // `usage` dela ja foi zerado — o gasto das vazias viaja so no
+        // terceiro elemento.
+        if let Some((resp, provider)) = ultima_vazia {
+            return Ok((resp, provider, uso_descartado));
         }
 
         Err(Error::Agent(format!(
@@ -4824,32 +4874,34 @@ fn resposta_vazia_sem_ferramenta(resp: &LlmResponse) -> bool {
     !tem_ferramenta && extract_text_opt(&resp.content).is_none()
 }
 
-/// #1776: acumula o consumo de uma tentativa 200-vazio descartada.
-fn guarda_uso_descartado(resp: &LlmResponse, total: &mut (u32, u32)) {
-    if let Some(u) = &resp.usage {
-        total.0 = total.0.saturating_add(u.input_tokens);
-        total.1 = total.1.saturating_add(u.output_tokens);
-    }
+/// #1776: uso (tokens input/output) das tentativas 200-vazio descartadas pelo
+/// circuito de retry/fallback.
+///
+/// Gasto real — foi faturado — e o chamador que contabiliza turno o soma. Mas
+/// ele viaja **separado** da `LlmResponse` de proposito: o campo `usage` dela
+/// tem dois consumidores com semantica oposta. O turno soma gasto; o shim
+/// `POST /v1/messages` (`garraia-gateway/src/anthropic_api.rs`) repassa o
+/// `usage` como medidor de janela de contexto do cliente (o Claude Code usa
+/// para o auto-compact) e so pode ver o valor da resposta que de fato serviu —
+/// somar tentativas descartadas mentiria a janela.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct UsoDescartado {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
 }
 
-/// #1776: o consumo das tentativas descartadas nao se perde - vai embutido no
-/// `usage` da resposta final, porque quem soma o consumo do turno le so o
-/// `response.usage`.
-fn embutir_uso_descartado(resp: &mut LlmResponse, descartado: (u32, u32)) {
-    if descartado == (0, 0) {
-        return;
+impl UsoDescartado {
+    /// Soma o uso de uma resposta (`None` nao contribui).
+    fn acumular(&mut self, usage: Option<&Usage>) {
+        if let Some(u) = usage {
+            self.input_tokens = self.input_tokens.saturating_add(u.input_tokens);
+            self.output_tokens = self.output_tokens.saturating_add(u.output_tokens);
+        }
     }
-    match &mut resp.usage {
-        Some(u) => {
-            u.input_tokens = u.input_tokens.saturating_add(descartado.0);
-            u.output_tokens = u.output_tokens.saturating_add(descartado.1);
-        }
-        None => {
-            resp.usage = Some(Usage {
-                input_tokens: descartado.0,
-                output_tokens: descartado.1,
-            })
-        }
+
+    /// Nenhuma tentativa vazia com uso reportado foi descartada.
+    pub fn e_zero(&self) -> bool {
+        self.input_tokens == 0 && self.output_tokens == 0
     }
 }
 
