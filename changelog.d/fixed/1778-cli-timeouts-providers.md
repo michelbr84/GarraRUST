@@ -9,4 +9,10 @@
   `0` = sem teto, #1593) e janela por entrada via `llm.<nome>.timeout_secs`,
   que vence a global. O ramo `llamacpp` do gateway, que recebia um client
   vazio, passa a receber o global de verdade. O pull de modelo do Ollama
-  segue sem teto, de proposito — a janela de 120s mataria o download no meio.
+  segue sem teto, de proposito — a janela de 120s mataria o download no
+  meio. Duas bordas documentadas (revisao da #1785): o atalho
+  `garra chat --model <tag>` — que roda a sonda/pull do Ollama antes de
+  escolher a entrada — aplica so a janela global, sem a de entrada; e no
+  `garra ask` a janela da config teta cada chamada de provider antes do
+  `--timeout-secs` da flag, entao quando ela dispara primeiro o envelope sai
+  como `provider_error` (69), nao como timeout (124).

@@ -350,7 +350,10 @@ enum Commands {
         json: bool,
 
         /// LLM call timeout in seconds. Default 60, range [1, 600].
-        /// Exceeding the timeout returns exit code 124.
+        /// Exceeding the timeout returns exit code 124. Each provider call is
+        /// also capped by `timeouts.llm.default_secs` from the config (#1778);
+        /// when the config window fires first, the error surfaces as
+        /// provider_error (exit 69), not 124.
         #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=600))]
         timeout_secs: u64,
 
