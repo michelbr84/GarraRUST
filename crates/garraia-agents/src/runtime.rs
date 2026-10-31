@@ -25,7 +25,7 @@ use crate::observabilidade::Desfecho;
 use crate::provider_resilience::ResilienceManager;
 use crate::providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
-    StreamEvent, ToolDefinition, preset_do_openrouter,
+    StreamEvent, ToolDefinition, Usage, preset_do_openrouter,
 };
 use crate::tools::approval::{ApprovalFingerprint, ToolApproval};
 use crate::tools::{Tool, ToolContext, ToolOutput};
@@ -4252,13 +4252,47 @@ impl AgentRuntime {
 
         // --- Try primary with retries ---
         let primary_cb = self.resilience.circuit_breaker(&primary_id).await;
+
+        // #1776: um 200 vazio - sem texto e sem ferramenta - nao e um sucesso.
+        // Ele entra no mesmo circuito de um erro reintentavel (breaker, backoff
+        // e fallback) e, se ninguem devolver nada melhor, e essa resposta vazia
+        // que volta: os guardas de turno do chamador (redo do streaming #1048,
+        // erro explicito do batch #1648) seguem enxergando "turno vazio" como
+        // antes, e o consumo das tentativas descartadas vai embutido no
+        // `usage` final para a telemetria nao esconder gasto.
+        let mut ultima_vazia: Option<(LlmResponse, String)> = None;
+        let mut uso_descartado: (u32, u32) = (0, 0);
+
         if primary_cb.allow_request().await {
             let mut last_err: Option<Error> = None;
             for attempt in 0..=retry_policy.max_retries {
                 match primary.complete(request).await {
+                    Ok(resp) if resposta_vazia_sem_ferramenta(&resp) => {
+                        // #1776: 200 vazio nao e sucesso - mesmo tratamento de
+                        // um erro reintentavel. A credencial, porem, foi
+                        // aceita: o 2xx passou na porta.
+                        warn!(
+                            "provider '{}' respondeu 200 vazio (sem texto e sem ferramenta) na tentativa {}; tratando como falha reintentavel",
+                            primary_id,
+                            attempt + 1
+                        );
+                        self.anotar_credencial_aceita(&primary_id);
+                        guarda_uso_descartado(&resp, &mut uso_descartado);
+                        let mut resp = resp;
+                        // O consumo dele ja esta em `uso_descartado`: zera para
+                        // nao contar duas vezes no merge final.
+                        resp.usage = None;
+                        ultima_vazia = Some((resp, primary_id.clone()));
+                        primary_cb.record_failure().await;
+                        if attempt < retry_policy.max_retries {
+                            tokio::time::sleep(retry_policy.delay_for_attempt(attempt)).await;
+                        }
+                    }
                     Ok(resp) => {
                         primary_cb.record_success().await;
                         self.anotar_credencial_aceita(&primary_id);
+                        let mut resp = resp;
+                        embutir_uso_descartado(&mut resp, uso_descartado);
                         return Ok((resp, primary_id.clone()));
                     }
                     // #1249: rede caida. Uma tentativa e cai para o fallback,
@@ -4332,9 +4366,25 @@ impl AgentRuntime {
             info!("provider fallback: trying '{}'", fallback_id);
             let pedido_do_fallback = requisicao_para_o_fallback(request, fallback_id);
             match fallback.complete(&pedido_do_fallback).await {
+                Ok(resp) if resposta_vazia_sem_ferramenta(&resp) => {
+                    // #1776: o mesmo 200 vazio no fallback - tenta o proximo.
+                    warn!(
+                        "fallback '{}' respondeu 200 vazio (sem texto e sem ferramenta); tentando o proximo",
+                        fallback_id
+                    );
+                    self.anotar_credencial_aceita(fallback_id);
+                    guarda_uso_descartado(&resp, &mut uso_descartado);
+                    let mut resp = resp;
+                    // Consumo ja contabilizado em `uso_descartado`.
+                    resp.usage = None;
+                    ultima_vazia = Some((resp, fallback_id.clone()));
+                    cb.record_failure().await;
+                }
                 Ok(resp) => {
                     cb.record_success().await;
                     self.anotar_credencial_aceita(fallback_id);
+                    let mut resp = resp;
+                    embutir_uso_descartado(&mut resp, uso_descartado);
                     return Ok((resp, fallback_id.clone()));
                 }
                 Err(e) => {
@@ -4345,6 +4395,16 @@ impl AgentRuntime {
                     }
                 }
             }
+        }
+
+        // #1776: o circuito inteiro falhou (ou so devolveu 200 vazio). Se
+        // alguma tentativa chegou a responder vazio, e essa resposta que
+        // volta: o guarda de turno do chamador decide o que mostrar (o batch
+        // da o erro explicito do #1648, o streaming ja passou pelo redo) e o
+        // consumo de todas as tentativas vazias vai no `usage`.
+        if let Some((mut resp, provider)) = ultima_vazia {
+            embutir_uso_descartado(&mut resp, uso_descartado);
+            return Ok((resp, provider));
         }
 
         Err(Error::Agent(format!(
@@ -4751,6 +4811,46 @@ fn texto_final_ou_erro(content: &[ContentBlock]) -> Result<String> {
     extract_text_opt(content).ok_or_else(|| {
         Error::Agent("o modelo devolveu um turno vazio (sem texto e sem ferramenta)".into())
     })
+}
+
+/// #1776: resposta 200 que nao produziu nada - nenhum bloco de ferramenta e
+/// nenhum texto. Um turno so-de-ferramenta (o modelo pediu a execucao e
+/// espera o resultado no proximo turno) e saudavel e NUNCA conta como vazio.
+fn resposta_vazia_sem_ferramenta(resp: &LlmResponse) -> bool {
+    let tem_ferramenta = resp
+        .content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+    !tem_ferramenta && extract_text_opt(&resp.content).is_none()
+}
+
+/// #1776: acumula o consumo de uma tentativa 200-vazio descartada.
+fn guarda_uso_descartado(resp: &LlmResponse, total: &mut (u32, u32)) {
+    if let Some(u) = &resp.usage {
+        total.0 = total.0.saturating_add(u.input_tokens);
+        total.1 = total.1.saturating_add(u.output_tokens);
+    }
+}
+
+/// #1776: o consumo das tentativas descartadas nao se perde - vai embutido no
+/// `usage` da resposta final, porque quem soma o consumo do turno le so o
+/// `response.usage`.
+fn embutir_uso_descartado(resp: &mut LlmResponse, descartado: (u32, u32)) {
+    if descartado == (0, 0) {
+        return;
+    }
+    match &mut resp.usage {
+        Some(u) => {
+            u.input_tokens = u.input_tokens.saturating_add(descartado.0);
+            u.output_tokens = u.output_tokens.saturating_add(descartado.1);
+        }
+        None => {
+            resp.usage = Some(Usage {
+                input_tokens: descartado.0,
+                output_tokens: descartado.1,
+            })
+        }
+    }
 }
 
 fn extract_text(content: &[ContentBlock]) -> String {
