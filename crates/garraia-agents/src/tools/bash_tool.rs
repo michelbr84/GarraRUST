@@ -9,33 +9,10 @@ use super::{Tool, ToolContext, ToolOutput};
 const TIMEOUT_PADRAO_SEGS: u64 = 30;
 const MAX_BYTES_SAIDA: usize = 32 * 1024;
 
-/// Allow list of safe commands for read-only mode - GAR-236
-const ALLOW_LIST_READONLY: &[&str] = &[
-    "ls",
-    "dir",
-    "pwd",
-    "cd",
-    "cat",
-    "type",
-    "head",
-    "tail",
-    "grep",
-    "find",
-    "date",     // Unix: get current date/time
-    "get-date", // PowerShell: get current date/time
-    "git status",
-    "git log",
-    "git diff",
-    "git branch",
-    "cargo",
-    "rustc",
-];
-
 /// Executa comandos de shell com timeout configurável e limite de saída.
 /// No Windows utiliza PowerShell. Em sistemas Unix-like utiliza Bash.
 pub struct BashTool {
     timeout: Duration,
-    allow_readonly: bool,
     /// GAR-187: When true, commands matching CONFIRM_LIST require user approval
     /// before execution. Approval arrives via `ToolContext.approval`, and
     /// vale para O COMANDO aprovado, nao para o turno (#1078 item 2).
@@ -65,7 +42,6 @@ impl BashTool {
     pub fn new(timeout_secs: Option<u64>) -> Self {
         Self {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(TIMEOUT_PADRAO_SEGS)),
-            allow_readonly: false,
             confirmation_enabled: false,
             allowlist: Vec::new(),
             allowlist_only: false,
@@ -77,20 +53,7 @@ impl BashTool {
     pub fn new_with_confirmation(timeout_secs: Option<u64>) -> Self {
         Self {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(TIMEOUT_PADRAO_SEGS)),
-            allow_readonly: false,
             confirmation_enabled: true,
-            allowlist: Vec::new(),
-            allowlist_only: false,
-            sandbox: crate::sandbox::SandboxPolicy::default(),
-        }
-    }
-
-    /// Create a read-only BashTool that only allows safe commands
-    pub fn new_readonly(timeout_secs: Option<u64>) -> Self {
-        Self {
-            timeout: Duration::from_secs(timeout_secs.unwrap_or(TIMEOUT_PADRAO_SEGS)),
-            allow_readonly: true,
-            confirmation_enabled: false,
             allowlist: Vec::new(),
             allowlist_only: false,
             sandbox: crate::sandbox::SandboxPolicy::default(),
@@ -347,23 +310,6 @@ impl BashTool {
     fn is_risky(&self, command: &str) -> bool {
         safety_gate::is_risky(command).is_err()
     }
-
-    /// Check if command is in allow list (for read-only mode)
-    fn is_allowed(&self, command: &str) -> bool {
-        if !self.allow_readonly {
-            return true; // Not in readonly mode, allow all (except deny list)
-        }
-
-        let cmd_lower = command.to_lowercase().trim().to_string();
-        for pattern in ALLOW_LIST_READONLY {
-            if cmd_lower.starts_with(&pattern.to_lowercase())
-                || cmd_lower.contains(&pattern.to_lowercase())
-            {
-                return true;
-            }
-        }
-        false
-    }
 }
 
 /// Tamanho maximo de comando que vai para o log.
@@ -527,17 +473,11 @@ impl Tool for BashTool {
             ));
         }
 
-        // GAR-236: Security check - read-only allow list
-        if !self.is_allowed(comando) {
-            tracing::warn!(
-                "Command not in allow list for read-only mode: {}",
-                comando_para_log(comando)
-            );
-            return Ok(ToolOutput::error(
-                "Comando não permitido no modo read-only. Use: ls, dir, cat, git, cargo, etc."
-                    .to_string(),
-            ));
-        }
+        // GAR-236: a lista read-only desta tool existia como segundo gate e
+        // nunca rodou — `allow_readonly` era sempre `false` (não há
+        // construtor que ligue; #1781 removeu o `new_readonly` morto), então
+        // `is_allowed` devolvia `true` incondicional. O gate real de comando
+        // é o `safety_gate` (deny + risky + allowlist do operador, acima).
 
         let (shell, arg) = if cfg!(target_os = "windows") {
             ("powershell", "-Command")
