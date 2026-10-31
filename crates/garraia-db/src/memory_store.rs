@@ -2235,6 +2235,32 @@ mod tests {
         assert_eq!(fila[0].content, "vigente");
     }
 
+    /// #1782: a fila de reindexacao inclui **so** `embedding IS NULL`.
+    /// Entrada que ja tem vetor — mesmo sem modelo registrado (legado do
+    /// #954) — nao entra: re-processa-la custaria chamada de provider por um
+    /// vetor que ja existe. Se a fila um dia passar a incluir
+    /// `embedding_model IS NULL`, e decisao separada — e este teste e o que
+    /// acusa a mudanca de semantica.
+    #[tokio::test]
+    async fn fila_de_reindexacao_nao_pega_vetor_sem_modelo() {
+        let store = MemoryStore::in_memory().expect("store");
+        let mut legada = entry(
+            "s1",
+            None,
+            "vetor sem modelo",
+            MemoryRole::User,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+        legada.embedding_model = None;
+        store.remember(legada).await.expect("insere");
+
+        let fila = store.entries_missing_embeddings(10).expect("fila");
+        assert!(
+            fila.is_empty(),
+            "entrada com vetor nao deve estar na fila: {fila:?}"
+        );
+    }
+
     /// O cursor da fila e uma **chave**, nao um `OFFSET` numerico — e a
     /// diferenca so aparece quando alguem apaga uma linha no meio.
     ///
