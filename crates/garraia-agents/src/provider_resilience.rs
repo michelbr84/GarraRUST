@@ -65,6 +65,16 @@ impl CircuitBreaker {
         }
     }
 
+    /// Falhas acumuladas desde a última recuperação.
+    ///
+    /// `failure_count` é átomo privado; esta leitura existe para o teste
+    /// travar a **contagem** — o #1776 grava UMA falha por turno de vazias,
+    /// não uma por tentativa, e `allow_request` sozinho não distingue
+    /// "nenhuma falha" de "quatro falhas num circuito ainda fechado".
+    pub async fn failures(&self) -> u64 {
+        self.failure_count.load(Ordering::Relaxed)
+    }
+
     pub async fn record_success(&self) {
         let state = self.state().await;
         if state == CircuitState::HalfOpen {
