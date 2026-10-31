@@ -73,9 +73,13 @@ const CONFIRM_LIST: &[&str] = &[
     // si só (#1075, auditoria). #1781: o substring solto "environ" era
     // falso-positivo no read-only PowerShell (`[Environment]::OSVersion`
     // contem "environ" dentro de "Environment"), entao o padrao e ancorado:
-    // caminho de arquivo (`/environ`) e o par `os.environ` do Python.
+    // caminho de arquivo (`/environ`), o par `os.environ` do Python e o
+    // idioma `from os import environ` ("import environ" — revisao da
+    // #1781). Residuo conhecido, sem ancora barata e documentado de
+    // proposito: o alias `import os as o; o.environ`.
     "/environ",
     "os.environ",
+    "import environ",
     // Destrutivos em formas que o substring legado nao cobre.
     " -delete",
     "dd of=",
@@ -352,7 +356,8 @@ const RM_SYSTEM_TARGETS: &[&str] = &[
 /// (chaves de API, JWT, `.env` carregado pelo dotenvy) que não devem
 /// alcançar um processo dirigido pelo modelo. Resíduo documentado: leitura
 /// direta de `/proc/<pid>/environ` por mesmo UID é gated pelo tier de risco
-/// (padrões `/environ`/`os.environ` no CONFIRM_LIST, ancorados desde o
+/// (padrões `/environ`/`os.environ`/`import environ` no CONFIRM_LIST,
+/// ancorados desde o
 /// #1781), mas um sandbox real segue fora do escopo do #1075.
 pub const R3_ENV_ALLOWLIST: &[&str] = &["PATH", "HOME", "LANG", "LC_ALL", "TERM", "USER"];
 
@@ -2004,6 +2009,9 @@ mod tests {
         assert!(e_risky("strings /proc/1/environ"));
         assert!(e_risky(r#"python3 -c 'import os;print(os.environ)'"#));
         assert!(e_risky("cat /etc/environment"));
+        assert!(e_risky(
+            r#"python3 -c 'from os import environ;print(environ["HOME"])'"#
+        ));
     }
 
     /// #1781: o fail-open do PowerShell fechado. `curl`/`wget` sao alias do
