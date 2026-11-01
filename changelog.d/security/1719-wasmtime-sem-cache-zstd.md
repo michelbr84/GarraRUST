@@ -1,1 +1,0 @@
-- **Desliga a feature `cache` do wasmtime e remove zstd vulneravel do lockfile (RUSTSEC-2026-0391, 0395 a 0406, 0410).** O cache de modulos nao e usado por garraia-plugins, e wasmtime 49/50 fixam `zstd ^0.13`, entao so desligar a feature destrava `cargo audit` e `cargo deny`.

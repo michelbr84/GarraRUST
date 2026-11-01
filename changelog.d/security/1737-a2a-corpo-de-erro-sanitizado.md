@@ -1,1 +1,0 @@
-- **O erro de `create_task` do cliente A2A passa o corpo do peer por `corpo_de_erro_sanitizado` (#1737 F2).** Antes o corpo cru entrava na mensagem de erro; agora so a frase do peer, truncada, como no chat e nos embeddings.
