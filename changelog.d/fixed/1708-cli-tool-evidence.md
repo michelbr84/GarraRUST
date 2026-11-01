@@ -1,1 +1,0 @@
-- **CLI preserva evidencias de execucoes reais de ferramentas entre turnos (#1708, parcial).** Eventos de termino alimentam registro factual limitado, separado da resposta do modelo, com sucesso/falha e nome do arquivo quando aplicavel. No modo --persist/--resume, o registro e salvo e recuperado; sem essas flags, fica so em memoria. Nao inclui saidas de ferramentas.

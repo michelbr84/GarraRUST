@@ -1,1 +1,0 @@
-- agents: o aviso de ferramentas MCP escondidas pelo modo restrito agora sai uma vez por (modo, servidor) por processo, agregando as tools numa linha; repeticoes por turno descem para `debug!` (#1734)
