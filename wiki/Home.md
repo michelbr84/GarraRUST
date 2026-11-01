@@ -29,7 +29,7 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
   toda a CLI (#1778); `/model` aceita **presets e variantes do OpenRouter**
   (`@preset/<slug>`, `:floor`, `:nitro`, `:online`, `:exacto`, #1752/#1764);
   resposta 200 vazia entra no circuito de retry/fallback (#1776); MSRV sobe
-  para 1.97 com wasmtime 50 sem o zstd vulnerável (#1714/#1774); a API diz
+  para 1.97 com wasmtime 50 sem o zstd vulnerável (#1714/#1719); a API diz
   quem respondeu (#1733) e o `/api/health` deixa de mostrar verde com chave
   recusada (#1743); Windows de primeira classe (MCP `filesystem`, `file_jail`,
   rollback, voz — #1697); 3xx vira diagnóstico próprio (#1779), `code_review`

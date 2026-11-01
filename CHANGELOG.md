@@ -35,7 +35,7 @@ O v0.5.0 muda o comportamento visivel do turno e sobe a barra do toolchain:
 - **Gate reclassifica PowerShell** (#1781): `[Environment]::OSVersion` deixa
   de ser falso-positivo POSIX e `Invoke-WebRequest` por extenso deixa de ser
   fail-open.
-- **`garra memory reindex` conserta entries_missing_model** (#1782).
+- **`garra memory stats` deixa de prometer conserto que o reindex nao faz** (#1782).
 
 Instalacao: `irm https://garraia.org/install.ps1 | iex` (Windows) ou
 `curl -fsSL https://garraia.org/install.sh | sh` (Linux/macOS) — e o
@@ -301,10 +301,10 @@ Instalacao: `irm https://garraia.org/install.ps1 | iex` (Windows) ou
   gtk-rs, glib) acompanham. Removidos, de forma espelhada, os ignores de `rsa` (RUSTSEC-2023-0071)
   e `unic-*` (RUSTSEC-2025-0075/0080/0081/0098/0100): as crates sairam do `Cargo.lock` e os
   ignores so geravam `advisory-not-detected`. Nada passou a ser ignorado a mais.
-- **Desliga a feature `cache` do wasmtime e remove zstd vulneravel do lockfile (RUSTSEC-2026-0391, 0395 a 0406, 0410).** O cache de modulos nao e usado por garraia-plugins, e wasmtime 49/50 fixam `zstd ^0.13`, entao so desligar a feature destrava `cargo audit` e `cargo deny`.
+- **Desliga a feature `cache` do wasmtime e remove zstd vulneravel do lockfile (RUSTSEC-2026-0391, 0395 a 0406, 0410) (#1719).** O cache de modulos nao e usado por garraia-plugins, e wasmtime 49/50 fixam `zstd ^0.13`, entao so desligar a feature destrava `cargo audit` e `cargo deny`.
 - **O erro de `create_task` do cliente A2A passa o corpo do peer por `corpo_de_erro_sanitizado` (#1737 F2).** Antes o corpo cru entrava na mensagem de erro; agora so a frase do peer, truncada, como no chat e nos embeddings.
 - **Os dois ultimos caminhos de erro do cliente OpenAI-compat passam pelo sanitizador compartilhado (#1737 F5).** O erro SSE entregue como objeto (`{"error":{"message":..}}`) e o erro no corpo com HTTP 200 agora reduzem o texto a frase do provider via `corpo_de_erro_sanitizado`/`truncar`, antes de ir ao log e a resposta. Antes o objeto passava batido e o corpo cru, com o `user_id` do OpenRouter, vazava no `warn!` de fallback. O corte do SSE e do preview de parsing virou corte por caractere: um corpo com acento ou emoji nao entra mais em panico na fronteira multibyte. O contrato `status=` que `status_http_do_erro` le no gateway e no runtime nao mudou.
-- **wasmtime 50.0.0 -> 50.0.1 fecha quatro advisories, e o piso de MSRV NAO sobe.**
+- **wasmtime 50.0.0 -> 50.0.1 fecha quatro advisories, e o piso de MSRV NAO sobe (#1774).**
   Tres no `wasmtime` — `RUSTSEC-2026-0422` (funcoes tipadas com argumentos `i31`
   ou `nullref` podem panicar por checagem de tipo insuficiente),
   `RUSTSEC-2026-0423` (confusao de tipos entre engines com struct-types com
