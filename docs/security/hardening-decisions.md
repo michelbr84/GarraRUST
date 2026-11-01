@@ -138,7 +138,7 @@ para o gate nunca julgar algo menor do que executa). Consequencia medida:
 | `cargo test` | roda |
 | `npm test` | roda |
 | `pytest` | **bloqueada** — roda por interpretador Python, sensivel no gate |
-| filtro que toca `environ` | **bloqueada** |
+| filtro cuja linha toca os padroes ancorados (`/proc/…/environ`, `os.environ`, `import environ`) | **bloqueada** (ancorados desde o #1781: um filtro que so se chama `environ` roda, e nao e mais bloqueada por substring solto) |
 
 Nenhuma capacidade nova e concedida, e por isso a decisao nao precisou do
 apetite de risco do dono. Com canal de confirmacao nada mudou: toda suite

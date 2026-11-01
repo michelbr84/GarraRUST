@@ -644,17 +644,21 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
     /// #1084 item 4: sem canal de confirmacao, o que decide e o gate — o mesmo
     /// do `bash`, aplicado ao comando que vai rodar de verdade.
     ///
-    /// Aqui o filtro toca o canal de procfs (`environ`, no CONFIRM_LIST), a
-    /// linha montada e sensivel, e a suite e bloqueada antes de qualquer
-    /// processo nascer. A aprovacao vem ligada de proposito: sem canal ela
-    /// pode ter sido plantada no historico, e nao deve valer nada.
+    /// #1781: o filtro `environ` numa linha de cargo deixou de ser sensivel —
+    /// o padrao do CONFIRM_LIST e ancorado (caminho de arquivo `/environ`, par
+    /// `os.environ`), e uma suite com esse nome e o caso do
+    /// `[Environment]::OSVersion`, nao um canal de procfs. A forma que sobe a
+    /// linha e o interpretador: pytest roda por `python`, que o gate trata
+    /// como codigo arbitrario (script-file). A aprovacao vem ligada de
+    /// proposito: sem canal ela pode ter sido plantada no historico, e nao
+    /// deve valer nada.
     #[tokio::test]
     async fn sensitive_suite_is_blocked_without_confirmation_channel() {
         let tool = RunTestsTool::new(Some(1));
         let out = tool
             .execute(
                 &ctx(Some(env!("CARGO_MANIFEST_DIR")), true),
-                serde_json::json!({ "framework": "cargo", "test_name": "environ" }),
+                serde_json::json!({ "framework": "pytest", "test_name": "environ" }),
             )
             .await
             .expect("executa");
@@ -684,8 +688,11 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
         // nao uma excecao a ela.
         assert!(is_risky("python -m pytest -v").is_err());
 
-        // E um filtro que toca procfs torna sensivel ate a linha do cargo.
-        assert!(is_risky("cargo test environ -- --color=never").is_err());
+        // #1781: um filtro que so se chama "environ" deixou de ser sensivel —
+        // o padrao e ancorado a caminho de arquivo e ao par `os.environ`; uma
+        // suite com esse nome e o caso do `[Environment]::OSVersion`, nao um
+        // canal de procfs.
+        assert!(is_risky("cargo test environ -- --color=never").is_ok());
     }
 
     // ── test_name como argumento do runner (#1084) ────────────────────────

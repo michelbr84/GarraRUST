@@ -7,7 +7,8 @@
 //! *inheritance*. It does not close *procfs*: a child of the same UID can open
 //! `/proc/<ppid>/environ` and read the parent's environment directly, which on
 //! a gateway is where `GARRAIA_JWT_SECRET`, `ANTHROPIC_API_KEY` and friends
-//! live. The command gate lists `environ` as a pattern needing confirmation,
+//! live. The command gate lists the `environ` anchors (`/environ`, `os.environ`,
+//! `import environ`) as patterns needing confirmation,
 //! but that only inspects the text of a command — not what runs *inside* a
 //! script the gate made someone confirm without reading.
 //!
