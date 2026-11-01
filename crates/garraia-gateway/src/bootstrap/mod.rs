@@ -536,30 +536,12 @@ fn lista_de_raizes(raizes: &[PathBuf]) -> String {
         .join(", ")
 }
 
-/// #1593: o cliente HTTP de um provider LLM — janela própria quando
-/// `llm.<nome>.timeout_secs` está declarada, o compartilhado caso contrário.
-///
-/// Puro de propósito: a decisão "qual timeout vale para este provider" fica
-/// testável sem subir runtime nenhum. `Some(x)` constrói um cliente com a
-/// janela própria; o `config check` já avisa quando o valor declarado é 0
-/// (mesmo aviso do valor global).
-pub(crate) fn cliente_do_llm(
-    compartilhado: &reqwest::Client,
-    timeout_secs: Option<u64>,
-) -> reqwest::Client {
-    match timeout_secs {
-        // 0 = sem timeout, a mesma semantica documentada do valor global
-        // (#1593: `Duration::ZERO` seria um sleep ja vencido, nao "sem teto").
-        Some(0) => reqwest::Client::builder()
-            .build()
-            .unwrap_or_else(|_| compartilhado.clone()),
-        Some(segs) => reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(segs))
-            .build()
-            .unwrap_or_else(|_| compartilhado.clone()),
-        None => compartilhado.clone(),
-    }
-}
+/// #1593 + #1778: os dois construtores de cliente HTTP dos providers vivem em
+/// `garraia_agents::cliente_llm`, de onde a CLI tambem os alcanca — ela monta
+/// os providers por `garraia-ask`, que nao pode depender desta crate. O
+/// comportamento e o mesmo que era montado aqui; os testes abaixo seguem
+/// cobrindo-o por este caminho.
+pub(crate) use garraia_agents::cliente_llm::{cliente_compartilhado, cliente_do_llm};
 
 /// Build a fully-configured `AgentRuntime` from the application config.
 pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
@@ -570,22 +552,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // early — before the "no API key" warnings that are the *symptom*.
     config::warn_if_vault_locked();
 
-    // #1593: `default_secs == 0` documenta "sem timeout" (o config check
-    // avisa sobre o risco) — e e o que este ramo entrega: sem chamar
-    // `.timeout()`, o reqwest fica com o default dele (sem teto). Antes o 0
-    // virava `Duration::ZERO`, que e um sleep ja vencido: TODA chamada LLM
-    // falhava em ~1ms, o oposto do que a mensagem do check prometia.
-    let llm_client = {
-        let builder = reqwest::Client::builder();
-        let builder = if config.timeouts.llm.default_secs == 0 {
-            builder
-        } else {
-            builder.timeout(std::time::Duration::from_secs(
-                config.timeouts.llm.default_secs,
-            ))
-        };
-        builder.build().unwrap_or_default()
-    };
+    // #1593: `default_secs == 0` documenta "sem timeout", e e o que
+    // `cliente_compartilhado` entrega — ver o racional la.
+    let llm_client = cliente_compartilhado(config.timeouts.llm.default_secs);
 
     // --- LLM Providers ---
     for (name, llm_config) in &config.llm {
@@ -785,7 +754,11 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     llm_config.base_url.clone(),
                     None,
                 )
-                .with_name(name.clone());
+                .with_name(name.clone())
+                // #1778: este arm nao entregava o cliente da config a ninguem
+                // — `LlamaCppProvider::new` monta um `Client::new()` sem teto
+                // nenhum, entao `timeouts.llm` era inerte aqui tambem.
+                .with_client(client.clone());
                 runtime.register_provider(Arc::new(provider));
                 info!("configured llamacpp provider: {name}");
             }

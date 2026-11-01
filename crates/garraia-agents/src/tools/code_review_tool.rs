@@ -15,6 +15,13 @@ use crate::providers::{ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequ
 /// Default timeout for diff operations
 const DEFAULT_TIMEOUT_SECS: u64 = 15;
 
+/// #1780: teto da chamada de LLM por dentro do review. O diff tem o teto de
+/// `DEFAULT_TIMEOUT_SECS`; o LLM não tinha teto nenhum — a chamada leva
+/// 30-120s de rotina contra provider real, e era o teto do modo (20s no
+/// `review`) que a matava antes de responder, virando a revisão inteira em
+/// erro. Generoso de propósito: revisão de 4096 tokens contra provider lento.
+const LLM_TIMEOUT_SECS: u64 = 180;
+
 /// Maximum diff lines to send to LLM
 const MAX_DIFF_LINES: usize = 1000;
 
@@ -27,6 +34,9 @@ pub struct CodeReviewTool {
     model: String,
     /// Timeout for git operations
     timeout: Duration,
+    /// #1780: teto da chamada de LLM por dentro do review. Default
+    /// [`LLM_TIMEOUT_SECS`]; sobrescrito em teste por [`Self::com_timeout_de_llm`].
+    timeout_de_llm: Duration,
     /// #1225 S2: `agent.sandbox`. Default `off` = host, como sempre.
     sandbox: crate::sandbox::SandboxPolicy,
 }
@@ -42,8 +52,17 @@ impl CodeReviewTool {
             provider,
             model: model.into(),
             timeout: Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)),
+            timeout_de_llm: Duration::from_secs(LLM_TIMEOUT_SECS),
             sandbox: crate::sandbox::SandboxPolicy::default(),
         }
+    }
+
+    /// #1780: sobrepõe o teto da chamada de LLM. Testes usam; produção fica
+    /// no default de [`LLM_TIMEOUT_SECS`].
+    #[must_use = "devolve a tool com o teto de LLM; o receptor é consumido"]
+    pub fn com_timeout_de_llm(mut self, secs: u64) -> Self {
+        self.timeout_de_llm = Duration::from_secs(secs);
+        self
     }
 
     /// #1225 S2: a policy de `agent.sandbox` que o spawn consulta.
@@ -199,11 +218,22 @@ Provide your review in a clear, structured format."#,
             tools: vec![],
         };
 
-        let response = self
-            .provider
-            .complete(&request)
-            .await
-            .map_err(|e| format!("LLM review error: {}", e))?;
+        // #1780: a chamada ao LLM tinha teto ZERO — o diff morria no teto
+        // proprio da tool, mas o LLM ficava pendurado até o wrap externo do
+        // runtime matar tudo no teto do modo, virando a revisão inteira em
+        // `tool timeout`. O teto é daqui para dentro: morre com erro
+        // nomeando a etapa, antes do wrap externo.
+        let resposta =
+            tokio::time::timeout(self.timeout_de_llm, self.provider.complete(&request)).await;
+        let response = match resposta {
+            Ok(inner) => inner.map_err(|e| format!("LLM review error: {}", e))?,
+            Err(_) => {
+                return Err(format!(
+                    "LLM review timed out after {}s (#1780: o teto da chamada de LLM da tool)",
+                    self.timeout_de_llm.as_secs()
+                ));
+            }
+        };
 
         let review = response
             .content
@@ -250,6 +280,15 @@ impl Tool for CodeReviewTool {
                 }
             }
         })
+    }
+
+    /// #1780: o bound total da revisão — diff (`timeout`) + LLM
+    /// (`timeout_de_llm`) somados. O wrap externo do runtime usa o maior
+    /// entre este e o teto do modo, então a revisão deixa de morrer no 20s
+    /// do modo `review` enquanto o LLM ainda trabalha dentro do teto que a
+    /// própria tool respeita.
+    fn teto_proprio(&self) -> Option<std::time::Duration> {
+        Some(self.timeout + self.timeout_de_llm)
     }
 
     async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
@@ -337,6 +376,83 @@ mod tests {
 
     fn tool_com_eco() -> CodeReviewTool {
         CodeReviewTool::new(Arc::new(ProvedorQueEcoa), "modelo-de-teste", Some(15))
+    }
+
+    /// #1780: provedor que dorme mais que o teto de LLM configurado — a
+    /// chamada morre dentro da tool com erro nomeando a etapa, e não fica
+    /// pendurada até o wrap externo do runtime.
+    struct ProvedorLento(Duration);
+
+    #[async_trait]
+    impl LlmProvider for ProvedorLento {
+        fn provider_id(&self) -> &str {
+            "lento-de-teste"
+        }
+
+        async fn complete(&self, _request: &LlmRequest) -> Result<LlmResponse> {
+            tokio::time::sleep(self.0).await;
+            Ok(LlmResponse {
+                content: vec![ContentBlock::Text {
+                    text: "revisão que nunca chega".to_string(),
+                }],
+                model: "lento".to_string(),
+                stop_reason: None,
+                usage: None,
+            })
+        }
+
+        async fn health_check(&self) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// #1780: o LLM sem resposta dentro do teto proprio da tool vira erro
+    /// preciso, antes de o wrap externo matar a chamada inteira.
+    ///
+    /// **Mutação que este teste pega**: tire o `tokio::time::timeout` de
+    /// `review_diff` e ele fica vermelho (o erro seria do provider, sem
+    /// "timed out", ou a chamada pendura).
+    #[tokio::test]
+    async fn llm_sem_resposta_dentro_do_teto_da_tool_e_erro_preciso() {
+        let repo = repo_git_temporario("alvo-review-lento", "ramo-review-lento");
+        let tool = CodeReviewTool::new(
+            Arc::new(ProvedorLento(Duration::from_secs(5))),
+            "modelo-de-teste",
+            Some(15),
+        )
+        .com_timeout_de_llm(1);
+        let wd = repo.path().to_string_lossy().into_owned();
+
+        let saida = tool
+            .execute(&ctx(Some(&wd)), serde_json::json!({}))
+            .await
+            .expect("execute");
+
+        assert!(saida.is_error, "{}", saida.content);
+        assert!(
+            saida.content.contains("LLM review timed out after 1s"),
+            "erro de LLM sem o teto aplicado:\n{}",
+            saida.content
+        );
+    }
+
+    /// #1780: o teto declarado cobre o diff **e** o LLM — o wrap externo usa
+    /// o maior entre este e o teto do modo.
+    #[test]
+    fn teto_proprio_cobre_diff_mais_llm() {
+        let tool = tool_com_eco();
+        assert_eq!(
+            tool.teto_proprio(),
+            Some(Duration::from_secs(15 + LLM_TIMEOUT_SECS))
+        );
+        // O default (sem override) é o const; o override de teste muda o
+        // bound declarado na mesma medida.
+        let custom =
+            CodeReviewTool::new(Arc::new(ProvedorQueEcoa), "m", None).com_timeout_de_llm(7);
+        assert_eq!(
+            custom.teto_proprio(),
+            Some(Duration::from_secs(DEFAULT_TIMEOUT_SECS + 7))
+        );
     }
 
     /// #1272 S3: o `code_review` usa o mesmo git endurecido — config

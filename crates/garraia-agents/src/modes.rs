@@ -1236,7 +1236,11 @@ impl ModeProfile {
             },
             limits: ModeLimits {
                 max_tool_loops: 10,
-                timeout_secs: 20,
+                // #1780: o review chama LLM por dentro (code_review, 30-120s de rotina).
+                // 20s matava a revisao inteira antes de o provider responder; o
+                // code_review agora carrega teto proprio, e este teto cobre as
+                // outras tools do modo quando o operador sobe o padrao via env.
+                timeout_secs: 120,
                 max_turns: 5,
             },
             tools_enabled: true,

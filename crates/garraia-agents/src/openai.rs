@@ -133,6 +133,19 @@ impl OpenAiProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            // #1779: 3xx nao tem corpo que explique — a explicacao e o
+            // `Location`, e o redirect nao e seguido (regra 14).
+            if status.is_redirection() {
+                let diagnostico = crate::providers::diagnostico_de_redirecionamento(
+                    status,
+                    response.headers(),
+                    "a base_url do provider",
+                );
+                tracing::warn!("Failed to list models: {diagnostico}");
+                return Err(Error::Agent(format!(
+                    "failed to list models: {diagnostico}"
+                )));
+            }
             let body = response.text().await.unwrap_or_default();
             // #1726: mesma sanitizacao do chat — o corpo do OpenRouter traz o
             // `user_id` da conta do operador.
@@ -382,6 +395,23 @@ impl LlmProvider for OpenAiProvider {
         let status = response.status();
 
         if !status.is_success() {
+            // #1779: 3xx chegava aqui e saia como `body=` vazio — o corpo de um
+            // redirect nao explica nada, quem explica e o `Location`. Ele sai
+            // CITADO, nunca seguido (regra 14): o cliente tem
+            // `Policy::none()`, e seguir um 3xx do provider contornaria o
+            // pinning de IP que o guard de SSRF aplicou.
+            if status.is_redirection() {
+                let diagnostico = crate::providers::diagnostico_de_redirecionamento(
+                    status,
+                    response.headers(),
+                    "a base_url do provider",
+                );
+                tracing::warn!(
+                    "openai API error: {diagnostico}, endpoint={}",
+                    self.endpoint()
+                );
+                return Err(Error::Agent(format!("openai API error: {diagnostico}")));
+            }
             let body = response.text().await.unwrap_or_default();
             // Log more details for debugging
             tracing::warn!(
@@ -554,6 +584,20 @@ impl LlmProvider for OpenAiProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            // #1779: mesma classificacao do caminho batch — o braco de
+            // streaming nao fica com o `body=` vazio de um 3xx.
+            if status.is_redirection() {
+                let diagnostico = crate::providers::diagnostico_de_redirecionamento(
+                    status,
+                    response.headers(),
+                    "a base_url do provider",
+                );
+                tracing::warn!(
+                    "openai API error: {diagnostico}, endpoint={}",
+                    self.endpoint()
+                );
+                return Err(Error::Agent(format!("openai API error: {diagnostico}")));
+            }
             let body = response.text().await.unwrap_or_default();
             // #1299: mesma classificação do caminho batch — o braço de
             // streaming não fica com a mensagem pior.
@@ -2317,6 +2361,178 @@ mod tests {
         assert_eq!(v, ValidacaoDeModelo::SemListagem);
         assert_eq!(estado.gets.load(Ordering::SeqCst) - g0, 0);
         assert_eq!(estado.posts.load(Ordering::SeqCst) - p0, 0);
+
+        let _ = tx.send(());
+        let _ = servidor.await;
+    }
+
+    /// #1779: um 3xx sai com o `Location` citado e **nenhum segundo request**.
+    ///
+    /// O contador do servidor falso e a prova da regra 14: cada caminho emite
+    /// exatamente UMA requisicao, recebe o redirect e para — seguir o
+    /// `Location` contornaria o pinning de IP do guard de SSRF. O corpo de um
+    /// 3xx e vazio, entao o ramo escrito para 4xx/5xx (`body=`) nao pode mais
+    /// ser o que responde: a asserção de que `body=` NAO aparece e o que trava
+    /// a regressao.
+    #[tokio::test]
+    async fn redirect_do_provider_cita_o_location_e_nao_emite_segundo_request() {
+        use axum::{
+            Router,
+            extract::State,
+            http::{StatusCode, header},
+            routing::{get, post},
+        };
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// `Location` com cara de real: o OpenRouter poe o `user_id` da conta
+        /// na query, e o header vem do servidor remoto — e dado influenciavel.
+        const LOCATION: &str =
+            "https://host-novo.test/v1/chat/completions?user_id=user_x&token=segredo";
+
+        #[derive(Clone)]
+        struct Estado {
+            requests: Arc<AtomicUsize>,
+        }
+
+        let estado = Estado {
+            requests: Arc::new(AtomicUsize::new(0)),
+        };
+
+        fn redireciona(
+            st: &Estado,
+            status: StatusCode,
+        ) -> (
+            StatusCode,
+            [(header::HeaderName, &'static str); 1],
+            &'static str,
+        ) {
+            st.requests.fetch_add(1, Ordering::SeqCst);
+            // Corpo vazio, como todo 3xx de verdade.
+            (status, [(header::LOCATION, LOCATION)], "")
+        }
+
+        let app = Router::new()
+            .route(
+                "/r308/v1/chat/completions",
+                post(|State(st): State<Estado>| async move {
+                    redireciona(&st, StatusCode::PERMANENT_REDIRECT)
+                }),
+            )
+            .route(
+                "/r301/v1/chat/completions",
+                post(|State(st): State<Estado>| async move {
+                    redireciona(&st, StatusCode::MOVED_PERMANENTLY)
+                }),
+            )
+            .route(
+                "/r307/v1/chat/completions",
+                post(|State(st): State<Estado>| async move {
+                    redireciona(&st, StatusCode::TEMPORARY_REDIRECT)
+                }),
+            )
+            .route(
+                "/r302/models",
+                get(|State(st): State<Estado>| async move { redireciona(&st, StatusCode::FOUND) }),
+            )
+            .with_state(estado.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}");
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let servidor = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let request = LlmRequest {
+            model: "z-ai/glm-5.3-flash".to_string(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: MessagePart::Text("oi".to_string()),
+            }],
+            system: None,
+            max_tokens: Some(16),
+            temperature: None,
+            tools: vec![],
+        };
+
+        let confere = |msg: &str, codigo: u16| {
+            assert!(msg.contains(&format!("status={codigo}")), "{msg}");
+            assert!(
+                msg.contains(LOCATION),
+                "o Location tem de ser citado: {msg}"
+            );
+            assert!(
+                msg.contains("redirects desligados por seguranca"),
+                "a politica tem de aparecer: {msg}"
+            );
+            assert!(
+                msg.contains("corrija a base_url do provider"),
+                "a recuperacao tem de aparecer: {msg}"
+            );
+            // O ramo de 4xx/5xx (corpo vazio) nao responde mais por 3xx.
+            assert!(!msg.contains("body="), "{msg}");
+            assert_eq!(
+                crate::providers::status_http_do_erro(&Error::Agent(msg.to_string())),
+                Some(codigo),
+                "o contrato `status=` continua legivel: {msg}"
+            );
+        };
+
+        // 308 no caminho batch: 1 request, nada depois.
+        let n0 = estado.requests.load(Ordering::SeqCst);
+        let provider = OpenAiProvider::new("sk-test", None, Some(format!("{url}/r308")));
+        let erro = provider
+            .complete(&request)
+            .await
+            .expect_err("308 tem de virar erro, nao redirect seguido");
+        confere(&erro.to_string(), 308);
+        assert_eq!(
+            estado.requests.load(Ordering::SeqCst) - n0,
+            1,
+            "o redirect nao pode ter sido seguido"
+        );
+
+        // 301 no caminho de streaming.
+        let n0 = estado.requests.load(Ordering::SeqCst);
+        let provider = OpenAiProvider::new("sk-test", None, Some(format!("{url}/r301")));
+        let erro = provider
+            .stream_complete(&request)
+            .await
+            .err()
+            .expect("301 tem de virar erro no braco de streaming");
+        confere(&erro.to_string(), 301);
+        assert_eq!(estado.requests.load(Ordering::SeqCst) - n0, 1);
+
+        // 307 (o redirect que preserva o metodo, e por isso o mais tentador).
+        let n0 = estado.requests.load(Ordering::SeqCst);
+        let provider = OpenAiProvider::new("sk-test", None, Some(format!("{url}/r307")));
+        let erro = provider
+            .complete(&request)
+            .await
+            .expect_err("307 tem de virar erro");
+        confere(&erro.to_string(), 307);
+        assert_eq!(estado.requests.load(Ordering::SeqCst) - n0, 1);
+
+        // 302 na listagem de catalogo: o mesmo diagnostico, nao `body=` vazio.
+        let n0 = estado.requests.load(Ordering::SeqCst);
+        let provider = OpenAiProvider::new("sk-test", None, Some(format!("{url}/r302")))
+            .with_name("openrouter");
+        let erro = provider
+            .available_models()
+            .await
+            .expect_err("302 no catalogo tem de virar erro");
+        let msg = erro.to_string();
+        assert!(msg.contains("failed to list models: status=302"), "{msg}");
+        assert!(msg.contains(LOCATION), "{msg}");
+        assert!(!msg.contains("body="), "{msg}");
+        assert_eq!(estado.requests.load(Ordering::SeqCst) - n0, 1);
 
         let _ = tx.send(());
         let _ = servidor.await;

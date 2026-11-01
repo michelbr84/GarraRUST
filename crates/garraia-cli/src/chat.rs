@@ -803,6 +803,7 @@ async fn try_build_default_provider(
     cfg: &garraia_config::LlmProviderConfig,
     model: &str,
     env: provider_binding::Env<'_>,
+    cliente: &reqwest::Client,
 ) -> Option<Arc<dyn LlmProvider>> {
     // GAR-576: return ONLY the trait object — the display strings
     // (config_key, model) are formed at the call site from inputs that
@@ -810,7 +811,7 @@ async fn try_build_default_provider(
     // logging dataflow analysis from conservatively tainting the model
     // name through this scope, which also resolves the api_key.
     let binding = provider_binding::bind_entry(config_key, cfg, env);
-    let provider = provider_binding::build_provider(&binding, model, None, None).ok()?;
+    let provider = provider_binding::build_provider(&binding, model, None, None, cliente).ok()?;
     // Local daemons are health-checked: a dead one must not win over the
     // autodetect chain.
     if matches!(binding.kind(), "ollama" | "llamacpp")
@@ -866,7 +867,11 @@ enum LocalOllamaProbe {
 ///
 /// Deliberately conservative: it can only ever win on an exact hit in
 /// `/api/tags`, so `--model gpt-4o` is never hijacked to a local provider.
-async fn try_local_ollama_model(config: &AppConfig, model_override: &str) -> LocalOllamaProbe {
+async fn try_local_ollama_model(
+    config: &AppConfig,
+    model_override: &str,
+    cliente: &reqwest::Client,
+) -> LocalOllamaProbe {
     // `openrouter/auto` and friends belong to another provider — bail before
     // spending a round-trip.
     let Some(tag) = normalize_ollama_tag(model_override) else {
@@ -888,9 +893,10 @@ async fn try_local_ollama_model(config: &AppConfig, model_override: &str) -> Loc
 
     match probe.resolve_installed_model(&tag).await {
         Ok(Some(found)) => {
-            // Rebuild with the default (untimed) client — the 2s probe budget
-            // must not cap inference.
-            let provider = OllamaProvider::new(Some(found.clone()), Some(base));
+            // Rebuild with the client from `timeouts` (#1778) — the 2s probe
+            // budget must not cap inference, and `::new()` would cap nothing.
+            let provider =
+                OllamaProvider::new(Some(found.clone()), Some(base)).with_client(cliente.clone());
             LocalOllamaProbe::Installed(Box::new((
                 "ollama".to_string(),
                 found,
@@ -916,6 +922,7 @@ async fn try_local_ollama_model(config: &AppConfig, model_override: &str) -> Loc
 async fn offer_pull_ollama_model(
     tag: &str,
     assume_yes: bool,
+    cliente: &reqwest::Client,
 ) -> Option<(String, String, Arc<dyn LlmProvider>)> {
     use std::io::IsTerminal as _;
 
@@ -947,7 +954,9 @@ async fn offer_pull_ollama_model(
     }
 
     let base = ollama_base_url();
-    // Default client: no timeout — a cold pull can run for many minutes.
+    // Default client: no timeout — a cold pull can run for many minutes, e e
+    // por isso que o cliente de `timeouts` NAO entra aqui (#1778): a janela de
+    // 120s mataria o download no meio. Ela vale para a inferencia, abaixo.
     let puller = OllamaProvider::new(Some(tag.to_string()), Some(base.clone()));
 
     eprintln!("{DIM}Baixando {tag}…{RESET}");
@@ -970,7 +979,8 @@ async fn offer_pull_ollama_model(
     match result {
         Ok(()) => {
             eprintln!("{GREEN}  {tag} pronto.{RESET}");
-            let provider = OllamaProvider::new(Some(tag.to_string()), Some(base));
+            let provider =
+                OllamaProvider::new(Some(tag.to_string()), Some(base)).with_client(cliente.clone());
             Some((
                 "ollama".to_string(),
                 tag.to_string(),
@@ -1021,6 +1031,16 @@ async fn detect_provider_with_env(
     assume_yes: bool,
     env: provider_binding::Env<'_>,
 ) -> (String, String, Arc<dyn LlmProvider>) {
+    // #1778: um cliente para a deteccao inteira, montado de
+    // `timeouts.llm.default_secs` como o bootstrap do gateway faz. Todo
+    // provider que sair daqui o recebe por `with_client` — antes cada ramo
+    // ficava com o cliente padrao do `::new()`, e contra Ollama ou llama.cpp
+    // isso era "sem teto de tempo em lugar nenhum". Uma janela propria de
+    // entrada (`llm.<nome>.timeout_secs`) ainda vence, dentro de
+    // `build_provider`.
+    let cliente =
+        garraia_agents::cliente_llm::cliente_compartilhado(config.timeouts.llm.default_secs);
+
     // 0. If a custom URL is provided, use OpenAI-compatible provider (LM Studio, vLLM, etc.)
     if let Some(url) = url_override {
         let base = url.trim_end_matches('/').to_string();
@@ -1033,6 +1053,9 @@ async fn detect_provider_with_env(
             None, // model will be set from --model flag or default
             Some(base.clone()),
         )
+        // Endereco avulso nao tem entrada `llm:`, entao so a janela global
+        // vale para ele (#1778).
+        .with_client(cliente.clone())
         .with_name("lmstudio");
 
         // An explicit --model wins over whatever the endpoint advertises.
@@ -1055,10 +1078,10 @@ async fn detect_provider_with_env(
     // even on a box configured for OpenRouter. Placed after `--url`, which is
     // a more explicit routing instruction than a bare model name.
     if let Some(m) = model_override.filter(|m| !m.is_empty()) {
-        match try_local_ollama_model(config, m).await {
+        match try_local_ollama_model(config, m, &cliente).await {
             LocalOllamaProbe::Installed(hit) => return *hit,
             LocalOllamaProbe::Missing { tag } => {
-                if let Some(hit) = offer_pull_ollama_model(&tag, assume_yes).await {
+                if let Some(hit) = offer_pull_ollama_model(&tag, assume_yes, &cliente).await {
                     return hit;
                 }
                 // Declined / failed / non-interactive: fall through. Every
@@ -1090,7 +1113,8 @@ async fn detect_provider_with_env(
             .map(str::to_string)
             .unwrap_or(model)
         && let Some(cfg) = config.llm.get(&config_key)
-        && let Some(provider) = try_build_default_provider(&config_key, cfg, &model, env).await
+        && let Some(provider) =
+            try_build_default_provider(&config_key, cfg, &model, env, &cliente).await
     {
         // GAR-576: form the display tuple here from the (untainted)
         // strings returned by `decide_default_provider` — they never
@@ -1130,7 +1154,8 @@ async fn detect_provider_with_env(
             AutodetectCandidate::OpenAi => ("openai", openai.as_ref()),
             AutodetectCandidate::OpenRouter => (DEFAULT_CLOUD_PROVIDER, openrouter.as_ref()),
             AutodetectCandidate::Ollama => {
-                let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url.clone()));
+                let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url.clone()))
+                    .with_client(cliente.clone());
                 if ollama.health_check().await.unwrap_or(false) {
                     return (
                         DEFAULT_LOCAL_PROVIDER.to_string(),
@@ -1148,7 +1173,8 @@ async fn detect_provider_with_env(
         // An `llm.openrouter` declaring `provider: openai` registers under
         // the entry's name, like an alias on the explicit path (GAR-582).
         let provider_id = (binding.kind() != name).then_some(name);
-        let Ok(provider) = provider_binding::build_provider(binding, &model, provider_id, None)
+        let Ok(provider) =
+            provider_binding::build_provider(binding, &model, provider_id, None, &cliente)
         else {
             continue;
         };
@@ -1158,7 +1184,7 @@ async fn detect_provider_with_env(
     // Last resort: Ollama with no health check (user will see the error on
     // the first message). Nothing else is left to try — this is the only
     // provider that needs no credential at all.
-    let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url));
+    let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url)).with_client(cliente);
     (
         OLLAMA_ULTIMO_RECURSO.to_string(),
         model,
@@ -3521,9 +3547,15 @@ mod tests {
             ],
         );
         let entry = cfg.llm.get("lmstudio").cloned().expect("entrada");
-        let p = try_build_default_provider("lmstudio", &entry, "m", &|_: &str| None)
-            .await
-            .expect("default provider construivel");
+        let p = try_build_default_provider(
+            "lmstudio",
+            &entry,
+            "m",
+            &|_: &str| None,
+            &reqwest::Client::new(),
+        )
+        .await
+        .expect("default provider construivel");
         texto_da_chamada(&p).await;
         assert!(a.credentials().await.is_empty(), "A nao pode receber nada");
         assert_eq!(b.credentials().await, vec!["chave-b".to_string()]);
