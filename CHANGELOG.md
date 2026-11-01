@@ -6,19 +6,322 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.5.0-rc2] - 2026-10-30
+## [0.5.0] - 2026-11-01
 
-**Segundo pre-lancamento da v0.5.0, nao e a versao estavel.** O rc1 publicou a Release como devia (prerelease, sem `latest`, canal estavel intacto: `/releases/latest`, `latest.json`, `garra update` e os instaladores sem versao fixada seguem na v0.4.10), mas a validacao de instalacao achou duas coisas. Primeiro, o `garra update` em si convidava a rebaixar: um binario a frente do canal (`0.5.0` contra o `latest` `0.4.10` — o caso do rc1) recebia `Update to v0.4.10? [Y/n]` com default "sim", porque o `run_update` comparava as versoes por igualdade enquanto so o aviso usava o gate de novidade; agora os dois usam `release_is_newer`, so `latest > current` oferece, e binario mais novo que o canal imprime "You are running v0.5.0, which is newer than the stable channel (v0.4.10). Nothing to do." e sai 0 sem prompt (#1772). Segundo, o wasmtime 50.0.0 do rc1 ganhou quatro advisories publicados depois do CI dele, fechados no 50.0.1: RUSTSEC-2026-0422 (funcoes tipadas com argumentos `i31` ou `nullref` podem panicar), 2026-0423 (confusao de tipos entre engines com supertipos criados pelo host) e 2026-0424 (uso de memoria nao checado ao transferir recursos emprestados entre componentes) no `wasmtime`, mais o 2026-0420 no `wasmtime-wasi` (o `send` UDP do wasip3 entrega datagrama a endereco que so permite receber); patch de lockfile apenas, o `Cargo.toml` ja pedia `wasmtime = "50"` e o piso de MSRV 1.97 nao muda (#1774). Fora essas duas correcoes, o codigo e o mesmo do rc1. Este RC sai como *prerelease* e nao e oferecido a quem esta na v0.4.10.
+O v0.5.0 muda o comportamento visivel do turno e sobe a barra do toolchain:
 
-**Como testar.** CLI no Windows: `$env:GARRAIA_VERSION='v0.5.0-rc2'; irm https://github.com/michelbr84/GarraRUST/releases/download/v0.5.0-rc2/install.ps1 | iex`. CLI no Linux/macOS: `GARRAIA_VERSION=v0.5.0-rc2 curl -fsSL https://github.com/michelbr84/GarraRUST/releases/download/v0.5.0-rc2/install.sh | bash`. Docker: `docker pull ghcr.io/michelbr84/garraia:0.5.0-rc2`. Depois de instalar, `garra --version` deve dizer 0.5.0 e `garra update` deve imprimir "You are running v0.5.0, which is newer than the stable channel (v0.4.10). Nothing to do." e sair 0, sem oferecer o rebaixamento.
+- **Chat sem teto de tempo por padrao** (#1751): `config.timeouts.llm.default_secs`
+  deixa de cortar o turno aos 120 s; `0` = sem teto e o default do chat
+  interativo. Quem depender do corte antigo configura `timeouts` de volta.
+- **MSRV sobe para 1.97** (#1714, #1750): wasmtime 50 e o binario novo exigem
+  toolchain Rust 1.97+. CI, scripts e docs atualizados.
+- **`/model` aceita variantes e presets do OpenRouter** (#1752, #1764):
+  `:floor`, `:nitro`, `:online`, `:exacto` e `@preset/<slug>` validados com
+  uma sonda real de 1 token; `--model` na linha de comando aceita a mesma
+  string.
+- **Resposta 200 vazia entra no circuito** (#1776): um `Ok` sem texto e sem
+  ferramenta re-tenta uma vez, cai para os fallbacks e registra UMA falha no
+  breaker por turno; o gasto faturado das tentativas descartadas sai em
+  campo proprio e o `usage` da resposta segue o de quem serviu (o medidor de
+  contexto do shim `/v1/messages` nao ve soma).
+- **CLI herda os timeouts da config** (#1778): providers montados pela CLI
+  passam a respeitar `config.timeouts` (antes: Client cru, chat contra
+  Ollama/llama.cpp rodava sem teto).
+- **3xx vira diagnostico proprio** (#1779): redirecionamento (308 na pratica)
+  nao cai mais no ramo de erro 4xx/5xx com corpo vazio; a `Location` entra
+  na mensagem. Politica de redirect intocada (regra 14).
+- **code_review com timeout proprio da chamada LLM interna** (#1780): o teto
+  do modo review deixa de matar a review antes da resposta.
+- **Gate reclassifica PowerShell** (#1781): `[Environment]::OSVersion` deixa
+  de ser falso-positivo POSIX e `Invoke-WebRequest` por extenso deixa de ser
+  fail-open.
+- **`garra memory stats` deixa de prometer conserto que o reindex nao faz** (#1782).
 
-**Limites conhecidos.** Os mesmos do rc1: a validacao dos instaladores desktop (D5/D6) continua pendente para a estavel; o canal estavel so muda quando a v0.5.0 estavel sair, e os fragmentos em `changelog.d/` continuam pendentes ate la.
+Instalacao: `irm https://garraia.org/install.ps1 | iex` (Windows) ou
+`curl -fsSL https://garraia.org/install.sh | sh` (Linux/macOS) — e o
+`garra update` a partir do 0.4.10.
 
-## [0.5.0-rc1] - 2026-10-30
+### Added
+- **CLI: autodiagnostico sob demanda (primeira etapa de #1712).** O agente interativo passa a ter a ferramenta somente leitura `cli_inspect` para consultar a versao real do binario, provedor e modelo selecionados, evidencias do ultimo turno, e inventario paginado das ferramentas do runtime. Informacoes externas nao verificadas de gateway e MCP permanecem explicitamente como desconhecidas; nenhuma credencial ou log administrativo e exposto.
+- **O agente passa a saber a data e a hora atuais (#1725).** Nenhuma superficie
+  dizia ao modelo que dia e, e ele inventava datas -- a auditoria de 2026-10-27 o
+  pegou gravando "Registrado em 2025-11-14" -- e nao tinha base para "amanha",
+  "esta semana" ou "ate sexta". Agora o runtime anexa ao system prompt de cada
+  turno uma linha no idioma da persona com dia da semana, data, hora local e o
+  deslocamento do fuso (`Data e hora atuais: terca-feira, 2026-10-27 23:55
+  (UTC-04:00).`), depois do objetivo da sessao. Vale para o gateway (todos os
+  canais) e para `garra chat`; o modo `neutral`, que por contrato nao tem system
+  prompt, continua sem nenhum.
+- **API OpenAI-compat: `/v1/chat/completions` diz quem respondeu (#1733).** O `model` da resposta (e o chunk final do streaming) e o novo campo `provider` passam a refletir o provider/modelo que de fato atendeu o turno, com os headers `X-AI-Provider`/`X-AI-Model` por turno, no lugar do rotulo pedido pelo cliente (#1733). A pausa de confirmacao (GAR-187) tambem grava as stats do turno, para a resposta nunca nomear o provider do turno anterior da sessao (#1733).
+- **API: a resposta do turno diz quem respondeu (#1733).** `POST /api/sessions/{id}/messages` passa a devolver `provider`, `model` e `fallback` do turno (aditivo) e os headers `X-AI-Provider`/`X-AI-Model` refletem quem respondeu de fato, nao o default da config (#1733).
+- **O /model aceita presets do OpenRouter (#1752).** Um preset (`@preset/<slug>` puro ou `<autor>/<modelo>@preset/<slug>`) passa a ser aceito pelo /model e validado por uma unica chamada real minima ao OpenRouter (`max_tokens` 1), ja que presets nao aparecem em `GET /models`; o roteamento manda o preset intacto ao OpenRouter mesmo quando o prefixo e de um provider nativo, e as allowlists do MCP seguem comparando a string inteira.
+- **O /model aceita variantes de roteamento do OpenRouter (#1764).** Um modelo do catalogo com sufixo de roteamento (`<autor>/<modelo>:floor`, `:nitro`, `:online` ou `:exacto`) passa a ser aceito pelo /model: a base e checada no catalogo (gratis) e a variante e validada por uma unica chamada real minima ao OpenRouter (`max_tokens` 1) da string inteira, como nos presets (#1752), ja que as variantes nao aparecem em `GET /models`. Base ausente ou sufixo fora da lista fechada recusa sem POST; `:free`/`:thinking`/`:extended` seguem vindo do catalogo por igualdade; `garra ask --model <modelo>:floor` roteia sem validar; e o allowlist do MCP compara a string inteira. Cuidado: `:online` cobra busca web na sonda de validacao.
 
-Candidato a release da v0.5.0, publicado como pre-release: nao e servido por `/releases/latest`, nao e oferecido pelo `garra update` nem pelo updater do desktop, e a imagem Docker sai sem a tag `latest`. Instalacao com pin — Windows: `$env:GARRAIA_VERSION='v0.5.0-rc1'; irm https://github.com/michelbr84/GarraRUST/releases/download/v0.5.0-rc1/install.ps1 | iex`; Linux/macOS: `GARRAIA_VERSION=v0.5.0-rc1 curl -fsSL https://github.com/michelbr84/GarraRUST/releases/download/v0.5.0-rc1/install.sh | bash`.
+### Changed
+- **CI ganha o job nao obrigatorio `Unit tests (windows-latest, macos-latest)`, que EXECUTA os testes unitarios (`--lib`) fora do Linux (#1697).**
+  Os jobs `Test (windows-latest)`/`Test (macos-latest)` so compilavam a suite (`--no-run`)
+  porque os runners nao tem Docker; mas o testcontainers so entra em alvos de integracao
+  (`tests/`), nunca num alvo lib, entao as suites unitarias do workspace inteiro passam a
+  rodar nos tres sistemas. No Windows o job novo tambem executa
+  `cargo test -p garraia-agents --features mcp --lib` e o clippy correspondente com
+  `-D warnings`. O job nasce fora dos checks obrigatorios, por decisao do dono: vermelho
+  ali e sinal em toda PR, nao bloqueio; a promocao a obrigatorio fica para depois de uma
+  sequencia de runs verdes em `main`. Fecha a lacuna que deixou 19 falhas Windows-only e
+  3 macOS-only invisiveis por semanas.
+- **wasmtime 49.0.4 -> 50.0.0 e MSRV 1.96 -> 1.97 (#1714).** A arvore do wasmtime
+  50 (cranelift 0.137.0, pulley/wiggle 50.0.0) declara `rustc 1.97.0`, entao o
+  `rust-version` do workspace e o job `MSRV check` sobem juntos, no mesmo padrao
+  dos cinco bumps anteriores; sem migracao de API em `garraia-plugins`. Quem
+  compila do fonte precisa de Rust 1.97 ou mais novo.
+- **Job `orphan-processes` do CI ganha `timeout-minutes` explicito (45) e o `steward` reconhece o leg macOS cancelado sem passos (#1749).**
+  Sem o teto valia o default de 360 min: um leg travado depois de comecar so caia
+  pela plataforma, sem motivo no log, e um hang no macOS custava minutos 10x ate la.
+  O valor e 2x o pior caso medido em 100 runs (22,4 min no leg Windows com cache
+  frio); estourado, o leg falha com motivo claro. O teto nao cobre a fila: um leg
+  `macos-latest` que nunca recebe runner continua terminando `cancelled` sem passos
+  nem log, e a skill `steward` passa a classificar essa assinatura como ambiental
+  quando os legs irmaos passam, o mesmo job esta verde em `main` e nao houve push
+  novo cancelando a run, com o remedio (re-executar so o leg depois que a run
+  termina; o job nao e check obrigatorio). Manter ou mover o leg macOS para o
+  workflow agendado segue como decisao do dono na #1749.
+- **`garra chat` deixa de ter teto de parede por padrao; `--timeout-secs` vira opt-in (#1751).**
+  Sem a flag o turno roda ate o modelo terminar (Ctrl+C cancela; o teto de 30 s por
+  ferramenta e o connect timeout dos providers continuam valendo). Com a flag estourada,
+  ou no Ctrl+C, o texto ja transmitido e a evidencia das ferramentas entram no historico
+  (em memoria e, com `--persist`, no SQLite) com o marcador de interrupcao, em vez de
+  serem descartados. Antes o default de 120 s cortava o turno inteiro e perdia tudo.
+  `garra ask` (60 s, exit 124) e o timeout do `garra_agent` MCP (300 s) nao mudam.
 
-O que muda de comportamento desde a v0.4.10 (os fragmentos em `changelog.d/` viram o changelog completo na estavel): `garra chat` deixa de ter teto de parede de 120 s por padrao, `--timeout-secs` vira opt-in e o texto ja transmitido fica no historico marcado como parcial (#1751); o `/model` aceita presets do OpenRouter `@preset/<slug>` (#1752) e variantes de roteamento `:floor`/`:nitro`/`:online`/`:exacto` (#1764), validados por uma chamada minima de 1 token; a API diz quem respondeu (`provider`/`model`/`fallback` no corpo e headers `X-AI-Provider`/`X-AI-Model`, #1733) e modelo invalido vira 4xx sanitizado em vez de 500 com o corpo cru (#1726); `fallback_providers` entra quando o primario recusa a credencial (#1735) e o `/api/health` deixa de mostrar verde com chave recusada (#1743); o agente sabe a data e a hora atuais (#1725) e ganha a ferramenta somente leitura `cli_inspect` (#1712); o TTS da Web volta a tocar (#1754); `/clear` apaga o historico persistido (#1723); no Windows, o MCP `filesystem` (#1722), o `file_jail` (#1737), o `garraia rollback` (#1720) e o diagnostico de voz (#1697) foram corrigidos. Supply chain: wasmtime 50.0.0 com MSRV 1.97 (#1714) e sem a feature `cache`, tirando o zstd vulneravel do lockfile (#1719); excecoes de advisories renovadas ate 2026-12-31 e ignores mortos removidos (#1667); todos os caminhos de erro do provider passam pelo sanitizador (#1737). CI: a suite unitaria roda tambem em Windows e macOS (#1697, #1762).
+### Fixed
+- **Diagnostico de voz nao afirma "sem resposta" quando no Windows o loopback ainda recusa (#1697).**
+  No Windows, um `connect` para porta fechada no loopback so devolve a recusa depois de
+  retransmitir o SYN (~2s em `127.0.0.1`), mais que o budget de 1.5s do probe. O texto de
+  `voice.tts`/`voice.stt` passa a dizer "nothing listening or no answer within 1.5s" nesse caso
+  (so Windows + loopback); o status segue `Unreachable`. Os testes do probe esperam o texto
+  correto por plataforma.
+- **Testes unitarios do `garraia-agents` (`--features mcp --lib`) passam num host Windows (#1697).**
+  Nenhum job de CI executava testes unitarios fora do Linux, e a suite acumulou falhas
+  invisiveis no Windows: `termux_ld_preload` montava o valor de `LD_PRELOAD` (um caminho
+  POSIX lido pelo loader do Android) com `Path::join`, que no Windows poe `\`; a ordem de
+  resolucao de `npm_cache_root` tratava "absoluto" pela plataforma do host em vez da do
+  filho simulado; os testes do sandbox que passam `"/tmp"` como cwd (semantica Unix de
+  montar o cwd num container, fail-closed por desenho em host Windows) ganham
+  `cfg(unix)`, assim como um teste que depende de `printenv PATH`; e um helper usado so
+  por testes `cfg(not(windows))` ganha o mesmo cfg, zerando o `dead_code` que o clippy do
+  Windows apontava. Asserts de `bash_tool`, `file_jail` e `tool_context` ficam portaveis
+  (CRLF do PowerShell, raiz verbatim, absoluto por plataforma). Comportamento em
+  Linux inalterado. Prepara o CI a executar `--lib` no Windows/macOS.
+- **CLI preserva evidencias de execucoes reais de ferramentas entre turnos (#1708, parcial).** Eventos de termino alimentam registro factual limitado, separado da resposta do modelo, com sucesso/falha e nome do arquivo quando aplicavel. No modo --persist/--resume, o registro e salvo e recuperado; sem essas flags, fica so em memoria. Nao inclui saidas de ferramentas.
+- **`garraia rollback` no Windows nao falha mais com "Access is denied" (#1720).** O executavel em uso e movido para o lado (`.rollback`) antes de restaurar o `.old`, com desfazer se a restauracao falhar.
+- **No Windows, as tools do servidor MCP `filesystem` voltam a funcionar (#1722).**
+  A ponte reescrevia cada caminho pelo canonico de `std::fs::canonicalize`, que
+  no Windows vem com o prefixo verbatim `\?\C:\...`; o servidor Node normalizava
+  isso para `C:\?\C:\...` e respondia `Access denied - path outside allowed
+  directories` em toda operacao com caminho (`read_text_file`, `list_directory`,
+  `write_file`, ...). E, mesmo sem o prefixo, o servidor desta versao recusa todo
+  caminho-filho escrito com `\` e so aceita `/` (probe direto: `C:\ws\notas.txt`
+  negado, `C:/ws/notas.txt` aceito). Agora a string entregue ao servidor sai sem
+  o prefixo (UNC inclusive) e com `/` como separador, e `list_allowed_directories`
+  mostra as raizes no mesmo formato, para o modelo copiar um caminho que o
+  servidor aceita. A checagem do jail continua sobre o canonico nativo;
+  Linux/macOS nao mudam.
+- **`/clear` apaga o historico gravado, nao so a copia em memoria (#1723).** O
+  comando respondia "Conversation history cleared", mas so esvaziava a memoria;
+  no turno seguinte `hydrate_session_history` via a memoria vazia e recarregava
+  tudo do `sessions.db` -- o agente voltava a saber o que o usuario pediu para
+  esquecer, e `GET /api/sessions/{id}/history` seguia devolvendo as mensagens
+  antigas, inclusive depois de um restart. Agora `SessionStore::
+  clear_session_messages` apaga mensagens e resumos da sessao numa transacao, e
+  o `/clear` do gateway (API, Telegram, WhatsApp) e o do Discord chamam a
+  limpeza; uma falha ao apagar o disco e dita na resposta em vez de escondida.
+- **Caminho relativo nas file tools resolve na raiz declarada, nao no CWD do
+  processo (#1724).** No gateway com `agent.file_roots` e sessao sem
+  `working_dir`, `notas.txt` era recusado como "fora das raizes" porque o jail
+  ancorava o relativo no CWD do processo, que nao e raiz; o modelo repetia ate
+  derrubar o breaker e a tarefa falhava ou era adiada por heartbeat. Agora
+  `FileJail::confine` ancora o relativo, nesta ordem, no `working_dir` da sessao,
+  no CWD se ele proprio estiver dentro de uma raiz (a CLI) ou na primeira raiz
+  configurada -- e o resultado continua passando pela checagem de raiz, entao o
+  jail nao se amplia (`..` e caminho fora seguem recusados). O confinamento do
+  MCP `filesystem` segue a mesma regra.
+- **Modelo invalido deixa de virar HTTP 500 com o corpo bruto do provider (#1726).**
+  `POST /api/sessions/{id}/messages` com `model` inexistente e `POST
+  /v1/chat/completions` com um `model` fora de `/v1/models` respondiam 500 com
+  `body={"error":{...},"user_id":"user_..."}` -- o erro e do cliente, e o
+  `user_id` e a conta OpenRouter do operador, que vazava ate o `garra ask`. Agora
+  os providers OpenAI-compativel e Anthropic reduzem o corpo de erro a frase
+  `error.message` (mais `code`), o gateway responde 400 para 400/404/413/422 do
+  provider, 429 para 429, 502 para 401/403/5xx e falha de rede, e `/v1` devolve
+  o objeto de erro no formato da OpenAI. `content` vazio ou so espaco em
+  `/api/sessions/{id}/messages` passa a ser 400 sem chamar o modelo.
+- agents: o aviso de ferramentas MCP escondidas pelo modo restrito agora sai uma vez por (modo, servidor) por processo, agregando as tools numa linha; repeticoes por turno descem para `debug!` (#1734)
+- `fallback_providers` agora e acionado quando o provider primario recusa a
+  credencial (401/403), em batch e em streaming, sem retry no primario. Erros do
+  pedido (400/404/413/422) continuam sem fallback (#1735).
+- **`file_jail` recusa `..` com `/` em caminho verbatim e relativo drive/root (#1737).**
+  No Windows, `x/../../y` sob `\\?\C:\...` virava um unico componente e escapava
+  da guarda de `ParentDir` (contido so pelo `starts_with(root)`); `C:foo` e `\foo`
+  eram "relativos" e `join` descartava a ancora. Agora a guarda tambem olha o
+  texto (so no Windows) e `confine` recusa `Prefix`/`RootDir` em relativos.
+  Anotado o quirk de `sem_prefixo_verbatim` (F6). Sem mudanca em POSIX.
+- **O download do runtime Node privado retenta o erro 92 do HTTP/2 (#1740).** O
+  `fetch()` de `scripts/desktop/node-runtime/build-node-runtime.sh` usava
+  `curl --retry 3`, que so repete erros que o curl julga transitorios; o
+  `curl: (92) HTTP/2 stream 1 was not closed cleanly: INTERNAL_ERROR` do CDN do
+  nodejs.org derrubou o `Build macOS .dmg` em duas runs seguidas sem retentar.
+  Agora o download usa `--http1.1 --retry 5 --retry-all-errors`; GPG e SHA-256
+  seguem validando o que chegou.
+- **Health: chave de API recusada deixa de aparecer verde (#1743).** A sonda do `/api/health` nao leva credencial (a rota `GET /models` do OpenRouter e publica e responde 200 com a chave morta), entao o check ficava `ok: true` enquanto todo turno voltava 401 e caia no fallback. Agora o runtime anota a ultima recusa de credencial (401/403) de cada provider e a expira quando um turno dele volta a passar; `GET /api/health`, o comando `/health` e o `garra doctor` (que passa a consultar o `/api/health` do daemon vivo) reportam o check do provider com `ok: false` e `credencial recusada (401) em <hora UTC>` — so status e hora, nunca o corpo do erro (#1743).
+- **Docs e scripts voltam a bater com a MSRV 1.97 (#1750).** O #1731 (que
+  substituiu o Dependabot #1714) subiu o `rust-version` do workspace para 1.97,
+  mas README (en e pt-BR: badge e Quick Start), `CONTRIBUTING.md`,
+  `scripts/setup-toolchain.sh` (fazia `rustup override set 1.96`, que quebra o
+  build de quem segue o CONTRIBUTING), `scripts/build-installer.ps1`, a wiki
+  publicada e docs mais antigas (algumas em 1.95 ou 1.92) ficaram para tras. Um
+  teste novo em `garraia-config` le o `rust-version` do `Cargo.toml` e confere
+  cada espelho, para o proximo bump nao deixar nada atras. A convencao do
+  `changelog.d/` passa a exigir o numero de uma issue que ja existe.
+- **TTS da Web volta a tocar o audio, com interrupcao e limpeza de recursos (#1754).**
+  No sucesso o `POST /api/tts` devolve os bytes WAV crus com `Content-Type: audio/wav`,
+  mas o `playTTS` do webchat fazia `await r.json()` e lia `audio` em base64 — o parse
+  quebrava sobre o binario e o erro morria num `catch {}` vazio, entao o TTS nunca
+  tocava. Agora o cliente le o content-type: em `audio/*` toca um `<audio>` via
+  `URL.createObjectURL`, interrompe e revoga a fala anterior ao comecar uma nova e no
+  `ended`/`error`, e avisa no console em vez de silenciar (autoplay bloqueado, resposta
+  sem audio). O toggle "Read AI responses aloud" ganhou `data-testid` estavel.
+- **TTS nao entra mais em panico com acento ou emoji na fronteira de 80 bytes (#1754).**
+  O log de inicio da sintese cortava o texto por byte (`&texto[..80]`), caindo no meio de
+  um code point multibyte (acento pt-BR, emoji) e entrando em panico; como o gateway nao
+  tem `CatchPanicLayer`, a conexao caia. O corte passa a ser por caractere.
+- **`config check` no Windows deixa de acusar grafia deprecated da passphrase quando so a canonica esta definida (#1762).**
+  Variaveis de ambiente sao case-insensitive no Windows, entao `GarraIA_VAULT_PASSPHRASE` e
+  `GARRAIA_VAULT_PASSPHRASE` sao a mesma variavel: ler a grafia legada devolvia o valor da
+  canonica e o check emitia o aviso espurio, que com `--strict` virava exit 2 numa config
+  correta. No Windows os dois avisos de grafia (deprecated e valores divergentes) deixam de
+  ser emitidos, porque as grafias nao sao distinguiveis la; em Unix nada muda. Teste
+  `cfg(windows)` prova o caso.
+- **Suites unitarias de `garraia-config`, `garraia-gateway` e `garraia-learning` passam num host Windows (#1762).**
+  Eram as 20 falhas que o job `Unit tests (windows-latest)` (#1697) expos na primeira execucao
+  fora do Linux. Fixtures portaveis onde a producao e multiplataforma (caminhos absolutos na
+  forma nativa, scans de fonte normalizando CRLF, caminho nao verbatim para o `..` chegar ao
+  `canonicalize`, raiz canonica como `allowed_roots()` entrega); `cfg(unix)` so onde a feature e
+  Unix por natureza (fiacao do sandbox) ou a premissa nao existe no Windows (duas grafias da
+  passphrase, que la sao a mesma variavel de ambiente); `config check` passa a ser testado
+  acusando o sandbox fora de Unix. Unica mudanca de producao: `relative_skill_path` do
+  `garraia-learning` emite pathspec de git com `/` no Windows. O job ganha chave de cache
+  propria com fallback de leitura na do `Test`, para nunca gravar um `target/` incompleto sobre
+  a chave do check obrigatorio.
+- **`garra update` nao convida mais a rebaixar (#1772).** O #1320 corrigiu o convite
+  de rebaixar no aviso, mas o `update` em si comparava as versoes por igualdade:
+  um binario a frente do canal (`0.5.0` contra `latest` `0.4.10` — o caso do
+  rc1) recebia `Update to v0.4.10? [Y/n]` com default(true). O `run_update` agora
+  usa o mesmo gate `release_is_newer`: so `latest > current` oferece; binario mais
+  novo que o canal imprime a mensagem e sai 0 sem prompt.
+- **`200` vazio entra no circuito de retry/fallback (#1776).** Um `Ok` sem
+  texto e sem bloco de ferramenta em `complete_reportando_provider` sai do
+  circuito como sucesso de primeira - sem retry no primario, sem fallback e
+  sem registro no breaker; o turno so aparecia vazio no guarda do chamador,
+  quando o circuito inteiro ja tinha sido pulado. Agora o 200 vazio recebe o
+  mesmo tratamento de um erro reintentavel: uma re-tentativa no primario, e o
+  segundo vazio no laco vai direto para os fallbacks sem queimar o orcamento
+  de retry inteiro (mesmo criterio do #1249 para transporte); o breaker do
+  primario recebe UMA falha por turno de vazias, nao uma por tentativa; no
+  esgotamento, a ultima resposta vazia volta e os guardas de turno existentes
+  seguem valendo. O gasto faturado das tentativas descartadas nao se perde:
+  sai em campo proprio (`RespostaDoCircuito.uso_descartado`), enquanto o
+  `usage` da resposta devolvida segue intocado - o valor de origem de quem
+  serviu, que e o que o shim `POST /v1/messages` repassa como medidor de
+  janela de contexto do cliente. Turno so-de-ferramenta continua sendo
+  sucesso.
+- **Providers da CLI obedecem `config.timeouts` (#1778).** `garra chat`
+  montava os providers com `Client` cru: contra Ollama/llama.cpp o turno nao
+  tinha teto de tempo em lugar nenhum (GAP-1) e `timeouts.llm.default_secs`
+  era inerte na CLI (GAP-2) — o gateway ja montava o client dele a partir da
+  config, a CLI ignorava. Os builders de cliente viram puros e
+  compartilhados (`garraia_agents::cliente_llm`, alcancavel pela CLI e pelo
+  gateway): connect timeout de 10s e redirects desligados em todo client num
+  lugar so, janela global de `timeouts.llm.default_secs` (120s default;
+  `0` = sem teto, #1593) e janela por entrada via `llm.<nome>.timeout_secs`,
+  que vence a global. O ramo `llamacpp` do gateway, que recebia um client
+  vazio, passa a receber o global de verdade. O pull de modelo do Ollama
+  segue sem teto, de proposito — a janela de 120s mataria o download no
+  meio. Duas bordas documentadas (revisao da #1785): o atalho
+  `garra chat --model <tag>` — que roda a sonda/pull do Ollama antes de
+  escolher a entrada — aplica so a janela global, sem a de entrada; e no
+  `garra ask` a janela da config teta cada chamada de provider antes do
+  `--timeout-secs` da flag, entao quando ela dispara primeiro o envelope sai
+  como `provider_error` (69), nao como timeout (124).
+- **Erro 3xx de provider e de `web_fetch` cita o destino do redirecionamento
+  (#1779).** Os clientes de provider tem redirects desligados por seguranca,
+  entao qualquer 3xx vira erro — mas a mensagem nao dizia para onde o salto
+  apontava: corpo vazio, `status=302` pelado, operador sem pistas. O
+  diagnostico unico (`diagnostico_de_redirecionamento`) cita o cabecalho
+  `Location` sanitizado — credenciais redigidas, controles de terminal
+  removidos, teto de 200 chars em fronteira de char — com sentinela para
+  header ausente/vazio, e nomeia o que corrigir (a `base_url` do provider ou
+  a URL pedida). O destino nunca e seguido.
+- **`code_review` deixa de morrer no teto do modo (#1780).** A ferramenta
+  chama um LLM por dentro (30-120s de rotina) e a chamada nao tinha timeout
+  proprio: quem a matava era o wrap externo do runtime, no teto do modo —
+  20s no `review` —, virando a revisao inteira em `tool timeout`. O LLM
+  ganha teto proprio de 180s dentro da tool, com erro nomeando a etapa; a
+  trait `Tool` ganha `teto_proprio`, e quem declara o bound total que
+  respeita (diff + LLM, no caso) nao e morta pelo wrap externo antes dele —
+  o teto do modo continua valendo para todas as outras ferramentas, e nada
+  levanta teto. O modo `review` sobe de 20s para 120s. Timeout nao e
+  controle de autorizacao: sem efeito em seguranca.
+- **Gate de comando: falso-positivo de `environ` fechado e o PowerShell por
+  extenso gated (#1781).** O substring solto `environ` no CONFIRM_LIST
+  bloqueava o read-only `[Environment]::OSVersion` do PowerShell; o padrao
+  agora e ancorado — caminho de arquivo (`/environ`, que segue pegando
+  `/proc/<pid>/environ` e `/etc/environment`) e o par `os.environ` do Python.
+  E o `SENSITIVE_PROGRAMS` listava `curl`/`wget` — que no PS 5.1 sao alias do
+  Invoke-WebRequest — enquanto o comando escrito por extenso passava livre:
+  entram `Invoke-WebRequest`/`iwr`, `Invoke-RestMethod`/`irm` e
+  `Invoke-Expression`/`iex`, full name e alias, no tier de confirmacao. Codigo
+  morto que parecia gate removido (`new_readonly`, `ALLOW_LIST_READONLY`,
+  `is_allowed` — que devolvia `true` incondicional em producao).
+- **`garra memory stats` deixa de prometer conserto que o reindex nao faz
+  (#1782).** A fila do reindex inclui so entradas sem vetor (`embedding IS
+  NULL`), mas o aviso dizia que `garra memory reindex` tambem conserta
+  entradas com vetor e sem modelo registrado - remedicao que provadamente nao
+  fazia nada. O aviso novo diz isso e aponta o bloco "Por modelo" do proprio
+  `garra memory stats` como o diagnostico do mismatch. Teste em `garraia-db`
+  fixa a semantica atual da fila (entrada com vetor e sem modelo nao entra).
+
+### Security
+- **Excecoes temporarias de advisories renovadas ate 2026-12-31 e ignores mortos removidos (#1667).**
+  As quatro excecoes com prazo verificado pelo CI (`deny.toml` + espelho em `.cargo/audit.toml`)
+  venceriam em 2026-11-18/20 e pintariam o job `cargo-deny` no meio do ciclo da v0.5.0:
+  RUSTSEC-2026-0370/0371/0372 (zbus_names/zvariant/zvariant_derive, `unmaintained`, via
+  tauri-plugin-notification -> notify-rust 4.18.2 -> zbus 5, so desktop) e RUSTSEC-2026-0381
+  (webpki-roots 0.26.11, shim que reexporta 1.0.10 ja corrigido). Sem upstream disponivel
+  (notify-rust mais novo segue em zbus 5), o prazo foi renovado com justificativa nos dois
+  arquivos; os comentarios "Expires 2026-11-15" das demais entradas unmaintained (proc-macro-error2,
+  gtk-rs, glib) acompanham. Removidos, de forma espelhada, os ignores de `rsa` (RUSTSEC-2023-0071)
+  e `unic-*` (RUSTSEC-2025-0075/0080/0081/0098/0100): as crates sairam do `Cargo.lock` e os
+  ignores so geravam `advisory-not-detected`. Nada passou a ser ignorado a mais.
+- **Desliga a feature `cache` do wasmtime e remove zstd vulneravel do lockfile (RUSTSEC-2026-0391, 0395 a 0406, 0410) (#1719).** O cache de modulos nao e usado por garraia-plugins, e wasmtime 49/50 fixam `zstd ^0.13`, entao so desligar a feature destrava `cargo audit` e `cargo deny`.
+- **O erro de `create_task` do cliente A2A passa o corpo do peer por `corpo_de_erro_sanitizado` (#1737 F2).** Antes o corpo cru entrava na mensagem de erro; agora so a frase do peer, truncada, como no chat e nos embeddings.
+- **Os dois ultimos caminhos de erro do cliente OpenAI-compat passam pelo sanitizador compartilhado (#1737 F5).** O erro SSE entregue como objeto (`{"error":{"message":..}}`) e o erro no corpo com HTTP 200 agora reduzem o texto a frase do provider via `corpo_de_erro_sanitizado`/`truncar`, antes de ir ao log e a resposta. Antes o objeto passava batido e o corpo cru, com o `user_id` do OpenRouter, vazava no `warn!` de fallback. O corte do SSE e do preview de parsing virou corte por caractere: um corpo com acento ou emoji nao entra mais em panico na fronteira multibyte. O contrato `status=` que `status_http_do_erro` le no gateway e no runtime nao mudou.
+- **wasmtime 50.0.0 -> 50.0.1 fecha quatro advisories, e o piso de MSRV NAO sobe (#1774).**
+  Tres no `wasmtime` — `RUSTSEC-2026-0422` (funcoes tipadas com argumentos `i31`
+  ou `nullref` podem panicar por checagem de tipo insuficiente),
+  `RUSTSEC-2026-0423` (confusao de tipos entre engines com struct-types com
+  supertipos criados pelo host) e `RUSTSEC-2026-0424` (uso de memoria nao
+  checado ao transferir recursos emprestados entre componentes) — e um no
+  `wasmtime-wasi`: `RUSTSEC-2026-0420` (o `send` UDP do wasip3 entrega um
+  datagrama a um endereco que so permite receber). O `cargo-deny` ficou
+  vermelho no CI da PR no dia da atualizacao da base de advisories (tambem
+  vermelho na main limpa: os advisories foram publicados depois do CI da main
+  ter corrido).
+  Patch de lockfile apenas: o `Cargo.toml` ja pedia `wasmtime = "50"`, entao
+  nao houve mudanca de manifesto nem migracao de API no
+  `garraia-plugins/src/runtime.rs`. O piso de MSRV NAO sobe: a arvore do
+  50.0.1 (cranelift 0.137.1, pulley/wiggle 50.0.1) segue declarando
+  `rustc 1.97.0`, igual a do 50.0.0, entao o job `MSRV check (1.97)` e o piso
+  do workspace ficam como estao — o que o #1559 quebrou da serie continua
+  quebrado.
 
 ## [0.4.10] - 2026-10-25
 

@@ -23,6 +23,17 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
 
 ## Novidades
 
+- **[v0.5.0 — Novidades](Novidades-v0.5.0)** · **[What's New in v0.5.0 (English)](Whats-New-v0.5.0)**
+  — o **turno de chat volta ao controle do usuário**: o corte de 120 s sai do
+  caminho por padrão (#1751) e a janela de timeout passa a ser herdada por
+  toda a CLI (#1778); `/model` aceita **presets e variantes do OpenRouter**
+  (`@preset/<slug>`, `:floor`, `:nitro`, `:online`, `:exacto`, #1752/#1764);
+  resposta 200 vazia entra no circuito de retry/fallback (#1776); MSRV sobe
+  para 1.97 com wasmtime 50 sem o zstd vulnerável (#1714/#1719); a API diz
+  quem respondeu (#1733) e o `/api/health` deixa de mostrar verde com chave
+  recusada (#1743); Windows de primeira classe (MCP `filesystem`, `file_jail`,
+  rollback, voz — #1697); 3xx vira diagnóstico próprio (#1779), `code_review`
+  ganha teto próprio (#1780) e o gate fecha o fail-open do PowerShell (#1781).
 - **[v0.4.10 — Novidades](Novidades-v0.4.10)** · **[What's New in v0.4.10 (English)](Whats-New-v0.4.10)**
   — o **Garra Desktop** ganha **Assistente de Primeiro Uso** (wizard em pt-BR,
   QR e pareamento sem terminal) e instaladores com **runtime Node privado**

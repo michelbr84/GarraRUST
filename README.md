@@ -700,6 +700,20 @@ verifiable provenance attestation on every release asset, and the request path
 now rejects `unwrap()`/`expect()`.
 See [What's New in v0.4.9](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.4.9).
 
+**v0.5.0** (Nov 2026) puts the chat turn back under the user's control.
+`garra chat` no longer stops at 120 seconds by default (`--timeout-secs` is
+opt-in, `0` = unlimited, and the CLI now inherits `config.timeouts` for its
+providers), `/model` accepts OpenRouter presets and routing variants
+(`@preset/<slug>`, `:floor`, `:nitro`, `:online`, `:exacto`), and an empty
+200 from a provider joins the retry/fallback circuit instead of ending the
+turn. On the platform side: wasmtime 50 with MSRV 1.97, the API response
+declares which provider/model answered, and `/api/health` no longer shows
+green with a rejected key. Alongside: first-class Windows fixes, honest
+diagnostics for redirects (3xx) and `garra memory stats`, and a safety-gate
+sweep that removes a PowerShell false positive while closing fail-open
+aliases.
+See [What's New in v0.5.0](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.5.0).
+
 ## Contributing
 
 GarraIA is MIT-licensed open source. Join the
