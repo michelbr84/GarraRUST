@@ -282,14 +282,31 @@ pub async fn run_stats(config: &AppConfig, json: bool) -> Result<i32> {
     }
     if report.entries_missing_model > 0 {
         println!(
-            "\n{} entrada(s) tem vetor mas nao registram o modelo que o produziu (legado\n\
-             de antes do #954). Elas perdem o eixo semantico do score sempre que o recall\n\
-             chega com um modelo definido — `garra memory reindex` tambem conserta isso.",
-            report.entries_missing_model
+            "{}",
+            aviso_do_vetor_sem_modelo(report.entries_missing_model)
         );
     }
 
     Ok(EXIT_OK)
+}
+
+/// Aviso do `garra memory stats` para entradas com vetor e sem modelo
+/// registrado (#1782).
+///
+/// A fila do reindex inclui **so** entradas sem vetor (`embedding IS NULL`)
+/// e o reparo barato dele jamais grava `embedding_model` — dizer que
+/// "`garra memory reindex` tambem conserta isso" era prometer uma remediacao
+/// que provadamente nao fazia nada, e o operador ficava a acreditar que tinha
+/// resolvido o mismatch (os vetores dessas entradas sao descartados em
+/// silencio no recall). Funcao pura para o teste travar o texto.
+fn aviso_do_vetor_sem_modelo(n: usize) -> String {
+    format!(
+        "\n{n} entrada(s) tem vetor mas nao registram o modelo que o produziu (legado\n\
+         de antes do #954). Elas perdem o eixo semantico do score sempre que o recall\n\
+         chega com um modelo definido. `garra memory reindex` nao conserta isso — a\n\
+         fila dele so inclui entradas sem vetor; o diagnostico do mismatch fica no\n\
+         bloco \"Por modelo\" do `garra memory stats`."
+    )
 }
 
 /// `garra memory list` — as entradas mais recentes, ou so a fila de reindex.
@@ -1183,6 +1200,28 @@ mod tests {
             .await
             .expect("list");
         assert_eq!(code, EXIT_USAGE);
+    }
+
+    /// #1782: o aviso nao pode prometer o que o reindex nao faz. A fila dele
+    /// inclui so entradas sem vetor (`embedding IS NULL`) e o reparo barato
+    /// jamais grava `embedding_model` — o texto antigo prometia conserto que
+    /// provadamente nao acontecia, e o operador ficava a acreditar que tinha
+    /// resolvido o mismatch.
+    #[test]
+    fn aviso_do_vetor_sem_modelo_nao_promete_reindex() {
+        let msg = aviso_do_vetor_sem_modelo(2);
+        assert!(
+            !msg.contains("tambem conserta"),
+            "o aviso promete conserto que o reindex nao faz: {msg}"
+        );
+        assert!(
+            msg.contains("nao conserta"),
+            "o aviso precisa dizer que o reindex nao resolve: {msg}"
+        );
+        assert!(
+            msg.contains("garra memory stats"),
+            "o diagnostico correto do mismatch e o stats: {msg}"
+        );
     }
 
     // ── #955: backup ─────────────────────────────────────────────────────
