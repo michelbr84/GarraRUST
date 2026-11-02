@@ -2536,12 +2536,16 @@ pub fn build_embedding_provider(config: &AppConfig) -> Option<Arc<dyn EmbeddingP
     let embed_name = config.memory.embedding_provider.as_ref()?;
     let embed_config = config.embeddings.get(embed_name)?;
 
-    let embed_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(
-            config.timeouts.embeddings.default_secs,
-        ))
-        .build()
-        .unwrap_or_default();
+    // #1792: a politica de `cliente_llm` (sem seguir redirect, teto de
+    // conexao) com a janela de `timeouts.embeddings`. Antes era o builder cru
+    // do reqwest: o `with_client` abaixo SUBSTITUI o cliente do provider,
+    // entao seguir ate 10 redirects voltava por aqui mesmo com o `::new()`
+    // corrigido. E `0` deixa de ser `Duration::ZERO` (toda chamada falhando
+    // em ~1ms) e vira "sem teto", a semantica que a config ja documenta
+    // para o LLM (#1593).
+    let embed_client = garraia_agents::cliente_llm::cliente_padrao(Some(
+        std::time::Duration::from_secs(config.timeouts.embeddings.default_secs),
+    ));
 
     let built: Option<Arc<dyn EmbeddingProvider>> = match embed_config.provider.as_str() {
         // =====================================
@@ -5062,5 +5066,98 @@ Corpo do skill de teste.
                 & 0o777;
             assert_eq!(modo, 0o700, "criado com {modo:o}, esperado 700");
         }
+    }
+
+    /// #1792: o provider de embeddings que o BOOT monta (o mesmo que o
+    /// recall e o `garra memory reindex` usam) nao segue redirect. O
+    /// `with_client` daqui substitui o cliente do `::new()`, entao corrigir so
+    /// o provider nao bastava: o `embed_client` cru seguia ate 10 redirects
+    /// por cima. O 3xx vira erro com o `Location` redigido, sem retry.
+    #[tokio::test]
+    async fn embeddings_do_boot_nao_seguem_redirect() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        let pedidos = Arc::new(AtomicUsize::new(0));
+        let contador = pedidos.clone();
+        let location = format!("{base}/seguido?token=segredo-do-location");
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let contador = contador.clone();
+                let location = location.clone();
+                tokio::spawn(async move {
+                    // Cabecalho e corpo (pelo content-length) antes de
+                    // responder, para o cliente ver o 3xx e nao conexao
+                    // quebrada no meio do upload.
+                    let mut lido = Vec::new();
+                    let mut pedaco = [0u8; 4096];
+                    let mut esperado = None;
+                    loop {
+                        match sock.read(&mut pedaco).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => lido.extend_from_slice(&pedaco[..n]),
+                        }
+                        if esperado.is_none()
+                            && let Some(fim) = lido.windows(4).position(|w| w == b"\r\n\r\n")
+                        {
+                            let cab = String::from_utf8_lossy(&lido[..fim]).to_lowercase();
+                            let tamanho = cab
+                                .lines()
+                                .find_map(|l| l.strip_prefix("content-length:"))
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                                .unwrap_or(0);
+                            esperado = Some(fim + 4 + tamanho);
+                        }
+                        if esperado.is_some_and(|total| lido.len() >= total) {
+                            break;
+                        }
+                    }
+                    contador.fetch_add(1, Ordering::SeqCst);
+                    let resposta = format!(
+                        "HTTP/1.1 308 Permanent Redirect\r\nlocation: {location}\r\n\
+                         content-length: 0\r\nconnection: close\r\n\r\n"
+                    );
+                    let _ = sock.write_all(resposta.as_bytes()).await;
+                    let _ = sock.shutdown().await;
+                });
+            }
+        });
+
+        let mut config = AppConfig::default();
+        config.memory.embedding_provider = Some("local".into());
+        config.embeddings.insert(
+            "local".into(),
+            garraia_config::EmbeddingProviderConfig {
+                provider: "ollama".into(),
+                model: None,
+                api_key: None,
+                base_url: Some(base.clone()),
+                dimensions: None,
+                extra: Default::default(),
+            },
+        );
+        let provider = build_embedding_provider(&config).expect("provider de embeddings");
+
+        let erro = provider
+            .embed_query("oi")
+            .await
+            .expect_err("3xx tem de virar erro");
+        let msg = erro.to_string();
+        assert_eq!(
+            pedidos.load(Ordering::SeqCst),
+            1,
+            "seguiu o redirect (ou repetiu um 3xx): {msg}"
+        );
+        assert!(msg.contains("status=308"), "{msg}");
+        assert!(
+            msg.contains(&format!("location={base}/seguido?token=[REDACTED]")),
+            "o Location tem de ser citado, redigido: {msg}"
+        );
+        assert!(!msg.contains("segredo-do-location"), "{msg}");
     }
 }

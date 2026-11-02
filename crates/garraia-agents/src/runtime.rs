@@ -25,7 +25,7 @@ use crate::observabilidade::Desfecho;
 use crate::provider_resilience::ResilienceManager;
 use crate::providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
-    StreamEvent, ToolDefinition, Usage, preset_do_openrouter,
+    StreamEvent, ToolDefinition, Usage, preset_do_openrouter, status_http_do_erro,
 };
 use crate::tools::approval::{ApprovalFingerprint, ToolApproval};
 use crate::tools::{Tool, ToolContext, ToolOutput};
@@ -155,10 +155,23 @@ fn detect_confirmation_approval(history: &[ChatMessage], user_text: &str) -> Too
 /// Detects rate-limit (429) and transient server errors (502/503/529).
 ///
 /// Estes **tiveram resposta**: o provider respondeu dizendo "agora nao". A
-/// politica certa e insistir com backoff no mesmo endereco, e por isso a
-/// leitura de texto continua aqui — o status vem no corpo formatado pelo
-/// provider, nao num tipo. Falha de transporte nao passa mais por este
-/// classificador: ela tem classe propria (`is_transport_error`).
+/// politica certa e insistir com backoff no mesmo endereco. Falha de
+/// transporte nao passa por este classificador: ela tem classe propria
+/// (`is_transport_error`).
+///
+/// #1792: o **status** decide, quando a mensagem traz um status de falha.
+/// Ele e lido por [`status_http_do_erro`] (o primeiro `status=NNN` da
+/// mensagem, o que o provider escreve antes do corpo), e o resto do texto nao
+/// e mais consultado: era substring solta (`"429"`, `"upstream"`,
+/// `"status=503"` em qualquer ponto), e um "4290 tokens" ou um `status=503`
+/// citado no corpo de um 400 faziam o runtime insistir num erro do pedido.
+///
+/// O texto fica como fallback so quando nao ha status de falha: mensagem sem
+/// status nenhum (erro no corpo sem codigo HTTP, como o `rate_limit_exceeded`
+/// do codex, ou os formatos `error status: 429 Too Many Requests` do
+/// Ollama/llama.cpp, que nao usam `status=`) ou com 2xx — o erro chegou no
+/// corpo de uma resposta 200 (o SSE do OpenRouter) e o status HTTP nao
+/// descreve a falha; quem descreve e a frase do provider.
 fn is_retryable_error(err: &Error) -> bool {
     let msg = err.to_string().to_lowercase();
     // #1299: roteamento impossível (`No allowed providers are available`) é
@@ -168,14 +181,17 @@ fn is_retryable_error(err: &Error) -> bool {
     if msg.contains("no allowed providers are available") {
         return false;
     }
-    msg.contains("429")
-        || msg.contains("rate limit")
-        || msg.contains("rate_limit")
-        || msg.contains("too many requests")
-        || msg.contains("status=502")
-        || msg.contains("status=503")
-        || msg.contains("status=529")
-        || msg.contains("upstream")
+    match status_http_do_erro(err) {
+        Some(status) if !(200..300).contains(&status) => {
+            matches!(status, 429 | 502 | 503 | 529)
+        }
+        _ => {
+            msg.contains("rate limit")
+                || msg.contains("rate_limit")
+                || msg.contains("too many requests")
+                || msg.contains("upstream")
+        }
+    }
 }
 
 /// #1249: a requisicao nao chegou a ter resposta — rede caida, DNS morto,

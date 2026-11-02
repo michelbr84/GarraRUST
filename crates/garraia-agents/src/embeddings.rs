@@ -49,6 +49,12 @@ fn sanitize_error_body(status: u16, body: &str) -> String {
     }
 }
 
+/// #1792: o que um 3xx do endpoint de embeddings manda corrigir. O 3xx vira
+/// erro que cita o `Location` (`providers::recusar_redirecionamento`), nunca um
+/// redirect seguido; como o texto segue em `status=3xx`, `extract_http_status`
+/// o le e o [`ResilientEmbeddingProvider`] nao insiste (3xx nao e transitorio).
+const ALVO_DO_REDIRECT: &str = "a base_url do provider de embeddings";
+
 /// Troca por `[REDACTED]` qualquer palavra que contenha um prefixo de chave
 /// conhecido. Redige a palavra toda de proposito: em JSON a chave vem cercada
 /// de aspas e virgulas, e cortar so o token deixaria pedaco para tras.
@@ -83,9 +89,12 @@ pub struct OllamaEmbeddingProvider {
 }
 
 impl OllamaEmbeddingProvider {
+    /// O cliente padrao segue a politica de `cliente_llm` (sem redirect, teto
+    /// de conexao); a janela total chega por `with_client`, que o gateway
+    /// monta de `timeouts.embeddings` (#1792).
     pub fn new(model: Option<String>, base_url: Option<String>) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::cliente_llm::cliente_padrao(None),
             model: model.unwrap_or_else(|| "nomic-embed-text".to_string()),
             base_url: base_url.unwrap_or_else(|| "http://localhost:11434".to_string()),
         }
@@ -135,6 +144,11 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
             .await
             .map_err(|e| Error::Agent(format!("ollama embeddings request failed: {}", e)))?;
 
+        crate::providers::recusar_redirecionamento(
+            "ollama embeddings request failed",
+            &response,
+            ALVO_DO_REDIRECT,
+        )?;
         if !response.status().is_success() {
             let status = response.status();
             let body =
@@ -173,7 +187,7 @@ pub struct OpenAiEmbeddingProvider {
 impl OpenAiEmbeddingProvider {
     pub fn new(api_key: String, model: Option<String>, base_url: Option<String>) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::cliente_llm::cliente_padrao(None),
             api_key,
             model: model.unwrap_or_else(|| "text-embedding-3-small".to_string()),
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com".to_string()),
@@ -222,6 +236,11 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
             .await
             .map_err(|e| Error::Agent(format!("openai embeddings request failed: {e}")))?;
 
+        crate::providers::recusar_redirecionamento(
+            "openai embeddings request failed",
+            &response,
+            ALVO_DO_REDIRECT,
+        )?;
         if !response.status().is_success() {
             let status = response.status();
             let body =
@@ -274,7 +293,7 @@ impl CohereEmbeddingProvider {
         base_url: Option<String>,
     ) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::cliente_llm::cliente_padrao(None),
             api_key: api_key.into(),
             model: model.unwrap_or_else(|| "embed-english-v3.0".to_string()),
             base_url: base_url.unwrap_or_else(|| "https://api.cohere.com".to_string()),
@@ -319,6 +338,11 @@ impl CohereEmbeddingProvider {
             .await
             .map_err(|e| Error::Agent(format!("cohere request failed: {e}")))?;
 
+        crate::providers::recusar_redirecionamento(
+            "cohere embed request failed",
+            &response,
+            ALVO_DO_REDIRECT,
+        )?;
         if !response.status().is_success() {
             let status = response.status();
             let body =
@@ -962,5 +986,67 @@ mod tests {
             Some("https://api.cohere.com/".into()),
         );
         assert_eq!(provider.endpoint(), "https://api.cohere.com/v1/embed");
+    }
+
+    /// #1792: o cliente padrao dos tres providers nao segue redirect (era
+    /// `Client::new()`, que segue ate 10 — e leva o bearer junto quando o
+    /// destino e o mesmo host), e o 3xx vira erro que cita o `Location`
+    /// redigido, nao `status=308, body=` vazio. Nao e transitorio: o
+    /// `ResilientEmbeddingProvider` nao insiste num endereco errado.
+    #[tokio::test]
+    async fn redirect_nao_e_seguido_e_o_erro_cita_o_location() {
+        use crate::cliente_llm::servidor_que_redireciona as srv;
+
+        let s = srv::subir(308).await;
+        let provedores: Vec<(&str, Box<dyn EmbeddingProvider>)> = vec![
+            (
+                "ollama",
+                Box::new(OllamaEmbeddingProvider::new(None, Some(s.base.clone()))),
+            ),
+            (
+                "openai",
+                Box::new(OpenAiEmbeddingProvider::new(
+                    "chave-de-teste".into(),
+                    None,
+                    Some(s.base.clone()),
+                )),
+            ),
+            (
+                "cohere",
+                Box::new(CohereEmbeddingProvider::new(
+                    "chave-de-teste",
+                    None,
+                    Some(s.base.clone()),
+                )),
+            ),
+        ];
+
+        for (nome, provedor) in provedores {
+            let antes = s.pedidos();
+            let erro = provedor
+                .embed_query("oi")
+                .await
+                .expect_err("3xx tem de virar erro");
+            let msg = erro.to_string();
+            assert_eq!(s.pedidos() - antes, 1, "{nome}: seguiu o redirect: {msg}");
+            assert!(msg.contains("status=308"), "{nome}: {msg}");
+            assert!(
+                msg.contains(&format!("location={}", s.location_redigido())),
+                "{nome}: o Location tem de ser citado, redigido: {msg}"
+            );
+            assert!(!msg.contains(srv::SEGREDO), "{nome}: segredo vazou: {msg}");
+            assert!(
+                msg.contains("redirects desligados por seguranca"),
+                "{nome}: {msg}"
+            );
+            assert!(
+                msg.contains("corrija a base_url do provider de embeddings"),
+                "{nome}: {msg}"
+            );
+            assert!(
+                !is_transient_embedding_error(&erro),
+                "{nome}: 3xx nao e transitorio: {msg}"
+            );
+        }
     }
 }

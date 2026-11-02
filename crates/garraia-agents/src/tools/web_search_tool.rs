@@ -47,10 +47,13 @@ impl WebSearchTool {
     }
 
     pub fn with_backend(backend: SearchBackend) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(SEARCH_TIMEOUT_SECS))
-            .build()
-            .unwrap_or_default();
+        // #1792: o cliente do Brave seguia redirect (default do reqwest), e a
+        // chave vai em `X-Subscription-Token` — header que o reqwest NAO tira
+        // num redirect para outro host. Agora a politica de `cliente_llm`
+        // (sem redirect, teto de conexao), com a janela propria da busca.
+        // O SearXNG nao usa este cliente: cada busca monta um pinado.
+        let client =
+            crate::cliente_llm::cliente_padrao(Some(Duration::from_secs(SEARCH_TIMEOUT_SECS)));
 
         Self { client, backend }
     }
@@ -458,5 +461,26 @@ mod tests {
             .backend_name(),
             "searxng"
         );
+    }
+
+    /// #1792: o cliente do Brave seguia redirect (default do reqwest). A
+    /// chave vai em `X-Subscription-Token`, que o reqwest NAO tira do pedido
+    /// num redirect para outro host (so tira `Authorization`/`Cookie`), entao
+    /// um 3xx levaria a chave junto. O 3xx tem de voltar como resposta.
+    #[tokio::test]
+    async fn cliente_do_brave_nao_segue_redirect() {
+        use crate::cliente_llm::servidor_que_redireciona as srv;
+
+        let s = srv::subir(307).await;
+        let tool = WebSearchTool::new("k".into());
+        let resposta = tool
+            .client
+            .get(&s.base)
+            .header("X-Subscription-Token", "k")
+            .send()
+            .await
+            .expect("o 3xx tem de voltar como resposta");
+        assert_eq!(resposta.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(s.pedidos(), 1, "o redirect foi seguido");
     }
 }

@@ -63,11 +63,9 @@ impl OpenAiProvider {
         // one would bypass the SSRF gate that `add_provider` applies. A
         // pinned client supplied via `with_client` already has this; the
         // default covers providers built from config at boot.
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        // #1792: a politica vem de `cliente_llm`, sem o reserva
+        // `Client::new()` que voltava seguindo redirect se o builder falhasse.
+        let client = crate::cliente_llm::cliente_padrao(None);
         Self {
             client,
             api_key: api_key.into(),
@@ -2390,6 +2388,9 @@ mod tests {
         /// na query, e o header vem do servidor remoto — e dado influenciavel.
         const LOCATION: &str =
             "https://host-novo.test/v1/chat/completions?user_id=user_x&token=segredo";
+        /// Como ele sai no diagnostico: a credencial da query redigida (#1792).
+        const LOCATION_CITADO: &str =
+            "https://host-novo.test/v1/chat/completions?user_id=user_x&token=[REDACTED]";
 
         #[derive(Clone)]
         struct Estado {
@@ -2466,8 +2467,12 @@ mod tests {
         let confere = |msg: &str, codigo: u16| {
             assert!(msg.contains(&format!("status={codigo}")), "{msg}");
             assert!(
-                msg.contains(LOCATION),
+                msg.contains(LOCATION_CITADO),
                 "o Location tem de ser citado: {msg}"
+            );
+            assert!(
+                !msg.contains("segredo"),
+                "a credencial da query vazou: {msg}"
             );
             assert!(
                 msg.contains("redirects desligados por seguranca"),
@@ -2531,7 +2536,8 @@ mod tests {
             .expect_err("302 no catalogo tem de virar erro");
         let msg = erro.to_string();
         assert!(msg.contains("failed to list models: status=302"), "{msg}");
-        assert!(msg.contains(LOCATION), "{msg}");
+        assert!(msg.contains(LOCATION_CITADO), "{msg}");
+        assert!(!msg.contains("segredo"), "{msg}");
         assert!(!msg.contains("body="), "{msg}");
         assert_eq!(estado.requests.load(Ordering::SeqCst) - n0, 1);
 

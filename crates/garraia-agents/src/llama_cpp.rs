@@ -23,6 +23,9 @@ const DEFAULT_MODEL: &str = "default";
 /// de repetir o literal, para que renomear aqui nao deixe o alias para tras.
 pub const ID_CANONICO: &str = "llama-cpp";
 
+/// #1792: o que um 3xx do `llama-server` manda corrigir.
+const ALVO_DO_REDIRECT: &str = "a base_url do provider";
+
 /// KV cache type for TurboQuant+ compression.
 ///
 /// Reference: <https://github.com/TheTom/turboquant_plus>
@@ -138,7 +141,8 @@ impl LlamaCppProvider {
         Self {
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-            client: Client::new(),
+            // #1792: era `Client::new()`; a janela total chega por `with_client`.
+            client: crate::cliente_llm::cliente_padrao(None),
             config: config.unwrap_or_default(),
             name: None,
         }
@@ -153,9 +157,9 @@ impl LlamaCppProvider {
 
     /// #1778: o cliente montado a partir de `timeouts` — o mesmo
     /// `with_client` que os outros tres providers ja expunham, e que faltava
-    /// justamente no unico cujo `::new()` nao tem teto nenhum
-    /// (`Client::new()`: sem janela total e sem connect timeout). Sem ele nem
-    /// o gateway conseguia aplicar a config a este provider.
+    /// justamente no unico cujo `::new()` nao tinha teto nenhum
+    /// (`Client::new()` ate a #1792: sem janela total nem connect timeout).
+    /// Sem ele nem o gateway conseguia aplicar a config a este provider.
     pub fn with_client(mut self, client: Client) -> Self {
         self.client = client;
         self
@@ -317,6 +321,7 @@ impl LlamaCppProvider {
             // mesma classe do Ollama desligado.
             .map_err(|e| erro_de_envio("llama.cpp request failed", &e))?;
 
+        crate::providers::recusar_redirecionamento("llama.cpp error", &res, ALVO_DO_REDIRECT)?;
         if !res.status().is_success() {
             let status = res.status();
             let body_text = res.text().await.unwrap_or_default();
@@ -423,6 +428,7 @@ impl LlmProvider for LlamaCppProvider {
             .await
             .map_err(|e| Error::Agent(format!("failed to list models: {e}")))?;
 
+        crate::providers::recusar_redirecionamento("llama.cpp error", &res, ALVO_DO_REDIRECT)?;
         if !res.status().is_success() {
             return Err(Error::Agent(format!(
                 "llama.cpp error status: {}",
@@ -459,6 +465,7 @@ impl LlmProvider for LlamaCppProvider {
             // mesma classe do Ollama desligado.
             .map_err(|e| erro_de_envio("llama.cpp request failed", &e))?;
 
+        crate::providers::recusar_redirecionamento("llama.cpp error", &res, ALVO_DO_REDIRECT)?;
         if !res.status().is_success() {
             let status = res.status();
             let body_text = res.text().await.unwrap_or_default();
@@ -589,6 +596,9 @@ struct OpenAiStreamChoice {
 struct OpenAiStreamDelta {
     content: Option<String>,
 }
+
+#[cfg(test)]
+mod redirecionamento;
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
