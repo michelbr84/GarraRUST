@@ -8,6 +8,8 @@
 
 use std::path::Path;
 use std::process::{Command, Stdio};
+// So o smoke de unix (o servidor MCP mudo e o `sleep`) mede tempo.
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
