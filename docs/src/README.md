@@ -40,10 +40,11 @@ Você pode reproduzir esses resultados por conta própria.
 
 ## Provedores LLM
 
-15 provedores suportados:
+16 provedores suportados:
 
 * Anthropic Claude
 * OpenAI
+* ChatGPT (seu plano, pelo Sign in with ChatGPT — [guia](guides/connect-chatgpt.md))
 * OpenRouter
 * Ollama
 * 11 provedores compatíveis com OpenAI:

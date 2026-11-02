@@ -598,6 +598,33 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         let api_key = resolved.unwrap_or_default();
 
         match provider_type {
+            // Sign in with ChatGPT: sem API key. A credencial e o login OAuth
+            // em `<config_dir>/credentials/openai-codex`; sem login, o
+            // provider registra assim mesmo e cada pedido diz como entrar
+            // (`garra chatgpt login` ou o botao na pagina Providers).
+            "openai-codex" => {
+                let esforco = llm_config
+                    .extra
+                    .get("reasoning_effort")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                let provider = garraia_agents::openai_codex::OpenAiCodexProvider::new(
+                    garraia_config::ConfigLoader::openai_codex_credentials_dir(),
+                    llm_config.model.clone(),
+                    esforco,
+                )
+                .with_velocidade(
+                    llm_config
+                        .extra
+                        .get("speed")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                )
+                .with_client(client.clone())
+                .with_name(name.clone());
+                runtime.register_provider(Arc::new(provider));
+                info!("configured openai-codex provider: {name}");
+            }
             "anthropic" => {
                 let provider = AnthropicProvider::new(
                     api_key,

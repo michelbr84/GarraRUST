@@ -1,6 +1,6 @@
 # Provedores (Providers)
 
-O GarraIA suporta **14 provedores de modelos LLM**. Três são implementações nativas com APIs específicas. Os restantes utilizam o formato compatível com a API de chat completions da OpenAI e são construídos sobre o `OpenAiProvider`, utilizando URLs base personalizadas.
+O GarraIA suporta **16 provedores de modelos LLM**. Quatro são implementações nativas com APIs específicas (Anthropic, OpenAI, Ollama e o plano do ChatGPT). Os restantes utilizam o formato compatível com a API de chat completions da OpenAI e são construídos sobre o `OpenAiProvider`, utilizando URLs base personalizadas.
 
 Todos os provedores suportam:
 
@@ -118,6 +118,40 @@ llm:
     model: qwen3.8:latest
     base_url: "http://localhost:11434"
 ```
+
+---
+
+## ChatGPT (plano, Sign in with ChatGPT)
+
+Usa o **seu plano do ChatGPT** pelo fluxo oficial da OpenAI para apps
+open-source, sem API key: você entra com a conta do ChatGPT no navegador
+(botão **Continuar com ChatGPT** na página Providers, ou
+`garra chatgpt login --padrao`).
+
+| Campo                | Valor                                          |
+| -------------------- | ---------------------------------------------- |
+| Tipo                 | `openai-codex`                                 |
+| Modelo preferencial  | `gpt-6.1-sol`                                  |
+| Raciocínio padrão    | `high` (`reasoning_effort`)                    |
+| Velocidade padrão    | `thinking` (`speed`: `thinking`, `fast`, `ultrafast`) |
+| Endpoint             | `https://api.openai.com/v1/responses` (oficial) |
+| Credencial           | login salvo em `credentials/openai-codex`      |
+
+```yaml
+llm:
+  chatgpt:
+    provider: openai-codex
+    model: gpt-6.1-sol
+    reasoning_effort: high
+    speed: thinking
+agent:
+  default_provider: chatgpt
+  fallback_providers: [openrouter]
+```
+
+Quando o limite de uso do plano acaba, o pedido passa para o primeiro
+provider de `fallback_providers`. Guia completo:
+[Usar o plano do ChatGPT](guides/connect-chatgpt.md).
 
 ---
 

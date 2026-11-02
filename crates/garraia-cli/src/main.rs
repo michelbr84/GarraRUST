@@ -8,6 +8,7 @@ mod boot_gate_cli;
 mod capability_prompt;
 mod chat;
 mod chat_input;
+mod chatgpt_cmd;
 mod cli_args;
 mod cli_inspect_tool;
 mod config_cmd;
@@ -214,6 +215,16 @@ enum Commands {
     Skill {
         #[command(subcommand)]
         action: SkillCommands,
+    },
+
+    /// Sign in with ChatGPT: usar o plano do ChatGPT no GarraIA (provider
+    /// `openai-codex`) — login, logout, status, modelos, teste e configuracao.
+    //
+    // `name` explicito: o clap derivaria `chat-gpt` de `ChatGpt`.
+    #[command(name = "chatgpt")]
+    ChatGpt {
+        #[command(subcommand)]
+        action: ChatGptCommands,
     },
 
     /// Admin panel helpers that need shell access on the host (#1122)
@@ -490,6 +501,72 @@ enum Commands {
         /// Defaults to the current working directory.
         #[arg(long, value_name = "DIR")]
         workspace: Option<std::path::PathBuf>,
+    },
+}
+
+/// Subcomandos de `garra chatgpt` (Sign in with ChatGPT, provider `openai-codex`).
+#[derive(Subcommand)]
+enum ChatGptCommands {
+    /// Entra com o ChatGPT no navegador (fluxo oficial da OpenAI) e guarda a
+    /// conta neste computador.
+    Login {
+        /// Registrar outra conta ou workspace em vez de reautorizar a atual.
+        #[arg(long)]
+        nova_conta: bool,
+        /// Porta do callback em 127.0.0.1 (padrao: 1455, ou uma livre).
+        #[arg(long)]
+        porta: Option<u16>,
+        /// So imprimir o endereco, sem abrir o navegador.
+        #[arg(long)]
+        sem_navegador: bool,
+        /// Depois do login, gravar `llm.chatgpt` (gpt-6.1-sol, reasoning
+        /// high) no config.yml e torna-la o provider padrao.
+        #[arg(long)]
+        padrao: bool,
+    },
+    /// Sai da conta em uso: revoga a sessao e apaga os tokens locais.
+    Logout,
+    /// Conta em uso, outras contas e a entrada do config.yml (sem segredos).
+    Status {
+        /// Saida em JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Modelos do catalogo da conta em uso.
+    Modelos,
+    /// Troca a conta em uso (client id ou e-mail de uma conta ja registrada).
+    Usar {
+        /// Client id (`oaiapp_...`) ou e-mail.
+        conta: String,
+    },
+    /// Grava modelo e reasoning effort da entrada openai-codex no config.yml.
+    Configurar {
+        /// Modelo (ex.: gpt-6.1-sol).
+        #[arg(long)]
+        modelo: Option<String>,
+        /// reasoning.effort: minimal, low, medium, high, xhigh ou max (o que o
+        /// modelo aceita; `garra chatgpt modelos` mostra os niveis de cada um).
+        #[arg(long)]
+        esforco: Option<String>,
+        /// Velocidade: thinking (padrao), fast ou ultrafast.
+        #[arg(long)]
+        velocidade: Option<String>,
+        /// Tornar a entrada o provider padrao do agente.
+        #[arg(long)]
+        padrao: bool,
+    },
+    /// Inferencia curta e real com a conta em uso (prova login, plano,
+    /// modelo, esforco e streaming).
+    Testar {
+        /// Modelo (padrao: o do config.yml ou gpt-6.1-sol).
+        #[arg(long)]
+        modelo: Option<String>,
+        /// reasoning.effort (padrao: o do config.yml ou high).
+        #[arg(long)]
+        esforco: Option<String>,
+        /// Velocidade: thinking, fast ou ultrafast (padrao: o do config.yml).
+        #[arg(long)]
+        velocidade: Option<String>,
     },
 }
 
@@ -1789,6 +1866,15 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
                 | WhatsAppCommands::Block { .. }
                 | WhatsAppCommands::Unblock { .. },
             ) => false,
+        },
+        Commands::ChatGpt { action } => match action {
+            // So leem e imprimem.
+            ChatGptCommands::Status { .. } | ChatGptCommands::Modelos => true,
+            ChatGptCommands::Login { .. }
+            | ChatGptCommands::Logout
+            | ChatGptCommands::Usar { .. }
+            | ChatGptCommands::Configurar { .. }
+            | ChatGptCommands::Testar { .. } => false,
         },
         Commands::Admin { action } => match action {
             AdminCommands::Recovery { action } => match action {
@@ -3296,6 +3382,42 @@ async fn async_main(
                     older_than_days,
                     yes,
                 } => memory_cmd::run_compact(&config, older_than_days, yes).await?,
+            };
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Commands::ChatGpt { action } => {
+            if cli.verbose || cli.debug {
+                init_tracing(&effective_level);
+            }
+            let code = match action {
+                ChatGptCommands::Login {
+                    nova_conta,
+                    porta,
+                    sem_navegador,
+                    padrao,
+                } => chatgpt_cmd::run_login(nova_conta, porta, sem_navegador, padrao).await?,
+                ChatGptCommands::Logout => chatgpt_cmd::run_logout().await?,
+                ChatGptCommands::Status { json } => chatgpt_cmd::run_status(json)?,
+                ChatGptCommands::Modelos => chatgpt_cmd::run_modelos().await?,
+                ChatGptCommands::Usar { conta } => chatgpt_cmd::run_usar(&conta)?,
+                ChatGptCommands::Configurar {
+                    modelo,
+                    esforco,
+                    velocidade,
+                    padrao,
+                } => chatgpt_cmd::run_configurar(
+                    modelo.as_deref(),
+                    esforco.as_deref(),
+                    velocidade.as_deref(),
+                    padrao,
+                )?,
+                ChatGptCommands::Testar {
+                    modelo,
+                    esforco,
+                    velocidade,
+                } => chatgpt_cmd::run_testar(modelo, esforco, velocidade).await?,
             };
             if code != 0 {
                 std::process::exit(code);

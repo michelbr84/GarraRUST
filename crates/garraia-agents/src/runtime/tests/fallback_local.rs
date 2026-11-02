@@ -19,6 +19,7 @@ pub(super) enum FalhaSimulada {
     /// #1743: chave valida mas sem permissao para o modelo - o provider
     /// responde 403. E credencial tambem, e o status anotado e o 403.
     Permissao,
+    CotaEsgotada,
 }
 
 impl FalhaSimulada {
@@ -41,6 +42,11 @@ impl FalhaSimulada {
             ),
             Self::PedidoInvalido => Error::Agent(
                 "openai API error: status=400 Bad Request, body=not a valid model ID".to_string(),
+            ),
+            Self::CotaEsgotada => Error::Agent(
+                "openai-codex: limite de uso do plano do ChatGPT atingido \
+                 (subscription_sharing_usage_limit_exceeded, quota_exhausted)"
+                    .to_string(),
             ),
             Self::Permissao => Error::Agent(
                 "openai API error: status=403 Forbidden, body=Key has no access to this model"
@@ -767,4 +773,72 @@ pub(super) async fn recusa_403_fica_anotada_com_o_proprio_status() {
         runtime.recusa_de_credencial("openai").map(|r| r.status),
         Some(403)
     );
+}
+
+// ─── #1796: ChatGPT (openai-codex) sem conta cai para o fallback ──────
+
+/// O provider `openai-codex` de verdade, sem nenhum login salvo, como
+/// primario: o turno nao pode morrer com "nenhuma conta conectada" — a falta
+/// de credencial e tratada como credencial recusada e o fallback responde.
+#[tokio::test]
+pub(super) async fn chatgpt_sem_conta_cai_para_o_fallback_em_streaming_e_batch() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let runtime = AgentRuntime::new();
+    let primario: Arc<dyn LlmProvider> = Arc::new(
+        crate::openai_codex::OpenAiCodexProvider::new(dir.path().join("openai-codex"), None, None)
+            .with_name("chatgpt"),
+    );
+    runtime.register_provider(primario.clone());
+    runtime.register_provider(Arc::new(LocalQueResponde));
+    runtime.set_fallback_providers(vec!["ollama".to_string()]);
+
+    let mut stream = runtime
+        .stream_complete_with_fallback(&primario, &pedido_simples())
+        .await
+        .expect("sem conta do ChatGPT, o fallback local tem de responder");
+    let mut texto = String::new();
+    while let Some(evento) = stream.next().await {
+        if let StreamEvent::TextDelta(t) = evento.expect("o stream local nao falha") {
+            texto.push_str(&t);
+        }
+    }
+    assert_eq!(texto, RESPOSTA_LOCAL);
+
+    let RespostaDoCircuito { provider: quem, .. } = runtime
+        .complete_reportando_provider(&primario, &pedido_simples())
+        .await
+        .expect("em batch tambem");
+    assert_eq!(quem, "ollama");
+}
+
+/// #1796: limite de uso do plano do ChatGPT -> uma tentativa (sem repetir) e
+/// o fallback configurado (o OpenRouter, no caso real) responde.
+#[tokio::test(start_paused = true)]
+pub(super) async fn cota_esgotada_cai_para_o_fallback_sem_repetir_em_batch() {
+    let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::CotaEsgotada);
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+    let RespostaDoCircuito { provider: quem, .. } = runtime
+        .complete_reportando_provider(&como_dyn, &pedido_simples())
+        .await
+        .expect("com a cota esgotada, o fallback tem de completar o turno");
+    assert_eq!(quem, "ollama");
+    assert_eq!(primario.completes(), 1, "cota esgotada nao se repete");
+}
+
+#[tokio::test]
+pub(super) async fn cota_esgotada_cai_para_o_fallback_em_streaming() {
+    let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::CotaEsgotada);
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+    let mut stream = runtime
+        .stream_complete_with_fallback(&como_dyn, &pedido_simples())
+        .await
+        .expect("o stream do fallback tem de chegar");
+    let mut texto = String::new();
+    while let Some(evento) = stream.next().await {
+        if let StreamEvent::TextDelta(t) = evento.expect("o stream local nao falha") {
+            texto.push_str(&t);
+        }
+    }
+    assert_eq!(texto, RESPOSTA_LOCAL);
+    assert_eq!(primario.streams(), 1);
 }

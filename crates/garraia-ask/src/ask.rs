@@ -29,7 +29,13 @@ pub const ARG_TIMEOUT_SECS_DEFAULT: u64 = 60;
 
 /// Providers aceitos pelo `garra_ask`, como o `enum` anunciado no schema. As
 /// duas superfícies (stdio e HTTP) leem daqui, para não divergirem.
-pub const PROVEDORES_ASK: [&str; 4] = ["ollama", "anthropic", "openai", "openrouter"];
+pub const PROVEDORES_ASK: [&str; 5] = [
+    "ollama",
+    "anthropic",
+    "openai",
+    "openrouter",
+    "openai-codex",
+];
 
 /// Truncamento de mensagens de erro do provider no envelope.
 const ERROR_MSG_TRUNCATE: usize = 512;

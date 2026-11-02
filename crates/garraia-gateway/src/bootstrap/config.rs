@@ -259,5 +259,7 @@ mod tests {
         assert_eq!(provider_key_env("ollama"), None);
         assert_eq!(provider_key_env("llamacpp"), None);
         assert_eq!(provider_key_env("echo"), None);
+        // Sign in with ChatGPT: a credencial e o login OAuth, nunca uma env.
+        assert_eq!(provider_key_env("openai-codex"), None);
     }
 }

@@ -771,6 +771,23 @@
       "availability": "opcional",
       "gate": "feature+config:tls + gateway.tls_cert_path/gateway.tls_key_path",
       "operator_only": true
+    },
+    {
+      "id": "chatgpt-plan",
+      "name": "Plano do ChatGPT (Sign in with ChatGPT, provider openai-codex)",
+      "category": "chat",
+      "summary": "Usa o plano do ChatGPT do usuario pelo fluxo oficial da OpenAI para apps open-source: login no navegador (OAuth + PKCE, registro dinamico, escopo chatgpt.tokens.use.direct) e inferencia no endpoint publico POST /v1/responses com store false, stream true e reasoning.effort (padrao high). Modelo preferencial gpt-6.1-sol. Login pelo cartao 'Continuar com ChatGPT' da pagina Providers ou por `garra chatgpt login`.",
+      "prerequisites": [
+        "conta do ChatGPT com o uso do plano autorizado no login",
+        "o login pelo painel exige o navegador na mesma maquina do gateway (callback em 127.0.0.1)"
+      ],
+      "limitations": [
+        "ferramentas hospedadas da OpenAI (geracao de imagem, file search, Code Interpreter, MCP hospedado) nao estao disponiveis por este caminho; as ferramentas locais do GarraIA funcionam",
+        "temperature e max_output_tokens nao sao enviados (a OpenAI os recusa neste fluxo)",
+        "limite de uso do plano pausa as requisicoes pelo plano; o GarraIA nunca troca de cobranca sozinho",
+        "o catalogo de modelos vem da conta; o acesso so fica confirmado depois de uma inferencia real"
+      ],
+      "availability": "configuravel"
     }
   ]
 }

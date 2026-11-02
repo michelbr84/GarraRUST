@@ -19,6 +19,7 @@ pub mod capabilities;
 pub mod capacidades_registro;
 pub mod channel_send;
 pub(crate) mod channels_view;
+pub mod chatgpt_handler;
 pub mod cluster;
 pub mod commands;
 pub mod context_summarizer;

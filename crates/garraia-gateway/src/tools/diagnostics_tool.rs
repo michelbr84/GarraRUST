@@ -684,6 +684,26 @@ fn verificacao_credenciais_providers(config: &garraia_config::AppConfig) -> Veri
             _ if PROVEDORES_SEM_CREDENCIAL.contains(&llm.provider.as_str()) => {
                 ("sem credencial necessaria".to_string(), true)
             }
+            // Sign in with ChatGPT: a credencial e o login OAuth salvo, nunca
+            // uma chave. So a presenca da conta e do escopo do plano (sem valores).
+            _ if llm.provider == "openai-codex" => {
+                let armazem = garraia_agents::openai_codex::ArmazemDeCredenciais::new(
+                    garraia_config::ConfigLoader::openai_codex_credentials_dir(),
+                );
+                match armazem.conta_ativa() {
+                    Some(c) if c.conectado && c.plano_habilitado => {
+                        ("login do ChatGPT com o plano autorizado".to_string(), true)
+                    }
+                    Some(c) if c.conectado => (
+                        "login do ChatGPT sem o uso do plano autorizado".to_string(),
+                        false,
+                    ),
+                    _ => (
+                        "sem login do ChatGPT (garra chatgpt login)".to_string(),
+                        false,
+                    ),
+                }
+            }
             None => (
                 "provedor desconhecido do runtime (ignorado no boot)".to_string(),
                 false,

@@ -50,6 +50,7 @@ pub async fn admin_list_providers(
         ("minimax", "MiniMax", true),
         ("moonshot", "Moonshot K2", true),
         ("ollama", "Ollama", false),
+        ("openai-codex", "ChatGPT (plano)", false),
     ];
 
     let mut providers = Vec::new();
