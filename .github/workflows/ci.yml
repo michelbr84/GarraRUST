@@ -965,6 +965,19 @@ jobs:
           cargo clippy -p garraia-agents --features mcp --all-targets -- -D warnings
         shell: bash
 
+      - name: Unit tests of the garra binary and clippy of CLI and gateway (Windows)
+        # Issue #1762: o pacote `garraia` (CLI) nao tem alvo lib, entao o
+        # `--workspace --lib` acima pula os testes do binario `garra` -- e eles
+        # nunca tinham rodado no Windows (7 falhas na primeira vez). O clippy
+        # com `-D warnings` cobre o codigo morto que so aparece fora de Unix
+        # (helpers de teste `cfg(unix)`), que o `Clippy Linting` (ubuntu) nao
+        # enxerga.
+        if: runner.os == 'Windows'
+        run: |
+          cargo test -p garraia --bin garra --no-fail-fast
+          cargo clippy -p garraia -p garraia-gateway --all-targets -- -D warnings
+        shell: bash
+
   # Guardas de processo orfao (#1636). O job `test` acima roda os testes de
   # verdade SO no Linux (`--no-run` em windows/macos), entao os testes que
   # provam que nenhum descendente sobrevive a morte do pai NAO rodariam onde o

@@ -48,6 +48,9 @@ use anyhow::{Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use garraia_security::{RedactingMakeWriter, RedactingWriter};
 use tracing_appender::rolling;
+// So o `start_daemon` (unix) monta o filtro aqui; o resto vive em
+// `tracing_setup`. Sem o cfg, o clippy do Windows acusa import morto (#1762).
+#[cfg(unix)]
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -4326,7 +4329,9 @@ mod tests {
     /// sem nome e falharia aqui.
     #[test]
     fn sigpipe_decide_cada_subcomando_aninhado_pelo_nome() {
-        let fonte = include_str!("main.rs");
+        // Fins de linha normalizados: o checkout do Windows e CRLF e o scan
+        // procura `"\n}\n"` (#1762).
+        let fonte = include_str!("main.rs").replace("\r\n", "\n");
         let inicio = fonte
             .find("fn sigpipe_padrao_para(")
             .expect("sigpipe_padrao_para existe");
