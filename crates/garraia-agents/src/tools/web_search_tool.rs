@@ -53,7 +53,8 @@ impl WebSearchTool {
         // (sem redirect, teto de conexao), com a janela propria da busca.
         // O SearXNG nao usa este cliente: cada busca monta um pinado.
         let client =
-            crate::cliente_llm::cliente_padrao(Some(Duration::from_secs(SEARCH_TIMEOUT_SECS)));
+            crate::cliente_llm::cliente_padrao(Some(Duration::from_secs(SEARCH_TIMEOUT_SECS)))
+                .expect(crate::cliente_llm::SEM_CLIENTE_HTTP);
 
         Self { client, backend }
     }

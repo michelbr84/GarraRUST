@@ -142,7 +142,8 @@ impl LlamaCppProvider {
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             // #1792: era `Client::new()`; a janela total chega por `with_client`.
-            client: crate::cliente_llm::cliente_padrao(None),
+            client: crate::cliente_llm::cliente_padrao(None)
+                .expect(crate::cliente_llm::SEM_CLIENTE_HTTP),
             config: config.unwrap_or_default(),
             name: None,
         }

@@ -28,7 +28,8 @@ impl A2AClient {
     /// que traga outra.
     pub fn new() -> Self {
         Self {
-            http: crate::cliente_llm::cliente_padrao(Some(crate::cliente_llm::JANELA_PADRAO)),
+            http: crate::cliente_llm::cliente_padrao(Some(crate::cliente_llm::JANELA_PADRAO))
+                .expect(crate::cliente_llm::SEM_CLIENTE_HTTP),
         }
     }
 

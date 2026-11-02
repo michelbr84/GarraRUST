@@ -107,7 +107,8 @@ impl OllamaProvider {
         // `Client::new()`, que voltava seguindo redirect se o builder
         // falhasse. Sem teto TOTAL de proposito: o `pull_model` usa este
         // cliente, e um download frio leva minutos (#1778).
-        let client = crate::cliente_llm::cliente_padrao(None);
+        let client =
+            crate::cliente_llm::cliente_padrao(None).expect(crate::cliente_llm::SEM_CLIENTE_HTTP);
         Self {
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),

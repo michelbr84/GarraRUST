@@ -2543,9 +2543,22 @@ pub fn build_embedding_provider(config: &AppConfig) -> Option<Arc<dyn EmbeddingP
     // corrigido. E `0` deixa de ser `Duration::ZERO` (toda chamada falhando
     // em ~1ms) e vira "sem teto", a semantica que a config ja documenta
     // para o LLM (#1593).
-    let embed_client = garraia_agents::cliente_llm::cliente_padrao(Some(
+    //
+    // #1790: cliente que nao monta nao vira um reserva com outra politica. O
+    // provider de embeddings nao sobe e o motivo vai para o log — o mesmo
+    // tratamento dos providers de LLM.
+    let embed_client = match garraia_agents::cliente_llm::cliente_padrao(Some(
         std::time::Duration::from_secs(config.timeouts.embeddings.default_secs),
-    ));
+    )) {
+        Ok(cliente) => cliente,
+        Err(e) => {
+            error!(
+                "o cliente HTTP do provider de embeddings {embed_name} nao montou ({e}); \
+                 a memoria segue sem embeddings (#1790)"
+            );
+            return None;
+        }
+    };
 
     let built: Option<Arc<dyn EmbeddingProvider>> = match embed_config.provider.as_str() {
         // =====================================

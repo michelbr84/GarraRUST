@@ -8,7 +8,7 @@
 //! `garraia-gateway` — o gateway e que depende dela —, e `garraia-agents` e a
 //! crate que as duas ja alcancam e onde o `reqwest` ja e dependencia direta.
 //!
-//! Duas funcoes, as duas puras: nenhuma le config, nenhuma faz I/O. A casca
+//! Tres construtores, todos puros: nenhum le config, nenhum faz I/O. A casca
 //! que le `config.timeouts` fica em quem tem o `AppConfig` na mao.
 //!
 //! **Falha de montagem e devolvida, nunca trocada (#1790).** Um cliente que
@@ -26,7 +26,8 @@
 //!
 //! **#1792:** a mesma politica vale para os clientes que NAO recebem o da
 //! config — os `::new()` dos providers, embeddings, A2A e `web_search` —, por
-//! [`cliente_padrao`]. Todo cliente HTTP desta crate sai daqui ou de
+//! [`cliente_padrao`], que devolve o erro de montagem como os outros dois.
+//! Todo cliente HTTP desta crate sai daqui ou de
 //! `garraia_common::ssrf::pinned_client`, que tambem desliga redirect. A
 //! excecao e o transporte HTTP do MCP: o `rmcp` monta o proprio cliente em
 //! reqwest 0.13 e nao aceita o nosso (ver `mcp::manager::validate_mcp_url`).
@@ -105,8 +106,12 @@ pub const JANELA_PADRAO: Duration = Duration::from_secs(120);
 /// Antes cada um montava o seu. Os de fora do caminho principal usavam
 /// `Client::new()`, que segue ate 10 redirects (e, no mesmo host, leva o
 /// bearer junto) e nao tem teto nenhum; os de dentro tinham `Policy::none()`,
-/// mas com `.unwrap_or_else(|_| Client::new())`, que trocava a politica pelo
-/// default do reqwest justamente quando o builder falhava.
+/// mas com um reserva `Client::new()` para quando o builder falhasse — e o
+/// reserva era o default do reqwest, seguindo redirect.
+///
+/// **A falha de montagem volta como `Err` (#1790).** Quem tem a quem
+/// devolver, devolve (o `embed_client` do gateway nao registra o provider de
+/// embeddings). Os `::new()` infaliveis param com [`SEM_CLIENTE_HTTP`].
 ///
 /// `janela` e o teto TOTAL da resposta:
 /// - `None` nos `::new()` dos providers: a janela deles e a da config, que
@@ -121,39 +126,24 @@ pub const JANELA_PADRAO: Duration = Duration::from_secs(120);
 /// `Some(Duration::ZERO)` vale como `None`, a mesma semantica de "0 = sem
 /// teto" da config (#1593): `Duration::ZERO` no reqwest e um sleep ja
 /// vencido, e toda chamada falharia em ~1ms.
-pub fn cliente_padrao(janela: Option<Duration>) -> reqwest::Client {
-    let builder = match janela.filter(|j| !j.is_zero()) {
-        Some(janela) => base().timeout(janela),
-        None => base(),
-    };
-    montar_sem_degradar(builder)
-}
-
-/// Monta o cliente sem NUNCA cair no default do reqwest (#1792).
-///
-/// Se o builder pedido falhar, o erro vai para o log e o reserva e o builder
-/// MINIMO que ainda nao segue redirect: perde o teto, nunca a politica. Se nem
-/// o minimo monta, o reqwest nao consegue montar cliente nenhum (backend TLS
-/// indisponivel) — e exatamente o caso em que o `Client::new()` dos reservas
-/// antigos ja entrava em panico, porque ele E `builder().build().expect(..)`.
-/// O `expect` abaixo nao cria um modo de falha novo; o que deixa de existir e
-/// o reserva que voltava SEGUINDO redirect.
-pub fn montar_sem_degradar(builder: reqwest::ClientBuilder) -> reqwest::Client {
-    match builder.build() {
-        Ok(cliente) => cliente,
-        Err(e) => {
-            tracing::error!(
-                erro = %e,
-                "cliente HTTP com a politica comum nao montou; usando o minimo, \
-                 sem seguir redirect e sem teto"
-            );
-            reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .expect("o reqwest nao monta cliente HTTP nenhum (backend TLS indisponivel)")
-        }
+pub fn cliente_padrao(janela: Option<Duration>) -> reqwest::Result<reqwest::Client> {
+    match janela.filter(|j| !j.is_zero()) {
+        Some(janela) => base().timeout(janela).build(),
+        None => base().build(),
     }
 }
+
+/// O motivo de parada dos construtores infaliveis (`::new() -> Self`) quando
+/// [`cliente_padrao`] devolve erro (#1790/#1792).
+///
+/// Eles nao tem a quem devolver o `Err`, e trocar o cliente por outro em
+/// silencio e o que o #1790 tirou daqui. O builder da [`base`] so falha sem
+/// backend TLS — exatamente o caso em que o `Client::new()` que eles usavam
+/// de reserva tambem parava, porque ele e o `build()` do builder padrao com
+/// `expect`. Nenhum modo de falha novo; o que some e o reserva que voltava
+/// seguindo redirect.
+pub const SEM_CLIENTE_HTTP: &str =
+    "o reqwest nao montou o cliente HTTP sem redirect (backend TLS indisponivel)";
 
 /// Servidor de teste que responde todo pedido com um 3xx (#1792).
 ///
@@ -288,9 +278,9 @@ mod testes_do_cliente_padrao {
     async fn cliente_padrao_nao_segue_redirect() {
         let s = srv::subir(302).await;
         let variantes = [
-            cliente_padrao(None),
-            cliente_padrao(Some(Duration::from_secs(5))),
-            cliente_padrao(Some(Duration::ZERO)),
+            cliente_padrao(None).expect("o cliente monta"),
+            cliente_padrao(Some(Duration::from_secs(5))).expect("o cliente monta"),
+            cliente_padrao(Some(Duration::ZERO)).expect("o cliente monta"),
         ];
         for cliente in &variantes {
             let resp = cliente
@@ -309,6 +299,7 @@ mod testes_do_cliente_padrao {
     async fn cliente_padrao_aplica_a_janela_e_zero_e_sem_teto() {
         let url = servidor_lento(Duration::from_secs(3)).await;
         let erro = cliente_padrao(Some(Duration::from_secs(1)))
+            .expect("o cliente monta")
             .get(&url)
             .send()
             .await
@@ -320,38 +311,12 @@ mod testes_do_cliente_padrao {
 
         let url = servidor_lento(Duration::from_millis(200)).await;
         let resp = cliente_padrao(Some(Duration::ZERO))
+            .expect("o cliente monta")
             .get(&url)
             .send()
             .await
             .expect("zero = sem teto: nao pode falhar numa resposta de 200ms");
         assert!(resp.status().is_success());
-    }
-
-    /// O reserva de um builder que FALHA continua sem seguir redirect. Era o
-    /// buraco do `.unwrap_or_else(|_| Client::new())` dos `::new()`: o
-    /// reserva era o default do reqwest. Versao TLS minima acima da maxima e
-    /// um jeito deterministico de fazer o `build()` falhar.
-    #[tokio::test]
-    async fn reserva_de_builder_que_falha_nao_segue_redirect() {
-        let quebrado = || {
-            base()
-                .min_tls_version(reqwest::tls::Version::TLS_1_3)
-                .max_tls_version(reqwest::tls::Version::TLS_1_2)
-        };
-        assert!(
-            quebrado().build().is_err(),
-            "o builder tem de falhar, senao este teste nao exercita o reserva"
-        );
-        let cliente = montar_sem_degradar(quebrado());
-
-        let s = srv::subir(302).await;
-        let resp = cliente
-            .get(&s.base)
-            .send()
-            .await
-            .expect("o 302 tem de voltar como resposta");
-        assert_eq!(resp.status(), reqwest::StatusCode::FOUND);
-        assert_eq!(s.pedidos(), 1, "o reserva seguiu o redirect");
     }
 }
 
@@ -429,6 +394,7 @@ mod tests {
         let _: fn(u64) -> reqwest::Result<reqwest::Client> = cliente_compartilhado;
         let _: fn(&reqwest::Client, Option<u64>) -> reqwest::Result<reqwest::Client> =
             cliente_do_llm;
+        let _: fn(Option<Duration>) -> reqwest::Result<reqwest::Client> = cliente_padrao;
         let fonte = include_str!("cliente_llm.rs");
         let producao = fonte.split("#[cfg(test)]").next().unwrap_or(fonte);
         for proibido in [

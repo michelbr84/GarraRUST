@@ -248,7 +248,8 @@ impl ArmazemDeCredenciais {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         // #1792: a politica de `cliente_llm`, sem o reserva `unwrap_or_default()`
         // que voltava seguindo redirect se o builder falhasse.
-        let cliente = crate::cliente_llm::cliente_padrao(Some(Duration::from_secs(30)));
+        let cliente = crate::cliente_llm::cliente_padrao(Some(Duration::from_secs(30)))
+            .expect(crate::cliente_llm::SEM_CLIENTE_HTTP);
         Self {
             dir: dir.into(),
             endpoints: Endpoints::default(),

@@ -65,7 +65,8 @@ impl OpenAiProvider {
         // default covers providers built from config at boot.
         // #1792: a politica vem de `cliente_llm`, sem o reserva
         // `Client::new()` que voltava seguindo redirect se o builder falhasse.
-        let client = crate::cliente_llm::cliente_padrao(None);
+        let client =
+            crate::cliente_llm::cliente_padrao(None).expect(crate::cliente_llm::SEM_CLIENTE_HTTP);
         Self {
             client,
             api_key: api_key.into(),

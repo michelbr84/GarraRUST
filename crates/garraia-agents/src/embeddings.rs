@@ -94,7 +94,8 @@ impl OllamaEmbeddingProvider {
     /// monta de `timeouts.embeddings` (#1792).
     pub fn new(model: Option<String>, base_url: Option<String>) -> Self {
         Self {
-            client: crate::cliente_llm::cliente_padrao(None),
+            client: crate::cliente_llm::cliente_padrao(None)
+                .expect(crate::cliente_llm::SEM_CLIENTE_HTTP),
             model: model.unwrap_or_else(|| "nomic-embed-text".to_string()),
             base_url: base_url.unwrap_or_else(|| "http://localhost:11434".to_string()),
         }
@@ -187,7 +188,8 @@ pub struct OpenAiEmbeddingProvider {
 impl OpenAiEmbeddingProvider {
     pub fn new(api_key: String, model: Option<String>, base_url: Option<String>) -> Self {
         Self {
-            client: crate::cliente_llm::cliente_padrao(None),
+            client: crate::cliente_llm::cliente_padrao(None)
+                .expect(crate::cliente_llm::SEM_CLIENTE_HTTP),
             api_key,
             model: model.unwrap_or_else(|| "text-embedding-3-small".to_string()),
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com".to_string()),
@@ -293,7 +295,8 @@ impl CohereEmbeddingProvider {
         base_url: Option<String>,
     ) -> Self {
         Self {
-            client: crate::cliente_llm::cliente_padrao(None),
+            client: crate::cliente_llm::cliente_padrao(None)
+                .expect(crate::cliente_llm::SEM_CLIENTE_HTTP),
             api_key: api_key.into(),
             model: model.unwrap_or_else(|| "embed-english-v3.0".to_string()),
             base_url: base_url.unwrap_or_else(|| "https://api.cohere.com".to_string()),
