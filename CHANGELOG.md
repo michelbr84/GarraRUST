@@ -6,6 +6,86 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-02
+
+O v0.5.1 traz o plano do ChatGPT para o GarraIA e fecha tres achados de seguranca:
+
+- **O plano do ChatGPT, sem API key** (#1796): provider `openai-codex` pelo
+  Sign in with ChatGPT oficial da OpenAI para apps open-source, com o botao
+  "Continuar com ChatGPT" na pagina Providers e `garra chatgpt`. Padrao
+  GPT-6.1 Sol com raciocinio High; niveis Minimal a Ultra e velocidades
+  Thinking, Fast e Ultrafast conforme a conta oferece. Limite de uso do plano
+  passa para o fallback configurado (ex.: OpenRouter) sem repetir o pedido.
+- **Voz sem temporario compartilhado** (#1754): duas sinteses ao mesmo tempo
+  deixam de trocar o audio entre usuarios.
+- **Gate de comandos reconhece o executavel do Windows** (#1791) e passa a
+  pedir confirmacao para `kubectl exec`.
+- **Dependencias** (#1795): `serialize-javascript` 7.1.4 no site de docs e
+  `clipboard-win` 5.4.3 na CLI do Windows.
+- **APK Android com a chave de assinatura definitiva**: o da v0.5.0 saiu com a
+  chave de debug do runner; desinstale a v0.5.0 uma vez antes de instalar a
+  v0.5.1. Daqui em diante as atualizacoes instalam por cima.
+
+Instalacao: `irm https://garraia.org/install.ps1 | iex` (Windows) ou
+`curl -fsSL https://garraia.org/install.sh | sh` (Linux/macOS) — e o
+`garra update` a partir do 0.5.0.
+
+### Added
+- **Provider `openai-codex`: o plano do ChatGPT pelo Sign in with ChatGPT (#1796).**
+  Login oficial da OpenAI para apps open-source (OAuth + PKCE S256, registro
+  dinamico, escopo `chatgpt.tokens.use.direct`, ID token validado em RS256
+  contra o JWKS) e inferencia no endpoint publico `POST /v1/responses` com
+  `store: false`, `stream: true` e `reasoning.effort` (padrao `high`). Modelo
+  preferencial `gpt-6.1-sol`. Credenciais em `credentials/openai-codex` (0600,
+  renovacao serializada entre processos, revogacao no logout). Novo comando
+  `garra chatgpt` (login, logout, status, modelos, usar, configurar, testar) e
+  cartao "Continuar com ChatGPT" na pagina Providers da porta 3888, com teste
+  de inferencia real. Guia em `docs/src/guides/connect-chatgpt.md`.
+- **ChatGPT: niveis de raciocinio e velocidade.** O cartao e o
+  `garra chatgpt configurar` oferecem Minimal, Low, Medium, High, Extra High,
+  Max e Ultra, e as velocidades Thinking (padrao), Fast e Ultrafast. Cada
+  opcao so fica ativa quando o catalogo da conta a oferece para o modelo e a
+  Responses API a aceita; Ultra existe so no Codex e aparece desativado com o
+  motivo. Fast envia `service_tier: priority` e o teste mostra o tier que a
+  OpenAI de fato serviu.
+- **ChatGPT: limite de uso do plano passa para o fallback.** Quando a OpenAI
+  responde `subscription_sharing_usage_limit_exceeded`, o runtime nao repete o
+  pedido e passa direto para o primeiro provider de `agent.fallback_providers`
+  (por exemplo o OpenRouter), no chat em streaming e no modo batch. Sem conta
+  conectada o comportamento e o mesmo.
+
+### Security
+- **Sintese de voz concorrente deixa de trocar o audio entre usuarios (#1754).**
+  Os provedores Hibiki e LM Studio passavam o WAV por um temporario
+  `garraia_tts_<pid>.wav`, o MESMO arquivo para toda chamada do processo: duas
+  sinteses ao mesmo tempo escreviam e liam o mesmo caminho, e um usuario podia
+  ouvir a resposta de outro (ou receber erro porque a outra chamada ja tinha
+  apagado o arquivo). Agora os bytes vem direto da resposta HTTP, sem arquivo
+  nenhum. Os clientes Whisper (STT) e Hibiki ganham timeout de 120 s, como o
+  Chatterbox e o LM Studio ja tinham, e o resumo de resposta sem audio do LM
+  Studio e cortado por caractere em vez de byte (o corte antigo dava panic com
+  texto acentuado).
+- **Gate de comandos reconhece o executavel do Windows (`curl.exe`, `C:\...\git.exe`) e cobre `kubectl exec` (#1791).**
+  O nome do programa so era cortado em `/` e comparado cru, entao `curl.exe`,
+  `C:\Windows\System32\curl.exe`, `CURL.EXE` e `git.exe push --force` passavam
+  livres no Windows, e `git.exe push --force origin main` e `format.com c:` nem
+  chegavam ao bloqueio duro que tem no Linux. Agora o basename corta em `/` e `\`,
+  tira o sufixo do PATHEXT (`.exe`, `.com`, `.cmd`, `.bat`) sem diferenciar
+  maiusculas e aceita caminho entre aspas (`& "C:\Program Files\Git\cmd\git.exe"`),
+  e os substrings do DENY_LIST/CONFIRM_LIST tambem sao checados com o programa
+  nessa forma canonica. A mesma resolucao passou a valer no wrapper
+  (`/usr/bin/sudo curl`), no pipe para shell (`| /bin/sh`) e no shell com `-c`
+  (`/bin/bash -c '...'`), que tambem escapavam no Linux. `kubectl exec pod -- env`
+  passa a exigir confirmacao, como o `docker exec`.
+- **`serialize-javascript` 7.1.4 no site de docs e `clipboard-win` 5.4.3 na CLI (#1795).**
+  O override do `website/` sai da 7.0.5 e fecha o GHSA-m5mm-p8h7-m29v (XSS por
+  `</script` no fim do corpo de funcao serializada; so no build do site). No
+  Windows, a CLI deixa a `clipboard-win` 5.4.1, retirada do registro (yanked),
+  cujo `get_html` podia ler fora dos limites com HTML de clipboard malformado.
+  Ficam abertos, sem correcao aplicavel: `minimatch` 3.1.5 (o `serve-handler`
+  fixa a versao, e a linha 3.x nao tem o codigo afetado) e `deepmerge` 4.3.1 (sem
+  versao corrigida; so mescla a config estatica do SVGO no build).
+
 ## [0.5.0] - 2026-11-01
 
 O v0.5.0 muda o comportamento visivel do turno e sobe a barra do toolchain:
