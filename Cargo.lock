@@ -3159,6 +3159,7 @@ dependencies = [
  "dialoguer",
  "dirs 7.0.0",
  "dotenvy",
+ "futures",
  "garraia-agents",
  "garraia-ask",
  "garraia-auth",
@@ -3203,7 +3204,9 @@ name = "garraia-agents"
 version = "0.5.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "axum 0.8.9",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "futures",
@@ -3213,6 +3216,7 @@ dependencies = [
  "garraia-security",
  "getrandom 0.4.3",
  "hmac 0.12.1",
+ "jsonwebtoken",
  "libc",
  "metrics 0.24.6",
  "metrics-util 0.20.4",

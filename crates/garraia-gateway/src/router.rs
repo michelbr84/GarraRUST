@@ -401,6 +401,21 @@ pub fn build_router(
         .route("/api/providers", get(list_providers).post(add_provider))
         .route("/api/providers/test", post(test_provider))
         .route("/api/providers/default", patch(set_default_provider))
+        // Sign in with ChatGPT (provider openai-codex): cartao "Continuar com ChatGPT".
+        .route("/api/chatgpt/status", get(crate::chatgpt_handler::status))
+        .route(
+            "/api/chatgpt/login",
+            post(crate::chatgpt_handler::iniciar_login)
+                .delete(crate::chatgpt_handler::cancelar_login),
+        )
+        .route("/api/chatgpt/logout", post(crate::chatgpt_handler::logout))
+        .route("/api/chatgpt/usar", post(crate::chatgpt_handler::usar))
+        .route("/api/chatgpt/modelos", get(crate::chatgpt_handler::modelos))
+        .route(
+            "/api/chatgpt/configurar",
+            post(crate::chatgpt_handler::configurar),
+        )
+        .route("/api/chatgpt/testar", post(crate::chatgpt_handler::testar))
         .route("/api/channels", get(list_channels))
         .route(
             "/api/diagnostics",
@@ -781,6 +796,8 @@ const KNOWN_PROVIDERS: &[(&str, &str, bool)] = &[
     ("minimax", "MiniMax", true),
     ("moonshot", "Moonshot K2", true),
     ("ollama", "Ollama", false),
+    // Sign in with ChatGPT: sem API key — login pelo botao "Continuar com ChatGPT".
+    ("openai-codex", "ChatGPT (plano)", false),
 ];
 
 /// Normalize a provider's advertised model catalog: drop blanks, sort,

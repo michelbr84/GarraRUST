@@ -72,6 +72,8 @@ pub fn hardcoded_default_model(provider_kind: &str) -> String {
         "llamacpp" => "default",
         "anthropic" => "claude-sonnet-4-5-20250929",
         "openai" => "gpt-4o",
+        // Sign in with ChatGPT: o modelo preferencial do provider.
+        "openai-codex" => garraia_agents::openai_codex::MODELO_PADRAO,
         // The official project default. Never `openrouter/auto`: `auto`
         // stays reachable only when the user passes it explicitly.
         garraia_config::defaults::DEFAULT_CLOUD_PROVIDER => {
@@ -147,7 +149,7 @@ pub fn select_explicit_provider_with_env(
 ) -> Result<(String, String, Arc<dyn LlmProvider>)> {
     let Some(binding) = provider_binding::bind_named(config, name, env) else {
         anyhow::bail!(
-            "Provider desconhecido: {name}. Use: ollama, llamacpp, anthropic, openai, openrouter \
+            "Provider desconhecido: {name}. Use: ollama, llamacpp, anthropic, openai, openrouter, openai-codex \
              (ou o nome de uma entrada em llm: no config.yml)"
         );
     };

@@ -131,7 +131,7 @@ pub fn process_env(var: &str) -> Option<String> {
 pub fn is_buildable_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "ollama" | "llamacpp" | "anthropic" | "openai" | "openrouter"
+        "ollama" | "llamacpp" | "anthropic" | "openai" | "openrouter" | "openai-codex"
     ) || (cfg!(feature = "dev-echo-provider") && kind == "echo")
 }
 
@@ -162,6 +162,9 @@ pub struct ProviderBinding {
     /// tipo. `None` quando nenhuma entrada descreve o provider — ai vale a
     /// janela global.
     timeout_secs: Option<u64>,
+    /// `llm.<nome>.reasoning_effort` (provider `openai-codex`): o
+    /// `reasoning.effort` da Responses API. `None` → o padrao do provider.
+    reasoning_effort: Option<String>,
 }
 
 /// `Debug` a mao: a credencial nunca aparece, nem num `{:?}` de teste que
@@ -254,6 +257,7 @@ impl ProviderBinding {
             model: None,
             // Sem entrada nao ha janela propria: vale a global.
             timeout_secs: None,
+            reasoning_effort: None,
         }
     }
 }
@@ -280,6 +284,13 @@ pub fn bind_entry(key: &str, cfg: &LlmProviderConfig, env: Env<'_>) -> ProviderB
         api_key,
         model: non_empty(cfg.model.as_deref()),
         timeout_secs: cfg.timeout_secs(),
+        reasoning_effort: cfg
+            .extra
+            .get("reasoning_effort")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string),
     }
 }
 
@@ -433,12 +444,26 @@ pub fn build_provider(
                 .with_name(provider_id.unwrap_or("openrouter"));
             Ok(Arc::new(provider))
         }
+        // Sign in with ChatGPT: sem chave — a credencial e o login OAuth
+        // salvo em `<config_dir>/credentials/openai-codex` (`garra chatgpt login`).
+        "openai-codex" => {
+            let mut provider = garraia_agents::openai_codex::OpenAiCodexProvider::new(
+                garraia_config::ConfigLoader::openai_codex_credentials_dir(),
+                model,
+                binding.reasoning_effort.clone(),
+            )
+            .with_client(cliente);
+            if let Some(id) = provider_id {
+                provider = provider.with_name(id);
+            }
+            Ok(Arc::new(provider))
+        }
         // Dev/CI only: o EchoProvider keyless (feature `dev-echo-provider`).
         #[cfg(feature = "dev-echo-provider")]
         "echo" => Ok(Arc::new(garraia_agents::EchoProvider::new(model))),
         other => bail!(
             "{} declara o tipo de provider '{other}', que a CLI nao sabe construir. \
-             Tipos aceitos: ollama, llamacpp, anthropic, openai, openrouter",
+             Tipos aceitos: ollama, llamacpp, anthropic, openai, openrouter, openai-codex",
             binding.origin()
         ),
     }

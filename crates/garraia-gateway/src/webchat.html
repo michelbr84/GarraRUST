@@ -2829,6 +2829,8 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
       </div>
       <div class="page-body">
         <p style="color: var(--garra-muted); margin-bottom: 16px;">Cada provider é exibido com seu estado atual, modelo configurado e os modelos disponíveis. Use <strong>Test connection</strong> para validar o canal sem mexer em chaves — nenhuma API key aparece aqui.</p>
+        <!-- Sign in with ChatGPT (provider openai-codex) -->
+        <div id="chatgpt-card" class="provider-card" data-testid="chatgpt-card" style="margin-bottom:16px;"></div>
         <div id="providers-grid" class="providers-grid"></div>
       </div>
     </div>
@@ -3401,6 +3403,7 @@ function renderFetchError(el, status, label, colspan) {
 
 // ─── Providers & Models page (plan 0119) ─────────────────────────────
 async function loadProvidersPage() {
+  loadChatGptCard();
   const grid = document.getElementById('providers-grid');
   if (!grid) return;
   grid.innerHTML = '<div style="color:var(--garra-muted);font-size:13px;">Carregando providers…</div>';
@@ -3416,7 +3419,10 @@ async function loadProvidersPage() {
     // configured. See #1540 fallout in router.rs::list_providers.
     const instances = Array.isArray(j.instances) ? j.instances : [];
     const catalog = Array.isArray(j.providers) ? j.providers : [];
-    const items = instances.concat(catalog.filter(p => !p.active));
+    // O ChatGPT (openai-codex) tem cartao proprio acima, com login e estado
+    // reais; um cartao generico aqui diria "Active" sem conta conectada.
+    const naoChatGpt = p => p.id !== 'openai-codex' && p.kind !== 'openai-codex';
+    const items = instances.concat(catalog.filter(p => !p.active)).filter(naoChatGpt);
     if (items.length === 0) {
       grid.innerHTML = '<div style="color:var(--garra-muted);font-size:13px;">Nenhum provider registrado. Use o painel direito para adicionar.</div>';
       return;
@@ -3430,6 +3436,200 @@ async function loadProvidersPage() {
     });
   } catch (e) {
     grid.innerHTML = '<div class="warning-box">Erro ao carregar providers: ' + (e && e.message ? e.message : e) + '</div>';
+  }
+}
+
+// ── Sign in with ChatGPT (provider openai-codex) ─────────────────────────
+// O login acontece no site da OpenAI, numa aba; o gateway recebe o callback
+// em 127.0.0.1 e guarda a credencial. Esta pagina nunca ve token nenhum.
+const CHATGPT_ESFORCOS = ['low', 'medium', 'high', 'xhigh', 'max'];
+let chatgptPoll = null;
+let chatgptModelos = null;
+function chatgptCard(titulo, pillCls, pillTxt, corpo) {
+  return `
+    <div class="provider-card-head">
+      <strong>${escapeHtml(titulo)}</strong>
+      <span class="pill ${pillCls}" data-testid="chatgpt-state"><span class="status-dot ${pillCls === 'success' ? '' : (pillCls === 'warning' ? 'warning' : 'offline')}"></span> ${escapeHtml(pillTxt)}</span>
+    </div>${corpo}`;
+}
+async function loadChatGptCard() {
+  const box = document.getElementById('chatgpt-card');
+  if (!box) return;
+  let s;
+  try {
+    const r = await fetch('/api/chatgpt/status');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    s = await r.json();
+  } catch (e) {
+    box.innerHTML = chatgptCard('ChatGPT', 'danger', 'Provedor indisponível',
+      '<div class="warning-box">Não foi possível consultar o login do ChatGPT: ' + escapeHtml(e && e.message ? e.message : e) + '</div>');
+    return;
+  }
+  renderChatGptCard(box, s);
+  const aguardando = s.login && s.login.estado === 'aguardando';
+  if (aguardando && !chatgptPoll) {
+    chatgptPoll = setInterval(loadChatGptCard, 2000);
+  } else if (!aguardando && chatgptPoll) {
+    clearInterval(chatgptPoll);
+    chatgptPoll = null;
+  }
+}
+function renderChatGptCard(box, s) {
+  const login = s.login || { estado: 'inativo' };
+  const conta = s.conta;
+  const cfg = s.config;
+  const local = s.acesso_local !== false;
+  const avisoRemoto = local ? '' : '<div class="warning-box" style="margin-top:10px;">O login pelo painel exige o navegador na mesma máquina do gateway. Num gateway remoto, rode <code>garra chatgpt login</code> no seu computador e copie as credenciais.</div>';
+  const erroLogin = login.estado === 'erro' ? '<div class="warning-box" data-testid="chatgpt-error" style="margin-top:10px;">Erro de autenticação: ' + escapeHtml(login.mensagem || '') + '</div>' : '';
+  const padraoMarcado = !cfg || cfg.padrao ? 'checked' : '';
+  const explicacao = '<p style="color:var(--garra-muted);font-size:13px;margin:8px 0;">Use seu plano do ChatGPT no GarraIA: as requisições elegíveis entram no seu plano ou saldo de créditos do ChatGPT, separado de qualquer custo de outros provedores. O GarraIA não tem acesso às suas conversas do ChatGPT.</p>';
+  if (login.estado === 'aguardando') {
+    box.innerHTML = chatgptCard('ChatGPT', 'warning', 'Aguardando autenticação',
+      '<p style="color:var(--garra-muted);font-size:13px;">Conclua o login na aba da OpenAI. Esta página atualiza sozinha.</p>' +
+      '<div class="provider-actions"><button id="chatgpt-cancelar" type="button">Cancelar</button></div>');
+    box.querySelector('#chatgpt-cancelar').onclick = async () => { await fetch('/api/chatgpt/login', { method: 'DELETE' }); loadChatGptCard(); };
+    return;
+  }
+  if (!conta || s.estado === 'desconectado' || s.estado === 'sessao_expirada' || s.estado === 'plano_pendente') {
+    const estados = {
+      desconectado: ['danger', 'Não conectado'],
+      sessao_expirada: ['warning', 'Sessão expirada'],
+      plano_pendente: ['warning', 'Uso do plano pendente ou negado'],
+    };
+    const [cls, txt] = login.estado === 'erro' ? ['danger', 'Erro de autenticação'] : (estados[s.estado] || estados.desconectado);
+    const quem = conta && conta.email ? '<div class="provider-meta">Conta: <strong>' + escapeHtml(conta.email) + '</strong></div>' : '';
+    const dica = s.estado === 'plano_pendente' ? '<div class="warning-box" style="margin-top:8px;">A conta entrou sem autorizar o uso do plano do ChatGPT. Entre de novo e autorize o uso do plano.</div>'
+      : (s.estado === 'sessao_expirada' ? '<div class="warning-box" style="margin-top:8px;">A sessão expirou ou foi desconectada no ChatGPT. Entre de novo.</div>' : '');
+    box.innerHTML = chatgptCard('ChatGPT', cls, txt, quem + explicacao + dica + erroLogin + avisoRemoto +
+      '<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:8px 0;"><input type="checkbox" id="chatgpt-padrao" ' + padraoMarcado + '> Usar como provedor padrão (GPT-6.1 Sol, raciocínio High)</label>' +
+      '<div class="provider-actions"><button class="primary" id="chatgpt-login" data-testid="chatgpt-login" type="button" ' + (local ? '' : 'disabled') + '>Continuar com ChatGPT</button></div>');
+    const btn = box.querySelector('#chatgpt-login');
+    if (btn) btn.onclick = () => chatgptLogin(false, box.querySelector('#chatgpt-padrao').checked);
+    return;
+  }
+  // Conectado.
+  let confirmado = false;
+  try { confirmado = localStorage.getItem('garra.chatgpt.confirmado') === '1'; } catch (_) {}
+  const confirmacao = confirmado ? '' : '<div class="glass-panel" data-testid="chatgpt-confirm" style="padding:12px;margin:10px 0;"><strong>Você está usando seu plano do ChatGPT</strong><p style="color:var(--garra-muted);font-size:13px;margin:6px 0;">As requisições elegíveis do GarraIA entram no seu plano ou saldo de créditos do ChatGPT.</p><button id="chatgpt-ok" type="button">Entendi</button></div>';
+  const nome = conta.nome ? escapeHtml(conta.nome) + ' — ' : '';
+  const outras = (s.contas || []).filter(c => c.client_id !== conta.client_id);
+  const listaOutras = outras.length ? '<div class="provider-meta" style="margin-top:6px;">Outras contas: ' + outras.map(c => escapeHtml(c.email || c.client_id) + ' <button type="button" data-chatgpt-usar="' + escapeHtml(c.client_id) + '">Usar</button>').join(' ') + '</div>' : '';
+  const modelo = cfg ? cfg.modelo : (s.preferencial ? s.preferencial.modelo : 'gpt-6.1-sol');
+  const esforco = cfg ? cfg.esforco : 'high';
+  const opcoesEsforco = CHATGPT_ESFORCOS.map(e => '<option value="' + e + '"' + (e === esforco ? ' selected' : '') + '>' + e + '</option>').join('');
+  box.innerHTML = chatgptCard('ChatGPT', 'success', (cfg && cfg.padrao) ? 'Conectado • Padrão' : 'Conectado',
+    '<div class="provider-meta" data-testid="chatgpt-account">' + nome + '<strong>' + escapeHtml(conta.email || conta.client_id) + '</strong> • <span style="color:var(--garra-accent);">Usando o plano do ChatGPT</span> • <a href="' + escapeHtml(s.uso_url) + '" target="_blank" rel="noopener noreferrer">Gerenciar uso</a></div>' +
+    listaOutras + confirmacao + erroLogin +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0;">' +
+      '<label style="font-size:13px;">Modelo <select id="chatgpt-modelo" data-testid="chatgpt-model"><option value="' + escapeHtml(modelo) + '">' + escapeHtml(modelo) + '</option></select></label>' +
+      '<label style="font-size:13px;">Raciocínio <select id="chatgpt-esforco" data-testid="chatgpt-effort">' + opcoesEsforco + '</select></label>' +
+      '<label style="display:flex;gap:6px;align-items:center;font-size:13px;"><input type="checkbox" id="chatgpt-padrao" ' + ((cfg && cfg.padrao) ? 'checked' : '') + '> Provedor padrão</label>' +
+    '</div>' +
+    '<div id="chatgpt-modelos-aviso" class="provider-meta"></div>' +
+    '<div class="provider-test-result" id="chatgpt-resultado" data-testid="chatgpt-test-result"></div>' +
+    '<div class="provider-actions">' +
+      '<button class="primary" id="chatgpt-salvar" type="button">Salvar</button>' +
+      '<button id="chatgpt-testar" data-testid="chatgpt-test" type="button">Testar conexão</button>' +
+      '<button id="chatgpt-trocar" type="button" ' + (local ? '' : 'disabled') + '>Trocar de conta</button>' +
+      '<button id="chatgpt-reconectar" type="button" ' + (local ? '' : 'disabled') + '>Reconectar</button>' +
+      '<button id="chatgpt-sair" data-testid="chatgpt-logout" type="button">Sair</button>' +
+    '</div>' + avisoRemoto);
+  const ok = box.querySelector('#chatgpt-ok');
+  if (ok) ok.onclick = () => { try { localStorage.setItem('garra.chatgpt.confirmado', '1'); } catch (_) {} loadChatGptCard(); };
+  box.querySelectorAll('[data-chatgpt-usar]').forEach(b => {
+    b.onclick = async () => {
+      await fetch('/api/chatgpt/usar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: b.dataset.chatgptUsar }) });
+      chatgptModelos = null;
+      loadChatGptCard();
+    };
+  });
+  box.querySelector('#chatgpt-salvar').onclick = () => chatgptSalvar(box);
+  box.querySelector('#chatgpt-testar').onclick = () => chatgptTestar(box);
+  box.querySelector('#chatgpt-trocar').onclick = () => chatgptLogin(true, box.querySelector('#chatgpt-padrao').checked);
+  box.querySelector('#chatgpt-reconectar').onclick = () => chatgptLogin(false, box.querySelector('#chatgpt-padrao').checked);
+  box.querySelector('#chatgpt-sair').onclick = async () => {
+    const r = await fetch('/api/chatgpt/logout', { method: 'POST' });
+    const j = await r.json().catch(() => ({}));
+    const out = document.getElementById('chatgpt-resultado');
+    if (j && j.ok === true && j.revogacao_confirmada === false && out) {
+      out.textContent = 'Saiu, mas a revogação remota não foi confirmada. Se quiser, desconecte o GarraIA nas configurações do ChatGPT.';
+    }
+    chatgptModelos = null;
+    setTimeout(loadChatGptCard, 600);
+  };
+  chatgptPreencherModelos(box, modelo);
+}
+async function chatgptPreencherModelos(box, atual) {
+  const sel = box.querySelector('#chatgpt-modelo');
+  const aviso = box.querySelector('#chatgpt-modelos-aviso');
+  if (!sel) return;
+  try {
+    if (!chatgptModelos) {
+      const r = await fetch('/api/chatgpt/modelos');
+      chatgptModelos = await r.json();
+    }
+    const j = chatgptModelos;
+    if (!j.ok) { if (aviso) aviso.textContent = 'Catálogo indisponível: ' + (j.error || ''); return; }
+    const lista = j.modelos || [];
+    if (lista.length) {
+      sel.innerHTML = lista.map(m => '<option value="' + escapeHtml(m.slug) + '"' + (m.slug === atual ? ' selected' : '') + '>' + escapeHtml(m.display_name || m.slug) + '</option>').join('');
+      if (!lista.some(m => m.slug === atual)) {
+        sel.insertAdjacentHTML('afterbegin', '<option value="' + escapeHtml(atual) + '" selected>' + escapeHtml(atual) + ' (fora do catálogo)</option>');
+      }
+    }
+    if (aviso && !j.preferencial_disponivel) {
+      aviso.textContent = 'O GPT-6.1 Sol não aparece no catálogo desta conta. Escolha um dos modelos disponíveis.';
+    }
+  } catch (e) {
+    if (aviso) aviso.textContent = 'Catálogo indisponível: ' + (e && e.message ? e.message : e);
+  }
+}
+async function chatgptLogin(novaConta, padrao) {
+  // Abre a aba ja no clique (bloqueadores de pop-up) e so depois aponta a URL.
+  const aba = window.open('about:blank', '_blank');
+  try {
+    const r = await fetch('/api/chatgpt/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nova_conta: !!novaConta, padrao: !!padrao }) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    if (aba) { aba.opener = null; aba.location = j.url; } else { window.location.assign(j.url); }
+  } catch (e) {
+    if (aba) aba.close();
+    const box = document.getElementById('chatgpt-card');
+    if (box) box.insertAdjacentHTML('beforeend', '<div class="warning-box" style="margin-top:10px;">Não foi possível iniciar o login: ' + escapeHtml(e && e.message ? e.message : e) + '</div>');
+    return;
+  }
+  loadChatGptCard();
+}
+async function chatgptSalvar(box) {
+  const out = box.querySelector('#chatgpt-resultado');
+  const corpo = { modelo: box.querySelector('#chatgpt-modelo').value, esforco: box.querySelector('#chatgpt-esforco').value, padrao: box.querySelector('#chatgpt-padrao').checked };
+  out.textContent = 'Salvando…';
+  const r = await fetch('/api/chatgpt/configurar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo) });
+  const j = await r.json().catch(() => ({}));
+  out.textContent = j.ok ? ('Salvo: ' + j.modelo + ', raciocínio ' + j.esforco + (j.padrao ? ', provedor padrão.' : '.')) : ('Erro: ' + (j.error || r.status));
+  if (j.ok) setTimeout(() => { loadChatGptCard(); loadProvidersPage(); }, 800);
+}
+async function chatgptTestar(box) {
+  const out = box.querySelector('#chatgpt-resultado');
+  const btn = box.querySelector('#chatgpt-testar');
+  out.className = 'provider-test-result';
+  out.textContent = 'Testando (inferência real)…';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/chatgpt/testar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ modelo: box.querySelector('#chatgpt-modelo').value }) });
+    const j = await r.json();
+    if (j.ok) {
+      out.className = 'provider-test-result ok';
+      out.textContent = 'OK: "' + j.texto + '" — ' + j.modelo + ', raciocínio ' + (j.enviado && j.enviado.reasoning ? j.enviado.reasoning.effort : '?') + ', ' + j.trechos_em_streaming + ' trechos em streaming, ' + j.ms + ' ms.';
+    } else {
+      out.className = 'provider-test-result error';
+      out.textContent = 'Falhou: ' + (j.error || r.status);
+    }
+  } catch (e) {
+    out.className = 'provider-test-result error';
+    out.textContent = 'Falhou: ' + (e && e.message ? e.message : e);
+  } finally {
+    btn.disabled = false;
   }
 }
 function escapeHtml(s) {

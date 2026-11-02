@@ -964,7 +964,10 @@ fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv, bind_env: &BindDaEnv)
     // the boot loop's arms in `garraia-gateway/src/bootstrap/mod.rs`.
     for (name, llm) in &config.llm {
         let known = crate::provider_keys::provider_key_env(&llm.provider).is_some()
-            || matches!(llm.provider.as_str(), "ollama" | "llamacpp" | "echo");
+            || matches!(
+                llm.provider.as_str(),
+                "ollama" | "llamacpp" | "echo" | "openai-codex"
+            );
         if !known {
             push_err(
                 &mut findings,

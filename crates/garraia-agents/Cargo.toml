@@ -38,6 +38,11 @@ sha2 = "0.10"
 # ja usadas pelo `garraia-auth`.
 hmac = "0.12"
 getrandom = "0.4"
+# Provider `openai-codex` (Sign in with ChatGPT): PKCE em base64url e a
+# validacao RS256 do ID token contra o JWKS da OpenAI. Mesmas versoes do
+# workspace; nao trazem arvore nova.
+base64 = { workspace = true }
+jsonwebtoken = { workspace = true }
 
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-io"], optional = true }
 
@@ -63,6 +68,9 @@ metrics-util = { version = "0.20", features = ["debugging"] }
 # producao este crate emite via `garraia_common::metrics`, nao direto.
 metrics = { workspace = true }
 tempfile = "3"
+# Gera o par RSA dos testes do ID token na hora (nada de chave fixa no repo).
+# Mesma versao que o jsonwebtoken ja puxa.
+aws-lc-rs = "1.18"
 # #1346: conta eventos de log nos testes de recuperacao do cache npx
 # (o erro de "max restarts" tem de sair UMA vez, nao a cada tick).
 tracing-subscriber = { workspace = true }

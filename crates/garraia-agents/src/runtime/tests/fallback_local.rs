@@ -768,3 +768,39 @@ pub(super) async fn recusa_403_fica_anotada_com_o_proprio_status() {
         Some(403)
     );
 }
+
+// ─── #1796: ChatGPT (openai-codex) sem conta cai para o fallback ──────
+
+/// O provider `openai-codex` de verdade, sem nenhum login salvo, como
+/// primario: o turno nao pode morrer com "nenhuma conta conectada" — a falta
+/// de credencial e tratada como credencial recusada e o fallback responde.
+#[tokio::test]
+pub(super) async fn chatgpt_sem_conta_cai_para_o_fallback_em_streaming_e_batch() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let runtime = AgentRuntime::new();
+    let primario: Arc<dyn LlmProvider> = Arc::new(
+        crate::openai_codex::OpenAiCodexProvider::new(dir.path().join("openai-codex"), None, None)
+            .with_name("chatgpt"),
+    );
+    runtime.register_provider(primario.clone());
+    runtime.register_provider(Arc::new(LocalQueResponde));
+    runtime.set_fallback_providers(vec!["ollama".to_string()]);
+
+    let mut stream = runtime
+        .stream_complete_with_fallback(&primario, &pedido_simples())
+        .await
+        .expect("sem conta do ChatGPT, o fallback local tem de responder");
+    let mut texto = String::new();
+    while let Some(evento) = stream.next().await {
+        if let StreamEvent::TextDelta(t) = evento.expect("o stream local nao falha") {
+            texto.push_str(&t);
+        }
+    }
+    assert_eq!(texto, RESPOSTA_LOCAL);
+
+    let RespostaDoCircuito { provider: quem, .. } = runtime
+        .complete_reportando_provider(&primario, &pedido_simples())
+        .await
+        .expect("em batch tambem");
+    assert_eq!(quem, "ollama");
+}

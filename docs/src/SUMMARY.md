@@ -16,6 +16,7 @@
 
 - [Conectar Bot do Telegram](./guides/connect-telegram.md)
 - [Conectar LM Studio / Ollama](./guides/add-lm-studio.md)
+- [Usar o plano do ChatGPT](./guides/connect-chatgpt.md)
 - [Desenvolver um Plugin](./guides/create-plugin.md)
 - [Configuração do iMessage](./channels/imessage.md)
 

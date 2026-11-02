@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod bind;
 pub mod boot_gate;
+pub mod chatgpt;
 pub mod check;
 pub mod defaults;
 pub mod execution;

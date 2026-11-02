@@ -61,6 +61,13 @@ llm:
     model: qwen3.8:latest
     base_url: "http://localhost:11434"
 
+  # ChatGPT plan (Sign in with ChatGPT) - no API key: `garra chatgpt login`.
+  # See docs/src/guides/connect-chatgpt.md.
+  chatgpt:
+    provider: openai-codex
+    model: gpt-6.1-sol
+    reasoning_effort: high
+
   # OpenRouter
   openrouter:
     provider: openrouter

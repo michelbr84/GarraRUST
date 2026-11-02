@@ -20,6 +20,15 @@ impl ConfigLoader {
         Self::config_dir_from_env(std::env::var("GARRAIA_CONFIG_DIR").ok())
     }
 
+    /// Onde o provider `openai-codex` (Sign in with ChatGPT) guarda o host id
+    /// e as credenciais 0600 de cada conta: `<config_dir>/credentials/openai-codex`.
+    /// Uma fonte so para gateway, CLI e servidor MCP.
+    pub fn openai_codex_credentials_dir() -> PathBuf {
+        Self::default_config_dir()
+            .join("credentials")
+            .join("openai-codex")
+    }
+
     /// Resolve o config_dir a partir do valor opcional da env, com a guarda
     /// de placeholder (#1620): `GARRAIA_CONFIG_DIR` vindo de um `.env` de
     /// exemplo (`/custom/config/path`) nao pode virar path real — o

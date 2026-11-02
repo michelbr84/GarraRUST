@@ -72,7 +72,7 @@ const MODEL_DEFAULT: &str = crate::defaults::DEFAULT_CLOUD_MODEL;
 /// `garra_ask` JSON schema — which MCP hosts treat as advisory, so it must
 /// be enforced here. Provider aliases defined in the user's `config.yml`
 /// `llm:` section are additionally accepted (see `validate_policy`).
-pub(crate) const PROVIDER_ENUM: [&str; 4] = garraia_ask::PROVEDORES_ASK;
+pub(crate) const PROVIDER_ENUM: [&str; 5] = garraia_ask::PROVEDORES_ASK;
 
 /// Runtime limits for the MCP tools, resolved once at server startup.
 ///
@@ -353,7 +353,7 @@ pub(crate) fn garra_ask_tool() -> Tool {
             },
             "provider": {
                 "type": "string",
-                "enum": ["ollama", "anthropic", "openai", "openrouter"],
+                "enum": ["ollama", "anthropic", "openai", "openrouter", "openai-codex"],
                 "default": PROVIDER_DEFAULT,
                 "description": format!("LLM provider. Default '{PROVIDER_DEFAULT}'.")
             },
@@ -1296,7 +1296,13 @@ mod tests {
         let policy = ServerPolicy::default();
         let cfg = cfg_with_llm_alias("sansa");
         // Schema enum members always pass.
-        for p in ["ollama", "anthropic", "openai", "openrouter"] {
+        for p in [
+            "ollama",
+            "anthropic",
+            "openai",
+            "openrouter",
+            "openai-codex",
+        ] {
             assert!(validate_policy(&cfg, &policy, p, "any-model", 60).is_ok());
         }
         // Alias configured under llm: passes; an unknown provider does not.

@@ -1456,6 +1456,22 @@ impl AgentRuntime {
         self.providers.write().unwrap().push(provider);
     }
 
+    /// Registra `provider` trocando a instancia de mesmo id, se houver — o
+    /// painel do ChatGPT muda modelo/esforco em runtime sem duplicar o
+    /// provider na lista (que `register_provider` so acrescenta).
+    pub fn upsert_provider(&self, provider: Arc<dyn LlmProvider>) {
+        let id = provider.provider_id().to_string();
+        {
+            let mut lista = self.providers.write().unwrap();
+            if let Some(pos) = lista.iter().position(|p| p.provider_id() == id) {
+                info!("replaced LLM provider: {}", id);
+                lista[pos] = provider;
+                return;
+            }
+        }
+        self.register_provider(provider);
+    }
+
     /// GAR-208: Return all registered providers (cloned Arc handles).
     pub fn list_providers(&self) -> Vec<Arc<dyn LlmProvider>> {
         self.providers.read().unwrap().clone()
