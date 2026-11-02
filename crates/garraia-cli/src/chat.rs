@@ -2696,6 +2696,10 @@ mod testes_1225_s2 {
     /// pelo ponto de registro de PRODUCAO. `mode = all` sem backend recusa
     /// todo spawn sem consultar binario nenhum do host — deterministico, e
     /// antes da S2b esta config deixava as tools rodarem no host.
+    ///
+    /// #1762: fora de Unix o wrap e recusado pela plataforma antes de olhar o
+    /// backend (`plataforma_permite_wrap`, #1760). A recusa continua provando
+    /// que a policy chegou a tool; so a mensagem muda.
     async fn roda_recusada(
         tool: std::sync::Arc<dyn garraia_agents::Tool>,
         input: serde_json::Value,
@@ -2717,7 +2721,12 @@ mod testes_1225_s2 {
             }
             Err(e) => e.to_string(),
         };
-        assert!(texto.contains("nenhum backend"), "{}: {texto}", tool.name());
+        let motivo = if cfg!(unix) {
+            "nenhum backend"
+        } else {
+            "nao suportado fora de unix"
+        };
+        assert!(texto.contains(motivo), "{}: {texto}", tool.name());
     }
 
     #[tokio::test]

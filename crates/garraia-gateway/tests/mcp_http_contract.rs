@@ -1813,10 +1813,15 @@ async fn garra_agent_entrada_e_saida_saem_redigidas() {
 /// Um provider que, no primeiro turno, pede a tool `bash` com o comando dado e,
 /// no seguinte (quando ja existe uma mensagem `tool` no historico), responde
 /// em texto. Atende os dois formatos: SSE (o laco do agente faz streaming) e JSON.
+///
+/// #1762: so os testes `cfg(unix)` abaixo usam este provider e o
+/// `config_agent_com_bash`; sem o cfg o clippy do Windows acusa codigo morto.
+#[cfg(unix)]
 struct PedeBash {
     comando: &'static str,
 }
 
+#[cfg(unix)]
 impl Respond for PedeBash {
     fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
         let corpo: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -1874,6 +1879,7 @@ impl Respond for PedeBash {
 
 /// A ponte com `garra_agent` num `isolated-pod` (o unico perfil em que o `bash`
 /// existe sem docker/podman no CI) e o provider apontando para `endereco`.
+#[cfg(unix)]
 fn config_agent_com_bash(endereco: &str) -> AppConfig {
     let mut config = config_agent_para(endereco);
     config.execution = garraia_config::ExecutionConfig::new(
