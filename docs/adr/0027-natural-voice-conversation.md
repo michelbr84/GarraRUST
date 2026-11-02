@@ -1,6 +1,6 @@
 # ADR 0027 — Conversação natural por voz na interface Web
 
-- **Estado:** decisão arquitetural para implementação incremental; validação acústica e adaptadores speech-to-speech pendentes.
+- **Estado:** aceito; caminho A implementado pela #1754 (ver [Execução](#execução-1754)); validação acústica e adaptadores speech-to-speech pendentes.
 - **Data:** 2026-10-28, America/New_York.
 - **Base auditada:** `7c9cdc29`; conferir o relatório de execução para o commit final implementado.
 - **Issue de execução:** [#1754](https://github.com/michelbr84/GarraRUST/issues/1754).
@@ -148,3 +148,67 @@ Testes automatizados devem cobrir contratos HTTP, modelos incompatíveis, autent
 A entrega inicial pode oferecer uma chamada contínua com STT por enunciado e TTS por frase, aproveitando ferramentas e histórico existentes. Não deve se apresentar como equivalente acústico de uma ligação já validada. Modelos que só existem no catálogo, sem formato/adaptador comprovado, aparecem como capacidades descobertas com estado pendente, não como escolhas executáveis silenciosamente.
 
 Permanecem incrementos próprios: streaming real de amostras quando suportado, STT parcial confirmado, VAD semântico, jitter buffer para transporte contínuo, S2S, testes móveis e orçamento rígido completo. A interface deve tornar limitações e indisponibilidades visíveis sem bloquear o chat textual existente.
+
+## Execução (#1754)
+
+Implementado em 2026-11-02 (America/New_York) sobre `main` `b4ecdf0d`, seguindo o
+[plan 0366](../../plans/0366-voice-chat-web.md). Este ADR descreve a decisão; o
+que segue registra como ela foi materializada e onde o código diverge do texto
+acima.
+
+**Entregue (caminho A):** página Voice Chat no Web Console; AudioWorklet com
+reamostragem para 16 kHz; VAD por energia com piso adaptativo, pre-roll de
+240 ms, início após 120 ms de voz, fim de fala configurável (0,6–1,6 s) e teto
+de 30 s por enunciado; STT por enunciado (`POST /api/voice/transcribe`); turno
+no runtime/`/ws` existente; TTS por frase (`POST /api/voice/synthesize`) com
+fila limitada; barge-in; catálogo dinâmico local + OpenRouter; limpeza em
+encerramento, erro, `pagehide`, ociosidade, segundo plano e perda do microfone.
+
+**Decisões tomadas na implementação:**
+
+1. **ID do turno no protocolo.** O `/ws` ganhou `turn_id` opt-in, ecoado em
+   todo frame do turno. O cliente descarta o que for de outro turno; um `stop`
+   com `turn_id` antigo não cancela o turno atual. Sem `turn_id` os frames são
+   os de antes (invariante 3).
+2. **Áudio ouvido versus texto gerado.** O `stop` leva `heard_chars` (code
+   points efetivamente tocados). Interrompido durante a geração, o histórico
+   grava o trecho falado e o gerado-não-ouvido separados; interrompido na
+   reprodução de um turno já concluído, o próximo turno de voz recebe uma nota
+   montada pelo servidor a partir do próprio texto — nada do navegador vira
+   instrução de sistema (invariante 4).
+3. **Porta de energia no servidor.** Antes de qualquer STT, um enunciado sem
+   ≥ 80 ms acima de ≈ −44 dBFS é respondido sem chamar provedor. É guarda de
+   custo, não classificador de fala: ruído alto passa (documentado em teste).
+4. **Fallback do LLM visível, não removido.** O runtime aplica a cadeia
+   `agent.fallback_providers` configurada pelo operador também aos turnos de
+   voz. Desligá-la por turno exigiria mudar `garraia-agents`; em vez disso o
+   catálogo anuncia a cadeia antes da chamada e o frame `message` de voz diz
+   `provider`/`model`/`fallback`. STT e TTS não têm fallback algum.
+5. **Formato de TTS por família documentada.** Gemini e HeyGen pedem PCM,
+   demais famílias MP3. PCM sem `rate`/`channels` só é aceito para Gemini
+   (24 kHz mono, documentado); HeyGen sem layout é erro visível. Nenhuma
+   segunda geração em outro formato.
+6. **Preço sem unidade inventada.** O catálogo do OpenRouter traz valores
+   decimais sem unidade para fala e transcrição; a interface mostra o valor e
+   "unidade não informada". Custo efetivo só quando o provedor devolve
+   `usage.cost` (STT).
+7. **Dica de estilo falado como mensagem de sistema no histórico.** Não
+   substitui persona, ferramentas nem aprovação. O adaptador Anthropic descarta
+   mensagens de sistema fora do topo, então ali a conversa funciona sem a dica.
+8. **Chave do gateway no handshake do `/ws`.** O navegador não envia header no
+   upgrade de WebSocket; o Voice Chat reutiliza o mesmo `?token=` do chat de
+   texto (rota única onde a query é aceita, e o log do gateway só registra o
+   caminho). Nenhuma credencial de provedor passa pelo navegador.
+
+**Medido:** nada acústico. Os testes automatizados simulam PCM, microfone e
+provedores (Rust: contratos HTTP/WS e unitários; Playwright: VAD, segmentador,
+chamada, barge-in, troca de modelo, limpeza). As metas da tabela "Metas
+propostas e validação" seguem **não validadas em hardware**; a página exibe
+"Fim da fala → primeiro áudio" e a latência de STT para a validação manual.
+
+**Pendências, em ordem:** (1) validação física com fone e alto-falante (eco
+disparando barge-in é o risco principal do VAD por energia); (2) Silero VAD se
+a taxa de falsos inícios medida justificar; (3) desligar o fallback do LLM por
+turno de voz em `garraia-agents`; (4) STT parcial e TTS com streaming de
+amostras quando houver adaptador; (5) adaptador speech-to-speech; (6) teto
+monetário por chamada.

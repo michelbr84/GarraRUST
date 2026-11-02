@@ -291,6 +291,140 @@ curl -X POST http://127.0.0.1:3888/api/stt \
 
 Returns transcribed text as JSON (`{"text": "..."}`).
 
+## Voice Chat contínuo na Web (#1754)
+
+A página **Voice Chat** do Web Console (`/#/voice`) faz uma chamada contínua:
+você inicia uma vez, fala no seu ritmo, interrompe o GarraIA falando por cima e
+troca modelos sem perder o contexto. A decisão de arquitetura está no
+[ADR 0027](adr/0027-natural-voice-conversation.md) e o contrato no
+[plan 0366](../plans/0366-voice-chat-web.md).
+
+```text
+Iniciar → microfone → AudioWorklet (PCM 16 kHz) → VAD por energia
+  → WAV de uma fala → POST /api/voice/transcribe → texto
+  → /ws (voice, turn_id) → deltas do LLM → frases
+  → POST /api/voice/synthesize por frase → reprodução → escuta continua
+```
+
+O que **não** é: transcrição parcial em tempo real, streaming interno de
+amostras de TTS, speech-to-speech nativo (Realtime/Gemini Live) ou WebRTC.
+Modelos speech-to-speech do catálogo aparecem como **indisponíveis**.
+
+### Como habilitar
+
+1. **Local (sem custo de provedor):** `garra start --with-voice` com Whisper e
+   Chatterbox/LM Studio configurados (ver [Setup](#setup)). O Voice Chat lista
+   "Whisper local" e "<tts_provider> local". O Hibiki aparece como
+   indisponível: o servidor de exemplo do repositório devolve um tom, não fala.
+2. **OpenRouter (pago, só por escolha explícita):** uma instância
+   `provider: openrouter` em `llm:` já registrada no gateway. O Voice Chat
+   consulta `GET <base_url>/models?output_modalities=all` (sem inferência),
+   guarda por 5 min e lista só o que `architecture.input_modalities` /
+   `output_modalities` anunciam: `text → speech` vira TTS, `audio →
+   transcription` vira STT. Nenhum filtro por nome de modelo.
+
+```yaml
+llm:
+  openrouter-voz:
+    provider: openrouter
+    api_key: ${OPENROUTER_API_KEY}     # fica no servidor; o navegador nunca vê
+    # base_url: https://openrouter.ai/api/v1   # HTTPS (ou http em loopback)
+    # As rotas de áudio do OpenRouter NÃO aplicam provider.order/only/ignore.
+    # Só zdr e data_collection são aceitos; qualquer outra chave é recusada.
+    voice_provider_policy:
+      zdr: true
+      data_collection: deny
+```
+
+O navegador escolhe **IDs** (instância, modelo, voz, idioma); URL, chave e
+política de roteamento vêm só da config do servidor. Não há fallback de
+STT/TTS: se o modelo escolhido falhar, a chamada mostra o erro e a
+transcrição continua disponível. O LLM usa o runtime de sempre — se o
+operador configurou `agent.fallback_providers`, o catálogo avisa antes da
+chamada e cada resposta diz **quem respondeu** e se foi o fallback.
+
+### Usando
+
+- **Iniciar chamada** pede o microfone (HTTPS ou localhost) com cancelamento
+  de eco, supressão de ruído e ganho automático quando o navegador suporta.
+- Fale normalmente; a pausa que conclui uma fala é configurável (0,6–1,6 s).
+  Cada fala vai até 30 s; acima disso o trecho é enviado e você continua.
+- **Interromper**: fale por cima (ou use o botão). O áudio para na hora, as
+  filas são esvaziadas, o turno do LLM é cancelado no `/ws` e frames
+  atrasados do turno velho são descartados pelo `turn_id`.
+- **Silenciar** desliga a track do microfone; **Encerrar** para tracks, fecha
+  o `AudioContext`, aborta requisições e fecha o socket. A chamada também
+  encerra com 5 min sem atividade, 60 min de duração, 30 s em segundo plano,
+  perda do microfone ou falha de reconexão.
+- Trocar STT, LLM (provedor e modelo), TTS, voz ou idioma vale **na próxima
+  fala**; a sessão e o histórico continuam os mesmos. **Nova conversa**
+  (com a chamada encerrada) começa sem o contexto anterior.
+
+### Contexto fiel
+
+O histórico guarda a sua fala mesmo quando você interrompe. Uma resposta
+interrompida durante a geração é gravada separando o **trecho falado** do
+**gerado e não ouvido** (o navegador informa quantos caracteres tocou). Se
+você interromper a reprodução de uma resposta que já tinha terminado, o
+próximo turno de voz recebe uma nota com o trecho realmente falado — montada
+pelo servidor a partir do texto que ele mesmo gerou.
+
+### Limites e privacidade
+
+| Limite | Valor |
+|---|---|
+| Upload por fala | WAV PCM16 mono 16 kHz, até 30 s (≈ 960 KB) |
+| Texto por síntese | 4 KiB (uma frase) |
+| Pedidos de STT/TTS simultâneos no gateway | 4 (o 5º recebe `429`, sem fila) |
+| Descobertas de catálogo simultâneas | 2 |
+| Timeout por fase (STT, TTS, catálogo) | 60 s (catálogo: 8 s) |
+| Turno de voz no LLM | `max_tokens` 1024, timeout 120 s |
+| Fila de síntese no navegador | 8 frases, 2 áudios prontos |
+
+O áudio fica só em memória: o Voice Chat não grava arquivo nenhum, nem
+temporário. Uma fala sem energia de voz (silêncio, mudo no sistema) é
+respondida pelo próprio gateway sem chamar nenhum STT. Erros de provedor não
+ecoam corpo, URL ou chave. As rotas de voz e o `/ws` não registram o texto
+do usuário em log `info`.
+
+### Custos
+
+O preço mostrado é o que o catálogo informa, **sem unidade inventada**: no
+OpenRouter os modelos de fala e transcrição trazem valores decimais em USD sem
+dizer se são por caractere, segundo ou token, e o Voice Chat escreve
+"unidade não informada". Preço zero não garante gratuidade de limites nem das
+outras etapas. O custo efetivo só aparece quando o provedor o devolve
+(`usage.cost` do STT); LLM e TTS ficam como "sem custo informado". Não há teto
+monetário por chamada.
+
+### Rotas
+
+| Rota | Uso |
+|---|---|
+| `GET /api/voice/models` | catálogo (local + OpenRouter), preços, horário da consulta, limitações, fallback do operador |
+| `POST /api/voice/transcribe` | multipart `file` (WAV), `provider`, `model`, `language?` → `{text, usage, skipped?}` |
+| `POST /api/voice/synthesize` | JSON `{text, provider, model, voice?, language?}` → `audio/wav` ou `audio/mpeg` |
+| `/ws` | mensagem `{content, provider, model?, stream: true, voice: true, turn_id}`; `stop` com `turn_id` e `heard_chars` |
+
+Todas passam pelo gate de `gateway.api_key` e pela guarda de origem do
+gateway; `voice: true` e `turn_id` são opt-in e não mudam o chat de texto.
+
+### Validação física (manual)
+
+Os testes automatizados simulam microfone, PCM e provedores. Antes de
+considerar a voz pronta numa máquina, faça à mão:
+
+1. Chamada com fone de ouvido: falar, ouvir a resposta, interromper falando
+   por cima, trocar o modelo de conversa e a voz no meio, encerrar.
+2. A mesma chamada **com alto-falante** (eco): o GarraIA não pode se
+   interromper sozinho com a própria voz.
+3. Ambiente com ruído (ventilador, rua): falsos inícios e cortes prematuros.
+4. Negar a permissão do microfone, desconectar o microfone no meio, mudar de
+   aba por mais de 30 s.
+5. Um STT e um TTS reais do OpenRouter (com `usage.cost` conferido no painel
+   do provedor) e os locais (Whisper + Chatterbox), anotando a latência
+   "Fim da fala → primeiro áudio" da página.
+
 ## Health Checks
 
 Voice services are checked at startup:

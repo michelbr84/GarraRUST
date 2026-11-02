@@ -1,6 +1,6 @@
 # Plan 0366 — Voice Chat contínuo na Web (#1754)
 
-- **Estado:** em execução (2026-11-02, America/New_York).
+- **Estado:** entregue (2026-11-02, America/New_York); validação física pendente.
 - **Issue:** [#1754](https://github.com/michelbr84/GarraRUST/issues/1754) (P1).
 - **Decisão de arquitetura:** [ADR 0027](../docs/adr/0027-natural-voice-conversation.md) —
   caminho C começando pelo A: STT por enunciado → runtime/WS existente → TTS por frase.
