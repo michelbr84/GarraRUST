@@ -232,7 +232,10 @@ mover para o workflow agendado é decisão do dono, registrada na #1749.
 ### `Unit tests (windows-latest|macos-latest)` vermelho (#1697)
 
 Este job **não é check obrigatório**: ele executa os testes unitários (`--lib`)
-fora do Linux, coisa que o `Test (windows|macos)` não faz (só compila). Vermelho
+fora do Linux, coisa que o `Test (windows|macos)` não faz (só compila). No
+Windows ele também roda os testes do binário `garra` (`--bin garra`: a CLI não
+tem alvo lib) e o clippy `-D warnings` de `garraia-agents --features mcp`,
+`garraia` e `garraia-gateway` (#1762). Vermelho
 ali não trava o merge, mas **é seu**: quase sempre é um teste novo com premissa
 POSIX. Padrões e remédios já vistos:
 
@@ -245,10 +248,20 @@ POSIX. Padrões e remédios já vistos:
   injete a sonda com `wrap_command_com(true, |_| true, ...)`, como os irmãos.
 - `PathBuf::push` sobre base verbatim do Windows normaliza `..` antes do jail
   ver o caminho: monte o caminho como texto se o `..` precisa chegar à guarda.
+- Varredura de fonte (`include_str!`) que procura `"\n}\n"`: o checkout do
+  Windows é CRLF. Normalize com `.replace("\r\n", "\n")` antes de varrer.
+- `dead_code` só no clippy do Windows: helper de teste usado apenas por testes
+  `cfg(unix)` leva o mesmo `cfg` (#1762).
 
 Não marque `cfg(unix)` o que a produção executa no Windows; só o que é Unix por
 natureza (sandbox, `printenv`, symlink). A promoção do job a obrigatório é
 decisão do dono, registrada na #1697.
+
+Vermelho **ambiental** já visto (#1762): o leg falha em ~20 s no passo
+`Install Rust` com `could not download file from
+'https://static.rust-lang.org/...'` e `connection error` (rede do runner ao
+baixar a toolchain; nenhum teste rodou). Não é da PR: re-execute só o leg com
+`gh run rerun --job <job_id>` depois que a run inteira terminar.
 
 ---
 
