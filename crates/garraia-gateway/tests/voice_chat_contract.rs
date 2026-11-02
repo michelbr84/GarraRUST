@@ -876,3 +876,30 @@ async fn concurrency_limit_answers_429_instead_of_queueing() {
         StatusCode::OK
     );
 }
+
+/// A chave do OpenRouter so sai por HTTPS ou por HTTP para um IP literal de
+/// loopback. Um nome em `http` — mesmo `localhost`, que aqui resolveria para o
+/// proprio mock — e recusado antes de qualquer pedido: o mock nao recebe nada.
+#[tokio::test]
+async fn credential_never_goes_to_a_cleartext_host_name() {
+    let server = MockServer::start().await;
+    mock_fixture_catalog(&server).await;
+    let mut config = remote_config(&server);
+    config.llm.get_mut("voice-router").unwrap().base_url =
+        Some(format!("http://localhost:{}/v1", server.address().port()));
+    let app = router(config, None, None);
+    let (status, _, bytes) = call(
+        app.clone(),
+        request("GET", "/api/voice/models", "application/json", vec![]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["catalogs"][0]["available"], false);
+    assert_eq!(ids(&body["tts"]), ["local:configured"]);
+    assert_eq!(
+        call(app, synth(remote_speech())).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
+}

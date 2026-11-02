@@ -115,12 +115,12 @@ fn remote(state: &SharedState, provider: &str) -> VoiceResult<Remote> {
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
-        || !(url.scheme() == "https"
-            || (url.scheme() == "http"
-                && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))))
+        // https anywhere; http only to a loopback IP literal, never a name
+        // (same rule as the Signal guard; see the CodeQL ledger).
+        || !credential_safe_endpoint(&url)
     {
         return Err(bad_request(
-            "Voice endpoint must use HTTPS or local HTTP, without credentials or query",
+            "Voice endpoint must be HTTPS (or HTTP to 127.0.0.1/[::1]), without credentials or query",
         ));
     }
     // Speech endpoints do not implement provider.only/order/ignore. Refuse
@@ -858,6 +858,24 @@ pub async fn transcribe(
         .map_err(|_| failure(StatusCode::GATEWAY_TIMEOUT, "Transcription timed out"))?
 }
 
+/// Where an OpenRouter key may be sent: `https` anywhere, plain `http` only to
+/// a loopback **IP literal** (`127.0.0.1`, `[::1]`; a local test double or
+/// proxy). No host name is accepted over `http`, so no resolver or hosts file
+/// can move the bearer off the machine. Redirects are disabled on the voice
+/// client, and the key travels only in the `Authorization` header, never in
+/// the URL.
+fn credential_safe_endpoint(url: &reqwest::Url) -> bool {
+    match url.scheme() {
+        "https" => true,
+        "http" => url
+            .host_str()
+            .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
+            .and_then(|h| h.parse::<std::net::IpAddr>().ok())
+            .is_some_and(|ip| ip.is_loopback()),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -979,6 +997,23 @@ mod tests {
         assert!(pcm_to_wav("audio/pcm;rate=24000", &pcm, Some((24_000, 1))).is_err());
         assert!(pcm_to_wav("audio/mpeg", &pcm, Some((24_000, 1))).is_err());
         assert!(pcm_to_wav("audio/pcm;rate=24000;channels=2", &[0; 6], None).is_err());
+    }
+
+    #[test]
+    fn credentials_go_only_to_https_or_a_loopback_ip_literal() {
+        let ok = |u: &str| credential_safe_endpoint(&reqwest::Url::parse(u).unwrap());
+        assert!(ok("https://openrouter.ai/api/v1"));
+        assert!(ok("https://example.com:8443/v1"));
+        assert!(ok("http://127.0.0.1:8080/v1"));
+        assert!(ok("http://[::1]:8080/v1"));
+        assert!(
+            !ok("http://localhost:8080/v1"),
+            "names are not trusted over http"
+        );
+        assert!(!ok("http://openrouter.ai/api/v1"));
+        assert!(!ok("http://10.0.0.5/v1"));
+        assert!(!ok("http://169.254.169.254/v1"));
+        assert!(!ok("ftp://127.0.0.1/v1"));
     }
 
     #[test]

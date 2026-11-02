@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/base.json",
   "schema_version": "1.2.0",
   "repo": "michelbr84/GarraRUST",
-  "last_updated": "2026-10-10",
+  "last_updated": "2026-11-02",
   "audit_expiration": "2026-11-28",
   "policy": "no-bulk-suppression",
   "linear_owner": "GAR-491",
@@ -551,6 +551,42 @@
       "justification": "Falso positivo em `criar_fechado`. O `caminho` vem de `garantir_raiz` chamado por `garantir_para_sessao`, que monta `raiz.join(nome_do_subdiretorio(session_id))`: o nome e o digest SHA-256 de 128 bits do `session_id` formatado como 32 hex minusculos (crates/garraia-agents/src/tools/session_workspace.rs:220), charset que nao expressa `..`, separador nem caminho absoluto. O segundo chamador de `garantir_raiz` e o boot do gateway sobre o `data_dir` do operador, canonicalizado no boot. O CodeQL Rust pack nao modela SHA-256-hex como sanitizer de caminho. O `mkdir` e de um componente so (sem `recursive`), nasce `0700`, e um link plantado faz o `mkdir` falhar com EEXIST em vez de ser seguido. Regressao: `session_workspace.rs::o_caminho_fica_sempre_debaixo_da_raiz` e `session_workspace.rs::o_nome_do_subdiretorio_e_sempre_hex_de_32_nunca_escapa_charset` (crates/garraia-agents/src/tools/session_workspace.rs:453).",
       "gar_ref": "GAR-491",
       "ledger_md_anchor": "alert-188"
+    },
+    {
+      "alert_number": 195,
+      "rule_id": "rust/cleartext-transmission",
+      "path": "crates/garraia-gateway/src/voice_chat.rs",
+      "line": 217,
+      "disposition": "dismissed-false-positive",
+      "dismissed_reason": "false_positive",
+      "justification": "Falso positivo em `catalog` (descoberta do catalogo de voz do OpenRouter, #1754). A URL vem de `remote()` (crates/garraia-gateway/src/voice_chat.rs:89), que so devolve `Remote` depois de `credential_safe_endpoint` (crates/garraia-gateway/src/voice_chat.rs:867) aceitar o endpoint configurado pelo operador: `https` em qualquer host, ou `http` apenas para IP literal de loopback (127.0.0.1/[::1]) — nenhum nome, entao nenhum resolver ou hosts file leva a chave para fora da maquina — e recusa URL com credencial, query ou fragmento. A chave vai so no header `Authorization` (`bearer_auth`), nunca na URL, e o cliente de voz nao segue redirect (crates/garraia-gateway/src/voice_chat.rs:72). Mesma regra do guard `vet_signal_cli_url` do canal Signal (#144). CodeQL nao modela o guard como barreira e trata o esquema da URL formatada como desconhecido. Regressao: `voice_chat.rs::credentials_go_only_to_https_or_a_loopback_ip_literal` (crates/garraia-gateway/src/voice_chat.rs:1003), `voice_chat_contract.rs::credential_never_goes_to_a_cleartext_host_name` (crates/garraia-gateway/tests/voice_chat_contract.rs:884) e `voice_chat_contract.rs::paid_provider_redirect_is_not_followed_with_credentials` (crates/garraia-gateway/tests/voice_chat_contract.rs:432).",
+      "gar_ref": "#1754",
+      "ledger_md_anchor": "alert-195",
+      "sink_snippet": ".get(format!(\"{}/models\", remote.base))"
+    },
+    {
+      "alert_number": 196,
+      "rule_id": "rust/cleartext-transmission",
+      "path": "crates/garraia-gateway/src/voice_chat.rs",
+      "line": 678,
+      "disposition": "dismissed-false-positive",
+      "dismissed_reason": "false_positive",
+      "justification": "Falso positivo em `synthesize` (TTS remoto do Voice Chat, #1754). A URL vem de `remote()` (crates/garraia-gateway/src/voice_chat.rs:89), que so devolve `Remote` depois de `credential_safe_endpoint` (crates/garraia-gateway/src/voice_chat.rs:867) aceitar o endpoint configurado pelo operador: `https` em qualquer host, ou `http` apenas para IP literal de loopback (127.0.0.1/[::1]) — nenhum nome, entao nenhum resolver ou hosts file leva a chave para fora da maquina — e recusa URL com credencial, query ou fragmento. A chave vai so no header `Authorization` (`bearer_auth`), nunca na URL, e o cliente de voz nao segue redirect (crates/garraia-gateway/src/voice_chat.rs:72). Mesma regra do guard `vet_signal_cli_url` do canal Signal (#144). CodeQL nao modela o guard como barreira e trata o esquema da URL formatada como desconhecido. Regressao: `voice_chat.rs::credentials_go_only_to_https_or_a_loopback_ip_literal` (crates/garraia-gateway/src/voice_chat.rs:1003), `voice_chat_contract.rs::credential_never_goes_to_a_cleartext_host_name` (crates/garraia-gateway/tests/voice_chat_contract.rs:884) e `voice_chat_contract.rs::paid_provider_redirect_is_not_followed_with_credentials` (crates/garraia-gateway/tests/voice_chat_contract.rs:432).",
+      "gar_ref": "#1754",
+      "ledger_md_anchor": "alert-196",
+      "sink_snippet": ".post(format!(\"{}/audio/speech\", remote.base))"
+    },
+    {
+      "alert_number": 197,
+      "rule_id": "rust/cleartext-transmission",
+      "path": "crates/garraia-gateway/src/voice_chat.rs",
+      "line": 807,
+      "disposition": "dismissed-false-positive",
+      "dismissed_reason": "false_positive",
+      "justification": "Falso positivo em `transcribe` (STT remoto do Voice Chat, #1754). A URL vem de `remote()` (crates/garraia-gateway/src/voice_chat.rs:89), que so devolve `Remote` depois de `credential_safe_endpoint` (crates/garraia-gateway/src/voice_chat.rs:867) aceitar o endpoint configurado pelo operador: `https` em qualquer host, ou `http` apenas para IP literal de loopback (127.0.0.1/[::1]) — nenhum nome, entao nenhum resolver ou hosts file leva a chave para fora da maquina — e recusa URL com credencial, query ou fragmento. A chave vai so no header `Authorization` (`bearer_auth`), nunca na URL, e o cliente de voz nao segue redirect (crates/garraia-gateway/src/voice_chat.rs:72). Mesma regra do guard `vet_signal_cli_url` do canal Signal (#144). CodeQL nao modela o guard como barreira e trata o esquema da URL formatada como desconhecido. Regressao: `voice_chat.rs::credentials_go_only_to_https_or_a_loopback_ip_literal` (crates/garraia-gateway/src/voice_chat.rs:1003), `voice_chat_contract.rs::credential_never_goes_to_a_cleartext_host_name` (crates/garraia-gateway/tests/voice_chat_contract.rs:884) e `voice_chat_contract.rs::paid_provider_redirect_is_not_followed_with_credentials` (crates/garraia-gateway/tests/voice_chat_contract.rs:432).",
+      "gar_ref": "#1754",
+      "ledger_md_anchor": "alert-197",
+      "sink_snippet": ".post(format!(\"{}/audio/transcriptions\", remote.base))"
     }
   ]
 }

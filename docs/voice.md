@@ -328,7 +328,7 @@ llm:
   openrouter-voz:
     provider: openrouter
     api_key: ${OPENROUTER_API_KEY}     # fica no servidor; o navegador nunca vê
-    # base_url: https://openrouter.ai/api/v1   # HTTPS (ou http em loopback)
+    # base_url: https://openrouter.ai/api/v1   # HTTPS (http só para 127.0.0.1/[::1])
     # As rotas de áudio do OpenRouter NÃO aplicam provider.order/only/ignore.
     # Só zdr e data_collection são aceitos; qualquer outra chave é recusada.
     voice_provider_policy:
