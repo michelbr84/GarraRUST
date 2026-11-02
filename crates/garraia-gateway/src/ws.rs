@@ -537,7 +537,17 @@ async fn process_text_message(
     state
         .hydrate_session_history(session_id, Some("web"), None)
         .await;
-    let history: Vec<ChatMessage> = state.session_history(session_id);
+    let mut history: Vec<ChatMessage> = state.session_history(session_id);
+    if msg.voice {
+        // This is an additional presentation hint, never a replacement for the
+        // persona, tool policy, approval scope or configured system prompt.
+        history.push(ChatMessage {
+            role: garraia_agents::ChatRole::System,
+            content: garraia_agents::MessagePart::Text(
+                "This is a live voice conversation. Answer naturally in the user's language, with short spoken sentences. Prefer a concise first answer and offer detail when useful. Preserve accuracy and necessary qualifications. Avoid reading Markdown syntax or code aloud. Treat an interrupted answer as incomplete; generated text may not have been heard.".to_string(),
+            ),
+        });
+    }
     let continuity_key = state.continuity_key();
     // Lido **antes** do `spawn`: dentro da task seguraria o lock do store
     // pelo tempo do turno inteiro (mesma licao do `parrot_ws.rs`).
@@ -556,8 +566,9 @@ async fn process_text_message(
     let text_for_agent = user_text.clone();
     let provider_id = msg.provider.clone();
     let model_override = msg.model.clone();
+    let voice = msg.voice;
     let task = tokio::spawn(async move {
-        agents
+        let work = agents
             .process_message_streaming_with_events(
                 &sid,
                 &text_for_agent,
@@ -568,10 +579,16 @@ async fn process_text_message(
                 provider_id.as_deref(),
                 model_override.as_deref(),
                 None,
-                None,
+                voice.then_some(1024),
                 &exec,
-            )
-            .await
+            );
+        if voice {
+            tokio::time::timeout(Duration::from_secs(120), work)
+                .await
+                .map_err(|_| garraia_common::Error::Agent("Voice turn timed out".into()))?
+        } else {
+            work.await
+        }
     });
 
     let turn = run_streaming_turn(
@@ -589,10 +606,16 @@ async fn process_text_message(
 
     match turn {
         TurnEnd::ClientGone => TurnOutcome::ClientGone,
-        // O parcial nao e persistido: `persist_turn` so roda no caminho de
-        // sucesso, e `remember_turn`/`record_turn_stats` vivem depois do loop
-        // dentro do runtime, entao o abort tambem nao grava memoria.
-        TurnEnd::Stopped => TurnOutcome::Quiet,
+        TurnEnd::Stopped(partial) => {
+            if msg.voice {
+                // Keep the user's interrupted request for corrections such as
+                // "explain that more simply". Never claim all generated audio
+                // was heard. Legacy text cancellation keeps its old semantics.
+                let interrupted = interrupted_voice_text(&partial);
+                state.persist_turn(session_id, Some("web"), None, &user_text, &interrupted).await;
+            }
+            TurnOutcome::Quiet
+        },
         TurnEnd::Completed(response_text) => {
             state
                 .persist_turn(session_id, Some("web"), None, &user_text, &response_text)
@@ -616,12 +639,22 @@ async fn process_text_message(
     }
 }
 
+
+/// Mark generated text as interrupted without pretending it was spoken fully.
+fn interrupted_voice_text(partial: &str) -> String {
+    if partial.is_empty() {
+        "[Voice response interrupted before a reply was delivered.]".to_string()
+    } else {
+        format!("[Voice response interrupted. The following text was generated but may not have been heard:]\n{partial}")
+    }
+}
+
 /// Como o turno terminou, do ponto de vista do socket.
 #[derive(Debug)]
 enum TurnEnd {
     Completed(String),
     Failed(String),
-    Stopped,
+    Stopped(String),
     ClientGone,
 }
 
@@ -653,13 +686,20 @@ where
     let mut rx_open = true;
     let mut finished: Option<Result<garraia_common::Result<String>, tokio::task::JoinError>> = None;
     let mut stopped = false;
+    let mut partial = String::new();
     let mut client_gone = false;
 
     while rx_open || finished.is_none() {
         tokio::select! {
             event = events_rx.recv(), if rx_open => match event {
                 Some(event) => {
-                    if stream_frames
+                    if !stopped && let TurnEvent::TextDelta(text) = &event {
+                        let remaining = 32 * 1024_usize - partial.len();
+                        let mut end = text.len().min(remaining);
+                        while !text.is_char_boundary(end) { end -= 1; }
+                        partial.push_str(&text[..end]);
+                    }
+                    if stream_frames && !stopped
                         && !client_gone
                         && sender
                             .send(Message::Text(turn_event_frame(session_id, &event).into()))
@@ -773,7 +813,7 @@ where
         {
             return TurnEnd::ClientGone;
         }
-        return TurnEnd::Stopped;
+        return TurnEnd::Stopped(partial);
     }
 
     // Os dois ultimos bracos sao, hoje, inalcancaveis, e estao aqui como rede:
@@ -787,7 +827,7 @@ where
         Some(Ok(Err(e))) => TurnEnd::Failed(e.to_string()),
         Some(Err(e)) => {
             if e.is_cancelled() {
-                return TurnEnd::Stopped;
+                return TurnEnd::Stopped(partial);
             }
             warn!("agent task failed: session={}, error={}", session_id, e);
             TurnEnd::Failed("internal agent task failure".to_string())
@@ -947,6 +987,8 @@ struct UserMessage {
     /// `false`: quem nao pede continua vendo so o `message` final, que e o
     /// contrato de antes.
     stream: bool,
+    /// Voice presentation and interrupted-context retention are opt-in.
+    voice: bool,
 }
 
 fn parse_user_message(raw: &str) -> UserMessage {
@@ -976,6 +1018,7 @@ fn parse_user_message(raw: &str) -> UserMessage {
             model,
             tenant_id,
             stream,
+            voice: v.get("voice").and_then(|v| v.as_bool()).unwrap_or(false),
         };
     }
     UserMessage {
@@ -1360,7 +1403,7 @@ mod tests {
         .await
         .expect("o stop tem de soltar o turno antes dos 5 s");
 
-        assert!(matches!(fim, TurnEnd::Stopped), "{fim:?}");
+        assert!(matches!(fim, TurnEnd::Stopped(_)), "{fim:?}");
         drop(sink);
         let tipos = tipos_dos_frames(sink_rx);
         assert_eq!(
@@ -1455,7 +1498,7 @@ mod tests {
         .await
         .expect("o stop tem de soltar o turno");
 
-        assert!(matches!(fim, TurnEnd::Stopped), "{fim:?}");
+        assert!(matches!(fim, TurnEnd::Stopped(_)), "{fim:?}");
         assert!(
             fila.is_empty(),
             "mensagem passou do teto e mesmo assim entrou na fila: {fila:?}"
@@ -1549,7 +1592,7 @@ mod tests {
         .await
         .expect("o stop tem de soltar o turno");
 
-        assert!(matches!(fim, TurnEnd::Stopped), "{fim:?}");
+        assert!(matches!(fim, TurnEnd::Stopped(_)), "{fim:?}");
         assert_eq!(
             fila.into_iter().collect::<Vec<_>>(),
             [r#"{"content":"a proxima pergunta"}"#.to_string()],

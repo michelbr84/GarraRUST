@@ -38,13 +38,19 @@ impl garraia_voice::TtsSynthesizer for TtsQueFalha {
 /// Monta o router com o gate global desligado (AppConfig::default nao tem
 /// api_key) e o voice_client injetado ANTES de envolver o estado em Arc.
 fn router_com_tts_que_falha() -> axum::Router {
+    router_com_tts(Arc::new(TtsQueFalha))
+}
+
+fn router_com_tts(tts: Arc<dyn garraia_voice::TtsSynthesizer>) -> axum::Router {
+    let mut config = AppConfig::default();
+    config.voice.language = "es".into();
     let mut st = AppState::new(
-        AppConfig::default(),
+        config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),
     );
     // injetamos antes do Arc porque o campo so e mutavel no estado possuido
-    st.voice_client = Some(Arc::new(TtsQueFalha));
+    st.voice_client = Some(tts);
     let admin_store = Arc::new(Mutex::new(
         AdminStore::in_memory().expect("in-memory admin store"),
     ));
@@ -137,21 +143,7 @@ impl garraia_voice::TtsSynthesizer for TtsQueFunciona {
 
 /// Mesma montagem de `router_com_tts_que_falha`, so trocando o mock.
 fn router_com_tts_que_funciona() -> axum::Router {
-    let mut st = AppState::new(
-        AppConfig::default(),
-        Arc::new(AgentRuntime::new()),
-        ChannelRegistry::new(),
-    );
-    st.voice_client = Some(Arc::new(TtsQueFunciona));
-    let admin_store = Arc::new(Mutex::new(
-        AdminStore::in_memory().expect("in-memory admin store"),
-    ));
-    build_router(
-        Arc::new(st),
-        PushChannelStates::empty(),
-        admin_store,
-        Arc::new(vec![0u8; 32]),
-    )
+    router_com_tts(Arc::new(TtsQueFunciona))
 }
 
 /// Contrato de SUCESSO: a sintese bem-sucedida devolve os bytes WAV crus com
@@ -180,4 +172,76 @@ async fn tts_sucesso_devolve_wav_cru_com_content_type_audio() {
         .await
         .expect("corpo legivel");
     assert_eq!(bytes.as_ref(), WAV_FIXO);
+}
+
+struct TtsQueRegistra(Arc<std::sync::Mutex<Vec<(String, String)>>>);
+
+#[async_trait::async_trait]
+impl garraia_voice::TtsSynthesizer for TtsQueRegistra {
+    async fn synthesize_bytes(
+        &self,
+        text: &str,
+        language: &str,
+    ) -> Result<Vec<u8>, garraia_voice::VoiceError> {
+        self.0
+            .lock()
+            .expect("registro")
+            .push((text.into(), language.into()));
+        Ok(b"RIFF audio".to_vec())
+    }
+}
+
+fn request_json(uri: &str, json: serde_json::Value) -> Request<Body> {
+    let mut request = request_base(uri);
+    *request.body_mut() = Body::from(json.to_string());
+    request
+}
+
+#[tokio::test]
+async fn tts_unicode_e_idioma_default_da_configuracao() {
+    let registro = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let app = router_com_tts(Arc::new(TtsQueRegistra(registro.clone())));
+    // The old byte-based log preview split this emoji at byte 80 and panicked.
+    let texto = format!("{}🦀 português", "a".repeat(79));
+    let response = app
+        .oneshot(request_json("/api/tts", serde_json::json!({"text": texto})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "audio/wav");
+    assert_eq!(*registro.lock().unwrap(), vec![(texto, "es".into())]);
+}
+
+#[tokio::test]
+async fn tts_recusa_texto_excessivo_antes_de_chamar_provedor() {
+    let registro = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let app = router_com_tts(Arc::new(TtsQueRegistra(registro.clone())));
+    let response = app
+        .oneshot(request_json(
+            "/api/tts",
+            serde_json::json!({"text": "a".repeat(garraia_voice::MAX_TEXT_BYTES + 1)}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(registro.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn tts_fallback_nao_expoe_diagnostico_do_provedor() {
+    let response = router_com_tts_que_falha()
+        .oneshot(request_base("/api/tts"))
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["text"], "ola garra");
+    assert!(
+        !json["error"]
+            .as_str()
+            .unwrap()
+            .contains("servidor de teste fora")
+    );
 }

@@ -4,6 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>GarraIA Chat</title>
+<link rel="stylesheet" href="/assets/voice-chat.css" />
+<script type="module" src="/assets/voice-chat.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" integrity="sha384-wH75j6z1lH97ZOpMOInqhgKzFkAInZPPSPlZpYKYTOqsaizPvhQZmAtLcPKXpLyH" crossorigin="anonymous" id="hljs-theme" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.7/purify.min.js" integrity="sha384-XQqX/4yiUGu+oyr87jvWzRuqBUK/adrY0DunhL+tID9m/9dwSpV8h9Fk/Sg6ifVQ" crossorigin="anonymous"></script>
@@ -2581,6 +2583,10 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
         <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.678 11.894a1 1 0 0 1 .287.801 10.97 10.97 0 0 1-.398 2c1.395-.323 2.247-.697 2.634-.893a1 1 0 0 1 .71-.074A8.06 8.06 0 0 0 8 14c3.996 0 7-2.807 7-6 0-3.192-3.004-6-7-6S1 4.808 1 8c0 1.468.617 2.83 1.678 3.894z"/></svg>
         Chat
       </button>
+      <button class="sidebar-page-btn" type="button" data-page="voice" data-testid="garra-voice-nav">
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0V3z"/><path d="M3 7v1a5 5 0 0 0 4.5 4.975V15h-3v1h7v-1h-3v-2.025A5 5 0 0 0 13 8V7h-1v1a4 4 0 0 1-8 0V7H3z"/></svg>
+        Voice Chat <span class="voice-call-badge" aria-label="Chamada em andamento">●</span>
+      </button>
       <button class="sidebar-page-btn" type="button" data-page="providers">
         <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4a2 2 0 1 1 .195 1.41L1.5 8.5l1.695 3.09a2 2 0 1 1-.71.412L.71 8.5 2.485 4.58A2 2 0 0 1 3 4zm10 0a2 2 0 1 0-.195 1.41l1.695 3.09-1.695 3.09a2 2 0 1 0 .71.412l1.775-3.502L13.515 4.58A2 2 0 0 0 13 4z"/></svg>
         Providers
@@ -2742,6 +2748,59 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
     </div>
     </div><!-- /.glass-panel.chat-console -->
   </main>
+
+  <!-- Continuous voice shares the console shell, provider registry and gateway. -->
+  <section class="page-view" data-page="voice" id="voice-chat-page" data-testid="garra-page-voice" aria-label="Voice Chat">
+    <div class="glass-panel page-card">
+      <div class="panel-header"><h2 class="panel-title">Voice Chat</h2><span class="pill">Conversa contínua</span></div>
+      <div class="page-body">
+        <div class="voice-layout">
+          <div class="voice-stage" id="voice-stage" data-state="idle">
+            <span class="voice-eyebrow">Sua voz, uma conversa</span>
+            <h1>Vamos conversar.</h1>
+            <p class="voice-description">Inicie a chamada e fale no seu ritmo. Você pode interromper o GarraIA a qualquer momento, como em uma ligação.</p>
+            <div class="voice-orb-wrap" aria-hidden="true"><div class="voice-orb" id="voice-orb">G</div></div>
+            <p class="voice-state" id="voice-state" role="status" aria-live="polite">Pronto para conversar</p>
+            <div class="voice-mic-line"><span id="voice-microphone">Microfone desligado</span><meter id="voice-level" min="0" max="1" value="0" aria-label="Nível do microfone"></meter></div>
+            <div class="voice-controls">
+              <button type="button" id="voice-start" disabled>Iniciar chamada</button>
+              <button type="button" id="voice-mute" disabled aria-pressed="false">Silenciar</button>
+              <button type="button" id="voice-interrupt" disabled>Interromper</button>
+              <button type="button" id="voice-end" disabled>Encerrar</button>
+            </div>
+            <p class="voice-notice" id="voice-availability">Consultando modelos disponíveis…</p>
+            <p class="voice-notice" id="voice-error" role="alert"></p>
+          </div>
+          <div class="voice-settings">
+            <h3>Escolha como conversar</h3>
+            <label for="voice-stt">Ouvir · reconhecimento de fala</label><select id="voice-stt"><option value="">Carregando…</option></select>
+            <label for="voice-llm">Conversar · provedor</label><select id="voice-llm"><option value="">Carregando…</option></select>
+            <label for="voice-llm-model">Modelo de conversa</label><input id="voice-llm-model" list="voice-llm-options" placeholder="Padrão do provedor" autocomplete="off" /><datalist id="voice-llm-options"></datalist>
+            <label for="voice-tts">Responder · síntese de voz</label><select id="voice-tts"><option value="">Carregando…</option></select>
+            <div class="voice-setting-pair">
+              <div><label for="voice-language">Idioma</label><select id="voice-language"><option value="pt">pt</option></select></div>
+              <div><label for="voice-voice">Voz</label><select id="voice-voice"><option value="">Padrão do modelo</option></select></div>
+            </div>
+            <label for="voice-silence">Pausa para concluir uma fala</label>
+            <select id="voice-silence"><option value="600">Curta · 0,6 segundo</option><option value="800" selected>Natural · 0,8 segundo</option><option value="1200">Tranquila · 1,2 segundo</option><option value="1600">Longa · 1,6 segundo</option></select>
+            <small id="voice-config-status">As escolhas são aplicadas no início de cada fala.</small>
+            <small id="voice-pricing">Custo estimado e efetivo: indisponíveis.</small>
+            <small id="voice-limitations"></small>
+            <button type="button" class="btn-sm" id="voice-refresh-models" style="margin-top:12px">Atualizar modelos</button>
+          </div>
+        </div>
+        <dl class="voice-metrics">
+          <div class="voice-metric"><dt>Duração da chamada</dt><dd id="voice-duration">00:00</dd></div>
+          <div class="voice-metric"><dt>Fim da fala → primeiro áudio</dt><dd id="voice-first-audio">—</dd></div>
+          <div class="voice-metric"><dt>Última transcrição</dt><dd id="voice-stt-latency">—</dd></div>
+          <div class="voice-metric"><dt>Custo da chamada</dt><dd>Indisponível</dd></div>
+        </dl>
+        <div class="voice-transcript-heading"><h3>Transcrição da conversa</h3><label><input type="checkbox" id="voice-transcript-toggle" checked /> Mostrar</label></div>
+        <div class="voice-transcript" id="voice-transcript" role="log" aria-label="Transcrição da conversa" aria-live="polite" aria-relevant="additions text"></div>
+        <p class="voice-notice" style="margin-top:14px">A transcrição da sua fala aparece após a pausa. Use fones para reduzir eco. Por privacidade, a chamada encerra após 5 minutos de inatividade, 60 minutos de duração ou 30 segundos em segundo plano.</p>
+      </div>
+    </div>
+  </section>
 
   <!-- DASHBOARD page (plan 0117) -->
   <section class="page-view" data-page="dashboard" data-testid="garra-page-dashboard" aria-label="Dashboard">
@@ -3216,6 +3275,7 @@ let ttsEnabled = localStorage.getItem('garraia.tts_enabled') === 'true';
 // usuario desliga o TTS — sem isso cada resposta vazava uma blob URL.
 let currentTtsAudio = null;
 let currentTtsUrl = null;
+let currentTtsController = null;
 
 // ─── Marked Configuration ─────────────────────────────────────────────
 const renderer = new marked.Renderer();
@@ -3289,6 +3349,7 @@ function applyTheme(theme) {
 // ─── Multi-page Router (plan 0117) ───────────────────────────────────
 const PAGE_TITLES = {
   chat: 'Chat',
+  voice: 'Voice Chat',
   dashboard: 'Dashboard',
   providers: 'Providers & Models',
   channels: 'Channels',
@@ -3343,6 +3404,7 @@ function setPage(name) {
     case 'dashboard':   hydrateDashboard && hydrateDashboard(); break;
     default: break;
   }
+  document.dispatchEvent(new CustomEvent('garra:page-change', { detail: name }));
 }
 function setupPageRouter() {
   document.querySelectorAll('.sidebar-page-btn').forEach(btn => {
@@ -4430,6 +4492,10 @@ function handleServerEvent(raw) {
       setThinking(false);
       appendErrorMsg((evt.code || 'Error') + ': ' + (evt.message || 'Unknown error'));
       break;
+    case 'stopped':
+      setThinking(false);
+      stopTTS();
+      break;
     case 'log':
       break; // logs go elsewhere
     default:
@@ -4526,8 +4592,11 @@ function showStopButton() {
     </button>
   `;
   $('stop-gen-btn').addEventListener('click', () => {
+    if (State.socket && State.socket.readyState === WebSocket.OPEN) {
+      State.socket.send(JSON.stringify({ type: 'stop', session_id: State.session }));
+    }
+    stopTTS();
     setThinking(false);
-    // Could send abort signal via WS in future
   });
 }
 function hideStopButton() { stopBtnContainer.innerHTML = ''; }
@@ -5631,30 +5700,45 @@ function stopRecording() {
 }
 
 // ─── TTS Playback Helper ───────────────────────────────────────────
-// Para a reproducao TTS corrente e libera a blob URL. Idempotente: chamar sem
-// nada tocando nao faz nada. revokeObjectURL e seguro de repetir.
+// Para a reproducao TTS corrente, cancela o fetch pendente e libera a blob
+// URL. Idempotente: chamar sem nada tocando nao faz nada. revokeObjectURL e
+// seguro de repetir.
 function stopTTS() {
+  if (currentTtsController) {
+    try { currentTtsController.abort(); } catch {}
+  }
   if (currentTtsAudio) {
     try { currentTtsAudio.pause(); currentTtsAudio.src = ''; } catch {}
   }
   if (currentTtsUrl) {
     try { URL.revokeObjectURL(currentTtsUrl); } catch {}
   }
+  currentTtsController = null;
   currentTtsAudio = null;
   currentTtsUrl = null;
 }
+window.addEventListener('pagehide', stopTTS);
 
 async function playTTS(text) {
   if (!ttsEnabled || !text) return;
+  // Durante uma chamada do Voice Chat (#1754) a fala e da propria chamada: o
+  // TTS do chat textual nao compete pelo alto-falante.
+  if (document.body.classList.contains('voice-call-active')) return;
+  // Interrompe a fala anterior (e o fetch dela, se ainda pendente) antes de
+  // comecar a nova.
+  stopTTS();
+  const controller = new AbortController();
+  currentTtsController = controller;
   let r;
   try {
     r = await fetch('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
       body: JSON.stringify({ text: text.substring(0, 500) })
     });
   } catch (e) {
-    console.warn('[tts] falha ao chamar /api/tts:', e);
+    if (!controller.signal.aborted) console.warn('[tts] falha ao chamar /api/tts:', e);
     return;
   }
 
@@ -5675,12 +5759,12 @@ async function playTTS(text) {
   try {
     blob = await r.blob();
   } catch (e) {
-    console.warn('[tts] falha ao ler o audio:', e);
+    if (!controller.signal.aborted) console.warn('[tts] falha ao ler o audio:', e);
     return;
   }
-
-  // Interrompe a fala anterior antes de comecar a nova.
-  stopTTS();
+  // Uma fala mais nova (ou o stop) tomou o lugar enquanto o audio chegava.
+  if (controller.signal.aborted || currentTtsController !== controller) return;
+  currentTtsController = null;
 
   const url = URL.createObjectURL(blob);
   const audio = new Audio(url);

@@ -1,14 +1,9 @@
+use crate::http::{MAX_AUDIO_BYTES, MAX_METADATA_BYTES, MAX_TEXT_BYTES, api_url, bounded_body};
 use crate::pipeline::VoiceError;
 use std::path::Path;
 
-/// Cliente HTTP assíncrono para serviços STT compatíveis com Whisper.
-///
-/// Suporta dois backends:
-///   - **whisper.cpp server** (`POST /inference`) — servidor local via whisper.cpp
-///   - **OpenAI-compatible** (`POST /v1/audio/transcriptions`) — OpenAI, LM Studio, etc.
-///
-/// O cliente tenta `/inference` primeiro (whisper.cpp), e se falhar
-/// tenta `/v1/audio/transcriptions` (OpenAI-compatible).
+/// Whisper-compatible STT. Unsupported whisper.cpp routes fall back to the
+/// OpenAI-compatible route on the same configured server only.
 #[derive(Clone)]
 pub struct WhisperClient {
     endpoint: String,
@@ -20,164 +15,177 @@ impl WhisperClient {
     pub fn new(endpoint: &str, language: &str) -> Self {
         Self {
             endpoint: endpoint.trim_end_matches('/').to_string(),
-            // #1754: sem timeout, um servidor travado prendia a transcricao
-            // para sempre. 120 s por tentativa, como os clientes de TTS.
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            client: crate::http::client(),
             language: language.to_string(),
         }
     }
 
-    /// Envia um arquivo de áudio ao servidor Whisper e retorna o texto transcrito.
-    ///
-    /// Tenta whisper.cpp (`/inference`) primeiro, depois OpenAI-compat (`/v1/audio/transcriptions`).
     pub async fn transcribe(&self, audio_path: &Path) -> Result<String, VoiceError> {
-        // Tenta whisper.cpp server primeiro
-        match self.transcribe_whispercpp(audio_path).await {
-            Ok(text) => return Ok(text),
-            Err(e) => {
-                tracing::debug!("whisper.cpp endpoint failed, trying OpenAI-compat: {e}");
+        let metadata = tokio::fs::metadata(audio_path).await?;
+        if metadata.len() > MAX_AUDIO_BYTES as u64 {
+            return Err(VoiceError::Stt("audio exceeds the size limit".into()));
+        }
+        let bytes = tokio::fs::read(audio_path).await?;
+        let filename = audio_path.file_name().unwrap_or_default().to_string_lossy();
+        self.transcribe_bytes(&bytes, &filename, "audio/wav", None, None)
+            .await
+    }
+
+    /// No temporary files or shared mutable settings. A model override selects
+    /// the OpenAI-compatible route; whisper.cpp loads models outside requests.
+    pub async fn transcribe_bytes(
+        &self,
+        audio: &[u8],
+        filename: &str,
+        content_type: &str,
+        language: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<String, VoiceError> {
+        if audio.is_empty() || audio.len() > MAX_AUDIO_BYTES {
+            return Err(VoiceError::Stt(
+                "audio is empty or exceeds the size limit".into(),
+            ));
+        }
+        let language = language
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(&self.language);
+        if language.len() > 64 || model.is_some_and(|s| s.len() > 256) {
+            return Err(VoiceError::Stt("invalid language or model".into()));
+        }
+        let model = model.filter(|s| !s.trim().is_empty());
+        if model.is_none() {
+            let response = self
+                .request(audio, filename, content_type, language, None)
+                .await?;
+            if !matches!(response.status().as_u16(), 404 | 405 | 501) {
+                return Self::transcription(response, true).await;
             }
         }
-
-        // Fallback: OpenAI-compatible endpoint
-        self.transcribe_openai_compat(audio_path).await
+        let response = self
+            .request(
+                audio,
+                filename,
+                content_type,
+                language,
+                Some(model.unwrap_or("whisper-1")),
+            )
+            .await?;
+        Self::transcription(response, false).await
     }
 
-    /// whisper.cpp server: `POST /inference` com multipart form (campo `file`).
-    ///
-    /// Resposta: JSON `{ "text": "..." }` ou texto puro.
-    async fn transcribe_whispercpp(&self, audio_path: &Path) -> Result<String, VoiceError> {
-        let file_bytes = tokio::fs::read(audio_path)
-            .await
-            .map_err(|e| VoiceError::Stt(format!("Failed to read audio file: {e}")))?;
-
-        let file_name = audio_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        let part = reqwest::multipart::Part::bytes(file_bytes)
-            .file_name(file_name)
-            .mime_str("audio/wav")
-            .map_err(|e| VoiceError::Stt(format!("Mime error: {e}")))?;
-
-        let form = reqwest::multipart::Form::new()
+    async fn request(
+        &self,
+        audio: &[u8],
+        filename: &str,
+        content_type: &str,
+        language: &str,
+        model: Option<&str>,
+    ) -> Result<reqwest::Response, VoiceError> {
+        let part = reqwest::multipart::Part::bytes(audio.to_vec())
+            .file_name(filename.to_string())
+            .mime_str(content_type)
+            .map_err(|_| VoiceError::Stt("invalid audio content type".into()))?;
+        let mut form = reqwest::multipart::Form::new()
             .part("file", part)
-            .text("language", self.language.clone())
-            .text("response_format", "json".to_string());
-
-        let url = format!("{}/inference", self.endpoint);
-
-        let resp = self
-            .client
-            .post(&url)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| VoiceError::Stt(format!("whisper.cpp request failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VoiceError::Stt(format!(
-                "whisper.cpp returned {status}: {body}"
-            )));
-        }
-
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| VoiceError::Stt(format!("Failed to read response: {e}")))?;
-
-        // whisper.cpp pode retornar JSON {"text": "..."} ou texto puro
-        let text = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            json.get("text")
-                .and_then(|v| v.as_str())
-                .unwrap_or(&body)
-                .trim()
-                .to_string()
+            .text("language", language.to_string())
+            .text("response_format", "json");
+        let path = if let Some(model) = model {
+            form = form.text("model", model.to_string());
+            "/v1/audio/transcriptions"
         } else {
-            body.trim().to_string()
+            "/inference"
         };
-
-        tracing::info!(
-            text_len = text.len(),
-            path = %audio_path.display(),
-            "whisper.cpp transcription complete"
-        );
-
-        Ok(text)
-    }
-
-    /// OpenAI-compatible: `POST /v1/audio/transcriptions` (OpenAI, LM Studio, faster-whisper).
-    async fn transcribe_openai_compat(&self, audio_path: &Path) -> Result<String, VoiceError> {
-        let file_bytes = tokio::fs::read(audio_path)
-            .await
-            .map_err(|e| VoiceError::Stt(format!("Failed to read audio file: {e}")))?;
-
-        let file_name = audio_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        let part = reqwest::multipart::Part::bytes(file_bytes)
-            .file_name(file_name)
-            .mime_str("audio/wav")
-            .map_err(|e| VoiceError::Stt(format!("Mime error: {e}")))?;
-
-        let form = reqwest::multipart::Form::new()
-            .part("file", part)
-            .text("language", self.language.clone())
-            .text("model", "whisper-1".to_string());
-
-        let url = format!("{}/v1/audio/transcriptions", self.endpoint);
-
-        let resp = self
-            .client
-            .post(&url)
+        self.client
+            .post(api_url(&self.endpoint, path))
             .multipart(form)
             .send()
             .await
-            .map_err(|e| VoiceError::Stt(format!("Whisper request failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VoiceError::Stt(format!(
-                "Whisper returned {status}: {body}"
-            )));
-        }
-
-        #[derive(serde::Deserialize)]
-        struct TranscribeResponse {
-            text: String,
-        }
-
-        let result: TranscribeResponse = resp
-            .json()
-            .await
-            .map_err(|e| VoiceError::Stt(format!("Failed to parse Whisper response: {e}")))?;
-
-        tracing::info!(
-            text_len = result.text.len(),
-            path = %audio_path.display(),
-            "OpenAI-compat transcription complete"
-        );
-
-        Ok(result.text)
+            .map_err(|e| {
+                VoiceError::Stt(
+                    if e.is_timeout() {
+                        "transcription timed out"
+                    } else {
+                        "transcription request failed"
+                    }
+                    .into(),
+                )
+            })
     }
 
-    /// Health check — verifica se o endpoint de transcrição está acessível.
-    pub async fn health_check(&self) -> Result<bool, VoiceError> {
-        let url = format!("{}/", self.endpoint);
-        match self.client.get(&url).send().await {
-            Ok(resp) => Ok(resp.status().is_success()),
-            Err(_) => Ok(false),
+    async fn transcription(
+        response: reqwest::Response,
+        allow_plain: bool,
+    ) -> Result<String, VoiceError> {
+        if !response.status().is_success() {
+            return Err(VoiceError::Stt(format!(
+                "transcription server returned HTTP {}",
+                response.status().as_u16()
+            )));
         }
+        let body = bounded_body(response, MAX_METADATA_BYTES)
+            .await
+            .map_err(VoiceError::Stt)?;
+        let text = match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(json) => json
+                .get("text")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| VoiceError::Stt("transcription response has no text".into()))?,
+            Err(_) if allow_plain => String::from_utf8(body)
+                .map_err(|_| VoiceError::Stt("invalid transcription encoding".into()))?,
+            Err(_) => return Err(VoiceError::Stt("invalid transcription response".into())),
+        };
+        if text.len() > MAX_TEXT_BYTES {
+            return Err(VoiceError::Stt(
+                "transcription exceeds the text limit".into(),
+            ));
+        }
+        tracing::info!(text_len = text.len(), "voice transcription complete");
+        Ok(text.trim().to_string())
+    }
+
+    pub async fn health_check(&self) -> Result<bool, VoiceError> {
+        Ok(self
+            .client
+            .get(format!("{}/", self.endpoint))
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn timeout_does_not_start_a_second_transcription() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            // Keep the original socket open without responding. A fallback
+            // would open another connection and hide the original timeout.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let mut client = WhisperClient::new(&endpoint, "pt");
+        client.client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(30))
+            .build()
+            .unwrap();
+        let error = client
+            .transcribe_bytes(b"audio", "audio.wav", "audio/wav", None, None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        server.await.unwrap();
     }
 }

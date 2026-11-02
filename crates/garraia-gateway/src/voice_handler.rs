@@ -2,26 +2,23 @@ use axum::Json;
 use axum::extract::{Multipart, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use garraia_voice::{MAX_AUDIO_BYTES, MAX_TEXT_BYTES, VOICE_REQUEST_TIMEOUT, VoiceError};
 use serde::Deserialize;
-use tracing::{error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::state::SharedState;
 
-/// Response for TTS with optional fallback text
 #[derive(serde::Serialize)]
 pub struct TtsResponse {
-    pub audio: Option<String>, // Base64 encoded audio if successful
-    pub text: Option<String>,  // Text fallback if TTS fails
+    pub audio: Option<String>,
+    pub text: Option<String>,
     pub error: Option<String>,
-    pub fallback: bool, // true if we fell back to text
+    pub fallback: bool,
 }
 
 #[derive(Deserialize)]
 pub struct TtsRequest {
-    /// Text to synthesize into speech.
     pub text: String,
-    /// Language code (e.g. "pt", "en", "es", "fr", "de", "it", "hi").
-    /// Falls back to the configured default if omitted.
     pub language: Option<String>,
 }
 
@@ -35,282 +32,222 @@ pub struct SynthesizeQuery {
 /// Cortar por byte (`&texto[..n]`) pode cair no meio de um code point
 /// multibyte — um acento pt-BR ou um emoji na fronteira — e entrar em panico.
 /// Como o gateway nao tem `CatchPanicLayer`, esse panico derrubava a conexao
-/// do `POST /api/tts`. `chars().take()` respeita a fronteira de caractere.
+/// do `POST /api/tts` (#1768). `chars().take()` respeita a fronteira de
+/// caractere. Fica em `debug!`: o texto e do usuario e nao vai ao log `info`.
 fn resumo_do_texto(texto: &str, max: usize) -> String {
     texto.chars().take(max).collect()
 }
 
-/// POST /api/tts — synthesize speech from text using Chatterbox TTS.
-///
-/// Returns WAV audio bytes with `Content-Type: audio/wav` on success.
-/// On failure, returns a JSON response with text fallback.
-/// Only available when the server is started with `--with-voice`.
-///
-/// Query parameter `fallback` (default: true) controls whether to return
-/// text fallback when TTS fails. Set to "false" to get error only.
-#[tracing::instrument(skip(state, body), fields(text_len, lang))]
+/// POST /api/tts. Preserve the legacy fallback contract, while bounding work
+/// and never reflecting provider response bodies (which may contain secrets).
+#[tracing::instrument(skip(state, body), fields(text_len = body.text.len()))]
 pub async fn synthesize(
     State(state): State<SharedState>,
     axum::extract::Query(query): axum::extract::Query<SynthesizeQuery>,
     Json(body): Json<TtsRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     let allow_fallback = !query
         .fallback
         .as_deref()
-        .map(|s| s.eq_ignore_ascii_case("false"))
-        .unwrap_or(false);
-
-    let lang = body.language.as_deref().unwrap_or("default");
-    tracing::Span::current().record("text_len", body.text.len());
-    tracing::Span::current().record("lang", lang);
-
-    let Some(voice_client) = &state.voice_client else {
-        warn!("TTS request rejected: voice mode not enabled");
-        return if allow_fallback {
+        .is_some_and(|s| s.eq_ignore_ascii_case("false"));
+    let failure = |status, message: &str| {
+        if allow_fallback {
             (
-                StatusCode::SERVICE_UNAVAILABLE,
+                status,
                 Json(TtsResponse {
                     audio: None,
-                    text: Some(
-                        "Voice mode is not enabled. Start the server with --with-voice."
-                            .to_string(),
-                    ),
-                    error: Some("Voice mode not enabled".to_string()),
+                    text: Some(message.to_string()),
+                    error: Some(message.to_string()),
                     fallback: true,
                 }),
             )
                 .into_response()
         } else {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({
-                    "error": "Voice mode is not enabled. Start the server with --with-voice."
-                })),
-            )
-                .into_response()
-        };
-    };
-
-    if body.text.trim().is_empty() {
-        warn!("TTS request rejected: empty text");
-        return if allow_fallback {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(TtsResponse {
-                    audio: None,
-                    text: Some("Cannot synthesize empty text".to_string()),
-                    error: Some("text field cannot be empty".to_string()),
-                    fallback: true,
-                }),
-            )
-                .into_response()
-        } else {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "text field cannot be empty"
-                })),
-            )
-                .into_response()
-        };
-    }
-
-    let text_preview = resumo_do_texto(&body.text, 80);
-    info!(
-        text_preview = %text_preview,
-        "🔊 TTS synthesis started"
-    );
-    let start = std::time::Instant::now();
-
-    match voice_client.synthesize_bytes(&body.text, lang).await {
-        Ok(audio_bytes) => {
-            let elapsed = start.elapsed();
-            info!(
-                audio_bytes = audio_bytes.len(),
-                duration_ms = elapsed.as_millis() as u64,
-                "✅ TTS synthesis complete — WAV generated"
-            );
-            let headers = [(axum::http::header::CONTENT_TYPE, "audio/wav")];
-            (headers, audio_bytes).into_response()
+            (status, Json(serde_json::json!({"error": message}))).into_response()
         }
-        Err(e) => {
-            let elapsed = start.elapsed();
-
+    };
+    let Some(voice_client) = &state.voice_client else {
+        return failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Voice mode is not enabled. Start the server with --with-voice.",
+        );
+    };
+    if body.text.trim().is_empty() {
+        return failure(StatusCode::BAD_REQUEST, "text field cannot be empty");
+    }
+    if body.text.len() > MAX_TEXT_BYTES {
+        return failure(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "text exceeds the synthesis limit",
+        );
+    }
+    if body.language.as_ref().is_some_and(|s| s.len() > 64) {
+        return failure(StatusCode::BAD_REQUEST, "invalid language");
+    }
+    let config = state.current_config();
+    let language = body
+        .language
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(&config.voice.language);
+    debug!(text_preview = %resumo_do_texto(&body.text, 80), "voice synthesis started");
+    let start = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        VOICE_REQUEST_TIMEOUT,
+        voice_client.synthesize_bytes(&body.text, language),
+    )
+    .await
+    .unwrap_or_else(|_| Err(VoiceError::Tts("synthesis timed out".into())))
+    .and_then(|audio| {
+        if audio.is_empty() || audio.len() > MAX_AUDIO_BYTES {
+            Err(VoiceError::Tts("invalid audio response size".into()))
+        } else {
+            Ok(audio)
+        }
+    });
+    match result {
+        Ok(bytes) => {
+            info!(
+                audio_bytes = bytes.len(),
+                duration_ms = start.elapsed().as_millis() as u64,
+                "voice synthesis complete"
+            );
+            ([(axum::http::header::CONTENT_TYPE, "audio/wav")], bytes).into_response()
+        }
+        Err(error) => {
+            warn!(error = %error, duration_ms = start.elapsed().as_millis() as u64, "voice synthesis failed");
             if allow_fallback {
-                // Graceful degradation: return text instead of crashing. O
-                // motivo vai para o log ANTES do fallback para que uma voz que
-                // "falha em silencio" deixe rastro — warn porque a rota se
-                // recupera, nao quebra.
-                warn!(
-                    error = %e,
-                    duration_ms = elapsed.as_millis() as u64,
-                    "⚠️ TTS synthesis failed — falling back to text"
-                );
                 (
                     StatusCode::OK,
                     Json(TtsResponse {
                         audio: None,
-                        text: Some(body.text.clone()),
-                        error: Some(format!("TTS failed: {}", e)),
+                        text: Some(body.text),
+                        error: Some("TTS failed: speech provider unavailable".into()),
                         fallback: true,
                     }),
                 )
                     .into_response()
             } else {
-                error!(
-                    error = %e,
-                    duration_ms = elapsed.as_millis() as u64,
-                    "❌ TTS synthesis failed (no fallback)"
-                );
-                (
+                failure(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": format!("TTS synthesis failed: {}", e)
-                    })),
+                    "TTS synthesis failed: speech provider unavailable",
                 )
-                    .into_response()
             }
         }
     }
 }
 
-/// Response for STT transcription
 #[derive(serde::Serialize)]
 pub struct SttResponse {
     pub text: String,
     pub error: Option<String>,
 }
 
-/// POST /api/stt — transcribe audio using Whisper STT.
-///
-/// Accepts multipart form data with an audio file (WAV, OGG, MP3, etc.).
-/// Returns JSON with transcribed text on success.
-/// Only available when the server is started with `--with-voice`.
-#[tracing::instrument(skip(state), fields(filename))]
+fn stt_failure(status: StatusCode, message: &str) -> (StatusCode, Json<SttResponse>) {
+    (
+        status,
+        Json(SttResponse {
+            text: String::new(),
+            error: Some(message.to_string()),
+        }),
+    )
+}
+
+/// POST /api/stt. Audio remains in memory only and is released on success,
+/// error, disconnect/cancellation or timeout; no recordings are persisted.
+#[tracing::instrument(skip(state, multipart))]
 pub async fn transcribe(
     State(state): State<SharedState>,
     mut multipart: Multipart,
-) -> impl IntoResponse {
+) -> (StatusCode, Json<SttResponse>) {
     let Some(stt_client) = &state.stt_client else {
-        warn!("STT request rejected: voice mode not enabled");
-        return (
+        return stt_failure(
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(SttResponse {
-                text: String::new(),
-                error: Some(
-                    "Voice mode is not enabled. Start the server with --with-voice.".to_string(),
-                ),
-            }),
+            "Voice mode is not enabled. Start the server with --with-voice.",
         );
     };
-
-    // Extract audio file from multipart
-    let mut audio_data: Option<(String, Vec<u8>)> = None;
-
-    while let Ok(Some(field)) = multipart.next_field().await {
-        let field_name = field.name().unwrap_or("").to_string();
-
-        if field_name == "file" {
-            let filename = field
-                .file_name()
-                .map(|s: &str| s.to_string())
-                .unwrap_or_else(|| "audio.wav".to_string());
-
-            // Record filename for tracing before moving
-            tracing::Span::current().record("filename", &filename);
-
-            let data: Vec<u8> = match field.bytes().await {
-                Ok(bytes) => bytes.to_vec(),
-                Err(e) => {
-                    error!("Failed to read file data: {}", e);
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(SttResponse {
-                            text: String::new(),
-                            error: Some(format!("Failed to read file: {}", e)),
-                        }),
-                    );
-                }
-            };
-            audio_data = Some((filename, data));
+    let mut audio = None;
+    let mut field_count = 0;
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(_) => {
+                return stt_failure(StatusCode::BAD_REQUEST, "Invalid audio multipart upload");
+            }
+        };
+        field_count += 1;
+        if field_count > 8 {
+            return stt_failure(StatusCode::BAD_REQUEST, "Too many multipart fields");
         }
-    }
-
-    let (filename, audio_bytes) = match audio_data {
-        Some(data) => data,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(SttResponse {
-                    text: String::new(),
-                    error: Some("No audio file provided".to_string()),
-                }),
+        if field.name() != Some("file") {
+            continue;
+        }
+        if audio.is_some() {
+            return stt_failure(StatusCode::BAD_REQUEST, "Provide exactly one audio file");
+        }
+        let filename: String = field
+            .file_name()
+            .unwrap_or("audio.wav")
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("audio.wav")
+            .chars()
+            .take(120)
+            .collect();
+        let content_type = field.content_type().unwrap_or("audio/wav").to_string();
+        if !content_type.starts_with("audio/") && content_type != "application/octet-stream" {
+            return stt_failure(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Expected an audio content type",
             );
         }
+        let mut field = field;
+        let mut bytes = Vec::new();
+        loop {
+            match field.chunk().await {
+                Ok(Some(chunk)) => {
+                    if chunk.len() > MAX_AUDIO_BYTES.saturating_sub(bytes.len()) {
+                        return stt_failure(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "Audio exceeds the upload limit",
+                        );
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(_) => return stt_failure(StatusCode::BAD_REQUEST, "Invalid audio upload"),
+            }
+        }
+        audio = Some((filename, content_type, bytes));
+    }
+    let Some((filename, content_type, bytes)) = audio else {
+        return stt_failure(StatusCode::BAD_REQUEST, "No audio file provided");
     };
-
-    if audio_bytes.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(SttResponse {
-                text: String::new(),
-                error: Some("Audio file is empty".to_string()),
-            }),
-        );
+    if bytes.is_empty() {
+        return stt_failure(StatusCode::BAD_REQUEST, "Audio file is empty");
     }
-
-    info!(
-        filename = %filename,
-        audio_size = audio_bytes.len(),
-        "🎙️ STT transcription started"
-    );
     let start = std::time::Instant::now();
-
-    // Create temp file for Whisper (it expects a file path)
-    let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join(format!("garraia_stt_{}.wav", uuid::Uuid::new_v4()));
-
-    // Write audio to temp file
-    if let Err(e) = tokio::fs::write(&temp_path, &audio_bytes).await {
-        error!("Failed to write temp audio file: {}", e);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(SttResponse {
-                text: String::new(),
-                error: Some(format!("Failed to process audio: {}", e)),
-            }),
-        );
-    }
-
-    // Transcribe using Whisper
-    let result = stt_client.transcribe(&temp_path).await;
-
-    // Clean up temp file
-    let _ = tokio::fs::remove_file(&temp_path).await;
-
+    let result = tokio::time::timeout(
+        VOICE_REQUEST_TIMEOUT,
+        stt_client.transcribe_bytes(&bytes, &filename, &content_type, None, None),
+    )
+    .await
+    .unwrap_or_else(|_| Err(VoiceError::Stt("transcription timed out".into())));
     match result {
         Ok(text) => {
-            let elapsed = start.elapsed();
             info!(
                 text_len = text.len(),
-                duration_ms = elapsed.as_millis() as u64,
-                "✅ STT transcription complete"
+                duration_ms = start.elapsed().as_millis() as u64,
+                "voice transcription complete"
             );
             (StatusCode::OK, Json(SttResponse { text, error: None }))
         }
-        Err(e) => {
-            let elapsed = start.elapsed();
-            error!(
-                error = %e,
-                duration_ms = elapsed.as_millis() as u64,
-                "❌ STT transcription failed"
-            );
-            (
+        Err(error) => {
+            warn!(error = %error, duration_ms = start.elapsed().as_millis() as u64, "voice transcription failed");
+            stt_failure(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(SttResponse {
-                    text: String::new(),
-                    error: Some(format!("Transcription failed: {}", e)),
-                }),
+                "Transcription failed: speech provider unavailable",
             )
         }
     }

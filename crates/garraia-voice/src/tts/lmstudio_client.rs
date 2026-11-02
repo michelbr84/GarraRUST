@@ -1,15 +1,12 @@
+use crate::http::{MAX_AUDIO_BYTES, MAX_TEXT_BYTES, api_url, bounded_body};
 use crate::pipeline::VoiceError;
 use std::path::{Path, PathBuf};
 
-/// Cliente TTS que usa modelos de voz via LM Studio.
+/// Adaptador para um servidor de fala local compativel com OpenAI (LM Studio).
 ///
-/// LM Studio expõe modelos TTS (como `vieneu-tts-v2-turbo`) através de uma
-/// API compatível com OpenAI:
-///   - `POST /v1/audio/speech` (OpenAI-compatible) — preferido
-///   - `POST /api/v1/chat` (LM Studio specific) — fallback
-///
-/// O cliente tenta `/v1/audio/speech` primeiro. Se não disponível,
-/// usa `/api/v1/chat` com o modelo TTS.
+/// Tenta `POST /v1/audio/speech`; so cai no `POST /api/v1/chat` quando a rota
+/// nao existe (404/405/501). Timeout, limite de taxa ou erro do provedor nao
+/// disparam uma segunda geracao (sem custo duplicado implicito).
 #[derive(Clone)]
 pub struct LmStudioTtsClient {
     endpoint: String,
@@ -20,181 +17,128 @@ pub struct LmStudioTtsClient {
 
 impl LmStudioTtsClient {
     pub fn new(endpoint: &str, model: &str, language: &str) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .unwrap_or_default();
-
         Self {
             endpoint: endpoint.trim_end_matches('/').to_string(),
-            client,
+            client: crate::http::client(),
             model: model.to_string(),
             language: language.to_string(),
         }
     }
 
-    /// Sintetiza texto em áudio WAV via LM Studio TTS e devolve os bytes.
-    ///
-    /// É o caminho do [`crate::TtsSynthesizer`]: sem arquivo intermediário,
-    /// cada chamada fica com os próprios bytes (#1754).
+    /// Sintetiza no idioma e voz configurados e devolve os bytes. Sem
+    /// arquivo intermediario: cada chamada fica com os proprios bytes (#1754).
     pub async fn synthesize_to_bytes(&self, text: &str) -> Result<Vec<u8>, VoiceError> {
-        // Tenta OpenAI-compatible endpoint primeiro
-        match self.synthesize_openai_compat(text).await {
-            Ok(audio) => return Ok(audio),
-            Err(e) => {
-                tracing::debug!("OpenAI-compat TTS failed, trying chat endpoint: {e}");
-            }
-        }
-
-        // Fallback: usa /api/v1/chat (LM Studio specific)
-        self.synthesize_via_chat(text).await
+        self.synthesize_bytes_with_options(text, None, None).await
     }
 
-    /// Sintetiza texto em áudio WAV via LM Studio TTS e salva em `output_path`.
     pub async fn synthesize(&self, text: &str, output_path: &Path) -> Result<PathBuf, VoiceError> {
-        let audio_bytes = self.synthesize_to_bytes(text).await?;
-
-        tokio::fs::write(output_path, &audio_bytes)
-            .await
-            .map_err(|e| VoiceError::Tts(format!("Failed to write WAV: {e}")))?;
-
-        tracing::debug!(path = %output_path.display(), "LM Studio TTS WAV written");
-
+        let bytes = self.synthesize_bytes_with_options(text, None, None).await?;
+        tokio::fs::write(output_path, bytes).await?;
         Ok(output_path.to_path_buf())
     }
 
-    /// Tenta via `POST /v1/audio/speech` (OpenAI-compatible).
-    async fn synthesize_openai_compat(&self, text: &str) -> Result<Vec<u8>, VoiceError> {
-        let url = format!("{}/v1/audio/speech", self.endpoint);
-
-        let body = serde_json::json!({
-            "model": self.model,
-            "input": text,
-            "voice": "alloy",
-            "response_format": "wav",
-        });
-
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| VoiceError::Tts(format!("LM Studio TTS request failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body_text = resp.text().await.unwrap_or_default();
-            return Err(VoiceError::Tts(format!(
-                "LM Studio TTS returned {status}: {body_text}"
-            )));
+    /// Calls own their bytes, including concurrent segments and cancellation.
+    /// The OpenAI speech shape infers language from input text; language is
+    /// sent to the legacy local chat fallback only.
+    pub async fn synthesize_bytes_with_options(
+        &self,
+        text: &str,
+        language: Option<&str>,
+        voice: Option<&str>,
+    ) -> Result<Vec<u8>, VoiceError> {
+        if text.trim().is_empty() || text.len() > MAX_TEXT_BYTES {
+            return Err(VoiceError::Tts(
+                "text is empty or exceeds the size limit".into(),
+            ));
         }
-
-        let audio_bytes = resp
-            .bytes()
+        let explicit_voice = voice.is_some_and(|s| !s.trim().is_empty());
+        let voice = voice.filter(|s| !s.trim().is_empty()).unwrap_or("alloy");
+        if voice.len() > 128 || language.is_some_and(|s| s.len() > 64) {
+            return Err(VoiceError::Tts("invalid voice or language".into()));
+        }
+        let response = self.client.post(api_url(&self.endpoint, "/v1/audio/speech"))
+            .json(&serde_json::json!({"model": self.model, "input": text, "voice": voice, "response_format": "wav"}))
+            .send().await.map_err(|_| VoiceError::Tts("speech request failed".into()))?;
+        // Retry only a missing route, never timeout/rate limit/provider error.
+        if matches!(response.status().as_u16(), 404 | 405 | 501) {
+            if explicit_voice {
+                return Err(VoiceError::Tts(
+                    "this server does not expose voice selection through /v1/audio/speech".into(),
+                ));
+            }
+            return self
+                .synthesize_via_chat(text, language.unwrap_or(&self.language))
+                .await;
+        }
+        Self::check_status(&response)?;
+        bounded_body(response, MAX_AUDIO_BYTES)
             .await
-            .map_err(|e| VoiceError::Tts(format!("Failed to read TTS response: {e}")))?;
-
-        tracing::info!(
-            bytes = audio_bytes.len(),
-            model = %self.model,
-            "LM Studio TTS synthesis complete (openai-compat)"
-        );
-
-        Ok(audio_bytes.to_vec())
+            .map_err(VoiceError::Tts)
     }
 
-    /// Fallback via `POST /api/v1/chat` (LM Studio specific TTS).
-    ///
-    /// Alguns modelos TTS no LM Studio usam o endpoint de chat com
-    /// `system_prompt` e `input` em vez do endpoint de áudio padrão.
-    async fn synthesize_via_chat(&self, text: &str) -> Result<Vec<u8>, VoiceError> {
-        let url = format!("{}/api/v1/chat", self.endpoint);
-
-        let body = serde_json::json!({
-            "model": self.model,
-            "system_prompt": format!(
-                "You are a text-to-speech engine. Speak naturally in {}.",
-                self.language
-            ),
-            "input": text,
-        });
-
-        let resp = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| VoiceError::Tts(format!("LM Studio chat TTS failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body_text = resp.text().await.unwrap_or_default();
-            return Err(VoiceError::Tts(format!(
-                "LM Studio chat TTS returned {status}: {body_text}"
-            )));
-        }
-
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-
-        if content_type.contains("audio") {
-            // Resposta é áudio direto
-            let audio_bytes = resp
-                .bytes()
-                .await
-                .map_err(|e| VoiceError::Tts(format!("Failed to read audio: {e}")))?;
-
-            tracing::info!(
-                bytes = audio_bytes.len(),
-                model = %self.model,
-                "LM Studio TTS synthesis complete (chat endpoint)"
-            );
-
-            Ok(audio_bytes.to_vec())
+    fn check_status(response: &reqwest::Response) -> Result<(), VoiceError> {
+        if response.status().is_success() {
+            Ok(())
         } else {
-            // Resposta é JSON — extrair áudio base64 se disponível
-            let body_text = resp.text().await.unwrap_or_default();
-
-            // Tentar parsear como JSON com campo de áudio
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body_text) {
-                // Checar campos comuns de áudio em respostas TTS
-                if let Some(audio_b64) = json
-                    .get("audio")
-                    .or_else(|| json.get("data"))
-                    .and_then(|v| v.as_str())
-                {
-                    use base64::Engine;
-                    let audio_bytes = base64::engine::general_purpose::STANDARD
-                        .decode(audio_b64)
-                        .map_err(|e| {
-                            VoiceError::Tts(format!("Failed to decode base64 audio: {e}"))
-                        })?;
-
-                    return Ok(audio_bytes);
-                }
-            }
-
-            // Por caractere, nao por byte: fatiar `&body_text[..200]` cai no
-            // meio de um caractere multibyte e da panic no caminho de erro.
-            let resumo: String = body_text.chars().take(200).collect();
             Err(VoiceError::Tts(format!(
-                "LM Studio TTS returned non-audio response: {resumo}"
+                "speech server returned HTTP {}",
+                response.status().as_u16()
             )))
         }
     }
 
-    /// Health check — verifica se o endpoint está acessível.
-    pub async fn health_check(&self) -> Result<bool, VoiceError> {
-        let url = format!("{}/v1/models", self.endpoint);
-        match self.client.get(&url).send().await {
-            Ok(resp) => Ok(resp.status().is_success()),
-            Err(_) => Ok(false),
+    async fn synthesize_via_chat(&self, text: &str, language: &str) -> Result<Vec<u8>, VoiceError> {
+        let response = self.client.post(format!("{}/api/v1/chat", self.endpoint.trim_end_matches("/v1")))
+            .json(&serde_json::json!({"model": self.model, "system_prompt": format!("You are a text-to-speech engine. Speak naturally in {language}."), "input": text}))
+            .send().await.map_err(|_| VoiceError::Tts("local speech fallback request failed".into()))?;
+        Self::check_status(&response)?;
+        let audio = response
+            .headers()
+            .get("content-type")
+            .and_then(|h| h.to_str().ok())
+            .is_some_and(|s| s.starts_with("audio/"));
+        let bytes = bounded_body(
+            response,
+            if audio {
+                MAX_AUDIO_BYTES
+            } else {
+                MAX_AUDIO_BYTES * 4 / 3 + 1024
+            },
+        )
+        .await
+        .map_err(VoiceError::Tts)?;
+        if audio {
+            return Ok(bytes);
         }
+        let json: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|_| VoiceError::Tts("LM Studio TTS returned non-audio response".into()))?;
+        let encoded = json
+            .get("audio")
+            .or_else(|| json.get("data"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                // Sem eco do corpo: o resumo antigo cortava por byte e dava
+                // panic em caractere multibyte, e o corpo nao e confiavel.
+                VoiceError::Tts("LM Studio TTS returned non-audio response".into())
+            })?;
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| VoiceError::Tts("invalid local speech audio".into()))?;
+        if bytes.len() > MAX_AUDIO_BYTES {
+            return Err(VoiceError::Tts(
+                "speech audio exceeds the size limit".into(),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    pub async fn health_check(&self) -> Result<bool, VoiceError> {
+        Ok(self
+            .client
+            .get(api_url(&self.endpoint, "/v1/models"))
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success()))
     }
 }

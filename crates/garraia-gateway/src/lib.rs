@@ -80,6 +80,7 @@ pub mod totp;
 pub mod uploads_worker;
 pub mod uploads_worker_util;
 pub mod voice_handler;
+pub mod voice_chat;
 pub mod ws;
 
 pub use server::GatewayServer;

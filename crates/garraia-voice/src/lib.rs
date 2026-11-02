@@ -15,16 +15,25 @@
 //! ```
 
 pub mod audio;
+pub mod http;
 pub mod pipeline;
 pub mod stt;
 pub mod tts;
 
 // Re-exports para conveniência
+pub use http::{MAX_AUDIO_BYTES, MAX_TEXT_BYTES, VOICE_REQUEST_TIMEOUT};
 pub use pipeline::{VoiceError, VoiceMetrics, VoicePipeline};
 pub use stt::whisper_client::WhisperClient;
 pub use tts::chatterbox_client::ChatterboxClient;
 pub use tts::hibiki_client::HibikiClient;
 pub use tts::lmstudio_client::LmStudioTtsClient;
+
+/// Idioma pedido por um chamador do [`TtsSynthesizer`]. Vazio ou `"default"`
+/// (o Telegram passa `"default"`) significa "use o idioma configurado".
+fn language_override(language: &str) -> Option<&str> {
+    let language = language.trim();
+    (!language.is_empty() && !language.eq_ignore_ascii_case("default")).then_some(language)
+}
 
 /// Trait unificado para provedores TTS.
 ///
@@ -37,28 +46,27 @@ pub trait TtsSynthesizer: Send + Sync {
 #[async_trait::async_trait]
 impl TtsSynthesizer for ChatterboxClient {
     async fn synthesize_bytes(&self, text: &str, language: &str) -> Result<Vec<u8>, VoiceError> {
-        self.synthesize(text, Some(language)).await
+        self.synthesize(text, language_override(language)).await
     }
 }
 
 #[async_trait::async_trait]
 impl TtsSynthesizer for HibikiClient {
-    async fn synthesize_bytes(&self, text: &str, _language: &str) -> Result<Vec<u8>, VoiceError> {
+    async fn synthesize_bytes(&self, text: &str, language: &str) -> Result<Vec<u8>, VoiceError> {
         // #1754: os bytes vem direto da resposta HTTP. O caminho antigo
         // passava por `garraia_tts_<pid>.wav`, o MESMO arquivo para toda
         // chamada do processo: duas sinteses concorrentes trocavam o audio
-        // entre si (um usuario ouvia a resposta de outro) ou falhavam porque
-        // a outra ja tinha apagado o arquivo. Sem arquivo, nao ha o que
-        // compartilhar nem o que limpar.
-        self.synthesize_to_bytes(text).await
+        // entre si. Sem arquivo, nao ha o que compartilhar nem o que limpar.
+        HibikiClient::synthesize_bytes(self, text, language_override(language)).await
     }
 }
 
 #[async_trait::async_trait]
 impl TtsSynthesizer for LmStudioTtsClient {
-    async fn synthesize_bytes(&self, text: &str, _language: &str) -> Result<Vec<u8>, VoiceError> {
+    async fn synthesize_bytes(&self, text: &str, language: &str) -> Result<Vec<u8>, VoiceError> {
         // #1754: sem o temporario compartilhado por PID — ver o Hibiki acima.
-        self.synthesize_to_bytes(text).await
+        self.synthesize_bytes_with_options(text, language_override(language), None)
+            .await
     }
 }
 
