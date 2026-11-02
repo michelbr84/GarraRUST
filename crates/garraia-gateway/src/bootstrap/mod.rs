@@ -3088,6 +3088,9 @@ mod tests {
     /// pelo ponto de registro de PRODUCAO. `mode = all` sem backend recusa
     /// todo spawn sem consultar binario nenhum do host — deterministico, e
     /// antes da S2b esta config deixava as tools rodarem no host.
+    // #1762: mesmo `cfg` do unico teste que a usa (o sandbox e recusado fora
+    // de Unix por desenho); sem ele o clippy do Windows acusa funcao morta.
+    #[cfg(unix)]
     async fn roda_recusada(
         tool: std::sync::Arc<dyn garraia_agents::Tool>,
         input: serde_json::Value,

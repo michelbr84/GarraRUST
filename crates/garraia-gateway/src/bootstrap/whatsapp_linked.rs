@@ -1461,8 +1461,10 @@ impl GatewaySink {
     }
 
     /// Troca o teto de cadencia (#1650). Os testes de politica disparam rajadas
-    /// de um unico chat que nao sao o assunto da guarda.
-    #[cfg(test)]
+    /// de um unico chat que nao sao o assunto da guarda. So os testes
+    /// `ponta_a_ponta` (`cfg(unix)`) usam; sem o `unix` o clippy do Windows
+    /// acusa metodo morto (#1762).
+    #[cfg(all(test, unix))]
     pub(crate) fn com_cadencia(self, c: cadencia::Cadencia) -> Self {
         if let Ok(mut guard) = self.runtime.cadencia.lock() {
             *guard = c;
