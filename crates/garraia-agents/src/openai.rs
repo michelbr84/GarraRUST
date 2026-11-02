@@ -527,13 +527,14 @@ impl LlmProvider for OpenAiProvider {
                 // Corte por caractere, nunca por byte: o corpo pode terminar
                 // numa fronteira multibyte e `&s[..n]` entraria em panico
                 // (#1737 F5).
-                let truncated_body = crate::providers::truncar(&body_str, 1000);
+                // #1769 item 3: nunca o corpo cru no log — resumo redigido,
+                // sem controle e com no maximo 200 caracteres.
+                let resumo = crate::providers::resumo_de_corpo_para_log(&body_str, &content_type);
                 tracing::warn!(
-                    "failed to parse openai response: {}\nstatus={}, content-type={}, body_preview={}",
+                    "failed to parse openai response: {} (status={}, {})",
                     e,
                     status_code,
-                    content_type,
-                    truncated_body
+                    resumo
                 );
                 Err(Error::Agent(format!(
                     "failed to parse openai response: {}",
@@ -1294,7 +1295,7 @@ fn erro_no_corpo_sse(data: &str) -> Option<String> {
         }
         _ => {
             let message = json_val.get("message")?.as_str()?;
-            Some(crate::providers::truncar(message, 200))
+            Some(crate::providers::frase_do_provider(message, 200))
         }
     }
 }
@@ -1316,7 +1317,7 @@ fn mensagem_de_erro_no_corpo_200(error: &serde_json::Value) -> String {
         .and_then(|m| m.as_str())
         .or_else(|| error.as_str())
         .unwrap_or("unknown error");
-    let msg = crate::providers::truncar(bruto, 200);
+    let msg = crate::providers::frase_do_provider(bruto, 200);
     match error
         .get("code")
         .and_then(|c| c.as_u64())
