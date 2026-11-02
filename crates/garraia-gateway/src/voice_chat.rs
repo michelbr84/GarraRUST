@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 use tokio::sync::{Mutex, Semaphore};
 
@@ -25,19 +25,31 @@ const CATALOG_TTL: Duration = Duration::from_secs(300);
 const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_UTTERANCE_BYTES: usize = 1024 * 1024;
 const MAX_SENTENCE_BYTES: usize = 4096;
+/// Concurrent STT/TTS requests per gateway (all users together).
+const MAX_CONCURRENT_VOICE_REQUESTS: usize = 4;
+/// Concurrent catalog discoveries per gateway.
+const MAX_CONCURRENT_DISCOVERIES: usize = 2;
+
+/// A cached provider catalog: when it was fetched (monotonic for the TTL,
+/// wall clock for the UI) and the voice-capable models it listed.
+struct CachedCatalog {
+    at: Instant,
+    fetched_at: SystemTime,
+    models: Vec<Value>,
+}
 
 /// Per-gateway capacity. Permits are released when the request is cancelled.
 pub struct VoiceChat {
     requests: Semaphore,
     discovery: Semaphore,
-    catalogs: Mutex<HashMap<String, (Instant, Vec<Value>)>>,
+    catalogs: Mutex<HashMap<String, CachedCatalog>>,
 }
 
 impl Default for VoiceChat {
     fn default() -> Self {
         Self {
-            requests: Semaphore::new(4),
-            discovery: Semaphore::new(2),
+            requests: Semaphore::new(MAX_CONCURRENT_VOICE_REQUESTS),
+            discovery: Semaphore::new(MAX_CONCURRENT_DISCOVERIES),
             catalogs: Mutex::new(HashMap::new()),
         }
     }
@@ -185,16 +197,20 @@ fn supports(model: &Value, capability: &str) -> bool {
         )
 }
 
-async fn catalog(state: &SharedState, provider: &str, remote: &Remote) -> VoiceResult<Vec<Value>> {
+async fn catalog(
+    state: &SharedState,
+    provider: &str,
+    remote: &Remote,
+) -> VoiceResult<(Vec<Value>, SystemTime)> {
     // The base URL is part of the cache identity: an operator changing an
     // endpoint must not validate against the previous server's catalog.
     let cache_key = format!("{provider}\n{}", remote.base);
     {
         let cache = state.voice_chat.catalogs.lock().await;
-        if let Some((at, models)) = cache.get(&cache_key)
-            && at.elapsed() < CATALOG_TTL
+        if let Some(cached) = cache.get(&cache_key)
+            && cached.at.elapsed() < CATALOG_TTL
         {
-            return Ok(models.clone());
+            return Ok((cached.models.clone(), cached.fetched_at));
         }
     }
     let response = client()?
@@ -226,13 +242,46 @@ async fn catalog(state: &SharedState, provider: &str, remote: &Remote) -> VoiceR
         .take(1000)
         .cloned()
         .collect();
+    let fetched_at = SystemTime::now();
     let mut cache = state.voice_chat.catalogs.lock().await;
-    cache.retain(|_, (at, _)| at.elapsed() < CATALOG_TTL);
+    cache.retain(|_, cached| cached.at.elapsed() < CATALOG_TTL);
     if cache.len() >= 16 {
         cache.clear();
     }
-    cache.insert(cache_key, (Instant::now(), models.clone()));
-    Ok(models)
+    cache.insert(
+        cache_key,
+        CachedCatalog {
+            at: Instant::now(),
+            fetched_at,
+            models: models.clone(),
+        },
+    );
+    Ok((models, fetched_at))
+}
+
+/// Prices exactly as the catalog states them. OpenRouter's speech and
+/// transcription entries carry decimal USD strings without a unit (per
+/// character, per second or per token depending on the model), so the unit is
+/// reported as unknown instead of being assumed to be tokens (ADR 0027).
+fn public_prices(model: &Value) -> Value {
+    let Some(pricing) = model.get("pricing").and_then(Value::as_object) else {
+        return Value::Null;
+    };
+    let prices: Vec<Value> = pricing
+        .iter()
+        .filter_map(|(field, value)| {
+            let usd = value.as_str()?;
+            // A decimal string, never an arbitrary provider text.
+            (usd.len() <= 32 && usd.parse::<f64>().is_ok_and(|v| v.is_finite() && v >= 0.0))
+                .then(|| json!({"field": field, "usd": usd, "unit": Value::Null}))
+        })
+        .take(16)
+        .collect();
+    Value::Array(prices)
+}
+
+fn utc_rfc3339(at: SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(at).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn public_model(provider: &str, model: &Value) -> Value {
@@ -243,6 +292,7 @@ fn public_model(provider: &str, model: &Value) -> Value {
         "voices": model.get("supported_voices").cloned().unwrap_or(json!([])),
         "languages": model.get("supported_languages").cloned().unwrap_or(Value::Null),
         "pricing": model.get("pricing").cloned().unwrap_or(Value::Null),
+        "prices": public_prices(model),
         "pricing_note": "Provider units; not a measured cost per call. Unknown units must not be treated as tokens.",
         "limits": model.get("per_request_limits").cloned().unwrap_or(Value::Null),
         "streaming": false, "available": true,
@@ -259,12 +309,26 @@ pub async fn models(State(state): State<SharedState>) -> VoiceResult<Json<Value>
         )
     })?;
     let cfg = state.current_config();
-    let mut stt = vec![
-        json!({"id":"configured", "provider":"local", "name":"Whisper configurado", "available":state.stt_client.is_some(), "voices":[], "languages":null, "pricing":null, "streaming":false}),
-    ];
-    let mut tts = vec![
-        json!({"id":"configured", "provider":"local", "name":format!("{} configurado", cfg.voice.tts_provider), "available":state.voice_client.is_some() && cfg.voice.tts_provider != "hibiki", "voices":[], "languages":null, "pricing":null, "streaming":false, "reason": if cfg.voice.tts_provider == "hibiki" {"Legacy Hibiki sample server does not synthesize speech"} else {"Requires --with-voice and a working configured server"}}),
-    ];
+    let stt_available = state.stt_client.is_some();
+    let mut local_stt = json!({"id":"configured", "provider":"local", "name":"Whisper local (configurado)", "available":stt_available, "voices":[], "languages":null, "pricing":null, "prices":null, "streaming":false});
+    if !stt_available {
+        local_stt["reason"] =
+            json!("Start the gateway with --with-voice and a configured Whisper server");
+    }
+    let mut stt = vec![local_stt];
+    let tts_reason = if cfg.voice.tts_provider == "hibiki" {
+        Some("Legacy Hibiki sample server does not synthesize speech")
+    } else if state.voice_client.is_none() {
+        Some("Start the gateway with --with-voice and a configured TTS server")
+    } else {
+        None
+    };
+    let mut local_tts = json!({"id":"configured", "provider":"local", "name":format!("{} local (configurado)", cfg.voice.tts_provider), "available":tts_reason.is_none(), "voices":[], "languages":null, "pricing":null, "prices":null, "streaming":false});
+    if let Some(reason) = tts_reason {
+        local_tts["reason"] = json!(reason);
+    }
+    let mut tts = vec![local_tts];
+    let mut catalogs = Vec::new();
     let mut speech_to_speech = Vec::new();
     let mut limitations = vec!["Transcrição por fala e síntese por frase; sem transcrição parcial nem adaptador speech-to-speech.".to_string(), "Preços são metadados do provedor; custo total e teto monetário da chamada ainda não são garantidos.".to_string()];
     let mut providers: Vec<_> = cfg
@@ -290,7 +354,8 @@ pub async fn models(State(state): State<SharedState>) -> VoiceResult<Json<Value>
     .await;
     for (provider, found) in discoveries {
         match found {
-            Ok(found) => {
+            Ok((found, fetched_at)) => {
+                catalogs.push(json!({"provider":provider, "fetched_at":utc_rfc3339(fetched_at), "ttl_seconds":CATALOG_TTL.as_secs(), "voice_models":found.len()}));
                 for model in found {
                     let mut public = public_model(&provider, &model);
                     if supports(&model, "transcription") {
@@ -308,13 +373,27 @@ pub async fn models(State(state): State<SharedState>) -> VoiceResult<Json<Value>
                     }
                 }
             }
-            Err(_) => limitations.push(format!(
-                "Catálogo de {provider} indisponível; nenhuma alternativa foi selecionada."
-            )),
+            Err(_) => {
+                catalogs.push(
+                    json!({"provider":provider, "fetched_at":Value::Null, "available":false}),
+                );
+                limitations.push(format!(
+                    "Catálogo de {provider} indisponível; nenhuma alternativa foi selecionada."
+                ))
+            }
         }
     }
+    // The operator's text-model fallback chain applies to voice turns too.
+    // Shown up front, and the reply frame names who actually answered.
+    let llm_fallback_providers = state.agents.fallback_providers();
+    if !llm_fallback_providers.is_empty() {
+        limitations.push(format!(
+            "Fallback de conversa configurado pelo operador: {}. Se o provedor escolhido falhar, um deles pode responder; a chamada mostra quando isso acontecer.",
+            llm_fallback_providers.join(", ")
+        ));
+    }
     Ok(Json(
-        json!({"stt":stt, "tts":tts, "speech_to_speech":speech_to_speech, "limitations":limitations, "catalog_ttl_seconds":CATALOG_TTL.as_secs(), "default_language":cfg.voice.language}),
+        json!({"stt":stt, "tts":tts, "speech_to_speech":speech_to_speech, "limitations":limitations, "catalogs":catalogs, "catalog_ttl_seconds":CATALOG_TTL.as_secs(), "default_language":cfg.voice.language, "llm_fallback_providers":llm_fallback_providers, "limits":{"max_utterance_seconds":30, "max_sentence_bytes":MAX_SENTENCE_BYTES, "max_concurrent_requests":MAX_CONCURRENT_VOICE_REQUESTS}}),
     ))
 }
 
@@ -361,9 +440,81 @@ fn validate_utterance(audio: &[u8]) -> VoiceResult<()> {
     Ok(())
 }
 
+/// Output format requested from `POST /audio/speech`, per model family, as
+/// documented by OpenRouter (ADR 0027). This is a protocol rule, not a model
+/// catalog: unknown families ask for MP3 and a mismatch surfaces as an error,
+/// never as a silent second generation in another format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpeechFormat {
+    /// PCM16 LE. `default_layout` is used only when the MIME omits
+    /// `rate`/`channels` and the family's layout is documented.
+    Pcm {
+        default_layout: Option<(u32, u16)>,
+    },
+    Mp3,
+}
+
+fn speech_format(model: &str) -> SpeechFormat {
+    if model.starts_with("google/gemini-") {
+        // Official cookbook: audio/pcm;rate=24000;channels=1.
+        SpeechFormat::Pcm {
+            default_layout: Some((24_000, 1)),
+        }
+    } else if model.starts_with("heygen/") {
+        SpeechFormat::Pcm {
+            default_layout: None,
+        }
+    } else {
+        SpeechFormat::Mp3
+    }
+}
+
+/// 20 ms of PCM16 mono at 16 kHz.
+const GATE_FRAME_SAMPLES: usize = 320;
+/// RMS (full scale = 1.0) a frame needs to count as voiced: about -44 dBFS,
+/// well below the browser VAD floor (0.012), so the gate never second-guesses
+/// a real start detected by the client.
+const GATE_FRAME_RMS: f64 = 0.006;
+/// Voiced frames an utterance needs: 80 ms.
+const GATE_MIN_VOICED_FRAMES: usize = 4;
+
+/// Energy gate run on the server before any STT request.
+///
+/// It is a cost guard, not a speech classifier: steady loud noise passes, and
+/// that limitation is documented. `audio` must already have passed
+/// [`validate_utterance`] (44-byte header, PCM16 mono 16 kHz).
+fn utterance_has_speech(audio: &[u8]) -> bool {
+    let Some(pcm) = audio.get(44..) else {
+        return false;
+    };
+    let voiced = pcm
+        .chunks(GATE_FRAME_SAMPLES * 2)
+        .filter(|frame| {
+            let samples = frame.len() / 2;
+            if samples == 0 {
+                return false;
+            }
+            let energy: f64 = frame
+                .chunks_exact(2)
+                .map(|b| {
+                    let v = f64::from(i16::from_le_bytes([b[0], b[1]])) / 32768.0;
+                    v * v
+                })
+                .sum();
+            (energy / samples as f64).sqrt() >= GATE_FRAME_RMS
+        })
+        .count();
+    voiced >= GATE_MIN_VOICED_FRAMES
+}
+
 /// OpenRouter PCM is signed 16-bit little-endian. Rate/channel metadata is
-/// mandatory: guessing a rate changes pitch and duration (and cost estimates).
-fn pcm_to_wav(content_type: &str, pcm: &[u8]) -> VoiceResult<Vec<u8>> {
+/// mandatory unless the family documents a fixed layout: guessing a rate
+/// changes pitch and duration (and cost estimates).
+fn pcm_to_wav(
+    content_type: &str,
+    pcm: &[u8],
+    default_layout: Option<(u32, u16)>,
+) -> VoiceResult<Vec<u8>> {
     let invalid = || {
         failure(
             StatusCode::BAD_GATEWAY,
@@ -385,6 +536,10 @@ fn pcm_to_wav(content_type: &str, pcm: &[u8]) -> VoiceResult<Vec<u8>> {
             }
         }
     }
+    let (rate, channels) = match (rate, channels, default_layout) {
+        (None, None, Some(layout)) => (Some(layout.0), Some(layout.1)),
+        _ => (rate, channels),
+    };
     let rate = rate
         .filter(|r| (8_000..=192_000).contains(r))
         .ok_or_else(invalid)?;
@@ -421,7 +576,7 @@ async fn selected_model(
     capability: &str,
 ) -> VoiceResult<(Remote, Value)> {
     let remote = remote(state, provider)?;
-    let models = catalog(state, provider, &remote).await?;
+    let (models, _) = catalog(state, provider, &remote).await?;
     let model = models
         .into_iter()
         .find(|m| m["id"].as_str() == Some(id) && supports(m, capability))
@@ -511,7 +666,8 @@ pub async fn synthesize(
         // These are protocol families, not a fixed model catalog. The official
         // speech contract requires PCM for Gemini TTS and HeyGen; MP3 works for
         // MiniMax/Voxtral. No failed inference is automatically retried.
-        let pcm = body.model.starts_with("google/gemini-") || body.model.starts_with("heygen/");
+        let format = speech_format(&body.model);
+        let pcm = matches!(format, SpeechFormat::Pcm { .. });
         let mut request = json!({"model":body.model, "input":body.text, "response_format":if pcm {"pcm"} else {"mp3"}, "provider":remote.policy});
         if let Some(voice) = voice {
             request["voice"] = json!(voice);
@@ -532,8 +688,8 @@ pub async fn synthesize(
             .unwrap_or("")
             .to_string();
         let audio = response_bytes(response, garraia_voice::http::MAX_AUDIO_BYTES).await?;
-        if pcm {
-            let wav = pcm_to_wav(&content_type, &audio)?;
+        if let SpeechFormat::Pcm { default_layout } = format {
+            let wav = pcm_to_wav(&content_type, &audio, default_layout)?;
             return Ok((
                 [("content-type", "audio/wav"), ("cache-control", "no-store")],
                 wav,
@@ -614,6 +770,14 @@ pub async fn transcribe(
             .get("model")
             .ok_or_else(|| bad_request("Missing STT model"))?;
         let lang = language(fields.get("language").map(String::as_str))?;
+        if !utterance_has_speech(&audio) {
+            // Digital silence or a near-silent upload (OS-level mute, a
+            // closed lid, a VAD false start): answer without contacting — and
+            // paying — any STT provider.
+            return Ok(Json(
+                json!({"text":"", "usage":Value::Null, "skipped":"silence"}),
+            ));
+        }
         let mut usage = Value::Null;
         let text = if provider == "local" {
             if model != "configured" {
@@ -692,4 +856,164 @@ pub async fn transcribe(
     tokio::time::timeout(REQUEST_TIMEOUT, work)
         .await
         .map_err(|_| failure(StatusCode::GATEWAY_TIMEOUT, "Transcription timed out"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PCM16 mono 16 kHz WAV from samples in [-1, 1].
+    fn wav(samples: &[f64]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(44 + samples.len() * 2);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + samples.len() as u32 * 2).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16_u32.to_le_bytes());
+        out.extend_from_slice(&1_u16.to_le_bytes());
+        out.extend_from_slice(&1_u16.to_le_bytes());
+        out.extend_from_slice(&16_000_u32.to_le_bytes());
+        out.extend_from_slice(&32_000_u32.to_le_bytes());
+        out.extend_from_slice(&2_u16.to_le_bytes());
+        out.extend_from_slice(&16_u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&(samples.len() as u32 * 2).to_le_bytes());
+        for s in samples {
+            out.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+        }
+        out
+    }
+
+    fn ms(n: usize) -> usize {
+        n * 16
+    }
+
+    /// A 220 Hz tone: a stand-in for voiced speech energy.
+    fn tone(len: usize, amplitude: f64) -> Vec<f64> {
+        (0..len)
+            .map(|i| amplitude * (i as f64 * 220.0 * std::f64::consts::TAU / 16_000.0).sin())
+            .collect()
+    }
+
+    /// Deterministic pseudo-random noise (no `rand` in the gateway tests).
+    fn noise(len: usize, amplitude: f64, seed: u32) -> Vec<f64> {
+        let mut x = seed.max(1);
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                amplitude * (f64::from(x) / f64::from(u32::MAX) * 2.0 - 1.0)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn simulated_pcm_passes_the_wav_contract() {
+        assert!(validate_utterance(&wav(&tone(ms(500), 0.2))).is_ok());
+        // 30 s is the ceiling; one more sample is refused.
+        assert!(validate_utterance(&wav(&vec![0.0; ms(30_000)])).is_ok());
+        assert!(validate_utterance(&wav(&vec![0.0; ms(30_000) + 1])).is_err());
+        assert!(validate_utterance(&wav(&[])).is_err(), "no samples");
+        let mut stereo = wav(&tone(ms(100), 0.2));
+        stereo[22] = 2;
+        assert!(validate_utterance(&stereo).is_err());
+        let mut wrong_rate = wav(&tone(ms(100), 0.2));
+        wrong_rate[24..28].copy_from_slice(&48_000_u32.to_le_bytes());
+        assert!(validate_utterance(&wrong_rate).is_err());
+    }
+
+    #[test]
+    fn digital_silence_and_low_noise_do_not_reach_stt() {
+        assert!(!utterance_has_speech(&wav(&vec![0.0; ms(2_000)])));
+        assert!(!utterance_has_speech(&wav(&noise(ms(2_000), 0.003, 7))));
+    }
+
+    #[test]
+    fn a_click_is_not_speech_but_a_short_word_is() {
+        // 20 ms burst inside silence: one voiced frame.
+        let mut click = vec![0.0; ms(500)];
+        click.splice(ms(200)..ms(220), tone(ms(20), 0.5));
+        assert!(!utterance_has_speech(&wav(&click)));
+        // 150 ms of voice ("sim") with pre-roll and trailing silence.
+        let mut word = vec![0.0; ms(240)];
+        word.extend(tone(ms(150), 0.1));
+        word.extend(vec![0.0; ms(800)]);
+        assert!(utterance_has_speech(&wav(&word)));
+    }
+
+    #[test]
+    fn speech_with_pauses_counts_every_voiced_segment() {
+        let mut talk = Vec::new();
+        for _ in 0..3 {
+            talk.extend(tone(ms(40), 0.05));
+            talk.extend(vec![0.0; ms(400)]);
+        }
+        assert!(
+            utterance_has_speech(&wav(&talk)),
+            "3 x 40 ms = 120 ms voiced"
+        );
+    }
+
+    /// Documented limitation: the gate measures energy, so loud steady noise
+    /// passes. The browser VAD adapts to the noise floor; the server only
+    /// stops silence from being billed.
+    #[test]
+    fn loud_noise_passes_the_energy_gate() {
+        assert!(utterance_has_speech(&wav(&noise(ms(1_000), 0.2, 3))));
+    }
+
+    #[test]
+    fn pcm_needs_explicit_layout_unless_the_family_documents_it() {
+        let pcm = vec![0_u8; 480];
+        let wav = pcm_to_wav("audio/pcm;rate=24000;channels=1", &pcm, None).expect("wav");
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(
+            u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]),
+            24_000
+        );
+        assert_eq!(wav.len(), 44 + pcm.len());
+        assert!(pcm_to_wav("audio/pcm", &pcm, None).is_err(), "rate unknown");
+        let gemini = pcm_to_wav("audio/pcm", &pcm, Some((24_000, 1))).expect("documented");
+        assert_eq!(u16::from_le_bytes([gemini[22], gemini[23]]), 1);
+        // Partial metadata never mixes with the default.
+        assert!(pcm_to_wav("audio/pcm;rate=24000", &pcm, Some((24_000, 1))).is_err());
+        assert!(pcm_to_wav("audio/mpeg", &pcm, Some((24_000, 1))).is_err());
+        assert!(pcm_to_wav("audio/pcm;rate=24000;channels=2", &[0; 6], None).is_err());
+    }
+
+    #[test]
+    fn speech_format_is_a_protocol_rule_not_a_catalog() {
+        assert_eq!(
+            speech_format("google/gemini-3.8-flash-tts"),
+            SpeechFormat::Pcm {
+                default_layout: Some((24_000, 1))
+            }
+        );
+        assert_eq!(
+            speech_format("heygen/heygen-voice-1-turbo"),
+            SpeechFormat::Pcm {
+                default_layout: None
+            }
+        );
+        assert_eq!(
+            speech_format("mistralai/voxtral-mini-tts-3-0"),
+            SpeechFormat::Mp3
+        );
+    }
+
+    #[test]
+    fn prices_keep_the_provider_value_and_never_invent_a_unit() {
+        let prices = public_prices(
+            &json!({"pricing":{"prompt":"0.000015","completion":"0","weird":"ten dollars","nested":{"x":1}}}),
+        );
+        let prices = prices.as_array().expect("array");
+        assert_eq!(prices.len(), 2, "{prices:?}");
+        assert!(prices.iter().all(|p| p["unit"].is_null()));
+        assert!(
+            prices
+                .iter()
+                .any(|p| p["field"] == "prompt" && p["usd"] == "0.000015")
+        );
+        assert_eq!(public_prices(&json!({"id":"x"})), Value::Null);
+    }
 }

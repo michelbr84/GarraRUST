@@ -2,7 +2,7 @@
 //! No model inference, paid service, microphone, environment edits or external
 //! network are needed: only ephemeral loopback HTTP servers are used.
 
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 
 use axum::{
     Router,
@@ -23,6 +23,22 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{header, method, path, query_param},
 };
+
+/// `AppState::new` le e grava no diretorio de config: o binario de teste
+/// inteiro aponta para um tempdir, e sem autoprovisionar MCP.
+static TEST_ENV: LazyLock<tempfile::TempDir> = LazyLock::new(|| {
+    let dir = tempfile::tempdir().expect("temp config dir");
+    // SAFETY: o `LazyLock` serializa isto contra as outras threads de teste
+    // deste binario; todo teste passa por `router_with` primeiro.
+    unsafe {
+        std::env::set_var("GARRAIA_CONFIG_DIR", dir.path());
+        std::env::set_var(
+            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
+            "1",
+        );
+    }
+    dir
+});
 
 const API_KEY: &str = "voice-contract-gateway-key";
 const PROVIDER_KEY: &str = "voice-contract-upstream-secret";
@@ -93,8 +109,24 @@ fn router(
     local: Option<Arc<LocalSpeech>>,
     stt: Option<garraia_voice::WhisperClient>,
 ) -> Router {
+    router_with(
+        config,
+        local.map(|l| l as Arc<dyn garraia_voice::TtsSynthesizer>),
+        stt,
+        |_| {},
+    )
+}
+
+fn router_with(
+    config: AppConfig,
+    local: Option<Arc<dyn garraia_voice::TtsSynthesizer>>,
+    stt: Option<garraia_voice::WhisperClient>,
+    setup: impl FnOnce(&AgentRuntime),
+) -> Router {
+    LazyLock::force(&TEST_ENV);
     let runtime = AgentRuntime::new();
     runtime.register_provider(Arc::new(RegisteredProvider));
+    setup(&runtime);
     let mut state = AppState::new(config, Arc::new(runtime), ChannelRegistry::new());
     if let Some(local) = local {
         state.voice_client = Some(local);
@@ -138,8 +170,18 @@ fn remote_speech() -> Value {
     json!({"provider":"voice-router","model":"example/speech","voice":"speaker-a","text":"Olá, mundo."})
 }
 
+/// 200 ms de tom (energia de fala) em PCM16 mono 16 kHz. Silencio puro nao
+/// serve mais: a porta de energia do servidor nao chama STT para ele.
 fn wav() -> Vec<u8> {
-    let pcm = vec![0_u8; 640]; // 20 ms of mono PCM16, 16 kHz.
+    wav_from((0..3200).map(|i| ((i as f64 * 0.0864).sin() * 8000.0) as i16))
+}
+
+fn silent_wav() -> Vec<u8> {
+    wav_from(std::iter::repeat_n(0_i16, 16_000))
+}
+
+fn wav_from(samples: impl Iterator<Item = i16>) -> Vec<u8> {
+    let pcm: Vec<u8> = samples.flat_map(i16::to_le_bytes).collect();
     let mut bytes = Vec::with_capacity(44 + pcm.len());
     bytes.extend_from_slice(b"RIFF");
     bytes.extend_from_slice(&(36 + pcm.len() as u32).to_le_bytes());
@@ -514,4 +556,323 @@ async fn local_stt_receives_selected_language_and_real_wav_without_remote_fallba
     let body = String::from_utf8_lossy(&requests[0].body);
     assert!(body.contains("name=\"language\"\r\n\r\nen\r\n"));
     assert!(requests[0].body.windows(4).any(|chunk| chunk == b"RIFF"));
+}
+
+// ─── #1754: catalogo por fixture local, formatos, uso, silencio e capacidade ──
+
+const FIXTURE: &str = include_str!("fixtures/openrouter_voice_models_2026-11-02.json");
+
+async fn mock_fixture_catalog(server: &MockServer) {
+    let body: Value = serde_json::from_str(FIXTURE).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .and(query_param("output_modalities", "all"))
+        .and(header("authorization", format!("Bearer {PROVIDER_KEY}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+fn ids(list: &Value) -> Vec<String> {
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            format!(
+                "{}:{}",
+                m["provider"].as_str().unwrap(),
+                m["id"].as_str().unwrap()
+            )
+        })
+        .collect()
+}
+
+/// Catalogo real (recortado) filtrado so por `architecture.*_modalities`:
+/// musica (texto+imagem -> texto+audio) e texto puro ficam de fora; audio ->
+/// audio aparece como speech-to-speech NAO executavel. Preco vem como o
+/// provedor informa, sem unidade inventada; o horario da consulta vai junto, e
+/// o fallback de conversa configurado pelo operador e anunciado.
+#[tokio::test]
+async fn catalog_from_local_fixture_reports_capabilities_prices_time_and_fallback() {
+    let server = MockServer::start().await;
+    mock_fixture_catalog(&server).await;
+    let mut config = remote_config(&server);
+    config.voice.tts_provider = "hibiki".into();
+    let app = router_with(config, None, None, |runtime| {
+        runtime.set_fallback_providers(vec!["voice-router".into()]);
+    });
+    let (status, _, bytes) = call(
+        app,
+        request("GET", "/api/voice/models", "application/json", vec![]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        ids(&body["tts"]),
+        [
+            "local:configured",
+            "voice-router:heygen/heygen-voice-1-turbo",
+            "voice-router:heygen/heygen-voice-1-turbo:free",
+            "voice-router:mistralai/voxtral-mini-tts-3-0",
+            "voice-router:google/gemini-3.8-flash-lite-tts",
+        ]
+    );
+    assert_eq!(
+        ids(&body["stt"]),
+        [
+            "local:configured",
+            "voice-router:mistralai/voxtral-mini-transcribe-3-0"
+        ]
+    );
+    assert_eq!(
+        ids(&body["speech_to_speech"]),
+        ["voice-router:openai/gpt-audio-mini"]
+    );
+    assert_eq!(body["speech_to_speech"][0]["available"], false);
+    // Locais: indisponibilidade explicita, com motivo.
+    assert_eq!(body["stt"][0]["available"], false);
+    assert!(
+        body["stt"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("--with-voice")
+    );
+    assert_eq!(body["tts"][0]["available"], false);
+    assert!(
+        body["tts"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Hibiki")
+    );
+    // Preco: o valor do catalogo, unidade desconhecida (nunca "por token").
+    let voxtral = &body["tts"][3];
+    assert!(
+        voxtral["prices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["field"] == "prompt" && p["usd"] == "0.000013" && p["unit"].is_null())
+    );
+    assert_eq!(voxtral["voices"].as_array().unwrap().len(), 6);
+    // Horario da consulta (UTC, RFC 3339) e validade.
+    let catalog = &body["catalogs"][0];
+    assert_eq!(catalog["provider"], "voice-router");
+    assert!(catalog["fetched_at"].as_str().unwrap().ends_with('Z'));
+    assert_eq!(catalog["ttl_seconds"], 300);
+    assert_eq!(body["llm_fallback_providers"], json!(["voice-router"]));
+    assert!(
+        body["limitations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l.as_str().unwrap().contains("Fallback de conversa"))
+    );
+    assert!(!String::from_utf8_lossy(&bytes).contains(PROVIDER_KEY));
+}
+
+/// Um enunciado sem energia de fala nao chega a nenhum STT — nem local, nem
+/// pago. O cliente volta a escutar.
+#[tokio::test]
+async fn silent_utterance_never_reaches_any_stt() {
+    let server = MockServer::start().await;
+    let client = garraia_voice::WhisperClient::new(&server.uri(), "pt");
+    let app = router(config(), None, Some(client));
+    let (status, _, bytes) = call(
+        app,
+        transcription(
+            &[("provider", "local"), ("model", "configured")],
+            &silent_wav(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["text"], "");
+    assert_eq!(body["skipped"], "silence");
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+/// STT remoto: o audio vai em base64 com o idioma base; do `usage` do
+/// provedor so voltam numeros (custo efetivo, segundos), nunca texto.
+#[tokio::test]
+async fn remote_transcription_returns_text_and_only_numeric_usage() {
+    let server = MockServer::start().await;
+    mock_fixture_catalog(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/audio/transcriptions"))
+        .and(header("authorization", format!("Bearer {PROVIDER_KEY}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "text": " olá garra ",
+            "usage": {"cost": 0.00012, "seconds": 0.2, "note": "internal routing detail"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let app = router(remote_config(&server), None, None);
+    let (status, _, bytes) = call(
+        app,
+        transcription(
+            &[
+                ("provider", "voice-router"),
+                ("model", "mistralai/voxtral-mini-transcribe-3-0"),
+                ("language", "pt-BR"),
+            ],
+            &wav(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["text"], "olá garra");
+    assert_eq!(body["usage"], json!({"cost": 0.00012, "seconds": 0.2}));
+    let sent = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.url.path() == "/v1/audio/transcriptions")
+        .unwrap();
+    let sent: Value = serde_json::from_slice(&sent.body).unwrap();
+    assert_eq!(sent["model"], "mistralai/voxtral-mini-transcribe-3-0");
+    assert_eq!(sent["language"], "pt");
+    assert_eq!(sent["input_audio"]["format"], "wav");
+}
+
+/// Formato por familia documentada: Gemini pede PCM e, sem `rate`/`channels`
+/// no MIME, usa o layout documentado (24 kHz mono) para virar WAV; Voxtral pede
+/// MP3 e o MP3 passa direto.
+#[tokio::test]
+async fn documented_pcm_becomes_wav_and_mp3_passes_through() {
+    let server = MockServer::start().await;
+    mock_fixture_catalog(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/audio/speech"))
+        .and(wiremock::matchers::body_partial_json(
+            json!({"model":"google/gemini-3.8-flash-lite-tts","response_format":"pcm","voice":"Kore"}),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "audio/pcm")
+                .set_body_bytes(vec![0_u8; 4800]),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/audio/speech"))
+        .and(wiremock::matchers::body_partial_json(
+            json!({"model":"mistralai/voxtral-mini-tts-3-0","response_format":"mp3","voice":"voice_3150"}),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "audio/mpeg")
+                .set_body_bytes(b"ID3fake-mp3".to_vec()),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let app = router(remote_config(&server), None, None);
+    let (status, headers, wav) = call(
+        app.clone(),
+        synth(json!({"provider":"voice-router","model":"google/gemini-3.8-flash-lite-tts","voice":"Kore","text":"Olá."})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "audio/wav");
+    assert_eq!(&wav[..4], b"RIFF");
+    assert_eq!(
+        u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]),
+        24_000
+    );
+    let (status, headers, mp3) = call(
+        app,
+        synth(json!({"provider":"voice-router","model":"mistralai/voxtral-mini-tts-3-0","voice":"voice_3150","text":"Olá."})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "audio/mpeg");
+    assert_eq!(headers["cache-control"], "no-store");
+    assert_eq!(mp3, b"ID3fake-mp3");
+}
+
+/// PCM sem layout de uma familia que nao documenta um padrao (HeyGen) e erro
+/// visivel — nada de gerar de novo em outro formato (custo duplicado).
+#[tokio::test]
+async fn undocumented_pcm_layout_is_an_error_not_a_second_generation() {
+    let server = MockServer::start().await;
+    mock_fixture_catalog(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/audio/speech"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "audio/pcm")
+                .set_body_bytes(vec![0_u8; 4800]),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (status, _, _) = call(
+        router(remote_config(&server), None, None),
+        synth(json!({"provider":"voice-router","model":"heygen/heygen-voice-1-turbo","voice":"nadine","text":"Olá."})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+/// TTS local lento: segura a vaga enquanto sintetiza.
+struct SlowSpeech;
+
+#[async_trait::async_trait]
+impl garraia_voice::TtsSynthesizer for SlowSpeech {
+    async fn synthesize_bytes(
+        &self,
+        _text: &str,
+        _language: &str,
+    ) -> Result<Vec<u8>, garraia_voice::VoiceError> {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        Ok(wav())
+    }
+}
+
+/// Com as 4 vagas ocupadas, o pedido seguinte recebe 429 na hora, em vez de
+/// entrar numa fila invisivel que atrasaria a fala de todo mundo.
+#[tokio::test]
+async fn concurrency_limit_answers_429_instead_of_queueing() {
+    let app = router_with(config(), Some(Arc::new(SlowSpeech)), None, |_| {});
+    let calls = (0..5).map(|i| {
+        let app = app.clone();
+        async move {
+            call(
+                app,
+                synth(json!({"provider":"local","model":"configured","text":format!("frase {i}")})),
+            )
+            .await
+            .0
+        }
+    });
+    let statuses = futures::future::join_all(calls).await;
+    assert_eq!(
+        statuses.iter().filter(|s| **s == StatusCode::OK).count(),
+        4,
+        "{statuses:?}"
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|s| **s == StatusCode::TOO_MANY_REQUESTS)
+            .count(),
+        1,
+        "{statuses:?}"
+    );
+    // Vagas devolvidas: o proximo pedido passa.
+    assert_eq!(
+        call(
+            app,
+            synth(json!({"provider":"local","model":"configured","text":"depois"}))
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
 }

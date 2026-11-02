@@ -1,0 +1,259 @@
+{
+ "_comment": "Recorte de GET https://openrouter.ai/api/v1/models?output_modalities=all (publico, sem chave, sem inferencia) em 2026-11-02 ~13:16 America/New_York: 685 modelos, 38 speech, 29 transcription, 4 audio. Vozes cortadas em 6 por modelo. Fixture de teste; o catalogo real muda.",
+ "data": [
+  {
+   "id": "heygen/heygen-voice-1-turbo",
+   "name": "HeyGen: HeyGen Voice Turbo",
+   "architecture": {
+    "modality": "text->speech",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "speech"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.000004",
+    "completion": "0"
+   },
+   "supported_voices": [
+    "nadine",
+    "tabitha",
+    "bram",
+    "gareth",
+    "noelle",
+    "meredith"
+   ],
+   "per_request_limits": null,
+   "supported_parameters": [],
+   "context_length": 0
+  },
+  {
+   "id": "heygen/heygen-voice-1-turbo:free",
+   "name": "HeyGen: HeyGen Voice Turbo (free)",
+   "architecture": {
+    "modality": "text->speech",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "speech"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "supported_voices": [
+    "nadine",
+    "tabitha",
+    "bram",
+    "gareth",
+    "noelle",
+    "meredith"
+   ],
+   "per_request_limits": null,
+   "supported_parameters": [],
+   "context_length": 0
+  },
+  {
+   "id": "mistralai/voxtral-mini-tts-3-0",
+   "name": "Mistral: Voxtral TTS 3",
+   "architecture": {
+    "modality": "text->speech",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "speech"
+    ],
+    "tokenizer": "Mistral",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.000013",
+    "completion": "0"
+   },
+   "supported_voices": [
+    "voice_3150",
+    "voice_478",
+    "voice_447",
+    "voice_485",
+    "en_paul_sad",
+    "en_paul_neutral"
+   ],
+   "per_request_limits": null,
+   "supported_parameters": [],
+   "context_length": 4096
+  },
+  {
+   "id": "mistralai/voxtral-mini-transcribe-3-0",
+   "name": "Mistral: Voxtral Mini Transcribe 3",
+   "architecture": {
+    "modality": "audio->transcription",
+    "input_modalities": [
+     "audio"
+    ],
+    "output_modalities": [
+     "transcription"
+    ],
+    "tokenizer": "Mistral",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.0000583333",
+    "completion": "0"
+   },
+   "supported_voices": null,
+   "per_request_limits": null,
+   "supported_parameters": [],
+   "context_length": 65536
+  },
+  {
+   "id": "google/gemini-3.8-flash-lite-tts",
+   "name": "Google: Gemini 3.8 Flash Lite TTS",
+   "architecture": {
+    "modality": "text->speech",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "speech"
+    ],
+    "tokenizer": "Gemini",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.0000005",
+    "completion": "0.000006"
+   },
+   "supported_voices": [
+    "Zephyr",
+    "Puck",
+    "Charon",
+    "Kore",
+    "Fenrir",
+    "Leda"
+   ],
+   "per_request_limits": null,
+   "supported_parameters": [],
+   "context_length": 32768
+  },
+  {
+   "id": "google/lyria-3-clip-preview",
+   "name": "Google: Lyria 3 Clip Preview",
+   "architecture": {
+    "modality": "text+image->text+audio",
+    "input_modalities": [
+     "text",
+     "image"
+    ],
+    "output_modalities": [
+     "text",
+     "audio"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "supported_voices": null,
+   "per_request_limits": null,
+   "supported_parameters": [
+    "max_tokens",
+    "response_format",
+    "seed",
+    "temperature",
+    "top_p"
+   ],
+   "context_length": 1048576
+  },
+  {
+   "id": "openai/gpt-audio-mini",
+   "name": "OpenAI: GPT Audio Mini",
+   "architecture": {
+    "modality": "text+audio->text+audio",
+    "input_modalities": [
+     "text",
+     "audio"
+    ],
+    "output_modalities": [
+     "text",
+     "audio"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.0000006",
+    "completion": "0.0000024",
+    "audio": "0.0000006",
+    "audio_output": "0.0000024"
+   },
+   "supported_voices": null,
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "logit_bias",
+    "logprobs",
+    "max_tokens",
+    "presence_penalty",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_logprobs",
+    "top_p"
+   ],
+   "context_length": 128000
+  },
+  {
+   "id": "z-ai/glm-5.3-flashx-legal",
+   "name": "Z.ai: GLM 5.3 FlashX Legal",
+   "architecture": {
+    "modality": "text+image+video->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "video"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.00000037",
+    "completion": "0.00000125",
+    "input_cache_read": "0.000000075"
+   },
+   "supported_voices": null,
+   "per_request_limits": null,
+   "supported_parameters": [
+    "include_reasoning",
+    "max_tokens",
+    "reasoning",
+    "reasoning_effort",
+    "response_format",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_p"
+   ],
+   "context_length": 1048576
+  }
+ ]
+}
