@@ -33,7 +33,9 @@ fn garra(dir: &Path, args: &[&str]) -> std::process::Output {
 
 /// O fixture stdio que o `garraia-agents` ja usa nos testes de lifecycle MCP
 /// (`tests/mcp_lifecycle.rs`) — fala so o suficiente de JSON-RPC para
-/// `initialize`, `tools/list` e `tools/call`.
+/// `initialize`, `tools/list` e `tools/call`. Mesmo `cfg` dos testes que o
+/// usam: sem ele o clippy do Windows acusa funcao morta (#1762).
+#[cfg(not(windows))]
 fn fixture_args() -> Vec<String> {
     vec![format!(
         "{}/../garraia-agents/tests/fixtures/fake_mcp_server.py",

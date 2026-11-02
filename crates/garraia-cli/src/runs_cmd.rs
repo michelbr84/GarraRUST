@@ -294,8 +294,10 @@ mod tests {
     /// coluna zero — mesma tecnica do scan de `run_scheduler` no
     /// `server.rs`. Sem o recorte, os scans casariam com o proprio modulo de
     /// teste, que tambem chama as funcoes vigiadas.
-    fn corpo_de(assinatura: &str) -> &'static str {
-        let src = include_str!("runs_cmd.rs");
+    fn corpo_de(assinatura: &str) -> String {
+        // Fins de linha normalizados: o checkout do Windows e CRLF e o recorte
+        // procura `"\n}\n"` (#1762).
+        let src = include_str!("runs_cmd.rs").replace("\r\n", "\n");
         let inicio = src
             .find(assinatura)
             .unwrap_or_else(|| panic!("{assinatura} tem de existir em runs_cmd.rs"));
@@ -303,7 +305,7 @@ mod tests {
         let fim = resto
             .find("\n}\n")
             .expect("a funcao tem de fechar em coluna zero");
-        &resto[..fim]
+        resto[..fim].to_string()
     }
 
     /// #1227 (slice 4): a listagem tem de LER o ledger. As duas chamadas —

@@ -503,6 +503,9 @@ mod tests {
         }
     }
 
+    // #1762: so os testes `cfg(unix)` (fiacao do sandbox, turno com bash) usam
+    // este item; sem o cfg o clippy do Windows acusa codigo morto.
+    #[cfg(unix)]
     fn ctx_sem_dir() -> garraia_agents::tools::ToolContext {
         garraia_agents::tools::ToolContext {
             session_id: "teste-1272".into(),
@@ -672,6 +675,10 @@ mod tests {
     /// Provider de stub: pede, uma por rodada, as tool calls do roteiro e guarda
     /// o que voltou de cada uma e quais tools o modelo viu. Sem `async_trait`, o
     /// impl é escrito na forma que a macro gera.
+    ///
+    /// #1762: o roteiro (e o `turno` que o usa) so serve aos testes `cfg(unix)`;
+    /// sem o cfg o clippy do Windows acusa codigo morto.
+    #[cfg(unix)]
     struct Roteiro {
         chamadas: Vec<(String, serde_json::Value)>,
         volta: std::sync::atomic::AtomicUsize,
@@ -679,6 +686,7 @@ mod tests {
         vistas: std::sync::Mutex<Vec<String>>,
     }
 
+    #[cfg(unix)]
     impl Roteiro {
         fn novo(chamadas: Vec<(&str, serde_json::Value)>) -> Arc<Self> {
             Arc::new(Self {
@@ -727,9 +735,11 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     type Fut<'a, T> =
         std::pin::Pin<Box<dyn std::future::Future<Output = garraia_common::Result<T>> + Send + 'a>>;
 
+    #[cfg(unix)]
     impl garraia_agents::LlmProvider for Roteiro {
         fn provider_id(&self) -> &str {
             "roteiro"
@@ -758,6 +768,7 @@ mod tests {
     /// Roda um turno do `garra_agent` pela montagem de produção ([`montar_runtime`])
     /// com o provider de stub. Devolve os resultados das tools (na última rodada)
     /// e as tools que o modelo viu.
+    #[cfg(unix)]
     async fn turno(
         config: &AppConfig,
         working_dir: Option<&str>,

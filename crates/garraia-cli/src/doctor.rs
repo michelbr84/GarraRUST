@@ -1099,10 +1099,13 @@ mod tests {
         assert!(item(&check, "LD_PRELOAD").detail.contains("/lib/x.so"));
     }
 
+    // Os dois testes abaixo comparam `Path` (por componente), nao o
+    // `display()`: no Windows o `join` poe `\` entre o prefixo e `bin/...`, e a
+    // string nunca casaria com a fixture de `/` (#1762).
     #[test]
     fn termux_check_flags_a_missing_mcp_wrapper() {
         let wrapper = format!("{TERMUX_PREFIX}/bin/garra-mcp-server");
-        let check = collect_termux_check(&termux_env(), |p| p.display().to_string() == wrapper);
+        let check = collect_termux_check(&termux_env(), |p| p == std::path::Path::new(&wrapper));
         assert!(item(&check, "Wrapper MCP").ok);
 
         let check = collect_termux_check(&termux_env(), |_| false);
@@ -1121,7 +1124,7 @@ mod tests {
     #[test]
     fn termux_check_always_offers_the_loader_recipe() {
         let linker = format!("{TERMUX_PREFIX}/bin/garra-mcp-server-linker");
-        let check = collect_termux_check(&termux_env(), |p| p.display().to_string() == linker);
+        let check = collect_termux_check(&termux_env(), |p| p == std::path::Path::new(&linker));
         let ok_item = item(&check, "Wrapper MCP (loader)");
         assert!(ok_item.ok);
         let step = ok_item.next_step.as_deref().expect("receita do loader");
