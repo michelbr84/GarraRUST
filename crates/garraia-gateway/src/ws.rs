@@ -568,20 +568,19 @@ async fn process_text_message(
     let model_override = msg.model.clone();
     let voice = msg.voice;
     let task = tokio::spawn(async move {
-        let work = agents
-            .process_message_streaming_with_events(
-                &sid,
-                &text_for_agent,
-                &history,
-                events_tx,
-                continuity_key.as_deref(),
-                None,
-                provider_id.as_deref(),
-                model_override.as_deref(),
-                None,
-                voice.then_some(1024),
-                &exec,
-            );
+        let work = agents.process_message_streaming_with_events(
+            &sid,
+            &text_for_agent,
+            &history,
+            events_tx,
+            continuity_key.as_deref(),
+            None,
+            provider_id.as_deref(),
+            model_override.as_deref(),
+            None,
+            voice.then_some(1024),
+            &exec,
+        );
         if voice {
             tokio::time::timeout(Duration::from_secs(120), work)
                 .await
@@ -612,10 +611,12 @@ async fn process_text_message(
                 // "explain that more simply". Never claim all generated audio
                 // was heard. Legacy text cancellation keeps its old semantics.
                 let interrupted = interrupted_voice_text(&partial);
-                state.persist_turn(session_id, Some("web"), None, &user_text, &interrupted).await;
+                state
+                    .persist_turn(session_id, Some("web"), None, &user_text, &interrupted)
+                    .await;
             }
             TurnOutcome::Quiet
-        },
+        }
         TurnEnd::Completed(response_text) => {
             state
                 .persist_turn(session_id, Some("web"), None, &user_text, &response_text)
@@ -639,13 +640,14 @@ async fn process_text_message(
     }
 }
 
-
 /// Mark generated text as interrupted without pretending it was spoken fully.
 fn interrupted_voice_text(partial: &str) -> String {
     if partial.is_empty() {
         "[Voice response interrupted before a reply was delivered.]".to_string()
     } else {
-        format!("[Voice response interrupted. The following text was generated but may not have been heard:]\n{partial}")
+        format!(
+            "[Voice response interrupted. The following text was generated but may not have been heard:]\n{partial}"
+        )
     }
 }
 

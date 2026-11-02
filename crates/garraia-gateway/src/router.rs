@@ -734,15 +734,24 @@ async fn web_chat() -> Html<String> {
 
 // Embedded assets keep the installed standalone binary independent of its cwd.
 async fn voice_chat_script() -> impl axum::response::IntoResponse {
-    ([("content-type", "text/javascript; charset=utf-8")], include_str!("../assets/voice-chat.js"))
+    (
+        [("content-type", "text/javascript; charset=utf-8")],
+        include_str!("../assets/voice-chat.js"),
+    )
 }
 
 async fn voice_worklet_script() -> impl axum::response::IntoResponse {
-    ([("content-type", "text/javascript; charset=utf-8")], include_str!("../assets/voice-pcm-worklet.js"))
+    (
+        [("content-type", "text/javascript; charset=utf-8")],
+        include_str!("../assets/voice-pcm-worklet.js"),
+    )
 }
 
 async fn voice_chat_style() -> impl axum::response::IntoResponse {
-    ([("content-type", "text/css; charset=utf-8")], include_str!("../assets/voice-chat.css"))
+    (
+        [("content-type", "text/css; charset=utf-8")],
+        include_str!("../assets/voice-chat.css"),
+    )
 }
 
 async fn status(
