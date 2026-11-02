@@ -716,6 +716,20 @@ sweep that removes a PowerShell false positive while closing fail-open
 aliases.
 See [What's New in v0.5.0](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.5.0).
 
+**v0.5.1** (Nov 2026) lets GarraIA run on your ChatGPT plan, with no API key:
+the new `openai-codex` provider uses OpenAI's official Sign in with ChatGPT
+flow for open-source apps (OAuth + PKCE, tokens kept at `0600` and revoked on
+sign-out), from the **Continuar com ChatGPT** (Continue with ChatGPT) card on
+the Providers page or `garra chatgpt login`. GPT-6.1 Sol with High reasoning
+is the default; reasoning levels and Thinking/Fast/Ultrafast speeds are
+offered only when your account supports them, and when the plan's usage limit
+runs out the turn moves straight to your configured fallback (e.g.
+OpenRouter). Alongside: concurrent voice synthesis no longer swaps audio
+between users, the safety gate recognises Windows executables (`curl.exe`,
+`C:\...\git.exe`) and asks before `kubectl exec`, and the Android APK ships
+with the project's permanent signing key (uninstall v0.5.0 once).
+See [What's New in v0.5.1](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.5.1).
+
 ## Contributing
 
 GarraIA is MIT-licensed open source. Join the

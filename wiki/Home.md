@@ -23,6 +23,14 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
 
 ## Novidades
 
+- **[v0.5.1 — Novidades](Novidades-v0.5.1)** · **[What's New in v0.5.1 (English)](Whats-New-v0.5.1)**
+  — o **GarraIA usa o seu plano do ChatGPT**, sem API key, pelo Sign in with
+  ChatGPT oficial da OpenAI (#1796): cartão **Continuar com ChatGPT** na
+  página Providers e `garra chatgpt`, GPT-6.1 Sol com raciocínio High,
+  níveis e velocidades conforme a conta e fallback automático quando o
+  limite do plano acaba; voz sem áudio trocado entre usuários (#1754), gate
+  que reconhece o executável do Windows (#1791), dependências (#1795) e APK
+  Android com a chave de assinatura definitiva.
 - **[v0.5.0 — Novidades](Novidades-v0.5.0)** · **[What's New in v0.5.0 (English)](Whats-New-v0.5.0)**
   — o **turno de chat volta ao controle do usuário**: o corte de 120 s sai do
   caminho por padrão (#1751) e a janela de timeout passa a ser herdada por
