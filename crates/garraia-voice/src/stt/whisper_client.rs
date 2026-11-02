@@ -20,7 +20,12 @@ impl WhisperClient {
     pub fn new(endpoint: &str, language: &str) -> Self {
         Self {
             endpoint: endpoint.trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            // #1754: sem timeout, um servidor travado prendia a transcricao
+            // para sempre. 120 s por tentativa, como os clientes de TTS.
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             language: language.to_string(),
         }
     }
