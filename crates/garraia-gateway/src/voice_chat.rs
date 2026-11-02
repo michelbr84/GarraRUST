@@ -495,9 +495,11 @@ fn utterance_has_speech(audio: &[u8]) -> bool {
                 return false;
             }
             let energy: f64 = frame
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|b| {
-                    let v = f64::from(i16::from_le_bytes([b[0], b[1]])) / 32768.0;
+                    let v = f64::from(i16::from_le_bytes(*b)) / 32768.0;
                     v * v
                 })
                 .sum();
