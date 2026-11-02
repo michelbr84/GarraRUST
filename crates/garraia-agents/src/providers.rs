@@ -387,16 +387,65 @@ pub(crate) fn corpo_de_erro_sanitizado(body: &str) -> String {
             })
             .map(|c| format!(" (code={c})"))
             .unwrap_or_default();
-        return format!("{}{codigo}", truncar(mensagem, MAX_CHARS));
+        return format!("{}{codigo}", frase_do_provider(mensagem, MAX_CHARS));
     }
     truncar(aparado, MAX_CHARS)
 }
 
+/// Troca todo caractere de controle (`\n`, `\r`, ESC/ANSI...) por espaco e
+/// colapsa corridas de espaco (#1769 item 1). Texto de provider e dado remoto:
+/// sem isto, um upstream hostil forja linhas no log e suja o envelope de erro.
+pub(crate) fn sanear_controle(texto: &str) -> String {
+    let mut saida = String::with_capacity(texto.len());
+    let mut ultimo_foi_espaco = false;
+    for c in texto.chars() {
+        let c = if c.is_control() { ' ' } else { c };
+        if c == ' ' {
+            if ultimo_foi_espaco {
+                continue;
+            }
+            ultimo_foi_espaco = true;
+        } else {
+            ultimo_foi_espaco = false;
+        }
+        saida.push(c);
+    }
+    saida
+}
+
+/// A frase que o provider escreveu, pronta para entrar numa mensagem de erro
+/// (#1769 itens 1 e 2): sem controle, com `status=` neutralizado e truncada.
+///
+/// `status_http_do_erro` le o primeiro `status=NNN` do texto; uma frase do
+/// provider com essa substring falsearia retry/mapeamento HTTP quando a
+/// mensagem nao traz o prefixo `status=` proprio (caminho 200 com `code`
+/// nao-HTTP). Por isso `status=` vira `status =` aqui.
+pub(crate) fn frase_do_provider(texto: &str, max: usize) -> String {
+    let limpo = sanear_controle(texto);
+    let limpo = limpo.trim().replace("status=", "status =");
+    truncar(&limpo, max)
+}
+
+/// Resumo seguro de um corpo que nao deu para interpretar, para log (#1769
+/// item 3): tamanho, content-type e os primeiros 200 caracteres, redigidos e
+/// sem controle. Nunca o corpo cru.
+pub(crate) fn resumo_de_corpo_para_log(body: &str, content_type: &str) -> String {
+    let redigido = garraia_security::redact_secrets(body);
+    let inicio = sanear_controle(&redigido);
+    format!(
+        "len={}, content-type={}, inicio={}",
+        body.len(),
+        sanear_controle(content_type),
+        truncar(inicio.trim(), 200)
+    )
+}
+
 /// Corta em `max` caracteres (nao bytes: o corpo pode ter acento ou emoji),
-/// marcando o corte.
+/// marcando o corte. Caracteres de controle viram espaco (#1769 item 1).
 pub(crate) fn truncar(texto: &str, max: usize) -> String {
+    let texto = sanear_controle(texto);
     if texto.chars().count() <= max {
-        return texto.to_string();
+        return texto;
     }
     let inicio: String = texto.chars().take(max).collect();
     format!("{inicio}…")
@@ -558,6 +607,52 @@ mod tests {
             corpo_de_erro_sanitizado(r#"{"detail":"x"}"#),
             r#"{"detail":"x"}"#
         );
+    }
+
+    /// #1769 item 1: controle/ANSI/CRLF do provider nao chega ao log nem ao
+    /// envelope de erro.
+    #[test]
+    fn sanitizador_neutraliza_controle_e_ansi() {
+        let bruto = "{\"error\":{\"message\":\"\\u001b[31mfalhou\\r\\nERROR forjado\\u0000fim\",\"code\":400}}";
+        let limpo = corpo_de_erro_sanitizado(bruto);
+        assert!(!limpo.chars().any(char::is_control), "{limpo:?}");
+        assert_eq!(
+            limpo,
+            " [31mfalhou ERROR forjado fim (code=400)".trim_start()
+        );
+        assert_eq!(truncar("a\nb\r\nc\u{1b}[0m", 50), "a b c [0m");
+        assert!(
+            !corpo_de_erro_sanitizado("x\ny\u{7}z")
+                .chars()
+                .any(char::is_control)
+        );
+    }
+
+    /// #1769 item 2: `status=NNN` dentro da frase do provider nao e lido como
+    /// status real.
+    #[test]
+    fn frase_do_provider_nao_forja_status() {
+        let e = Error::Agent(format!(
+            "openai API error: {}",
+            frase_do_provider("bad status=503 upstream", 200)
+        ));
+        assert_eq!(status_http_do_erro(&e), None);
+        let e = Error::Agent(format!(
+            "openai API error: status=400 Bad Request, body={}",
+            corpo_de_erro_sanitizado(r#"{"error":{"message":"x status=503"}}"#)
+        ));
+        assert_eq!(status_http_do_erro(&e), Some(400));
+    }
+
+    /// #1769 item 3: o resumo para log redige, limpa controle e limita.
+    #[test]
+    fn resumo_de_corpo_para_log_e_limitado_e_sem_controle() {
+        let corpo = format!("linha1\nlinha2\u{1b}[31m {}", "z".repeat(1000));
+        let r = resumo_de_corpo_para_log(&corpo, "text/html\r\nX: y");
+        assert!(!r.chars().any(char::is_control), "{r:?}");
+        assert!(r.contains(&format!("len={}", corpo.len())));
+        assert!(r.chars().count() < 300, "{}", r.chars().count());
+        assert!(!r.contains(&"z".repeat(250)));
     }
 
     /// #1726: o status sai do texto do `Error::Agent`, no formato que os
