@@ -813,9 +813,15 @@ mod tests {
             let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind efemero");
             l.local_addr().expect("addr").port()
         };
-        reqwest::Client::new()
+        // So o teto de CONEXAO, nunca o total (#1790): no Windows a porta
+        // fechada do loopback so devolve "recusada" depois de ~2 s de SYNs
+        // repetidos, e um `.timeout()` total dessa ordem corria contra ela —
+        // o erro saia como a janela de `timeouts.llm` e nao como conexao.
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("cliente de teste")
             .get(format!("http://127.0.0.1:{porta}/"))
-            .timeout(std::time::Duration::from_secs(2))
             .send()
             .await
             .expect_err("ninguem esta escutando nessa porta")
