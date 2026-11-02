@@ -544,9 +544,13 @@ enum ChatGptCommands {
         /// Modelo (ex.: gpt-6.1-sol).
         #[arg(long)]
         modelo: Option<String>,
-        /// reasoning.effort: none, minimal, low, medium, high, xhigh ou max.
+        /// reasoning.effort: minimal, low, medium, high, xhigh ou max (o que o
+        /// modelo aceita; `garra chatgpt modelos` mostra os niveis de cada um).
         #[arg(long)]
         esforco: Option<String>,
+        /// Velocidade: thinking (padrao), fast ou ultrafast.
+        #[arg(long)]
+        velocidade: Option<String>,
         /// Tornar a entrada o provider padrao do agente.
         #[arg(long)]
         padrao: bool,
@@ -560,6 +564,9 @@ enum ChatGptCommands {
         /// reasoning.effort (padrao: o do config.yml ou high).
         #[arg(long)]
         esforco: Option<String>,
+        /// Velocidade: thinking, fast ou ultrafast (padrao: o do config.yml).
+        #[arg(long)]
+        velocidade: Option<String>,
     },
 }
 
@@ -3398,11 +3405,19 @@ async fn async_main(
                 ChatGptCommands::Configurar {
                     modelo,
                     esforco,
+                    velocidade,
                     padrao,
-                } => chatgpt_cmd::run_configurar(modelo.as_deref(), esforco.as_deref(), padrao)?,
-                ChatGptCommands::Testar { modelo, esforco } => {
-                    chatgpt_cmd::run_testar(modelo, esforco).await?
-                }
+                } => chatgpt_cmd::run_configurar(
+                    modelo.as_deref(),
+                    esforco.as_deref(),
+                    velocidade.as_deref(),
+                    padrao,
+                )?,
+                ChatGptCommands::Testar {
+                    modelo,
+                    esforco,
+                    velocidade,
+                } => chatgpt_cmd::run_testar(modelo, esforco, velocidade).await?,
             };
             if code != 0 {
                 std::process::exit(code);

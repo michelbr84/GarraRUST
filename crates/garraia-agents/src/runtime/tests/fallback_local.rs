@@ -19,6 +19,7 @@ pub(super) enum FalhaSimulada {
     /// #1743: chave valida mas sem permissao para o modelo - o provider
     /// responde 403. E credencial tambem, e o status anotado e o 403.
     Permissao,
+    CotaEsgotada,
 }
 
 impl FalhaSimulada {
@@ -41,6 +42,11 @@ impl FalhaSimulada {
             ),
             Self::PedidoInvalido => Error::Agent(
                 "openai API error: status=400 Bad Request, body=not a valid model ID".to_string(),
+            ),
+            Self::CotaEsgotada => Error::Agent(
+                "openai-codex: limite de uso do plano do ChatGPT atingido \
+                 (subscription_sharing_usage_limit_exceeded, quota_exhausted)"
+                    .to_string(),
             ),
             Self::Permissao => Error::Agent(
                 "openai API error: status=403 Forbidden, body=Key has no access to this model"
@@ -803,4 +809,36 @@ pub(super) async fn chatgpt_sem_conta_cai_para_o_fallback_em_streaming_e_batch()
         .await
         .expect("em batch tambem");
     assert_eq!(quem, "ollama");
+}
+
+/// #1796: limite de uso do plano do ChatGPT -> uma tentativa (sem repetir) e
+/// o fallback configurado (o OpenRouter, no caso real) responde.
+#[tokio::test(start_paused = true)]
+pub(super) async fn cota_esgotada_cai_para_o_fallback_sem_repetir_em_batch() {
+    let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::CotaEsgotada);
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+    let RespostaDoCircuito { provider: quem, .. } = runtime
+        .complete_reportando_provider(&como_dyn, &pedido_simples())
+        .await
+        .expect("com a cota esgotada, o fallback tem de completar o turno");
+    assert_eq!(quem, "ollama");
+    assert_eq!(primario.completes(), 1, "cota esgotada nao se repete");
+}
+
+#[tokio::test]
+pub(super) async fn cota_esgotada_cai_para_o_fallback_em_streaming() {
+    let (runtime, primario) = runtime_com_fallback_local(FalhaSimulada::CotaEsgotada);
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+    let mut stream = runtime
+        .stream_complete_with_fallback(&como_dyn, &pedido_simples())
+        .await
+        .expect("o stream do fallback tem de chegar");
+    let mut texto = String::new();
+    while let Some(evento) = stream.next().await {
+        if let StreamEvent::TextDelta(t) = evento.expect("o stream local nao falha") {
+            texto.push_str(&t);
+        }
+    }
+    assert_eq!(texto, RESPOSTA_LOCAL);
+    assert_eq!(primario.streams(), 1);
 }

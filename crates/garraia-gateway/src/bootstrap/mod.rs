@@ -613,6 +613,13 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     llm_config.model.clone(),
                     esforco,
                 )
+                .with_velocidade(
+                    llm_config
+                        .extra
+                        .get("speed")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                )
                 .with_client(client.clone())
                 .with_name(name.clone());
                 runtime.register_provider(Arc::new(provider));

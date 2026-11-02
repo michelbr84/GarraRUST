@@ -3442,7 +3442,10 @@ async function loadProvidersPage() {
 // ── Sign in with ChatGPT (provider openai-codex) ─────────────────────────
 // O login acontece no site da OpenAI, numa aba; o gateway recebe o callback
 // em 127.0.0.1 e guarda a credencial. Esta pagina nunca ve token nenhum.
-const CHATGPT_ESFORCOS = ['low', 'medium', 'high', 'xhigh', 'max'];
+// Os sete niveis do cartao; o painel liga so os que o modelo declara E que a
+// Responses API publica aceita (o `ultra` so existe no Codex).
+const CHATGPT_ESFORCOS = [['minimal', 'Minimal'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra High'], ['max', 'Max'], ['ultra', 'Ultra']];
+const CHATGPT_VELOCIDADES = [['thinking', 'Thinking'], ['fast', 'Fast'], ['ultrafast', 'Ultrafast']];
 let chatgptPoll = null;
 let chatgptModelos = null;
 function chatgptCard(titulo, pillCls, pillTxt, corpo) {
@@ -3516,13 +3519,16 @@ function renderChatGptCard(box, s) {
   const listaOutras = outras.length ? '<div class="provider-meta" style="margin-top:6px;">Outras contas: ' + outras.map(c => escapeHtml(c.email || c.client_id) + ' <button type="button" data-chatgpt-usar="' + escapeHtml(c.client_id) + '">Usar</button>').join(' ') + '</div>' : '';
   const modelo = cfg ? cfg.modelo : (s.preferencial ? s.preferencial.modelo : 'gpt-6.1-sol');
   const esforco = cfg ? cfg.esforco : 'high';
-  const opcoesEsforco = CHATGPT_ESFORCOS.map(e => '<option value="' + e + '"' + (e === esforco ? ' selected' : '') + '>' + e + '</option>').join('');
+  const velocidade = cfg && cfg.velocidade ? cfg.velocidade : 'thinking';
+  const opcoesEsforco = CHATGPT_ESFORCOS.map(([v, rotulo]) => '<option value="' + v + '"' + (v === esforco ? ' selected' : '') + '>' + rotulo + '</option>').join('');
+  const opcoesVelocidade = CHATGPT_VELOCIDADES.map(([v, rotulo]) => '<option value="' + v + '"' + (v === velocidade ? ' selected' : '') + '>' + rotulo + '</option>').join('');
   box.innerHTML = chatgptCard('ChatGPT', 'success', (cfg && cfg.padrao) ? 'Conectado • Padrão' : 'Conectado',
     '<div class="provider-meta" data-testid="chatgpt-account">' + nome + '<strong>' + escapeHtml(conta.email || conta.client_id) + '</strong> • <span style="color:var(--garra-accent);">Usando o plano do ChatGPT</span> • <a href="' + escapeHtml(s.uso_url) + '" target="_blank" rel="noopener noreferrer">Gerenciar uso</a></div>' +
     listaOutras + confirmacao + erroLogin +
     '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0;">' +
       '<label style="font-size:13px;">Modelo <select id="chatgpt-modelo" data-testid="chatgpt-model"><option value="' + escapeHtml(modelo) + '">' + escapeHtml(modelo) + '</option></select></label>' +
       '<label style="font-size:13px;">Raciocínio <select id="chatgpt-esforco" data-testid="chatgpt-effort">' + opcoesEsforco + '</select></label>' +
+      '<label style="font-size:13px;">Velocidade <select id="chatgpt-velocidade" data-testid="chatgpt-speed">' + opcoesVelocidade + '</select></label>' +
       '<label style="display:flex;gap:6px;align-items:center;font-size:13px;"><input type="checkbox" id="chatgpt-padrao" ' + ((cfg && cfg.padrao) ? 'checked' : '') + '> Provedor padrão</label>' +
     '</div>' +
     '<div id="chatgpt-modelos-aviso" class="provider-meta"></div>' +
@@ -3557,7 +3563,37 @@ function renderChatGptCard(box, s) {
     chatgptModelos = null;
     setTimeout(loadChatGptCard, 600);
   };
+  box.querySelector('#chatgpt-modelo').onchange = () => chatgptAjustarOpcoes(box);
   chatgptPreencherModelos(box, modelo);
+}
+// Liga/desliga niveis e velocidades conforme o modelo escolhido (catalogo da
+// conta) e o que a Responses API aceita; o que ficar desligado diz o porque.
+function chatgptAjustarOpcoes(box) {
+  const j = chatgptModelos;
+  const sel = box.querySelector('#chatgpt-modelo');
+  const esf = box.querySelector('#chatgpt-esforco');
+  const vel = box.querySelector('#chatgpt-velocidade');
+  if (!j || !j.ok || !sel || !esf || !vel) return;
+  const m = (j.modelos || []).find(x => x.slug === sel.value);
+  const api = j.esforcos_api || [];
+  Array.from(esf.options).forEach(o => {
+    const doModelo = !m || !m.esforcos || m.esforcos.length === 0 || m.esforcos.includes(o.value);
+    const daApi = api.includes(o.value);
+    o.disabled = !(doModelo && daApi);
+    o.title = !daApi ? 'Só existe no Codex: a Responses API pública recusa este nível.' : (!doModelo ? 'Este modelo não oferece este nível.' : '');
+  });
+  if (esf.selectedOptions[0] && esf.selectedOptions[0].disabled) {
+    const opPadrao = m && m.esforco_padrao ? Array.from(esf.options).find(o => o.value === m.esforco_padrao) : null;
+    const opHigh = Array.from(esf.options).find(o => o.value === 'high');
+    const livre = Array.from(esf.options).find(o => !o.disabled);
+    esf.value = (opPadrao && !opPadrao.disabled) ? opPadrao.value : ((opHigh && !opHigh.disabled) ? 'high' : (livre ? livre.value : 'high'));
+  }
+  Array.from(vel.options).forEach(o => {
+    const ok = o.value === 'thinking' || (m && (m.velocidades || []).includes(o.value));
+    o.disabled = !ok;
+    o.title = ok ? '' : 'Esta conta não oferece este modo para este modelo.';
+  });
+  if (vel.selectedOptions[0] && vel.selectedOptions[0].disabled) vel.value = 'thinking';
 }
 async function chatgptPreencherModelos(box, atual) {
   const sel = box.querySelector('#chatgpt-modelo');
@@ -3577,6 +3613,7 @@ async function chatgptPreencherModelos(box, atual) {
         sel.insertAdjacentHTML('afterbegin', '<option value="' + escapeHtml(atual) + '" selected>' + escapeHtml(atual) + ' (fora do catálogo)</option>');
       }
     }
+    chatgptAjustarOpcoes(box);
     if (aviso && !j.preferencial_disponivel) {
       aviso.textContent = 'O GPT-6.1 Sol não aparece no catálogo desta conta. Escolha um dos modelos disponíveis.';
     }
@@ -3602,11 +3639,11 @@ async function chatgptLogin(novaConta, padrao) {
 }
 async function chatgptSalvar(box) {
   const out = box.querySelector('#chatgpt-resultado');
-  const corpo = { modelo: box.querySelector('#chatgpt-modelo').value, esforco: box.querySelector('#chatgpt-esforco').value, padrao: box.querySelector('#chatgpt-padrao').checked };
+  const corpo = { modelo: box.querySelector('#chatgpt-modelo').value, esforco: box.querySelector('#chatgpt-esforco').value, velocidade: box.querySelector('#chatgpt-velocidade').value, padrao: box.querySelector('#chatgpt-padrao').checked };
   out.textContent = 'Salvando…';
   const r = await fetch('/api/chatgpt/configurar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo) });
   const j = await r.json().catch(() => ({}));
-  out.textContent = j.ok ? ('Salvo: ' + j.modelo + ', raciocínio ' + j.esforco + (j.padrao ? ', provedor padrão.' : '.')) : ('Erro: ' + (j.error || r.status));
+  out.textContent = j.ok ? ('Salvo: ' + j.modelo + ', raciocínio ' + j.esforco + ', velocidade ' + j.velocidade + (j.padrao ? ', provedor padrão.' : '.')) : ('Erro: ' + (j.error || r.status));
   if (j.ok) setTimeout(() => { loadChatGptCard(); loadProvidersPage(); }, 800);
 }
 async function chatgptTestar(box) {
@@ -3616,11 +3653,14 @@ async function chatgptTestar(box) {
   out.textContent = 'Testando (inferência real)…';
   btn.disabled = true;
   try {
-    const r = await fetch('/api/chatgpt/testar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ modelo: box.querySelector('#chatgpt-modelo').value }) });
+    const r = await fetch('/api/chatgpt/testar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ modelo: box.querySelector('#chatgpt-modelo').value, esforco: box.querySelector('#chatgpt-esforco').value, velocidade: box.querySelector('#chatgpt-velocidade').value }) });
     const j = await r.json();
     if (j.ok) {
       out.className = 'provider-test-result ok';
-      out.textContent = 'OK: "' + j.texto + '" — ' + j.modelo + ', raciocínio ' + (j.enviado && j.enviado.reasoning ? j.enviado.reasoning.effort : '?') + ', ' + j.trechos_em_streaming + ' trechos em streaming, ' + j.ms + ' ms.';
+      const servido = j.tier_servido || 'não informado';
+      const rapido = j.velocidade_pedida && j.velocidade_pedida !== 'thinking';
+      const aplicado = !rapido || servido === 'priority' || servido === 'ultrafast';
+      out.textContent = 'OK: "' + j.texto + '" — ' + j.modelo + ', raciocínio ' + (j.enviado && j.enviado.reasoning ? j.enviado.reasoning.effort : '?') + ', velocidade ' + (j.velocidade_pedida || 'thinking') + ' (servido: ' + servido + '), ' + j.trechos_em_streaming + ' trechos em streaming, ' + j.ms + ' ms.' + (aplicado ? '' : ' A OpenAI não aplicou o modo rápido nesta conta.');
     } else {
       out.className = 'provider-test-result error';
       out.textContent = 'Falhou: ' + (j.error || r.status);

@@ -205,6 +205,16 @@ fn is_credential_error(err: &Error) -> bool {
     msg.contains("status=401") || msg.contains("status=403")
 }
 
+/// #1796: a cota/plano do provider acabou (ex.: limite de uso do plano do
+/// ChatGPT, `subscription_sharing_usage_limit_exceeded`). Nao e transitorio
+/// em segundos — repetir so gasta tempo e a OpenAI pede para pausar — nem e
+/// credencial ruim: e aquele caminho de cobranca que parou. Vai direto ao
+/// fallback que o operador configurou (o OpenRouter, por exemplo), sem retry;
+/// o breaker registra a falha e pausa o primario por um tempo.
+fn is_quota_exhausted(err: &Error) -> bool {
+    err.to_string().contains("quota_exhausted")
+}
+
 /// Resolve provider ID from model override.
 /// Models like "openrouter/auto", "openai/gpt-4o" have the provider as prefix.
 ///
@@ -4398,6 +4408,14 @@ impl AgentRuntime {
                         self.anotar_recusa_de_credencial(&primary_id, &e);
                         break;
                     }
+                    Err(e) if is_quota_exhausted(&e) => {
+                        warn!(
+                            "cota do provider '{}' esgotada ({}); usando fallback",
+                            primary_id, e
+                        );
+                        primary_cb.record_failure().await;
+                        break;
+                    }
                     Err(e) if is_retryable_error(&e) => {
                         warn!(
                             "provider '{}' attempt {} failed (retryable): {}",
@@ -4529,7 +4547,10 @@ impl AgentRuntime {
             // — e uma tentativa e o fallback —, entao transporte entra na
             // mesma porta que 429/5xx.
             Err(e)
-                if is_retryable_error(&e) || is_transport_error(&e) || is_credential_error(&e) =>
+                if is_retryable_error(&e)
+                    || is_transport_error(&e)
+                    || is_credential_error(&e)
+                    || is_quota_exhausted(&e) =>
             {
                 warn!(
                     "streaming provider '{}' failed, trying fallbacks: {}",

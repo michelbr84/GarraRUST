@@ -9,17 +9,12 @@
 //! O consentimento e sempre da pessoa no site da OpenAI. Nada aqui imprime
 //! token, codigo de autorizacao ou o `id_token_hint`.
 
-use std::time::Instant;
-
 use anyhow::Result;
-use futures::StreamExt;
 use garraia_agents::openai_codex::{
     ArmazemDeCredenciais, ContaChatGpt, ESFORCO_PADRAO, MODELO_PADRAO, OpcoesDeLogin,
-    OpenAiCodexProvider, esforco_normalizado, login,
+    OpenAiCodexProvider, esforco_normalizado, login, velocidade_normalizada,
 };
-use garraia_agents::providers::{
-    ChatMessage, ChatRole, LlmProvider, LlmRequest, MessagePart, StreamEvent,
-};
+use garraia_agents::providers::LlmProvider;
 use garraia_config::ConfigLoader;
 use garraia_config::chatgpt::{AjusteDoChatGpt, aplicar, entrada_existente};
 
@@ -59,16 +54,18 @@ fn descrever(conta: &ContaChatGpt) -> String {
     format!("{quem} ({sessao}, {plano})")
 }
 
-/// Le a config, aplica o ajuste e grava (0600). Devolve a chave da entrada.
-fn gravar_config(ajuste: &AjusteDoChatGpt<'_>) -> Result<String> {
+/// Le a config, aplica o ajuste e grava (0600). Nao devolve nada derivado da
+/// config gravada: o que e impresso depois e texto fixo (a config pode ter
+/// credenciais de outros providers; o CodeQL trata o fluxo como sensivel).
+fn gravar_config(ajuste: &AjusteDoChatGpt<'_>) -> Result<()> {
     let loader = ConfigLoader::new()?;
     loader.ensure_dirs()?;
     let mut config = loader.load().map_err(|e| {
         anyhow::anyhow!("o config.yml atual nao pode ser lido ({e}); corrija antes de gravar")
     })?;
-    let chave = aplicar(&mut config, ajuste);
+    aplicar(&mut config, ajuste);
     loader.save(&config)?;
-    Ok(chave)
+    Ok(())
 }
 
 pub async fn run_login(
@@ -123,12 +120,12 @@ pub async fn run_login(
                 );
             }
             if padrao {
-                let chave = gravar_config(&AjusteDoChatGpt {
+                gravar_config(&AjusteDoChatGpt {
                     tornar_padrao: true,
                     ..Default::default()
                 })?;
                 println!(
-                    "config.yml: llm.{chave} (openai-codex, {MODELO_PADRAO}, reasoning {ESFORCO_PADRAO}) agora e o provider padrao. Reinicie o gateway para aplicar."
+                    "config.yml: entrada openai-codex ({MODELO_PADRAO}, reasoning {ESFORCO_PADRAO}) gravada e definida como provider padrao. Reinicie o gateway para aplicar."
                 );
             } else {
                 println!("Para usar como padrao: `garra chatgpt configurar --padrao`.");
@@ -214,12 +211,16 @@ pub fn run_status(json: bool) -> Result<i32> {
     }
     match &entrada {
         Some((k, e)) => println!(
-            "config.yml: llm.{k} — modelo {}, reasoning {}{}",
+            "config.yml: llm.{k} — modelo {}, reasoning {}, velocidade {}{}",
             e.model.as_deref().unwrap_or(MODELO_PADRAO),
             e.extra
                 .get("reasoning_effort")
                 .and_then(|v| v.as_str())
                 .unwrap_or(ESFORCO_PADRAO),
+            e.extra
+                .get("speed")
+                .and_then(|v| v.as_str())
+                .unwrap_or("thinking"),
             if padrao.as_deref() == Some(k.as_str()) {
                 " (provider padrao)"
             } else {
@@ -256,7 +257,31 @@ pub async fn run_modelos() -> Result<i32> {
         println!(
             "  {}  {}{marca}",
             m.slug,
-            m.display_name.unwrap_or_default()
+            m.display_name.clone().unwrap_or_default()
+        );
+        // Niveis do catalogo que a Responses API publica aceita; o resto
+        // (o `ultra`, que so existe no Codex) aparece marcado.
+        let niveis: Vec<String> = m
+            .esforcos
+            .iter()
+            .map(|e| {
+                if esforco_normalizado(e).is_some() {
+                    e.clone()
+                } else {
+                    format!("{e} (so no Codex)")
+                }
+            })
+            .collect();
+        let mut velocidades = vec!["thinking".to_string()];
+        velocidades.extend(m.velocidades.iter().cloned());
+        println!(
+            "      raciocinio: {} | velocidade: {}",
+            if niveis.is_empty() {
+                "-".into()
+            } else {
+                niveis.join(", ")
+            },
+            velocidades.join(", ")
         );
     }
     Ok(0)
@@ -283,22 +308,34 @@ pub fn run_usar(conta: &str) -> Result<i32> {
     }
 }
 
-pub fn run_configurar(modelo: Option<&str>, esforco: Option<&str>, padrao: bool) -> Result<i32> {
+pub fn run_configurar(
+    modelo: Option<&str>,
+    esforco: Option<&str>,
+    velocidade: Option<&str>,
+    padrao: bool,
+) -> Result<i32> {
     if let Some(e) = esforco
         && esforco_normalizado(e).is_none()
     {
         eprintln!(
-            "reasoning effort invalido: '{e}'. Use: none, minimal, low, medium, high, xhigh ou max."
+            "reasoning effort '{e}' nao e aceito pela Responses API. Use: minimal, low, medium, high, xhigh ou max (`ultra` so existe no Codex)."
         );
         return Ok(2);
     }
-    let chave = gravar_config(&AjusteDoChatGpt {
+    if let Some(v) = velocidade
+        && velocidade_normalizada(v).is_none()
+    {
+        eprintln!("velocidade invalida: '{v}'. Use: thinking, fast ou ultrafast.");
+        return Ok(2);
+    }
+    gravar_config(&AjusteDoChatGpt {
         modelo,
         esforco,
+        velocidade,
         tornar_padrao: padrao,
     })?;
     println!(
-        "config.yml: llm.{chave} atualizado{}. Reinicie o gateway para aplicar.",
+        "config.yml: entrada openai-codex atualizada{}. Reinicie o gateway para aplicar.",
         if padrao {
             " e definido como provider padrao"
         } else {
@@ -309,83 +346,68 @@ pub fn run_configurar(modelo: Option<&str>, esforco: Option<&str>, padrao: bool)
 }
 
 /// Uma inferencia curta e real (nao e mock): prova login, autorizacao do
-/// plano, modelo, esforco e streaming de uma vez.
-pub async fn run_testar(modelo: Option<String>, esforco: Option<String>) -> Result<i32> {
+/// plano, modelo, esforco, velocidade e streaming de uma vez, e mostra o
+/// `service_tier` que a OpenAI serviu de fato.
+pub async fn run_testar(
+    modelo: Option<String>,
+    esforco: Option<String>,
+    velocidade: Option<String>,
+) -> Result<i32> {
     let config = ConfigLoader::new().ok().and_then(|l| l.load().ok());
     let entrada = config
         .as_ref()
         .and_then(|c| entrada_existente(c).map(|k| c.llm[&k].clone()));
-    let modelo = modelo.or_else(|| entrada.as_ref().and_then(|e| e.model.clone()));
-    let esforco = esforco.or_else(|| {
+    let extra = |chave: &str| {
         entrada.as_ref().and_then(|e| {
             e.extra
-                .get("reasoning_effort")
+                .get(chave)
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
         })
-    });
+    };
+    let modelo = modelo.or_else(|| entrada.as_ref().and_then(|e| e.model.clone()));
+    let esforco = esforco.or_else(|| extra("reasoning_effort"));
+    let velocidade = velocidade.or_else(|| extra("speed"));
     let p = OpenAiCodexProvider::new(
         ConfigLoader::openai_codex_credentials_dir(),
         modelo,
         esforco,
-    );
-    let modelo_usado = p.configured_model().unwrap_or(MODELO_PADRAO).to_string();
+    )
+    .with_velocidade(velocidade);
     println!(
-        "Teste real: modelo {modelo_usado}, reasoning.effort={}, streaming.",
-        p.esforco()
+        "Teste real: modelo {}, reasoning.effort={}, velocidade {}, streaming.",
+        p.configured_model().unwrap_or(MODELO_PADRAO),
+        p.esforco(),
+        p.velocidade()
     );
-    let pedido = LlmRequest {
-        model: String::new(),
-        messages: vec![ChatMessage {
-            role: ChatRole::User,
-            content: MessagePart::Text("Responda exatamente: ok".into()),
-        }],
-        system: None,
-        max_tokens: None,
-        temperature: None,
-        tools: Vec::new(),
-    };
-    let inicio = Instant::now();
-    let mut stream = match p.stream_complete(&pedido).await {
-        Ok(s) => s,
+    match p.testar(None).await {
+        Ok(r) => {
+            println!(
+                "Uso: {} tokens de entrada, {} de saida.",
+                r.tokens_entrada, r.tokens_saida
+            );
+            println!(
+                "Resposta: {:?} ({} trechos em streaming, {} ms). Login, plano, modelo e streaming OK.",
+                r.texto, r.trechos_em_streaming, r.ms
+            );
+            println!(
+                "service_tier servido pela OpenAI: {}",
+                r.tier_servido.as_deref().unwrap_or("(nao informado)")
+            );
+            if p.velocidade() != "thinking"
+                && r.tier_servido.as_deref() != Some("priority")
+                && r.tier_servido.as_deref() != Some("ultrafast")
+            {
+                println!(
+                    "Aviso: o modo {} foi pedido, mas a OpenAI serviu o tier normal nesta conta/fluxo.",
+                    p.velocidade()
+                );
+            }
+            Ok(0)
+        }
         Err(e) => {
-            eprintln!("Falhou antes do streaming: {e}");
-            return Ok(1);
-        }
-    };
-    let mut deltas = 0usize;
-    let mut texto = String::new();
-    let mut concluido = false;
-    while let Some(ev) = stream.next().await {
-        match ev {
-            Ok(StreamEvent::TextDelta(t)) => {
-                deltas += 1;
-                texto.push_str(&t);
-            }
-            Ok(StreamEvent::MessageDelta { usage, .. }) => {
-                if let Some(u) = usage {
-                    println!(
-                        "Uso: {} tokens de entrada, {} de saida.",
-                        u.input_tokens, u.output_tokens
-                    );
-                }
-            }
-            Ok(StreamEvent::MessageStop) => concluido = true,
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("Falhou durante o streaming: {e}");
-                return Ok(1);
-            }
+            eprintln!("Falhou: {e}");
+            Ok(1)
         }
     }
-    if !concluido {
-        eprintln!("O stream terminou sem response.completed.");
-        return Ok(1);
-    }
-    println!(
-        "Resposta: {:?} ({deltas} trechos em streaming, {} ms). Login, plano, modelo e streaming OK.",
-        texto.trim(),
-        inicio.elapsed().as_millis()
-    );
-    Ok(0)
 }

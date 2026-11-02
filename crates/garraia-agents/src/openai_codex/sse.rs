@@ -41,6 +41,8 @@ pub(super) struct LeitorDeEventos {
     chamadas: HashMap<String, Chamada>,
     houve_chamada: bool,
     terminou: bool,
+    /// O `service_tier` que a OpenAI serviu de fato (no `response.completed`).
+    pub(super) tier_servido: Option<String>,
 }
 
 impl LeitorDeEventos {
@@ -177,6 +179,10 @@ impl LeitorDeEventos {
             }
             "response.completed" => {
                 let usage = uso(&v["response"]);
+                self.tier_servido = v["response"]
+                    .get("service_tier")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_string);
                 let stop = if self.houve_chamada {
                     "tool_use"
                 } else {
@@ -313,7 +319,7 @@ pub(super) fn erro_estruturado(
     };
     match codigo {
         "subscription_sharing_usage_limit_exceeded" => Error::Agent(format!(
-            "openai-codex: limite de uso do plano do ChatGPT atingido ({codigo}); novas requisicoes pelo plano ficam pausadas. Veja o uso em {PAGINA_DE_USO}"
+            "openai-codex: limite de uso do plano do ChatGPT atingido ({codigo}, quota_exhausted); novas requisicoes pelo plano ficam pausadas e o fallback configurado assume. Veja o uso em {PAGINA_DE_USO}"
         )),
         "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable" => {
             Error::Agent(format!(
@@ -321,7 +327,7 @@ pub(super) fn erro_estruturado(
             ))
         }
         "subscription_sharing_user_not_eligible" => Error::Agent(format!(
-            "openai-codex: o uso do plano do ChatGPT nao esta disponivel para esta conta, workspace ou politica ({codigo}): {msg}"
+            "openai-codex: o uso do plano do ChatGPT nao esta disponivel para esta conta, workspace ou politica ({codigo}, status=403): {msg}"
         )),
         "subscription_sharing_unsupported_capability" => Error::Agent(format!(
             "openai-codex: recurso nao suportado pelo uso do plano ({codigo}){param}: {msg}"
@@ -500,6 +506,8 @@ mod tests {
         let msg = fim.expect_err("falha").to_string();
         assert!(msg.contains("subscription_sharing_usage_limit_exceeded"));
         assert!(msg.contains(PAGINA_DE_USO));
+        // Marcador que o runtime le para ir ao fallback sem repetir.
+        assert!(msg.contains("quota_exhausted"));
         assert!(!msg.contains("429") && !msg.to_lowercase().contains("rate limit"));
     }
 

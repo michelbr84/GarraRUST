@@ -24,7 +24,10 @@ use serde::{Deserialize, Serialize};
 
 use super::credenciais::ArmazemDeCredenciais;
 use super::sse::{LeitorDeEventos, NAMESPACE, erro_estruturado};
-use super::{ESFORCO_PADRAO, Endpoints, MODELO_PADRAO, PROVIDER_ID, esforco_normalizado};
+use super::{
+    ESFORCO_PADRAO, Endpoints, MODELO_PADRAO, PROVIDER_ID, esforco_normalizado, tier_da_velocidade,
+    velocidade_do_tier, velocidade_normalizada,
+};
 use crate::providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
     StreamEvent, Usage, erro_de_envio,
@@ -36,6 +39,41 @@ pub struct ModeloDisponivel {
     pub slug: String,
     #[serde(default)]
     pub display_name: Option<String>,
+    /// Niveis de `reasoning.effort` que o catalogo declara para o modelo.
+    #[serde(default)]
+    pub esforcos: Vec<String>,
+    #[serde(default)]
+    pub esforco_padrao: Option<String>,
+    /// Velocidades oferecidas alem do `thinking` (`fast`, `ultrafast`).
+    #[serde(default)]
+    pub velocidades: Vec<String>,
+}
+
+/// O resultado de uma inferencia curta e real (`testar`).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ResultadoDoTeste {
+    pub texto: String,
+    pub trechos_em_streaming: usize,
+    pub ms: u64,
+    pub modelo: String,
+    /// O que foi enviado (sem segredo): modelo, reasoning e service_tier.
+    pub enviado: serde_json::Value,
+    /// O `service_tier` que a OpenAI serviu de fato.
+    pub tier_servido: Option<String>,
+    pub tokens_entrada: u32,
+    pub tokens_saida: u32,
+}
+
+#[derive(Deserialize, Default)]
+struct NivelDoCatalogo {
+    #[serde(default)]
+    effort: String,
+}
+
+#[derive(Deserialize, Default)]
+struct TierDoCatalogo {
+    #[serde(default)]
+    id: String,
 }
 
 #[derive(Deserialize)]
@@ -51,6 +89,12 @@ struct ItemDoCatalogo {
     display_name: Option<String>,
     #[serde(default)]
     visibility: Option<String>,
+    #[serde(default)]
+    supported_reasoning_levels: Vec<NivelDoCatalogo>,
+    #[serde(default)]
+    default_reasoning_level: Option<String>,
+    #[serde(default)]
+    service_tiers: Vec<TierDoCatalogo>,
 }
 
 pub struct OpenAiCodexProvider {
@@ -58,6 +102,8 @@ pub struct OpenAiCodexProvider {
     cliente: reqwest::Client,
     modelo: String,
     esforco: String,
+    /// `thinking` (padrao), `fast` ou `ultrafast`.
+    velocidade: String,
     nome: String,
 }
 
@@ -90,6 +136,7 @@ impl OpenAiCodexProvider {
             cliente,
             modelo,
             esforco,
+            velocidade: "thinking".to_string(),
             nome: PROVIDER_ID.to_string(),
         }
     }
@@ -109,6 +156,20 @@ impl OpenAiCodexProvider {
     pub fn with_endpoints(mut self, endpoints: Endpoints) -> Self {
         self.armazem = self.armazem.with_endpoints(endpoints);
         self
+    }
+
+    /// Velocidade (`thinking`, `fast`, `ultrafast`); invalida ou ausente
+    /// fica em `thinking`, sem `service_tier`.
+    pub fn with_velocidade(mut self, velocidade: Option<String>) -> Self {
+        self.velocidade = velocidade
+            .as_deref()
+            .and_then(velocidade_normalizada)
+            .unwrap_or_else(|| "thinking".to_string());
+        self
+    }
+
+    pub fn velocidade(&self) -> &str {
+        &self.velocidade
     }
 
     pub fn armazem(&self) -> &ArmazemDeCredenciais {
@@ -152,6 +213,9 @@ impl OpenAiCodexProvider {
         });
         if !instrucoes.is_empty() {
             corpo["instructions"] = serde_json::Value::String(instrucoes.join("\n\n"));
+        }
+        if let Some(tier) = tier_da_velocidade(&self.velocidade) {
+            corpo["service_tier"] = tier.into();
         }
         if !pedido.tools.is_empty() {
             let funcoes: Vec<serde_json::Value> = pedido
@@ -243,8 +307,84 @@ impl OpenAiCodexProvider {
             .map(|m| ModeloDisponivel {
                 slug: m.slug,
                 display_name: m.display_name,
+                esforcos: m
+                    .supported_reasoning_levels
+                    .into_iter()
+                    .map(|n| n.effort)
+                    .filter(|e| !e.is_empty())
+                    .collect(),
+                esforco_padrao: m.default_reasoning_level,
+                velocidades: m
+                    .service_tiers
+                    .iter()
+                    .filter_map(|t| velocidade_do_tier(&t.id).map(str::to_string))
+                    .collect(),
             })
             .collect())
+    }
+
+    /// Uma inferencia curta e **real** (nao e mock): prova login, plano,
+    /// modelo, esforco, velocidade e streaming, e diz o tier servido.
+    pub async fn testar(&self, modelo: Option<&str>) -> Result<ResultadoDoTeste> {
+        let pedido = LlmRequest {
+            model: modelo.unwrap_or_default().to_string(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: MessagePart::Text("Responda exatamente: ok".into()),
+            }],
+            system: None,
+            max_tokens: None,
+            temperature: None,
+            tools: Vec::new(),
+        };
+        let corpo = self.montar_corpo(&pedido);
+        let enviado = serde_json::json!({
+            "model": corpo["model"],
+            "reasoning": corpo["reasoning"],
+            "service_tier": corpo.get("service_tier"),
+            "store": corpo["store"],
+            "stream": corpo["stream"],
+        });
+        let inicio = std::time::Instant::now();
+        let resp = self.abrir(&pedido).await?;
+        let mut bytes = resp.bytes_stream();
+        let mut leitor = LeitorDeEventos::default();
+        let mut texto = String::new();
+        let mut trechos = 0usize;
+        let (mut entrada, mut saida) = (0u32, 0u32);
+        loop {
+            while let Some(ev) = leitor.proximo() {
+                match ev {
+                    StreamEvent::TextDelta(t) => {
+                        trechos += 1;
+                        texto.push_str(&t);
+                    }
+                    StreamEvent::MessageDelta { usage: Some(u), .. } => {
+                        entrada = u.input_tokens;
+                        saida = u.output_tokens;
+                    }
+                    _ => {}
+                }
+            }
+            if leitor.terminou() {
+                break;
+            }
+            match bytes.next().await {
+                Some(Ok(chunk)) => leitor.alimentar(&chunk)?,
+                Some(Err(e)) => return Err(erro_de_envio("openai-codex stream failed", &e)),
+                None => leitor.finalizar()?,
+            }
+        }
+        Ok(ResultadoDoTeste {
+            texto: texto.trim().to_string(),
+            trechos_em_streaming: trechos,
+            ms: inicio.elapsed().as_millis() as u64,
+            modelo: corpo["model"].as_str().unwrap_or_default().to_string(),
+            enviado,
+            tier_servido: leitor.tier_servido.clone(),
+            tokens_entrada: entrada,
+            tokens_saida: saida,
+        })
     }
 }
 
@@ -570,6 +710,23 @@ mod tests {
     }
 
     #[test]
+    fn velocidade_vira_service_tier_so_quando_pedida() {
+        let mut req = pedido_com_ferramenta();
+        req.tools.clear();
+        let thinking = OpenAiCodexProvider::new("/tmp/x", None, None);
+        assert!(thinking.montar_corpo(&req).get("service_tier").is_none());
+        let fast =
+            OpenAiCodexProvider::new("/tmp/x", None, None).with_velocidade(Some("Fast".into()));
+        assert_eq!(fast.montar_corpo(&req)["service_tier"], "priority");
+        let ultra = OpenAiCodexProvider::new("/tmp/x", None, None)
+            .with_velocidade(Some("ultrafast".into()));
+        assert_eq!(ultra.montar_corpo(&req)["service_tier"], "ultrafast");
+        let invalida =
+            OpenAiCodexProvider::new("/tmp/x", None, None).with_velocidade(Some("turbo".into()));
+        assert_eq!(invalida.velocidade(), "thinking");
+    }
+
+    #[test]
     fn modelo_e_esforco_da_config_vencem_e_invalido_cai_no_padrao() {
         let p = OpenAiCodexProvider::new("/tmp/x", Some("gpt-6-luna".into()), Some("Max".into()));
         let mut req = pedido_com_ferramenta();
@@ -624,7 +781,7 @@ mod tests {
                 "/v1/models",
                 get(|| async {
                     axum::Json(serde_json::json!({"models": [
-                        {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "visibility": "list"},
+                        {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "visibility": "list", "default_reasoning_level": "low", "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}, {"effort": "ultra"}], "service_tiers": [{"id": "priority", "name": "Fast"}]},
                         {"slug": "interno", "display_name": "Interno", "visibility": "hide"},
                         {"slug": "gpt-6-luna", "display_name": "GPT-6 Luna", "visibility": "list"}
                     ]}))
@@ -734,6 +891,11 @@ mod tests {
             OpenAiCodexProvider::new(tmp.path(), None, None).with_endpoints(api.endpoints.clone());
         let slugs = p.available_models().await.expect("modelos");
         assert_eq!(slugs, vec!["gpt-6.1-sol", "gpt-6-luna"]);
+        let detalhes = p.listar_modelos().await.expect("modelos");
+        assert_eq!(detalhes[0].esforcos, vec!["low", "high", "ultra"]);
+        assert_eq!(detalhes[0].esforco_padrao.as_deref(), Some("low"));
+        assert_eq!(detalhes[0].velocidades, vec!["fast"]);
+        assert!(detalhes[1].velocidades.is_empty());
         assert!(p.health_check().await.expect("health"));
     }
 

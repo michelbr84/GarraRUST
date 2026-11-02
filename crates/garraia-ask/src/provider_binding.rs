@@ -165,6 +165,9 @@ pub struct ProviderBinding {
     /// `llm.<nome>.reasoning_effort` (provider `openai-codex`): o
     /// `reasoning.effort` da Responses API. `None` → o padrao do provider.
     reasoning_effort: Option<String>,
+    /// `llm.<nome>.speed` (provider `openai-codex`): `thinking`, `fast` ou
+    /// `ultrafast`.
+    speed: Option<String>,
 }
 
 /// `Debug` a mao: a credencial nunca aparece, nem num `{:?}` de teste que
@@ -258,6 +261,7 @@ impl ProviderBinding {
             // Sem entrada nao ha janela propria: vale a global.
             timeout_secs: None,
             reasoning_effort: None,
+            speed: None,
         }
     }
 }
@@ -287,6 +291,13 @@ pub fn bind_entry(key: &str, cfg: &LlmProviderConfig, env: Env<'_>) -> ProviderB
         reasoning_effort: cfg
             .extra
             .get("reasoning_effort")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string),
+        speed: cfg
+            .extra
+            .get("speed")
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|v| !v.is_empty())
@@ -452,6 +463,7 @@ pub fn build_provider(
                 model,
                 binding.reasoning_effort.clone(),
             )
+            .with_velocidade(binding.speed.clone())
             .with_client(cliente);
             if let Some(id) = provider_id {
                 provider = provider.with_name(id);

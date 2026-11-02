@@ -25,6 +25,8 @@ pub struct AjusteDoChatGpt<'a> {
     pub modelo: Option<&'a str>,
     /// `reasoning.effort` (`None` mantem o atual; entrada nova usa `high`).
     pub esforco: Option<&'a str>,
+    /// Velocidade: `thinking` (padrao), `fast` ou `ultrafast` (`None` mantem).
+    pub velocidade: Option<&'a str>,
     /// Tornar esta entrada o provider padrao do agente.
     pub tornar_padrao: bool,
 }
@@ -77,6 +79,20 @@ pub fn aplicar(config: &mut AppConfig, ajuste: &AjusteDoChatGpt<'_>) -> String {
         "reasoning_effort".into(),
         serde_json::Value::String(esforco),
     );
+    if let Some(v) = ajuste
+        .velocidade
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+    {
+        entrada
+            .extra
+            .insert("speed".into(), serde_json::Value::String(v));
+    }
+    if !entrada.extra.contains_key("speed") {
+        entrada
+            .extra
+            .insert("speed".into(), serde_json::Value::String("thinking".into()));
+    }
     // Credencial e endpoint nunca vem da config para este tipo.
     entrada.api_key = None;
     entrada.base_url = None;
@@ -130,6 +146,7 @@ mod tests {
         assert_eq!(e.provider, "openai-codex");
         assert_eq!(e.model.as_deref(), Some("gpt-6.1-sol"));
         assert_eq!(e.extra["reasoning_effort"], "high");
+        assert_eq!(e.extra["speed"], "thinking");
         assert!(e.api_key.is_none() && e.base_url.is_none());
         assert_eq!(c.agent.default_provider.as_deref(), Some("chatgpt"));
         // O padrao anterior vira o primeiro fallback; o resto fica intacto.
@@ -171,6 +188,15 @@ mod tests {
             c.llm["chatgpt"].extra["reasoning_effort"], "xhigh",
             "esforco mantido"
         );
+        aplicar(
+            &mut c,
+            &AjusteDoChatGpt {
+                velocidade: Some("Fast"),
+                ..Default::default()
+            },
+        );
+        assert_eq!(c.llm["chatgpt"].extra["speed"], "fast");
+        assert_eq!(c.llm["chatgpt"].extra["reasoning_effort"], "xhigh");
         assert_eq!(c.llm.len(), 2);
     }
 }

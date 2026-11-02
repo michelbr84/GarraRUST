@@ -38,7 +38,7 @@ mod sse;
 
 pub use credenciais::{ArmazemDeCredenciais, ContaChatGpt, ErroDeConta, RegistroDeCredencial};
 pub use login::{LoginEmAndamento, OpcoesDeLogin, ResultadoDoLogin};
-pub use provedor::{ModeloDisponivel, OpenAiCodexProvider};
+pub use provedor::{ModeloDisponivel, OpenAiCodexProvider, ResultadoDoTeste};
 
 /// Id do provider no runtime e o `provider:` da entrada `llm.<nome>`.
 pub const PROVIDER_ID: &str = "openai-codex";
@@ -97,6 +97,36 @@ impl Default for Endpoints {
     }
 }
 
+/// Modos de velocidade do cartao: `thinking` (o normal, sem `service_tier`),
+/// `fast` (`service_tier: "priority"`) e `ultrafast`
+/// (`service_tier: "ultrafast"`). O catalogo da conta diz quais o modelo
+/// oferece (`service_tiers`); a resposta diz qual foi servido de fato.
+pub const VELOCIDADES: [&str; 3] = ["thinking", "fast", "ultrafast"];
+
+/// Normaliza a velocidade da config; `None` quando invalida.
+pub fn velocidade_normalizada(valor: &str) -> Option<String> {
+    let v = valor.trim().to_ascii_lowercase();
+    VELOCIDADES.contains(&v.as_str()).then_some(v)
+}
+
+/// O `service_tier` enviado para uma velocidade (`None` = nao enviar).
+pub fn tier_da_velocidade(velocidade: &str) -> Option<&'static str> {
+    match velocidade {
+        "fast" => Some("priority"),
+        "ultrafast" => Some("ultrafast"),
+        _ => None,
+    }
+}
+
+/// A velocidade que um `service_tier` do catalogo representa.
+pub fn velocidade_do_tier(tier: &str) -> Option<&'static str> {
+    match tier {
+        "priority" | "fast" => Some("fast"),
+        "ultrafast" => Some("ultrafast"),
+        _ => None,
+    }
+}
+
 /// Normaliza um `reasoning_effort` vindo da config: minusculas, sem espacos.
 /// `None` quando vazio ou fora de [`ESFORCOS_ACEITOS`].
 pub fn esforco_normalizado(valor: &str) -> Option<String> {
@@ -113,6 +143,13 @@ mod tests {
         assert_eq!(esforco_normalizado(" High ").as_deref(), Some("high"));
         assert_eq!(esforco_normalizado("max").as_deref(), Some("max"));
         assert_eq!(esforco_normalizado("turbo"), None);
+        // `ultra` aparece no catalogo, mas a Responses API publica recusa.
+        assert_eq!(esforco_normalizado("ultra"), None);
+        assert_eq!(velocidade_normalizada(" Fast ").as_deref(), Some("fast"));
+        assert_eq!(velocidade_normalizada("turbo"), None);
+        assert_eq!(tier_da_velocidade("fast"), Some("priority"));
+        assert_eq!(tier_da_velocidade("thinking"), None);
+        assert_eq!(velocidade_do_tier("priority"), Some("fast"));
         assert_eq!(esforco_normalizado(""), None);
     }
 
