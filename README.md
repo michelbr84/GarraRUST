@@ -341,7 +341,7 @@ with per-claim evidence in `results/`:
 | | **GarraIA** | **OpenClaw** | **ZeroClaw** |
 |---|---|---|---|
 | Chat channels | 11 wired in the default build (Telegram, Discord, Slack, WhatsApp, iMessage·macOS, Google Chat, Teams, LINE, Matrix, IRC, Signal) + web chat + OpenAI-compatible API; the first 5 also have gateway integration tests | 27 bundled channel plugins | ~40 adapters (default build bundles 6) |
-| LLM providers | 15 built-in (Anthropic, OpenAI, Ollama native + 12 OpenAI-compatible presets); 100+ models via OpenRouter; any endpoint via `base_url` | plugin providers | multiple, feature-gated |
+| LLM providers | 16 built-in (Anthropic, OpenAI, Ollama and your ChatGPT plan via Sign in with ChatGPT native + 12 OpenAI-compatible presets); 100+ models via OpenRouter; any endpoint via `base_url` | plugin providers | multiple, feature-gated |
 | MCP | client: stdio (default build) + Streamable HTTP (`mcp-http` feature); also serves MCP over stdio (`garra mcp-server`, one `garra_ask` tool) | client: stdio/SSE/Streamable HTTP; also serves MCP | client: stdio/http/sse, per-agent fail-closed scoping |
 | Memory | SQLite + local vector search (sqlite-vec) + LLM fact extraction, auto-injected into context | Markdown files + SQLite FTS5/vector | sqlite/postgres/qdrant backends |
 | Config hot reload | file watch — most settings apply live (channels/providers wire at boot) | file watch (hybrid mode) | explicit reload endpoint only |
@@ -363,9 +363,11 @@ with the scenario ID and we will fix the table, not the finding.
 
 ### LLM providers
 
-3 native providers — **Anthropic Claude** (SSE streaming, tool use),
+4 native providers — **Anthropic Claude** (SSE streaming, tool use),
 **OpenAI** (GPT-4o, Azure, any compatible endpoint via `base_url`),
-**Ollama** (local models + local embeddings) — plus 12 OpenAI-compatible
+**Ollama** (local models + local embeddings), **ChatGPT plan**
+(`openai-codex`: Sign in with ChatGPT, no API key, GPT-6.1 Sol with
+selectable reasoning and speed) — plus 12 OpenAI-compatible
 presets: OpenRouter (100+ models), DeepSeek, Mistral, Gemini, Qwen, Yi,
 Cohere, MiniMax, Moonshot, Falcon, Jais, Sansa. Automatic provider
 fallback on 429/5xx with exponential backoff and a circuit breaker.

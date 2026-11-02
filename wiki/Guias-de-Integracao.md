@@ -13,7 +13,8 @@
 
 ## Provedores LLM
 
-- [Os 15 provedores e como configurar](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/providers.md)
+- [Os 16 provedores e como configurar](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/providers.md)
+- [Usar o plano do ChatGPT (Sign in with ChatGPT)](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/guides/connect-chatgpt.md) — botão "Continuar com ChatGPT" na página Providers, GPT-6.1 Sol, raciocínio e velocidade, fallback quando o limite do plano acaba
 - [LM Studio / Ollama (modelos locais)](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/guides/add-lm-studio.md)
 
 ## Voz (STT/TTS)

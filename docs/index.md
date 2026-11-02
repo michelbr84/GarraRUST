@@ -29,7 +29,7 @@ Welcome to the GarraIA documentation. GarraIA is a secure, lightweight open-sour
 ### Core Features
 
 - **Multi-channel support** - Telegram, Discord, Slack, WhatsApp, iMessage
-- **15+ LLM providers** - Anthropic, OpenAI, Ollama, and 12+ OpenAI-compatible
+- **16 LLM providers** - Anthropic, OpenAI, Ollama, your ChatGPT plan, and 12 OpenAI-compatible
 - **Voice pipeline** - STT → LLM → TTS with Whisper, Chatterbox, Hibiki
 - **Memory system** - SQLite with vector search, facts extraction
 - **MCP support** - Model Context Protocol with stdio and HTTP transport
