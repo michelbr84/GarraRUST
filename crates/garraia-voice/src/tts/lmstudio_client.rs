@@ -33,26 +33,38 @@ impl LmStudioTtsClient {
         }
     }
 
-    /// Sintetiza texto em áudio WAV via LM Studio TTS.
-    pub async fn synthesize(&self, text: &str, output_path: &Path) -> Result<PathBuf, VoiceError> {
+    /// Sintetiza texto em áudio WAV via LM Studio TTS e devolve os bytes.
+    ///
+    /// É o caminho do [`crate::TtsSynthesizer`]: sem arquivo intermediário,
+    /// cada chamada fica com os próprios bytes (#1754).
+    pub async fn synthesize_to_bytes(&self, text: &str) -> Result<Vec<u8>, VoiceError> {
         // Tenta OpenAI-compatible endpoint primeiro
-        match self.synthesize_openai_compat(text, output_path).await {
-            Ok(path) => return Ok(path),
+        match self.synthesize_openai_compat(text).await {
+            Ok(audio) => return Ok(audio),
             Err(e) => {
                 tracing::debug!("OpenAI-compat TTS failed, trying chat endpoint: {e}");
             }
         }
 
         // Fallback: usa /api/v1/chat (LM Studio specific)
-        self.synthesize_via_chat(text, output_path).await
+        self.synthesize_via_chat(text).await
+    }
+
+    /// Sintetiza texto em áudio WAV via LM Studio TTS e salva em `output_path`.
+    pub async fn synthesize(&self, text: &str, output_path: &Path) -> Result<PathBuf, VoiceError> {
+        let audio_bytes = self.synthesize_to_bytes(text).await?;
+
+        tokio::fs::write(output_path, &audio_bytes)
+            .await
+            .map_err(|e| VoiceError::Tts(format!("Failed to write WAV: {e}")))?;
+
+        tracing::debug!(path = %output_path.display(), "LM Studio TTS WAV written");
+
+        Ok(output_path.to_path_buf())
     }
 
     /// Tenta via `POST /v1/audio/speech` (OpenAI-compatible).
-    async fn synthesize_openai_compat(
-        &self,
-        text: &str,
-        output_path: &Path,
-    ) -> Result<PathBuf, VoiceError> {
+    async fn synthesize_openai_compat(&self, text: &str) -> Result<Vec<u8>, VoiceError> {
         let url = format!("{}/v1/audio/speech", self.endpoint);
 
         let body = serde_json::json!({
@@ -83,29 +95,20 @@ impl LmStudioTtsClient {
             .await
             .map_err(|e| VoiceError::Tts(format!("Failed to read TTS response: {e}")))?;
 
-        tokio::fs::write(output_path, &audio_bytes)
-            .await
-            .map_err(|e| VoiceError::Tts(format!("Failed to write WAV: {e}")))?;
-
         tracing::info!(
             bytes = audio_bytes.len(),
             model = %self.model,
-            path = %output_path.display(),
             "LM Studio TTS synthesis complete (openai-compat)"
         );
 
-        Ok(output_path.to_path_buf())
+        Ok(audio_bytes.to_vec())
     }
 
     /// Fallback via `POST /api/v1/chat` (LM Studio specific TTS).
     ///
     /// Alguns modelos TTS no LM Studio usam o endpoint de chat com
     /// `system_prompt` e `input` em vez do endpoint de áudio padrão.
-    async fn synthesize_via_chat(
-        &self,
-        text: &str,
-        output_path: &Path,
-    ) -> Result<PathBuf, VoiceError> {
+    async fn synthesize_via_chat(&self, text: &str) -> Result<Vec<u8>, VoiceError> {
         let url = format!("{}/api/v1/chat", self.endpoint);
 
         let body = serde_json::json!({
@@ -147,18 +150,13 @@ impl LmStudioTtsClient {
                 .await
                 .map_err(|e| VoiceError::Tts(format!("Failed to read audio: {e}")))?;
 
-            tokio::fs::write(output_path, &audio_bytes)
-                .await
-                .map_err(|e| VoiceError::Tts(format!("Failed to write WAV: {e}")))?;
-
             tracing::info!(
                 bytes = audio_bytes.len(),
                 model = %self.model,
-                path = %output_path.display(),
                 "LM Studio TTS synthesis complete (chat endpoint)"
             );
 
-            Ok(output_path.to_path_buf())
+            Ok(audio_bytes.to_vec())
         } else {
             // Resposta é JSON — extrair áudio base64 se disponível
             let body_text = resp.text().await.unwrap_or_default();
@@ -178,17 +176,15 @@ impl LmStudioTtsClient {
                             VoiceError::Tts(format!("Failed to decode base64 audio: {e}"))
                         })?;
 
-                    tokio::fs::write(output_path, &audio_bytes)
-                        .await
-                        .map_err(|e| VoiceError::Tts(format!("Failed to write WAV: {e}")))?;
-
-                    return Ok(output_path.to_path_buf());
+                    return Ok(audio_bytes);
                 }
             }
 
+            // Por caractere, nao por byte: fatiar `&body_text[..200]` cai no
+            // meio de um caractere multibyte e da panic no caminho de erro.
+            let resumo: String = body_text.chars().take(200).collect();
             Err(VoiceError::Tts(format!(
-                "LM Studio TTS returned non-audio response: {}",
-                &body_text[..body_text.len().min(200)]
+                "LM Studio TTS returned non-audio response: {resumo}"
             )))
         }
     }
