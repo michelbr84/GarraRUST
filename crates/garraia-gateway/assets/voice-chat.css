@@ -39,8 +39,12 @@
 .voice-turn:last-child { margin-bottom:0; }
 .voice-turn strong { display:block; font-size:11px; color:var(--garra-accent); margin-bottom:4px; }
 .voice-turn[data-interrupted="true"]::after { content:' · resposta interrompida'; font-size:11px; color:var(--text-secondary); }
+#voice-new-session { margin-top:4px; }
+#voice-served-by[data-fallback="true"] { color:var(--garra-warning); }
 .voice-call-badge { display:none; color:var(--garra-success); margin-left:auto; font-size:10px; }
-body.voice-call-active .voice-call-badge { display:inline; }
+body.voice-call-active #voice-new-session { margin-top:4px; }
+#voice-served-by[data-fallback="true"] { color:var(--garra-warning); }
+.voice-call-badge { display:inline; }
 @keyframes voice-breathe { 50% { opacity:.65; } }
 @media (max-width:900px) { .voice-layout { grid-template-columns:1fr; } .voice-stage { padding:12px 0; } .voice-orb-wrap { height:190px; } }
 @media (max-width:480px) { .voice-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } .voice-controls { gap:6px; } .voice-controls button { padding:10px 12px; } .voice-setting-pair { grid-template-columns:1fr; gap:0; } }

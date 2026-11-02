@@ -2768,6 +2768,7 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
               <button type="button" id="voice-interrupt" disabled>Interromper</button>
               <button type="button" id="voice-end" disabled>Encerrar</button>
             </div>
+            <button type="button" class="btn-sm" id="voice-new-session" data-testid="voice-new-session">Nova conversa</button>
             <p class="voice-notice" id="voice-availability">Consultando modelos disponíveis…</p>
             <p class="voice-notice" id="voice-error" role="alert"></p>
           </div>
@@ -2783,8 +2784,10 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
             </div>
             <label for="voice-silence">Pausa para concluir uma fala</label>
             <select id="voice-silence"><option value="600">Curta · 0,6 segundo</option><option value="800" selected>Natural · 0,8 segundo</option><option value="1200">Tranquila · 1,2 segundo</option><option value="1600">Longa · 1,6 segundo</option></select>
-            <small id="voice-config-status">As escolhas são aplicadas no início de cada fala.</small>
+            <small id="voice-config-status" role="status">As escolhas são aplicadas no início de cada fala.</small>
+            <small id="voice-served-by" data-testid="voice-served-by"></small>
             <small id="voice-pricing">Custo estimado e efetivo: indisponíveis.</small>
+            <small id="voice-catalog-time"></small>
             <small id="voice-limitations"></small>
             <button type="button" class="btn-sm" id="voice-refresh-models" style="margin-top:12px">Atualizar modelos</button>
           </div>
@@ -2793,7 +2796,7 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
           <div class="voice-metric"><dt>Duração da chamada</dt><dd id="voice-duration">00:00</dd></div>
           <div class="voice-metric"><dt>Fim da fala → primeiro áudio</dt><dd id="voice-first-audio">—</dd></div>
           <div class="voice-metric"><dt>Última transcrição</dt><dd id="voice-stt-latency">—</dd></div>
-          <div class="voice-metric"><dt>Custo da chamada</dt><dd>Indisponível</dd></div>
+          <div class="voice-metric"><dt>Custo efetivo informado</dt><dd id="voice-cost">Indisponível</dd></div>
         </dl>
         <div class="voice-transcript-heading"><h3>Transcrição da conversa</h3><label><input type="checkbox" id="voice-transcript-toggle" checked /> Mostrar</label></div>
         <div class="voice-transcript" id="voice-transcript" role="log" aria-label="Transcrição da conversa" aria-live="polite" aria-relevant="additions text"></div>
