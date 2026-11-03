@@ -102,10 +102,13 @@ impl OllamaProvider {
         // one would bypass the SSRF gate. A pinned client from
         // `with_client` already has this; the default covers providers
         // built from config at boot.
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        // #1792: a politica vem de `cliente_llm` — ganha o teto de CONEXAO
+        // que os providers de nuvem ja tinham e perde o reserva
+        // `Client::new()`, que voltava seguindo redirect se o builder
+        // falhasse. Sem teto TOTAL de proposito: o `pull_model` usa este
+        // cliente, e um download frio leva minutos (#1778).
+        let client =
+            crate::cliente_llm::cliente_padrao(None).expect(crate::cliente_llm::SEM_CLIENTE_HTTP);
         Self {
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),

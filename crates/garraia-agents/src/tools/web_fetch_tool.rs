@@ -313,11 +313,14 @@ mod tests {
             .expect("3xx e observacao soft, nao Err");
         assert!(out.is_error, "{}", out.content);
         assert!(out.content.contains("status=308"), "{}", out.content);
+        // O destino sai citado, com a credencial da query redigida (#1792).
         assert!(
-            out.content.contains(LOCATION),
+            out.content
+                .contains("https://destino.test/pagina?user_id=user_x&token=[REDACTED]"),
             "o destino tem de ser citado: {}",
             out.content
         );
+        assert!(!out.content.contains("segredo"), "{}", out.content);
         assert!(
             out.content.contains("corrija a URL pedida"),
             "{}",

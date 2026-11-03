@@ -22,6 +22,72 @@ pub(super) fn erro_de_roteamento_openrouter_nao_e_retryable() {
     )));
 }
 
+/// #1792: com status HTTP de falha na mensagem, o STATUS decide o retry — e
+/// nao uma substring solta. O corpo e texto do provider: um "4290 tokens", um
+/// "upstream" ou um `status=503` citado no meio dele nao podem fazer o runtime
+/// insistir num 400/404.
+#[test]
+pub(super) fn retry_decide_pelo_status_e_nao_por_substring_do_corpo() {
+    let falsos_positivos = [
+        // "429" solto dentro do numero de tokens.
+        "openai API error: status=400 Bad Request, body=limite de 4290 tokens excedido",
+        // "503" citado no texto do corpo, inclusive no formato `status=`.
+        "erro na API da Anthropic: status=400 Bad Request, body=o proxy respondeu \
+         status=503 antes",
+        "openai API error: status=404 Not Found, body=modelo 503-preview nao existe",
+        // "upstream" na frase do provider de um erro do pedido.
+        "openai API error: status=422 Unprocessable Entity, body=upstream rejected the \
+         schema",
+        // "rate limit" num 401 nao vira retry: a chave e que esta errada.
+        "openai API error: status=401 Unauthorized, body=rate limit tier requires a key",
+        // 3xx e erro de configuracao (base_url), nunca transitorio.
+        "llama.cpp error: status=308 Permanent Redirect, location=http://h/x?code=503; \
+         redirects desligados por seguranca - corrija a base_url do provider",
+    ];
+    for msg in falsos_positivos {
+        assert!(
+            !is_retryable_error(&Error::Agent(msg.into())),
+            "status de falha nao-retryavel tem de vencer o texto: {msg}"
+        );
+    }
+
+    let por_status = [
+        "openai API error: status=429 Too Many Requests, body=slow down",
+        "openai API error: status=502 Bad Gateway, body=",
+        "erro na API da Anthropic: status=503 Service Unavailable, body=",
+        "erro na API da Anthropic: status=529 <unknown status code>, body=overloaded",
+        // `error.code` HTTP de um erro entregue com 200 (#1726).
+        "openai API error: status=429 (no corpo, com HTTP 200), body=rate limited",
+    ];
+    for msg in por_status {
+        assert!(
+            is_retryable_error(&Error::Agent(msg.into())),
+            "status retryavel: {msg}"
+        );
+    }
+
+    // Sem status (ou com 2xx, quando o erro veio no corpo de uma resposta
+    // 200, como o SSE do OpenRouter): quem fala e a frase, e o texto e o
+    // fallback.
+    let por_texto = [
+        "openai API error (SSE): status=200 OK, error=Rate limit exceeded",
+        "openai API error (SSE): status=200 OK, error=upstream connect error",
+        "openai-codex API error: body=slow down (code=rate_limit_exceeded)",
+        "ollama error status: 429 Too Many Requests",
+    ];
+    for msg in por_texto {
+        assert!(
+            is_retryable_error(&Error::Agent(msg.into())),
+            "sem status de falha, o texto decide: {msg}"
+        );
+    }
+
+    // Sem status, "429" solto tambem nao basta.
+    assert!(!is_retryable_error(&Error::Agent(
+        "failed to parse openai response: 4290 tokens".into()
+    )));
+}
+
 /// #1540: duas entradas `llm:` do mesmo tipo (`provider: openai` em bases
 /// distintas) precisam de ids proprios (a chave do perfil) — sem isso o id
 /// era o tipo (`"openai"`), `get_provider` so achava a primeira registrada e
