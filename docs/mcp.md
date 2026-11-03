@@ -358,6 +358,10 @@ timeouts:
     default_secs: 60  # Increase from default
 ```
 
+A server's own `timeout:` wins over `timeouts.mcp.default_secs`. The same
+rule applies at gateway boot and in `garra mcp inspect|resources|prompts`, and
+`garra mcp list` shows the effective window of each server (#1793).
+
 ## See also
 
 - [`docs/cli-mcp-server.md`](cli-mcp-server.md) — the reverse direction:

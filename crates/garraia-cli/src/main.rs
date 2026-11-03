@@ -31,6 +31,7 @@ mod repo_workflow;
 mod runs_cmd;
 #[cfg(unix)]
 mod sigpipe;
+mod sonda_de_provider;
 mod systemd_guard;
 mod team;
 mod tracing_setup;
@@ -1382,9 +1383,11 @@ enum SkillCommands {
 
 #[derive(Subcommand)]
 enum McpCommands {
-    /// List configured MCP servers
+    /// List configured MCP servers, with each one's effective timeout
     List,
-    /// Connect to an MCP server and list its tools
+    /// Connect to an MCP server and list its tools. Every call to the server
+    /// is capped by its `timeout:` or, without one, `timeouts.mcp.default_secs`
+    /// (the same window the gateway uses at boot).
     Inspect { name: String },
     /// List resources from a connected MCP server
     Resources { name: String },
@@ -3005,7 +3008,8 @@ async fn async_main(
                             status,
                             target,
                             server.args,
-                            server.timeout.unwrap_or(30),
+                            // #1793: a janela que o servidor tem de fato.
+                            server.timeout_efetivo(&config.timeouts),
                         );
                     }
                 }
@@ -3028,7 +3032,8 @@ async fn async_main(
 
                     println!("Connecting to MCP server '{name}'...");
                     let manager = garraia_agents::McpManager::new();
-                    let timeout_secs = server_config.timeout.unwrap_or(30);
+                    // #1793: a mesma janela do boot do gateway, nao 30s fixos.
+                    let timeout_secs = server_config.timeout_efetivo(&config.timeouts);
 
                     match manager
                         .connect(
@@ -3069,7 +3074,8 @@ async fn async_main(
 
                     println!("Connecting to MCP server '{name}'...");
                     let manager = garraia_agents::McpManager::new();
-                    let timeout_secs = server_config.timeout.unwrap_or(30);
+                    // #1793: a mesma janela do boot do gateway, nao 30s fixos.
+                    let timeout_secs = server_config.timeout_efetivo(&config.timeouts);
 
                     match manager
                         .connect(
@@ -3115,7 +3121,8 @@ async fn async_main(
 
                     println!("Connecting to MCP server '{name}'...");
                     let manager = garraia_agents::McpManager::new();
-                    let timeout_secs = server_config.timeout.unwrap_or(30);
+                    // #1793: a mesma janela do boot do gateway, nao 30s fixos.
+                    let timeout_secs = server_config.timeout_efetivo(&config.timeouts);
 
                     match manager
                         .connect(
