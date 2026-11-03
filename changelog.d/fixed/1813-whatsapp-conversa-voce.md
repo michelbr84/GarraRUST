@@ -7,3 +7,7 @@
   O eco da resposta do proprio Garra nesse chat e barrado em duas camadas
   (ids enviados na ponte e no runner). A identidade e o numero da conta e passa
   pelo mesmo portao de admissao.
+  Salvaguardas da revisao de seguranca: so o `remoteJid` decide a conversa
+  "Voce" (o `remoteJidAlt` do Baileys 7 e o do remetente), encaminhada nao vira
+  turno, as respostas ali levam uma marca invisivel que outro Garra na mesma
+  conta reconhece, e um codigo de 6 digitos digitado ali nao vira pareamento.

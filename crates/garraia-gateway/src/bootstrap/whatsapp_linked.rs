@@ -1384,6 +1384,11 @@ pub fn merece_turno(msg: &InboundMessage) -> bool {
     por_que_sem_turno(msg).is_none()
 }
 
+/// A marca invisivel (U+2063, separador invisivel) no comeco de toda resposta
+/// do Garra na conversa "Voce" (#1813, revisao). Uma mensagem da conversa
+/// "Voce" que comeca com ela e de outro Garra na mesma conta — nunca turno.
+pub const MARCA_DO_GARRA: char = '\u{2063}';
+
 /// Por que uma mensagem nao virou turno no `deliver` (#1815). Antes, todos
 /// estes casos sumiam sem log nenhum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1396,12 +1401,24 @@ pub enum SemTurno {
     SemTexto,
     /// Texto vazio, ou midia em grupo/da propria conta: ruido, so `debug`.
     Vazia,
+    /// Na conversa "Voce", a resposta de OUTRO Garra vinculado a mesma conta
+    /// (comeca com [`MARCA_DO_GARRA`]): responder seria o ping-pong entre os
+    /// dois.
+    EcoDeOutroGarra,
 }
 
 /// `None` quando a mensagem merece turno; senao, o porque.
 pub fn por_que_sem_turno(msg: &InboundMessage) -> Option<SemTurno> {
     if msg.from_me && !msg.self_chat {
         return Some(SemTurno::DaPropriaConta);
+    }
+    if msg.self_chat
+        && msg
+            .text
+            .as_deref()
+            .is_some_and(|t| t.starts_with(MARCA_DO_GARRA))
+    {
+        return Some(SemTurno::EcoDeOutroGarra);
     }
     if msg.text.as_deref().is_some_and(|t| !t.trim().is_empty()) {
         return None;
@@ -1519,7 +1536,21 @@ impl GatewaySink {
 
     /// Responde num chat. Erro de fila nao derruba nada: a ponte caida descarta
     /// de proposito (ver `runner::serve`).
-    async fn responder(outbound: &mpsc::Sender<BridgeCommand>, chat: &Jid, texto: String) {
+    async fn responder(
+        outbound: &mpsc::Sender<BridgeCommand>,
+        chat: &Jid,
+        conversa_propria: bool,
+        texto: String,
+    ) {
+        // Na conversa "Voce" a resposta sai marcada (#1813, revisao): outra
+        // instancia do Garra vinculada a mesma conta reconhece a marca e nao
+        // responde a resposta desta — sem isso as duas conversariam entre si
+        // para sempre (o anti-eco por id so conhece os ids da PROPRIA ponte).
+        let texto = if conversa_propria {
+            format!("{MARCA_DO_GARRA}{texto}")
+        } else {
+            texto
+        };
         let comando = BridgeCommand::Send {
             request_id: uuid::Uuid::new_v4().to_string(),
             chat_jid: chat.clone(),
@@ -1595,7 +1626,11 @@ impl GatewaySink {
                 return;
             };
             gate.recarregar(&settings);
-            let admissao = admitir(&mut gate, &mut pair, &remetente, &bruto);
+            // Revisao da #1819: um codigo de 6 digitos digitado na conversa
+            // "Voce" (um OTP anotado, por exemplo) nao e pedido de pareamento
+            // — nao gasta tentativa nem queima codigo de ninguem.
+            let texto_do_codigo = if msg.from_me { "" } else { bruto.as_str() };
+            let admissao = admitir(&mut gate, &mut pair, &remetente, texto_do_codigo);
             // O que o portao sabe e que a config nao diz: entrou por codigo.
             (
                 admissao,
@@ -1641,6 +1676,7 @@ impl GatewaySink {
                 Self::responder(
                     &outbound,
                     &msg.chat_jid,
+                    msg.self_chat,
                     "Pronto! Voce tem acesso a este GarraIA. Mande sua pergunta.".to_string(),
                 )
                 .await;
@@ -1662,6 +1698,7 @@ impl GatewaySink {
             Self::responder(
                 &outbound,
                 &msg.chat_jid,
+                msg.self_chat,
                 "Nao consegui processar essa mensagem.".to_string(),
             )
             .await;
@@ -1721,7 +1758,7 @@ impl GatewaySink {
                 DecisaoDeComando::NaoEComando => {}
                 DecisaoDeComando::Negado(motivo) => {
                     info!(phone_last4 = %last4, principal = quem, "whatsapp_linked: comando recusado");
-                    Self::responder(&outbound, &msg.chat_jid, motivo).await;
+                    Self::responder(&outbound, &msg.chat_jid, msg.self_chat, motivo).await;
                     return;
                 }
                 DecisaoDeComando::Roteia => {
@@ -1733,7 +1770,7 @@ impl GatewaySink {
                         .map(|r| r.content)
                         .unwrap_or_else(|| "Comando nao reconhecido.".to_string());
                     info!(phone_last4 = %last4, principal = quem, "whatsapp_linked: comando roteado");
-                    Self::responder(&outbound, &msg.chat_jid, resposta).await;
+                    Self::responder(&outbound, &msg.chat_jid, msg.self_chat, resposta).await;
                     return;
                 }
             }
@@ -1770,9 +1807,7 @@ impl GatewaySink {
                 cadencia::JANELA.as_secs()
             );
             if primeiro_corte {
-                Self::responder(
-                    &outbound,
-                    &msg.chat_jid,
+                Self::responder(&outbound, &msg.chat_jid, msg.self_chat,
                     "Muitas mensagens em pouco tempo; vou pausar as respostas nesta conversa por um instante."
                         .to_string(),
                 )
@@ -1844,13 +1879,14 @@ impl GatewaySink {
                 state
                     .persist_turn(&sid, Some(CONFIG_KEY), Some(&remetente), &texto, &resposta)
                     .await;
-                Self::responder(&outbound, &msg.chat_jid, resposta).await;
+                Self::responder(&outbound, &msg.chat_jid, msg.self_chat, resposta).await;
             }
             Err(e) => {
                 warn!(phone_last4 = %last4, "whatsapp_linked: o agente falhou: {e}");
                 Self::responder(
                     &outbound,
                     &msg.chat_jid,
+                    msg.self_chat,
                     "Tive um problema para responder agora. Tente de novo em instantes."
                         .to_string(),
                 )
@@ -1922,7 +1958,9 @@ impl InboundSink for GatewaySink {
     }
 
     fn on_dropped(&self, d: &DroppedInbound) {
-        let last4 = d.chat_last4.as_deref().unwrap_or("????");
+        // So digitos e no maximo quatro: o valor vem da ponte (revisao).
+        let last4 = rejeicoes::so_final4(d.chat_last4.as_deref().unwrap_or(""));
+        let last4 = last4.as_str();
         let motivo_ponte = d.reason.as_str();
         info!(
             motivo = motivo_ponte,

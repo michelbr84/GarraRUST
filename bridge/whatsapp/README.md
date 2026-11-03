@@ -30,10 +30,14 @@ Eventos bridge -> Rust: `started`, `qr`, `status`, `authenticated`, `connected`,
 `disconnected`, `logged_out`, `session_update`, `message`, `sent`, `error`,
 `log`, `pong` e `dropped`.
 
-- `message` traz `self_chat` (#1813): `true` quando o chat e a propria conta
-  (a conversa "Voce"), por telefone ou LID. E o unico caso em que o Rust
+- `message` traz `self_chat` (#1813): `true` quando o `key.remoteJid` (so ele,
+  nunca o `remoteJidAlt`) e a propria conta (a conversa "Voce"), por telefone
+  ou LID, e a mensagem nao e encaminhada. E o unico caso em que o Rust
   transforma uma mensagem `from_me` em turno. Os ids que a ponte envia ficam
-  lembrados (teto de 512) e nunca voltam como `message` (anti-eco).
+  lembrados (teto de 512) e nunca voltam como `message` (anti-eco). Um `append`
+  da propria conta so vira `message` na conversa "Voce" e com mais de
+  `ECO_LOCAL_MAX_SECS` (5 s) de idade: o eco local de um envio tem o carimbo
+  de agora.
 - `messages.upsert` com `type: append` e o eco local de um envio **ou** o que
   ficou na fila do servidor com a ponte fora. Da propria conta, nunca vira
   `message`; de terceiro, vira `message` se tiver ate

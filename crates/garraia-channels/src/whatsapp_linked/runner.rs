@@ -1721,8 +1721,9 @@ async fn serve_once(
                 match event {
                     BridgeEvent::SessionUpdate { ref session, .. } => persist(store, key, session),
                     BridgeEvent::Message(ref msg) if enviados.e_eco(msg) => {
+                        let final4 = msg.chat_jid.last4();
                         tracing::debug!(
-                            chat_last4 = %msg.chat_jid.last4(),
+                            chat_last4 = %final4,
                             "whatsapp_linked: eco da propria resposta ignorado"
                         );
                     }

@@ -950,6 +950,48 @@ fn conversa_voce_gera_turno_e_o_resto_da_propria_conta_nao() {
     assert!(!merece_turno(&a_terceiro));
 }
 
+/// #1813 (revisao): a resposta de OUTRO Garra na mesma conta chega na
+/// conversa "Voce" com a marca invisivel e nunca vira turno; sem a marca, o
+/// dono digitando, vira.
+#[test]
+fn conversa_voce_com_a_marca_e_outro_garra_e_nao_vira_turno() {
+    let mut de_outro = msg(Some(&format!("{MARCA_DO_GARRA}Oi! Em que posso ajudar?")));
+    de_outro.from_me = true;
+    de_outro.self_chat = true;
+    assert_eq!(
+        por_que_sem_turno(&de_outro),
+        Some(SemTurno::EcoDeOutroGarra)
+    );
+
+    let mut do_dono = de_outro.clone();
+    do_dono.text = Some("oi".into());
+    assert_eq!(por_que_sem_turno(&do_dono), None);
+
+    // Fora da conversa "Voce" a marca nao muda nada (terceiro nao e eco).
+    let mut de_terceiro = msg(Some(&format!("{MARCA_DO_GARRA}oi")));
+    de_terceiro.self_chat = false;
+    assert_eq!(por_que_sem_turno(&de_terceiro), None);
+}
+
+/// #1813 (revisao): toda resposta na conversa "Voce" sai com a marca; nos
+/// demais chats, o texto sai intacto.
+#[tokio::test]
+async fn resposta_na_conversa_voce_sai_marcada() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let jid = Jid::new("5511999990000@s.whatsapp.net");
+    GatewaySink::responder(&tx, &jid, true, "oi".to_string()).await;
+    GatewaySink::responder(&tx, &jid, false, "oi".to_string()).await;
+    let texto = |c: BridgeCommand| match c {
+        BridgeCommand::Send { text, .. } => text,
+        outro => panic!("{outro:?}"),
+    };
+    assert_eq!(
+        texto(rx.recv().await.unwrap()),
+        format!("{MARCA_DO_GARRA}oi")
+    );
+    assert_eq!(texto(rx.recv().await.unwrap()), "oi");
+}
+
 /// #1815: cada descarte do `deliver` tem motivo. So a midia de terceiro em
 /// 1:1 deixa alguem sem resposta — e so ela conta como rejeicao.
 #[test]
@@ -3009,6 +3051,44 @@ mod ponta_a_ponta {
         assert!(
             ate(|| c.state.sessions.contains_key(&sid)).await,
             "a sessao e a da conversa \"Voce\", e a resposta sai nela"
+        );
+
+        encerra(c).await;
+    }
+
+    /// **#1813 (revisao): em `restricted` o numero proprio nao se autoriza
+    /// sozinho.** Sem ele no `allow`, a conversa "Voce" e recusada pelo MESMO
+    /// portao de qualquer remetente — nada chega ao modelo, e a recusa e
+    /// contada como `restricted_policy`.
+    #[tokio::test]
+    async fn conversa_voce_em_restricted_sem_o_numero_proprio_e_recusada() {
+        let c = Montagem {
+            roteiro: Roteiro::empurra("oi").na_conversa_propria(),
+            ..Montagem::default()
+        }
+        .sobe(|_| {})
+        .await;
+
+        assert!(
+            ate(|| !recebidas(&c).is_empty()).await,
+            "a mensagem precisa chegar para o teste ter o que provar"
+        );
+        assert!(recebidas(&c)[0].self_chat, "premissa: conversa \"Voce\"");
+        assert!(
+            ate(|| c
+                .state
+                .whatsapp_linked
+                .rejeicoes()
+                .de(rejeicoes::Motivo::Restrita)
+                >= 1)
+            .await,
+            "a recusa e contada: {:?}",
+            c.state.whatsapp_linked.rejeicoes()
+        );
+        assert!(
+            turnos(&c.provider).is_empty(),
+            "nada chega ao modelo: {:?}",
+            turnos(&c.provider)
         );
 
         encerra(c).await;

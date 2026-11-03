@@ -596,9 +596,23 @@ garraia whatsapp allow +55 11 98888-0000
   mensagem vira turno, com a identidade do proprio numero passando pelo mesmo
   portao (em `open`, admitida; em `restricted`, so se o numero estiver
   autorizado). A resposta sai no mesmo chat, e o eco dela e barrado pelo id
-  (na ponte e no runner), entao o canal nao responde a si mesmo. O `link`
-  avisa quando o numero digitado termina como o do aparelho vinculado e pede
-  confirmacao (default nao).
+  (na ponte e no runner), entao o canal nao responde a si mesmo. Salvaguardas:
+  - so o `key.remoteJid` decide o que e a conversa "Voce" — nunca o
+    `remoteJidAlt`, que no Baileys 7 e o endereco do remetente;
+  - mensagem **encaminhada** para "Voce" nao vira turno (seria instrucao de
+    terceiro com o privilegio do dono);
+  - toda resposta do Garra ali comeca com uma marca invisivel (U+2063), e uma
+    mensagem da conversa "Voce" com essa marca e de outro Garra na mesma conta
+    e nunca e respondida. Outro **bot** (nao Garra) na conversa "Voce" da mesma
+    conta pode conversar com o Garra ate a guarda de cadencia cortar: use um so
+    bot por conta nessa conversa;
+  - um codigo de 6 digitos digitado ali (um OTP anotado) nao e tratado como
+    pedido de pareamento;
+  - o "oi" que o dono digita na conversa "Voce" com o gateway fora chega como
+    entrega offline e e respondido se tiver ate 10 minutos.
+
+  O `link` avisa quando o numero digitado termina como o do aparelho vinculado
+  e pede confirmacao (default nao).
 - **Vale sem reiniciar — com duas condicoes.** Com o gateway rodando, `allow`
   e `owners` sao relidos do `config.yml` a cada mensagem: autorizar vale na
   proxima, e **revogar tambem** — rode `garraia whatsapp remove <numero>`

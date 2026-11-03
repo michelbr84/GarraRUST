@@ -45,6 +45,12 @@ export const OFFLINE_REPLY_WINDOW_SECS = 10 * 60;
 export const SENT_IDS_MAX = 512;
 /** `proto.WebMessageInfo.StubType.CIPHERTEXT`: o Baileys nao conseguiu decriptar. */
 export const CIPHERTEXT_STUB = 2;
+/**
+ * Idade maxima do eco local de um envio (`append` da propria conta). Ele sai
+ * com o carimbo do proprio envio; qualquer `append` da propria conta mais
+ * velho que isso foi digitado no celular com a ponte fora.
+ */
+export const ECO_LOCAL_MAX_SECS = 5;
 
 export const EXIT_OK = 0;
 export const EXIT_FATAL = 1;
@@ -372,14 +378,24 @@ export function normalizeUserJid(jid) {
  * A conversa "Voce" (conversa consigo mesmo) do WhatsApp: o chat e a propria
  * conta, por telefone ou por LID (#1813). `ownIds` sao o JID e o LID da conta;
  * qualquer um deles pode faltar.
+ *
+ * So o `key.remoteJid` decide — nunca o `remoteJidAlt`. No Baileys 7 o
+ * `remoteJidAlt` e o endereco alternativo do REMETENTE (`sender_pn`/
+ * `sender_lid` ganham do `peer_recipient_*`): numa mensagem do dono a um
+ * terceiro ele pode ser a propria conta, e o Garra passaria a responder no
+ * chat do terceiro em nome do dono (revisao de seguranca da #1819).
  */
 export function isSelfChat(key, ownIds) {
   const own = new Set((ownIds ?? []).map(normalizeUserJid).filter(Boolean));
   if (own.size === 0) return false;
-  return [key?.remoteJid, key?.remoteJidAlt].some((jid) => {
-    const n = normalizeUserJid(jid);
-    return n !== null && own.has(n);
-  });
+  const n = normalizeUserJid(key?.remoteJid);
+  return n !== null && own.has(n);
+}
+
+/** A mensagem foi encaminhada (`contextInfo.isForwarded` em qualquer conteudo). */
+export function isForwarded(content) {
+  if (!content || typeof content !== 'object') return false;
+  return Object.values(content).some((v) => Boolean(v?.contextInfo?.isForwarded));
 }
 
 /** @returns {object|null} evento `message`, ou null quando nao ha o que entregar */
@@ -426,7 +442,9 @@ export function toMessageEvent(waMessage, ownJid, ownLid = null) {
     is_group: isGroup,
     from_me: fromMe,
     // Conversa "Voce": o unico lugar em que `from_me` vira turno (#1813).
-    self_chat: !isGroup && isSelfChat(key, [ownJid, ownLid]),
+    // Encaminhada nao conta: conteudo de terceiro reencaminhado para "Voce"
+    // viraria instrucao com o privilegio do dono (injecao indireta).
+    self_chat: !isGroup && isSelfChat(key, [ownJid, ownLid]) && !isForwarded(content),
     push_name: waMessage.pushName ?? null,
   };
 }
@@ -492,11 +510,25 @@ export function triageUpsert(
   if (chatJid === 'status@broadcast' || chatJid.endsWith('@newsletter')) return null;
   const fromMe = Boolean(key.fromMe);
   if (fromMe && sentIds?.has(key.id)) return null;
-  if (type !== 'notify' && (type !== 'append' || fromMe)) return null;
+  if (type !== 'notify' && type !== 'append') return null;
 
-  if (waMessage.messageStubType === CIPHERTEXT_STUB) return droppedEvent('decrypt_failed', key);
+  // Falha de decriptacao so conta de terceiro: as da propria conta sao
+  // sincronizacao entre aparelhos, e contar isso so assusta o operador.
+  if (waMessage.messageStubType === CIPHERTEXT_STUB) {
+    return fromMe ? null : droppedEvent('decrypt_failed', key);
+  }
 
   const ev = toMessageEvent(waMessage, ownJid, ownLid);
+  if (type === 'append' && fromMe) {
+    // `append` da propria conta e, quase sempre, o eco local do que a ponte
+    // acabou de enviar (o Baileys o emite ANTES de o `sendMessage` resolver,
+    // entao o id ainda nao esta em `sentIds`). O eco tem o carimbo de agora; o
+    // "oi" que o dono digitou na conversa "Voce" com o gateway fora chega com
+    // o carimbo de quando foi digitado. So esse segundo, recente, vira turno.
+    const idade = nowSecs - toSecs(waMessage.messageTimestamp);
+    const doDonoOffline = ev?.self_chat && idade > ECO_LOCAL_MAX_SECS && idade <= offlineWindowSecs;
+    return doDonoOffline ? ev : null;
+  }
   if (!ev) {
     const content = unwrapMessage(waMessage.message);
     const visivel = content && Object.keys(content).some((k) => !SILENT_CONTENT.has(k));
@@ -743,7 +775,10 @@ export function createBridge({
         try {
           restored = await decodeSnapshot(cmd.session ?? null);
         } catch (err) {
-          emit({ type: 'error', code: 'bad_request', message: `invalid session blob: ${describeError(err)}` });
+          // Sem a mensagem do erro: o `JSON.parse` do V8 cita o comeco do texto
+          // invalido, que aqui e material de sessao — e este evento agora vai
+          // para o log do gateway (revisao de seguranca da #1819).
+          emit({ type: 'error', code: 'bad_request', message: `invalid session blob (${err?.name ?? 'Error'})` });
           return;
         }
         state.auth = await makeMemoryAuthState(restored?.creds ? restored : null, markDirty);
