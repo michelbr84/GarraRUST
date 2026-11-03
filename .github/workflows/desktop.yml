@@ -593,6 +593,36 @@ jobs:
           assert_selftest "$asidecar"
           echo "SMOKE LINUX OK (.deb + AppImage): origin=privado, self_test=ok, caminho com espaco"
 
+  # #1818: o mesmo smoke real do release, sobre o AppImage do desktop da PR —
+  # abre o app sob Xvfb (nao so extrai), espera o sidecar, a ponte com o Node
+  # privado e a janela do assistente, e confere que fechar o app derruba o
+  # sidecar.
+  smoke-linux-appimage-real:
+    name: Smoke real do AppImage do desktop (abre o app sob Xvfb)
+    needs: build-linux-bundles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Download Linux bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: garraia-desktop-linux-pr
+          path: bundles
+      - name: Smoke deps (Xvfb, D-Bus, GL do sistema)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xvfb dbus-x11 libegl1 libgl1 libgles2 libgbm1
+      - name: Run the desktop AppImage
+        run: |
+          set -euo pipefail
+          versao="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["workspace"]["package"]["version"])')"
+          app="$(ls bundles/*.AppImage | head -1)"
+          bash scripts/release/smoke-appimages-linux.sh - "$versao" "$app"
+
   smoke-macos:
     name: Smoke macOS (.app do DMG, caminho com espaco, sem Node global)
     needs: build-macos-bundles

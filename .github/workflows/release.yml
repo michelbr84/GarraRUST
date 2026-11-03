@@ -791,7 +791,8 @@ jobs:
           cp packaging/appimage/garraia.desktop "$appdir/garraia.desktop"
           # Ícone reaproveitado do desktop Tauri (256x256) — não duplicado no repo.
           cp crates/garraia-desktop/src-tauri/icons/128x128@2x.png "$appdir/garraia.png"
-          ln -s usr/bin/garraia "$appdir/AppRun"
+          # #1817: AppRun em script — duplo clique abre um terminal (ou avisa).
+          install -m 0755 packaging/appimage/AppRun "$appdir/AppRun"
           # APPIMAGE_EXTRACT_AND_RUN: os runners ubuntu-latest (24.04) não têm
           # libfuse2, então o próprio appimagetool precisa rodar extraído.
           APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 "${RUNNER_TEMP}/appimagetool" \
@@ -826,7 +827,8 @@ jobs:
           chmod +x "$appdir/usr/bin/garraia"
           cp packaging/appimage/garraia.desktop "$appdir/garraia.desktop"
           cp crates/garraia-desktop/src-tauri/icons/128x128@2x.png "$appdir/garraia.png"
-          ln -s usr/bin/garraia "$appdir/AppRun"
+          # #1817: AppRun em script — duplo clique abre um terminal (ou avisa).
+          install -m 0755 packaging/appimage/AppRun "$appdir/AppRun"
           # --runtime-file: embute o ELF runtime aarch64 no lugar do runtime
           # x86_64 que o appimagetool usaria por padrão. O mksquashfs é
           # agnóstico de arquitetura, então o appimagetool x86_64 empacota.
@@ -858,6 +860,58 @@ jobs:
           name: garraia-linux-packages
           path: stage/
 
+  # #1818: executa os AppImages que VAO ser publicados, como um usuario —
+  # antes so o `--version` da CLI rodava, e o AppImage do desktop publicado
+  # nunca era aberto (o smoke dele vive no desktop.yml, sobre outro build, so em
+  # PR). Desktop: sidecar em /api/health com a versao certa, ponte do WhatsApp
+  # com o Node privado (sem Node no PATH), janela do assistente aberta e sidecar
+  # morrendo junto com o app. CLI: --version, sem argumento sai sozinha, duplo
+  # clique abre terminal (#1817). O que depende de celular/microfone segue no
+  # dogfood manual e nao e simulado. Desktop e best-effort como o build dele:
+  # sem o artefato, prova so a CLI; com o artefato, uma falha bloqueia o
+  # release (nao se publica um desktop que nao abre).
+  smoke-appimages-linux:
+    name: Smoke real dos AppImages Linux
+    needs:
+      - package-linux
+      - build-linux-desktop
+    if: always() && needs.package-linux.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Download Linux packages
+        uses: actions/download-artifact@v8
+        with:
+          name: garraia-linux-packages
+          path: pkgs
+
+      - name: Download Linux desktop (best-effort)
+        if: needs.build-linux-desktop.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: garraia-desktop-linux
+          path: desk
+
+      - name: Smoke deps (Xvfb, D-Bus, GL do sistema)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xvfb dbus-x11 libegl1 libgl1 libgles2 libgbm1
+
+      - name: Run the AppImages
+        run: |
+          set -euo pipefail
+          versao="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["workspace"]["package"]["version"])')"
+          desk=""
+          if [ -f desk/garraia-desktop-linux-x86_64.AppImage ]; then
+            desk=desk/garraia-desktop-linux-x86_64.AppImage
+          else
+            echo "::warning ::sem AppImage do desktop (build best-effort): so a CLI e provada"
+          fi
+          bash scripts/release/smoke-appimages-linux.sh pkgs/garraia-linux-x86_64.AppImage "$versao" $desk
+
   # Create release
   release:
     name: Create Release
@@ -879,8 +933,10 @@ jobs:
       - build-linux-desktop
       - build-macos-desktop
       - package-linux
+      - smoke-appimages-linux
     if: |
       always() &&
+      needs.smoke-appimages-linux.result == 'success' &&
       needs.build-linux-x86_64.result == 'success' &&
       needs.build-windows-x86_64.result == 'success' &&
       needs.build-macos-x86_64.result == 'success'
