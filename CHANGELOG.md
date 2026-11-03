@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.2-rc1] - 2026-11-03
+
+Candidato a release da v0.5.2, publicado como pre-lancamento para o teste
+manual antes da estavel: nao e servido por `/releases/latest`, nao e oferecido
+pelo `garra update` nem pelo atualizador do app desktop, e a imagem Docker sai
+so com a tag `0.5.2-rc1` (sem `latest` e sem `0.5`). O binario se identifica
+como `garra 0.5.2` (o `-rc1` vive so na tag).
+
+Instalacao com versao fixa: no Windows,
+`$env:GARRAIA_VERSION='v0.5.2-rc1'; irm https://github.com/michelbr84/GarraRUST/releases/download/v0.5.2-rc1/install.ps1 | iex`;
+no Linux/macOS,
+`curl -fsSL https://github.com/michelbr84/GarraRUST/releases/download/v0.5.2-rc1/install.sh | sh -s -- --version v0.5.2-rc1`.
+
+O que muda desde a v0.5.1:
+
+- **Gate de comandos mais firme** (#1791): leitura do ambiente pelo
+  .NET/PowerShell (`[Environment]::GetEnvironmentVariable`,
+  `reg query HKCU\Environment`, `Get-ChildItem Env:`), download (`WebClient`,
+  `Start-BitsTransfer`, `bitsadmin`) e `[Diagnostics.Process]::Start` passam a
+  pedir confirmacao, e `Start-Process` e avaliado pelo programa que dispara.
+  Atribuicao na frente do comando (`FOO=1 curl ...`, `$r = iwr ...`), codigo
+  pelo stdin (`echo ... | python3`) e interpretador com versao no nome
+  (`python3.12 -c`) deixam de passar livres. Efeito visivel:
+  `DEBUG=1 node server.js` pede confirmacao, como `node server.js`.
+- **Janelas de timeout** (#1790, #1793): `garra ask` cortado pela janela de
+  `timeouts.llm` sai como `timeout` (exit 124), e nao como erro do provider;
+  `garra chat --model <tag>` usa a janela da entrada `llm:` do modelo; os
+  providers ativados pelo Web Console obedecem a janela da config; as sondas
+  que escolhem o provider usam `timeouts.health` (5s) no lugar da janela de
+  inferencia, e um `agent.default_provider` descartado avisa o motivo;
+  `garra mcp inspect|resources|prompts` usam o timeout do servidor ou
+  `timeouts.mcp` (60s) no lugar de 30s fixos.
+- **Nenhum cliente HTTP segue redirect** (#1792): embeddings, llama.cpp, A2A e
+  a busca do Brave deixam de seguir redirect, que podia levar a chave para
+  outro host; o retry do runtime decide pelo status HTTP; credencial em query
+  string e redigida; e um cliente que nao monta deixa de virar, em silencio,
+  um cliente com outra politica.
+- **Erros do provider sanitizados** (#1769): caracteres de controle e ANSI
+  saem da mensagem, e o log de falha de parsing mostra so um resumo redigido.
+- **Testes do binario e clippy no Windows** (#1762), sem mudanca de
+  comportamento.
+- **Dependencias** (#1803): plugins do Tauri (shell, notification, dialog),
+  AWS SDK e `aws-lc-rs`.
+
+O Voice Chat continuo na Web (#1754) entra na `v0.5.2-rc2`, e e nela que
+acontece o teste manual completo antes da estavel (o gate de dogfood de
+`docs/releasing.md` §1.5 e a validacao fisica da voz). Esta rc valida as
+mudancas acima e o pipeline de release. Para testa-las desde ja: um comando
+PowerShell que le o ambiente pedindo confirmacao; `garra ask` com
+`timeouts.llm.default_secs` curto saindo com exit 124; `garra chat` com
+`agent.default_provider` apontando para um Ollama parado avisando o motivo
+antes de cair na autodeteccao; `garra mcp list` mostrando a janela efetiva de
+cada servidor.
+
 ## [0.5.1] - 2026-11-02
 
 O v0.5.1 traz o plano do ChatGPT para o GarraIA e fecha tres achados de seguranca:
