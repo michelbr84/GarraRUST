@@ -6,6 +6,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.2-rc2] - 2026-11-03
+
+Segundo candidato da v0.5.2, publicado como pre-lancamento: e a rc1 mais o
+Voice Chat continuo na Web (#1754), e e nele que acontece o teste manual
+completo antes da estavel. Nao e servido por `/releases/latest`, nao e
+oferecido pelo `garra update` nem pelo atualizador do app desktop, e a imagem
+Docker sai so com a tag `0.5.2-rc2` (sem `latest` e sem `0.5`). O binario se
+identifica como `garra 0.5.2` (o `-rc2` vive so na tag).
+
+Instalacao com versao fixa: no Windows,
+`$env:GARRAIA_VERSION='v0.5.2-rc2'; irm https://github.com/michelbr84/GarraRUST/releases/download/v0.5.2-rc2/install.ps1 | iex`;
+no Linux/macOS,
+`curl -fsSL https://github.com/michelbr84/GarraRUST/releases/download/v0.5.2-rc2/install.sh | sh -s -- --version v0.5.2-rc2`.
+
+O que muda desde a v0.5.1:
+
+- **Voice Chat continuo no Web Console** (#1754, novo nesta rc): a pagina
+  `#/voice` inicia uma chamada uma vez, ouve sem apertar botao a cada turno,
+  aceita interromper o GarraIA falando por cima e troca STT, modelo de
+  conversa, TTS, voz e idioma no meio da chamada sem perder a sessao. Usa os
+  servidores locais do `--with-voice` e as instancias OpenRouter ja
+  configuradas, com o preco como o provedor informa; o navegador so escolhe
+  IDs (URL, chave e politica ficam no servidor) e STT/TTS nao tem fallback.
+  O `/ws` ganha `turn_id`, `stop` por turno e contexto de voz, todos opcionais.
+- **Base de voz com limites** (#1754): respostas com teto de tamanho, timeouts
+  e sem seguir redirect nos clientes Whisper, Chatterbox, Hibiki e LM Studio;
+  timeout nao gera uma segunda sintese ou transcricao; o audio do Chatterbox
+  so e baixado da origem configurada; e os erros de STT/TTS nao ecoam mais o
+  corpo do provedor.
+- **Gate de comandos mais firme** (#1791): leitura do ambiente pelo
+  .NET/PowerShell, download por `WebClient`/BITS e `[Diagnostics.Process]::Start`
+  pedem confirmacao; atribuicao na frente do comando, codigo pelo stdin e
+  interpretador com versao no nome deixam de passar livres
+  (`DEBUG=1 node server.js` pede confirmacao, como `node server.js`).
+- **Janelas de timeout** (#1790, #1793): `garra ask` cortado pela janela de
+  `timeouts.llm` sai com exit 124; `garra chat --model <tag>` e os providers
+  ativados pelo Web Console obedecem a janela da config; as sondas da escolha
+  de provider usam `timeouts.health`, e um `agent.default_provider` descartado
+  avisa o motivo; `garra mcp inspect|resources|prompts` usam o timeout do
+  servidor ou `timeouts.mcp`.
+- **Nenhum cliente HTTP segue redirect** (#1792), o retry decide pelo status
+  HTTP e credencial em query string e redigida.
+- **Erros do provider sanitizados** (#1769), **testes e clippy da CLI no
+  Windows** (#1762) e **dependencias** (#1803: plugins do Tauri, AWS SDK).
+
+**Teste manual antes da estavel** (gate de dogfood, `docs/releasing.md` §1.5):
+instalacao no Windows com `garra doctor` (D2); o app desktop (D5/D6);
+pareamento do WhatsApp com numero autorizado e reinicio sem novo QR (D1/D3);
+perguntas reais ao agente e isolamento por sessao (D7/D10); os itens da rc1
+(PowerShell lendo o ambiente pede confirmacao, `garra ask` com janela curta
+sai com exit 124, `garra mcp list` mostra a janela efetiva). Validacao fisica
+do Voice Chat: `--with-voice` com Whisper e Chatterbox locais (falar, ouvir,
+interromper falando por cima, encerrar); a mesma chamada no alto-falante, sem
+o GarraIA se interromper com a propria voz; ambiente com ruido; troca de
+modelo, TTS e voz no meio da chamada sem perder o contexto; microfone negado,
+desconectado no meio e mais de 30 s em outra aba; STT e TTS do OpenRouter
+conferindo `usage.cost` e a voz em PT-BR; e as latencias mostradas na pagina,
+para a tabela de metas do ADR 0027. Passando, a `v0.5.2` sai como estavel;
+uma falha reproduzivel vira a `v0.5.2-rc3`.
+
 ## [0.5.2-rc1] - 2026-11-03
 
 Candidato a release da v0.5.2, publicado como pre-lancamento para o teste
