@@ -252,7 +252,17 @@ fn decidir_execucao(
 }
 
 async fn build_completer(config: &garraia_config::AppConfig) -> Option<RuntimeCompleter> {
-    let (config_key, model, provider) = chat::detect_provider(config, None, None, true).await;
+    let (config_key, model, provider) = match chat::detect_provider(config, None, None, true).await
+    {
+        Ok(provedor) => provedor,
+        // #1790: o cliente HTTP dos providers nao montou — nao ha com quem
+        // falar, e o erro diz por que.
+        Err(e) => {
+            println!("  [provider] {e:#}");
+            println!();
+            return None;
+        }
+    };
     let instalados =
         if provider.provider_id() == "ollama" && config_key != chat::OLLAMA_ULTIMO_RECURSO {
             Some(provider.available_models().await.map_err(|_| ()))

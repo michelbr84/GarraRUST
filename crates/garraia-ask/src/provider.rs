@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use garraia_agents::LlmProvider;
 use garraia_config::AppConfig;
 
@@ -163,8 +163,12 @@ pub fn select_explicit_provider_with_env(
     // #1778: o cliente HTTP sai de `config.timeouts.llm`, como no bootstrap
     // do gateway. Sem isto o provider vinha com o cliente padrao do `::new()`
     // e a janela declarada no config nao valia para `garra ask`/`-p`.
+    //
+    // #1790: cliente que nao monta e erro, nao um cliente padrao em silencio
+    // (seguindo redirect, regra 14, e sem a janela).
     let cliente =
-        garraia_agents::cliente_llm::cliente_compartilhado(config.timeouts.llm.default_secs);
+        garraia_agents::cliente_llm::cliente_compartilhado(config.timeouts.llm.default_secs)
+            .context("montando o cliente HTTP dos providers (timeouts.llm)")?;
     let provider =
         provider_binding::build_provider(&binding, &model, provider_id, url_override, &cliente)?;
     Ok((name.to_string(), model, provider))

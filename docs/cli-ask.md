@@ -72,7 +72,7 @@ stdout is the answer (or a `garra.ask.v1` JSON envelope when `--json`).
 | `65` | arquivo de config inválido (`EX_DATAERR`) — reservado, propagado pela inicialização |
 | `69` | provider indisponível, auth, network (`EX_UNAVAILABLE`) |
 | `74` | falha de I/O ao ler stdin (`EX_IOERR`) |
-| `124` | LLM excedeu `--timeout-secs` (convenção Unix `timeout(1)`) |
+| `124` | LLM excedeu `--timeout-secs` (convenção Unix `timeout(1)`) — ou a janela da config (`timeouts.llm.default_secs` / `llm.<nome>.timeout_secs`), quando ela corta primeiro; a mensagem diz qual chave aumentar (#1790) |
 
 ## Resolução de provider e model
 

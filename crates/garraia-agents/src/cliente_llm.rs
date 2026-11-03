@@ -11,6 +11,13 @@
 //! Duas funcoes, as duas puras: nenhuma le config, nenhuma faz I/O. A casca
 //! que le `config.timeouts` fica em quem tem o `AppConfig` na mao.
 //!
+//! **Falha de montagem e devolvida, nunca trocada (#1790).** Um cliente que
+//! nao monta vira `Err` para quem chamou. Antes ele virava, em silencio, o
+//! cliente padrao do `reqwest` — que SEGUE redirect (regra 14 / #1248) e nao
+//! tem a janela de resposta — ou o compartilhado, com a janela errada. Nao
+//! existe cliente "quase certo" para cair: quem chama decide o que fazer sem
+//! ele (a CLI falha com a causa, o gateway nao registra o provider).
+//!
 //! **Contrato do `with_client`:** os `::new()` dos providers montam um cliente
 //! com `redirect(none)` (issue #1248, regra 14 do projeto) e, nos de nuvem,
 //! `connect_timeout`. Como `with_client` SUBSTITUI esse cliente, quem chama
@@ -43,14 +50,14 @@ fn base() -> reqwest::ClientBuilder {
 /// virava `Duration::ZERO`, que e um sleep ja vencido — TODA chamada LLM
 /// falhava em ~1ms, o oposto do que a mensagem do `config check` promete
 /// (#1593).
-pub fn cliente_compartilhado(default_secs: u64) -> reqwest::Client {
+pub fn cliente_compartilhado(default_secs: u64) -> reqwest::Result<reqwest::Client> {
     let builder = base();
     let builder = if default_secs == 0 {
         builder
     } else {
         builder.timeout(Duration::from_secs(default_secs))
     };
-    builder.build().unwrap_or_default()
+    builder.build()
 }
 
 /// #1593: o cliente HTTP de um provider LLM — janela propria quando
@@ -63,16 +70,13 @@ pub fn cliente_compartilhado(default_secs: u64) -> reqwest::Client {
 pub fn cliente_do_llm(
     compartilhado: &reqwest::Client,
     timeout_secs: Option<u64>,
-) -> reqwest::Client {
+) -> reqwest::Result<reqwest::Client> {
     match timeout_secs {
         // 0 = sem timeout, a mesma semantica documentada do valor global
         // (#1593: `Duration::ZERO` seria um sleep ja vencido, nao "sem teto").
-        Some(0) => base().build().unwrap_or_else(|_| compartilhado.clone()),
-        Some(segs) => base()
-            .timeout(Duration::from_secs(segs))
-            .build()
-            .unwrap_or_else(|_| compartilhado.clone()),
-        None => compartilhado.clone(),
+        Some(0) => base().build(),
+        Some(segs) => base().timeout(Duration::from_secs(segs)).build(),
+        None => Ok(compartilhado.clone()),
     }
 }
 
@@ -106,7 +110,7 @@ mod tests {
     /// nao tinha (#1778) e que o bootstrap do gateway montava inline.
     #[tokio::test]
     async fn compartilhado_aplica_a_janela_global() {
-        let cliente = cliente_compartilhado(1);
+        let cliente = cliente_compartilhado(1).expect("o cliente monta");
         let addr = servidor_lento(Duration::from_secs(3)).await;
 
         let inicio = std::time::Instant::now();
@@ -129,7 +133,7 @@ mod tests {
     /// falharia em ~1ms; passar aqui prova que 0 nao virou teto.
     #[tokio::test]
     async fn compartilhado_com_zero_nao_tem_teto() {
-        let cliente = cliente_compartilhado(0);
+        let cliente = cliente_compartilhado(0).expect("o cliente monta");
         let addr = servidor_lento(Duration::from_millis(200)).await;
 
         let resp = cliente
@@ -138,6 +142,31 @@ mod tests {
             .await
             .expect("sem teto nao pode falhar numa resposta de 200ms");
         assert!(resp.status().is_success());
+    }
+
+    /// #1790 item 8: falha de montagem do cliente nunca vira um cliente
+    /// "qualquer". O `Client::default()` segue redirect (regra 14 / #1248) e
+    /// nao tem a janela de resposta; cair nele em silencio trocava a policy
+    /// sem aviso. Varre so a parte de producao do arquivo.
+    #[test]
+    fn montagem_nunca_cai_num_cliente_degradado_em_silencio() {
+        // O erro chega a quem chama: a assinatura e o contrato.
+        let _: fn(u64) -> reqwest::Result<reqwest::Client> = cliente_compartilhado;
+        let _: fn(&reqwest::Client, Option<u64>) -> reqwest::Result<reqwest::Client> =
+            cliente_do_llm;
+        let fonte = include_str!("cliente_llm.rs");
+        let producao = fonte.split("#[cfg(test)]").next().unwrap_or(fonte);
+        for proibido in [
+            ".unwrap_or_default()",
+            ".unwrap_or_else(",
+            ".unwrap()",
+            ".ok()",
+        ] {
+            assert!(
+                !producao.contains(proibido),
+                "cliente_llm.rs nao pode engolir erro de montagem com `{proibido}` (#1790)"
+            );
+        }
     }
 
     /// Regra 14 / #1248: o cliente da config NAO segue redirect. Sem isto,
@@ -163,10 +192,11 @@ mod tests {
         });
 
         let url = format!("http://{addr}/");
+        let compartilhado = cliente_compartilhado(30).expect("o cliente monta");
         for cliente in [
-            cliente_compartilhado(30),
-            cliente_do_llm(&cliente_compartilhado(30), Some(5)),
-            cliente_do_llm(&cliente_compartilhado(30), Some(0)),
+            compartilhado.clone(),
+            cliente_do_llm(&compartilhado, Some(5)).expect("o cliente monta"),
+            cliente_do_llm(&compartilhado, Some(0)).expect("o cliente monta"),
         ] {
             let resp = cliente
                 .get(&url)

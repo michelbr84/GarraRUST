@@ -674,7 +674,7 @@ impl LlmProvider for OpenAiProvider {
                         }
                         Some(Err(e)) => {
                             return Some((
-                                Err(Error::Agent(format!("stream read error: {e}"))),
+                                Err(crate::providers::erro_de_leitura("stream read error", &e)),
                                 (stream, buffer),
                             ));
                         }

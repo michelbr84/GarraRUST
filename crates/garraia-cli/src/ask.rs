@@ -85,13 +85,23 @@ pub(crate) async fn ask_oneshot(config: &AppConfig, opts: AskOptions) -> AskOutc
         return garraia_ask::ask_oneshot(config, opts).await;
     }
     let inicio = Instant::now();
-    let provedor = chat::detect_provider(
+    let provedor = match chat::detect_provider(
         config,
         opts.url_override.as_deref(),
         opts.model_override.as_deref(),
         opts.assume_yes,
     )
-    .await;
+    .await
+    {
+        Ok(provedor) => provedor,
+        // #1790: so acontece quando o cliente HTTP dos providers nao monta —
+        // sem ele nenhum provider fala com a policy certa.
+        Err(e) => {
+            return AskOutcome::Failure(AskError::NoProvider(
+                garraia_ask::sanitize_provider_error(&format!("{e:#}")),
+            ));
+        }
+    };
     garraia_ask::executar(provedor, inicio, opts).await
 }
 

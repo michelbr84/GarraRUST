@@ -22,7 +22,7 @@ use garraia_hardware::{
     FonteDeSinonimos, HaAdapterConfig, HaAdapterManager, HardwareEventBus, MqttAdapterConfig,
     MqttAdapterManager, carregar_automacoes,
 };
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::mcp::persistence::resolver_env_com_vault;
 
@@ -554,7 +554,21 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
 
     // #1593: `default_secs == 0` documenta "sem timeout", e e o que
     // `cliente_compartilhado` entrega — ver o racional la.
-    let llm_client = cliente_compartilhado(config.timeouts.llm.default_secs);
+    //
+    // #1790: um cliente que nao monta nao vira mais um cliente padrao em
+    // silencio (seguindo redirect, regra 14, e sem a janela). Sem ele nenhum
+    // provider de LLM fala com a policy certa, entao nenhum e registrado — e
+    // o motivo vai para o log, em vez de um gateway "funcionando" errado.
+    let llm_client = match cliente_compartilhado(config.timeouts.llm.default_secs) {
+        Ok(cliente) => Some(cliente),
+        Err(e) => {
+            error!(
+                "o cliente HTTP dos providers de LLM nao montou ({e}); nenhum provider \
+                 de LLM sera registrado (#1790)"
+            );
+            None
+        }
+    };
 
     // --- LLM Providers ---
     for (name, llm_config) in &config.llm {
@@ -565,7 +579,19 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         // deste provider — o caso real e o host local lento (build de 20-40
         // min no Termux) onde os 120s globais descartam a resposta inteira
         // antes de ela terminar. Ausente = o cliente compartilhado de sempre.
-        let client = cliente_do_llm(&llm_client, llm_config.timeout_secs());
+        let Some(llm_client) = llm_client.as_ref() else {
+            continue;
+        };
+        let client = match cliente_do_llm(llm_client, llm_config.timeout_secs()) {
+            Ok(cliente) => cliente,
+            Err(e) => {
+                error!(
+                    "skipping {provider_type} provider {name}: o cliente HTTP com \
+                     llm.{name}.timeout_secs nao montou ({e}) (#1790)"
+                );
+                continue;
+            }
+        };
 
         // One table lookup and one precedence walk for every provider, rather
         // than the same three lines duplicated into fifteen match arms. The
@@ -3168,7 +3194,7 @@ mod tests {
             .timeout(std::time::Duration::from_secs(1))
             .build()
             .unwrap();
-        let cliente = cliente_do_llm(&compartilhado, None);
+        let cliente = cliente_do_llm(&compartilhado, None).expect("o cliente monta");
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -3203,7 +3229,7 @@ mod tests {
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .unwrap();
-        let lento = cliente_do_llm(&compartilhado, Some(1));
+        let lento = cliente_do_llm(&compartilhado, Some(1)).expect("o cliente monta");
 
         // Um servidor que aceita a conexao e so responde depois de 3s.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3249,7 +3275,7 @@ mod tests {
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .unwrap();
-        let sem_teto = cliente_do_llm(&compartilhado, Some(0));
+        let sem_teto = cliente_do_llm(&compartilhado, Some(0)).expect("o cliente monta");
 
         // Servidor que responde depois de 200ms: com um teto de ZERO a
         // chamada ja teria falhado em ~1ms (medido: reqwest mapeia ZERO para

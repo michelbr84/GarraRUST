@@ -252,7 +252,7 @@ impl LlmProvider for AnthropicProvider {
                         }
                         Some(Err(e)) => {
                             return Some((
-                                Err(Error::Agent(format!("erro ao ler stream: {e}"))),
+                                Err(crate::providers::erro_de_leitura("erro ao ler stream", &e)),
                                 (stream, buffer),
                             ));
                         }

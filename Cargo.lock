@@ -3239,7 +3239,10 @@ name = "garraia-ask"
 version = "0.5.1"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "futures",
  "garraia-agents",
+ "garraia-common",
  "garraia-config",
  "regex",
  "reqwest 0.12.28",

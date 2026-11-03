@@ -268,7 +268,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn ollama_travado_com_cliente_de_inferencia_esgota_na_janela_da_sonda() {
         let addr = servidor_que_nao_responde().await;
-        let inferencia = garraia_agents::cliente_llm::cliente_compartilhado(120);
+        let inferencia =
+            garraia_agents::cliente_llm::cliente_compartilhado(120).expect("o cliente monta");
         let ollama = garraia_agents::OllamaProvider::new(None, Some(format!("http://{addr}")))
             .with_client(inferencia);
 
