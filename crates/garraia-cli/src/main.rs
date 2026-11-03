@@ -2428,6 +2428,10 @@ fn main() -> Result<()> {
         // fork e ANTES de derrubar o daemon atual num `restart -d`, sobre o
         // host ja resolvido acima (flag > env > default, nunca o arquivo).
         preflight_do_bind(&config.gateway, true);
+        if !is_restart {
+            // #1816: porta ocupada e recusa ANTES do fork, em stderr.
+            recusar_porta_ocupada(&config.gateway);
+        }
         if is_restart {
             // #1542: a recusa vem antes do stop — depois de matar o daemon da
             // unit nao ha como desfazer o orfao.
@@ -2435,6 +2439,7 @@ fn main() -> Result<()> {
             // Don't init tracing here — try_stop_daemon uses println!,
             // and the daemon child will init its own subscriber after fork.
             try_stop_daemon(config.gateway.port);
+            recusar_porta_ocupada(&config.gateway);
         }
         return start_daemon(config);
     }
@@ -2463,6 +2468,21 @@ const EX_UPDATE_FAILED: i32 = 70;
 /// file e do `try_stop_daemon`. Com o opt-out, `imprimir_aviso` decide se o
 /// aviso sai em stderr aqui (daemon: o log do filho e invisivel ao terminal)
 /// ou fica so com o `warn!` do gateway (foreground).
+/// `EX_UNAVAILABLE` (sysexits): o servico que se pediu nao pode subir agora.
+const EX_UNAVAILABLE: i32 = 69;
+
+/// #1816: com a porta ja ocupada, sai em menos de um segundo, sem subir canal
+/// nenhum e sem tocar no pidfile de outro gateway.
+fn recusar_porta_ocupada(gateway: &garraia_config::GatewayConfig) {
+    if let Some(quem) = bind_gate::porta_ocupada(&gateway.host, gateway.port) {
+        eprintln!(
+            "{}",
+            bind_gate::mensagem_porta_ocupada(&gateway.host, gateway.port, &quem)
+        );
+        std::process::exit(EX_UNAVAILABLE);
+    }
+}
+
 fn preflight_do_bind(gateway: &garraia_config::GatewayConfig, imprimir_aviso: bool) {
     match bind_gate::preflight(gateway) {
         Ok(bind_gate::Preflight::Sobe) => {}
@@ -2543,6 +2563,8 @@ async fn async_main(
             config.gateway.port = port;
             // #1261: recusa antes do banner, do PID file e do bind.
             preflight_do_bind(&config.gateway, false);
+            // #1816: porta ocupada tambem — antes do boot e do PID file.
+            recusar_porta_ocupada(&config.gateway);
             if with_voice {
                 config.voice.enabled = true;
             }

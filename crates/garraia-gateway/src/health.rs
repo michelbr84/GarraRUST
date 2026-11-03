@@ -528,6 +528,16 @@ fn extras_from_state(state: &SharedState) -> (Vec<String>, Option<String>, Optio
     (Vec::new(), provider, model)
 }
 
+/// #1700: sem provedor de LLM registrado o gateway sobe, os canais conectam e
+/// nenhuma mensagem tem resposta. O `status` continua o dos checks (o gateway
+/// em si esta de pe), mas o health deixa de dizer "tudo certo" calado: a lista
+/// de avisos diz que o Garra nao conversa e o que fazer.
+pub const AVISO_SEM_PROVEDOR: &str = "llm: nenhum provedor de LLM registrado — o Garra recebe mensagens e nao consegue responder. Configure um no assistente do Desktop (\"Quem responde\") ou com `garraia init`.";
+
+pub fn aviso_sem_provedor(provider: Option<&str>) -> Option<&'static str> {
+    provider.is_none().then_some(AVISO_SEM_PROVEDOR)
+}
+
 /// GET /api/health — Dashboard contract per plan 0116b §6.1 + back-compat
 /// `checks` array. Always 200; degraded/unhealthy is conveyed in the
 /// `status` field, never the HTTP code (the Web Console renders an amber
@@ -578,7 +588,9 @@ pub async fn health_handler(State(state): State<SharedState>) -> Json<HealthResp
         "unhealthy"
     };
 
-    let warnings: Vec<String> = checks
+    let (_unused, provider, model) = extras_from_state(&state);
+
+    let mut warnings: Vec<String> = checks
         .iter()
         .filter(|c| !c.ok)
         .map(|c| match &c.error {
@@ -586,6 +598,9 @@ pub async fn health_handler(State(state): State<SharedState>) -> Json<HealthResp
             None => format!("{}: unhealthy", c.name),
         })
         .collect();
+    if let Some(aviso) = aviso_sem_provedor(provider.as_deref()) {
+        warnings.push(aviso.to_string());
+    }
 
     let channels: Vec<String> = state
         .channels
@@ -595,8 +610,6 @@ pub async fn health_handler(State(state): State<SharedState>) -> Json<HealthResp
         .into_iter()
         .map(|s| s.to_string())
         .collect();
-
-    let (_unused, provider, model) = extras_from_state(&state);
 
     Json(HealthResponse {
         status: status.to_string(),
@@ -616,6 +629,14 @@ pub async fn health_handler(State(state): State<SharedState>) -> Json<HealthResp
 mod tests {
     use super::*;
     use garraia_common::ssrf::vet_url;
+
+    /// #1700: o health avisa quando nao ha provedor — e so entao.
+    #[test]
+    fn health_avisa_sem_provedor_de_llm() {
+        assert_eq!(aviso_sem_provedor(None), Some(AVISO_SEM_PROVEDOR));
+        assert_eq!(aviso_sem_provedor(Some("openrouter")), None);
+        assert!(AVISO_SEM_PROVEDOR.starts_with("llm: "));
+    }
 
     /// O ponto do `AllowPrivate`: alvo local passa, metadata de nuvem não.
     ///
