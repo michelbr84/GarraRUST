@@ -26,8 +26,8 @@ use tokio::sync::{mpsc, watch};
 
 use super::bridge::{BridgeConnection, BridgeError, BridgeLauncher};
 use super::protocol::{
-    BridgeCommand, BridgeEvent, BridgeState, DisconnectReason, ErrorCode, InboundMessage, Jid,
-    StartMode,
+    BridgeCommand, BridgeEvent, BridgeState, DisconnectReason, DropReason, ErrorCode,
+    InboundMessage, Jid, LogLevel, StartMode,
 };
 use super::session::{SessionBlob, SessionError, SessionKey, SessionStore};
 use super::state::{Desired, Effect, Event, Failure, Machine, Phase, backoff_ms};
@@ -1092,6 +1092,65 @@ pub trait InboundSink: Send + Sync {
     /// Chamado quando o canal parou de vez: nao ha reconexao automatica
     /// (#1663). Diferente de uma queda, que volta sozinha.
     fn on_terminal(&self, _motivo: super::health::MotivoTerminal) {}
+
+    /// Chamado quando a ponte **nao** entregou uma mensagem recebida (#1815):
+    /// offline velha, falha de decriptacao, conteudo nao suportado. So a
+    /// forma chega aqui — nunca texto nem numero inteiro.
+    fn on_dropped(&self, _dropped: &DroppedInbound) {}
+}
+
+/// Uma mensagem recebida que a ponte descartou, e por que (#1815).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DroppedInbound {
+    pub reason: DropReason,
+    /// `…1234` sem a reticencia: so os quatro ultimos digitos do chat.
+    pub chat_last4: Option<String>,
+    pub is_group: bool,
+    pub from_me: bool,
+}
+
+/// Quantos ids de mensagens enviadas o runner lembra para o anti-eco (#1813).
+const SENT_IDS_MAX: usize = 512;
+
+/// Anti-eco em segunda camada (#1813): os ids que a ponte confirmou ter
+/// enviado (`sent`). Uma mensagem `from_me` com um desses ids e a resposta do
+/// proprio Garra voltando, e nunca vira turno — a ponte ja filtra, e isto
+/// garante o mesmo mesmo com uma ponte antiga ou com defeito.
+#[derive(Debug, Default)]
+struct IdsEnviados {
+    ordem: std::collections::VecDeque<String>,
+    conjunto: std::collections::HashSet<String>,
+}
+
+impl IdsEnviados {
+    fn lembrar(&mut self, id: &str) {
+        if id.is_empty() || !self.conjunto.insert(id.to_string()) {
+            return;
+        }
+        self.ordem.push_back(id.to_string());
+        while self.ordem.len() > SENT_IDS_MAX {
+            if let Some(velho) = self.ordem.pop_front() {
+                self.conjunto.remove(&velho);
+            }
+        }
+    }
+
+    fn e_eco(&self, msg: &InboundMessage) -> bool {
+        msg.from_me && self.conjunto.contains(&msg.id)
+    }
+}
+
+/// O que a ponte disse num evento `log`, no tracing (#1815). O texto ja vem
+/// redigido pela ponte (`redact`): JIDs e corridas de digitos mascarados.
+fn registrar_log_da_ponte(level: LogLevel, message: &str) {
+    match level {
+        LogLevel::Debug => tracing::debug!(ponte = %message, "whatsapp_linked: ponte"),
+        LogLevel::Info => tracing::info!(ponte = %message, "whatsapp_linked: ponte"),
+        LogLevel::Warn | LogLevel::Unknown => {
+            tracing::warn!(ponte = %message, "whatsapp_linked: ponte")
+        }
+        LogLevel::Error => tracing::error!(ponte = %message, "whatsapp_linked: ponte"),
+    }
 }
 
 /// Persistencia da sessao vista pelo modo serve.
@@ -1454,6 +1513,7 @@ async fn serve_once(
     // Ultimo motivo de queda que o bridge informou. Sem isto a saida
     // `Dropped` nao dizia POR QUE caiu, e o log de reconexao ficava mudo.
     let mut last_disconnect: Option<(DisconnectReason, Option<i64>)> = None;
+    let mut enviados = IdsEnviados::default();
 
     // O relogio que faltava. `conn.send` e `conn.wait` ganharam prazo antes;
     // `conn.next_event()` nao tinha nenhum, e uma ponte que diz `started`,
@@ -1660,7 +1720,36 @@ async fn serve_once(
                 };
                 match event {
                     BridgeEvent::SessionUpdate { ref session, .. } => persist(store, key, session),
+                    BridgeEvent::Message(ref msg) if enviados.e_eco(msg) => {
+                        tracing::debug!(
+                            chat_last4 = %msg.chat_jid.last4(),
+                            "whatsapp_linked: eco da propria resposta ignorado"
+                        );
+                    }
                     BridgeEvent::Message(ref msg) => sink.deliver((**msg).clone()),
+                    BridgeEvent::Sent { id: Some(ref id), .. } => enviados.lembrar(id),
+                    BridgeEvent::Dropped {
+                        reason,
+                        ref chat_last4,
+                        is_group,
+                        from_me,
+                    } => sink.on_dropped(&DroppedInbound {
+                        reason,
+                        chat_last4: chat_last4.clone(),
+                        is_group,
+                        from_me,
+                    }),
+                    BridgeEvent::Log { level, ref message } => registrar_log_da_ponte(level, message),
+                    BridgeEvent::Error {
+                        code,
+                        ref message,
+                        ref request_id,
+                    } => tracing::warn!(
+                        code = ?code,
+                        envio = request_id.is_some(),
+                        erro = %message,
+                        "whatsapp_linked: a ponte devolveu erro"
+                    ),
                     BridgeEvent::Connected { ref jid, .. } => {
                         saw_connected = true;
                         sink.on_connection(jid.as_ref(), true);
@@ -1687,6 +1776,44 @@ async fn serve_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn de_mim(id: &str) -> InboundMessage {
+        InboundMessage {
+            id: id.into(),
+            chat_jid: Jid::new("5511999990000@s.whatsapp.net"),
+            sender_jid: Jid::new("5511999990000:1@s.whatsapp.net"),
+            sender_phone: Some("+5511999990000".into()),
+            text: Some("oi".into()),
+            timestamp: 0,
+            is_group: false,
+            from_me: true,
+            self_chat: true,
+            push_name: None,
+            media_kind: None,
+        }
+    }
+
+    /// #1813: o anti-eco do runner reconhece so o que a ponte confirmou ter
+    /// enviado, so em `from_me`, e esquece os mais antigos no teto.
+    #[test]
+    fn ids_enviados_reconhecem_o_eco_e_respeitam_o_teto() {
+        let mut ids = IdsEnviados::default();
+        ids.lembrar("S1");
+        assert!(ids.e_eco(&de_mim("S1")));
+        assert!(!ids.e_eco(&de_mim("OUTRO")), "o dono digitando nao e eco");
+        let mut de_terceiro = de_mim("S1");
+        de_terceiro.from_me = false;
+        assert!(!ids.e_eco(&de_terceiro), "id igual de terceiro nao e eco");
+
+        ids.lembrar("");
+        for i in 0..SENT_IDS_MAX {
+            ids.lembrar(&format!("N{i}"));
+        }
+        assert!(!ids.e_eco(&de_mim("S1")), "o mais antigo saiu no teto");
+        assert!(ids.e_eco(&de_mim(&format!("N{}", SENT_IDS_MAX - 1))));
+        assert_eq!(ids.ordem.len(), SENT_IDS_MAX);
+        assert_eq!(ids.conjunto.len(), SENT_IDS_MAX);
+    }
 
     /// A linha que o usuario le quando a ponte cai — e o prazo que ela
     /// promete.

@@ -2025,6 +2025,7 @@ fn event_name(ev: &BridgeEvent) -> &'static str {
         BridgeEvent::Error { .. } => "error",
         BridgeEvent::Log { .. } => "log",
         BridgeEvent::Pong => "pong",
+        BridgeEvent::Dropped { .. } => "dropped",
         BridgeEvent::Unknown => "<desconhecido>",
     }
 }

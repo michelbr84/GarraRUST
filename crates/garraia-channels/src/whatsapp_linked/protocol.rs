@@ -173,6 +173,12 @@ pub struct InboundMessage {
     pub is_group: bool,
     #[serde(default)]
     pub from_me: bool,
+    /// A conversa "Voce" (conversa consigo mesmo) da conta vinculada (#1813):
+    /// o chat e a propria conta, por telefone ou por LID. E o unico lugar em
+    /// que uma mensagem `from_me` vira turno — o dono escrevendo a terceiros
+    /// continua fora. `false` quando a ponte e de antes do campo.
+    #[serde(default)]
+    pub self_chat: bool,
     #[serde(default)]
     pub push_name: Option<String>,
     /// Sempre presente no JSON, `null` para texto puro. Quando ha midia:
@@ -190,6 +196,7 @@ impl fmt::Debug for InboundMessage {
             .field("sender", &format_args!("***{}", self.sender_jid.last4()))
             .field("is_group", &self.is_group)
             .field("from_me", &self.from_me)
+            .field("self_chat", &self.self_chat)
             .field("has_text", &self.text.is_some())
             .field("media_kind", &self.media_kind)
             .finish_non_exhaustive()
@@ -277,9 +284,50 @@ pub enum BridgeEvent {
     /// Resposta do bridge a um [`BridgeCommand::Ping`]. Sem carga: o que ela
     /// prova e que o laco de stdout do filho esta de pe, nao que algo mudou.
     Pong,
+    /// Uma mensagem recebida que a ponte **nao** entregou, e por que (#1815).
+    /// So a forma: nunca texto, nunca numero inteiro.
+    Dropped {
+        reason: DropReason,
+        /// Os quatro ultimos digitos do chat (`null` quando nao ha digitos).
+        #[serde(default)]
+        chat_last4: Option<String>,
+        #[serde(default)]
+        is_group: bool,
+        #[serde(default)]
+        from_me: bool,
+    },
     /// `type` que esta versao nao conhece. Ignorado pelo driver.
     #[serde(other)]
     Unknown,
+}
+
+/// Por que a ponte nao entregou uma mensagem recebida (#1814, #1815).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DropReason {
+    /// Chegou "offline" (ficou na fila do servidor com a ponte fora) e passou
+    /// da janela de resposta.
+    OfflineExpired,
+    /// O Baileys nao decriptou (stub `CIPHERTEXT`). Costuma se resolver com o
+    /// reenvio automatico; se persistir, o remetente nao tem a chave deste
+    /// aparelho.
+    DecryptFailed,
+    /// Conteudo que nao e texto nem midia conhecida (enquete, botoes...).
+    UnsupportedContent,
+    /// Motivo que esta versao nao conhece.
+    #[serde(other)]
+    Unknown,
+}
+
+impl DropReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DropReason::OfflineExpired => "offline_expired",
+            DropReason::DecryptFailed => "decrypt_failed",
+            DropReason::UnsupportedContent => "unsupported_content",
+            DropReason::Unknown => "unknown",
+        }
+    }
 }
 
 fn default_qr_expiry() -> u64 {
@@ -636,6 +684,7 @@ mod tests {
             timestamp: 0,
             is_group: false,
             from_me: false,
+            self_chat: false,
             push_name: Some("Ana".into()),
             media_kind: None,
         };
@@ -648,5 +697,57 @@ mod tests {
         }
         assert!(shown.contains("***8888"));
         assert!(shown.contains("has_text: true"));
+    }
+
+    /// #1813: a ponte nova marca a conversa "Voce"; a antiga nao manda o campo
+    /// e ele cai em `false` — nunca um turno `from_me` por acidente.
+    #[test]
+    fn message_self_chat_defaults_to_false_and_parses_when_present() {
+        let antiga = r#"{"type":"message","id":"A","chat_jid":"5511999990000@s.whatsapp.net","sender_jid":"5511999990000:1@s.whatsapp.net","sender_phone":"+5511999990000","text":"oi","media_kind":null,"timestamp":1,"is_group":false,"from_me":true,"push_name":null}"#;
+        let BridgeEvent::Message(m) = serde_json::from_str::<BridgeEvent>(antiga).unwrap() else {
+            panic!("message")
+        };
+        assert!(m.from_me && !m.self_chat);
+
+        let nova = antiga.replace(r#""from_me":true,"#, r#""from_me":true,"self_chat":true,"#);
+        let BridgeEvent::Message(m) = serde_json::from_str::<BridgeEvent>(&nova).unwrap() else {
+            panic!("message")
+        };
+        assert!(m.from_me && m.self_chat);
+        assert!(format!("{m:?}").contains("self_chat: true"));
+    }
+
+    /// #1815: o descarte da ponte chega com o motivo; motivo novo nao derruba
+    /// a leitura.
+    #[test]
+    fn dropped_event_parses_known_and_unknown_reasons() {
+        let ev: BridgeEvent = serde_json::from_str(
+            r#"{"type":"dropped","reason":"offline_expired","chat_last4":"0000","is_group":false,"from_me":false}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ev,
+            BridgeEvent::Dropped {
+                reason: DropReason::OfflineExpired,
+                chat_last4: Some("0000".into()),
+                is_group: false,
+                from_me: false,
+            }
+        );
+        for (fio, motivo) in [
+            ("decrypt_failed", DropReason::DecryptFailed),
+            ("unsupported_content", DropReason::UnsupportedContent),
+            ("motivo_do_futuro", DropReason::Unknown),
+        ] {
+            let ev: BridgeEvent = serde_json::from_str(&format!(
+                r#"{{"type":"dropped","reason":"{fio}","chat_last4":null,"is_group":true,"from_me":false}}"#
+            ))
+            .unwrap();
+            let BridgeEvent::Dropped { reason, .. } = ev else {
+                panic!("dropped")
+            };
+            assert_eq!(reason, motivo, "{fio}");
+        }
+        assert_eq!(DropReason::DecryptFailed.as_str(), "decrypt_failed");
     }
 }

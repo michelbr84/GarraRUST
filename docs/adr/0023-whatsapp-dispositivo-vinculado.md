@@ -271,7 +271,9 @@ stdio** com o Rust:
 
 - **eventos (bridge → Rust):** `started`, `qr`, `status`, `authenticated`,
   `connected`, `disconnected`, `logged_out`, `message`, `session_update`,
-  `error`;
+  `error`; *(emenda 2026-11, #1813/#1815: `message` ganhou `self_chat` e ha o
+  evento `dropped` — a tabela viva e `bridge/whatsapp/scripts/protocol-lint.mjs`
+  e o README da ponte)*;
 - **comandos (Rust → bridge):** `session_load`, `send`, `logout`, `ack`.
 
 O bridge **não persiste nada**. O auth state vive em memória, como um

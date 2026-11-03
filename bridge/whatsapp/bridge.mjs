@@ -34,6 +34,17 @@ export const QR_EXPIRES_SECS = 20;
  * unica coisa que o Rust nao pode perder.
  */
 export const TEARDOWN_TIMEOUT_MS = 2000;
+/**
+ * Ate quantos segundos uma mensagem entregue "offline" (Baileys `append`: ela
+ * ficou na fila do servidor enquanto a ponte estava fora) ainda vale resposta
+ * (#1814). Cobre o restart do gateway — inclusive o do assistente do Desktop —
+ * sem fazer o Garra acordar respondendo conversa velha depois de horas parado.
+ */
+export const OFFLINE_REPLY_WINDOW_SECS = 10 * 60;
+/** Quantos ids enviados pela propria ponte ficam lembrados para o anti-eco (#1813). */
+export const SENT_IDS_MAX = 512;
+/** `proto.WebMessageInfo.StubType.CIPHERTEXT`: o Baileys nao conseguiu decriptar. */
+export const CIPHERTEXT_STUB = 2;
 
 export const EXIT_OK = 0;
 export const EXIT_FATAL = 1;
@@ -348,8 +359,31 @@ export function unwrapMessage(message) {
   return current;
 }
 
+/** `5511…:12@s.whatsapp.net` -> `5511…@s.whatsapp.net` (sem o aparelho). */
+export function normalizeUserJid(jid) {
+  if (typeof jid !== 'string') return null;
+  const at = jid.indexOf('@');
+  if (at <= 0) return null;
+  const user = jid.slice(0, at).split(':')[0];
+  return user ? `${user}${jid.slice(at)}` : null;
+}
+
+/**
+ * A conversa "Voce" (conversa consigo mesmo) do WhatsApp: o chat e a propria
+ * conta, por telefone ou por LID (#1813). `ownIds` sao o JID e o LID da conta;
+ * qualquer um deles pode faltar.
+ */
+export function isSelfChat(key, ownIds) {
+  const own = new Set((ownIds ?? []).map(normalizeUserJid).filter(Boolean));
+  if (own.size === 0) return false;
+  return [key?.remoteJid, key?.remoteJidAlt].some((jid) => {
+    const n = normalizeUserJid(jid);
+    return n !== null && own.has(n);
+  });
+}
+
 /** @returns {object|null} evento `message`, ou null quando nao ha o que entregar */
-export function toMessageEvent(waMessage, ownJid) {
+export function toMessageEvent(waMessage, ownJid, ownLid = null) {
   const key = waMessage?.key;
   const chatJid = key?.remoteJid;
   if (!key?.id || typeof chatJid !== 'string') return null;
@@ -391,8 +425,88 @@ export function toMessageEvent(waMessage, ownJid) {
     timestamp: typeof ts === 'object' && ts !== null ? Number(ts.toNumber?.() ?? ts) : Number(ts ?? 0),
     is_group: isGroup,
     from_me: fromMe,
+    // Conversa "Voce": o unico lugar em que `from_me` vira turno (#1813).
+    self_chat: !isGroup && isSelfChat(key, [ownJid, ownLid]),
     push_name: waMessage.pushName ?? null,
   };
+}
+
+/**
+ * Conteudo que nao e mensagem de ninguem: sincronizacao, chaves, reacao,
+ * edicao de enquete. Some sem evento — contar isso so faria barulho.
+ */
+const SILENT_CONTENT = new Set([
+  'protocolMessage',
+  'senderKeyDistributionMessage',
+  'messageContextInfo',
+  'reactionMessage',
+  'encReactionMessage',
+  'pollUpdateMessage',
+  'keepInChatMessage',
+  'pinInChatMessage',
+]);
+
+function toSecs(ts) {
+  if (typeof ts === 'object' && ts !== null) return Number(ts.toNumber?.() ?? ts);
+  return Number(ts ?? 0);
+}
+
+/** Evento `dropped`: so o motivo e a forma, nunca texto nem numero inteiro. */
+function droppedEvent(reason, key) {
+  const chatJid = key?.remoteJid;
+  return {
+    type: 'dropped',
+    reason,
+    chat_last4: phoneLast4(chatJid),
+    is_group: typeof chatJid === 'string' && chatJid.endsWith('@g.us'),
+    from_me: Boolean(key?.fromMe),
+  };
+}
+
+/**
+ * Decide o que um item de `messages.upsert` vira: `message`, `dropped`, ou
+ * nada. Antes desta funcao, tudo que nao era `notify` sumia em silencio, e as
+ * falhas de decriptacao tambem (#1814, #1815).
+ *
+ * - `sentIds`: os ids que a propria ponte enviou. Uma resposta do Garra na
+ *   conversa "Voce" e `from_me` no mesmo chat — sem este anti-eco ele
+ *   responderia a si mesmo para sempre.
+ * - `append` e o eco local de um envio (sempre `from_me`) **ou** o que ficou na
+ *   fila do servidor enquanto a ponte estava fora. Do segundo tipo, so o que e
+ *   recente vira turno ([`OFFLINE_REPLY_WINDOW_SECS`]).
+ */
+export function triageUpsert(
+  waMessage,
+  type,
+  {
+    ownJid = null,
+    ownLid = null,
+    sentIds = null,
+    nowSecs = Math.floor(Date.now() / 1000),
+    offlineWindowSecs = OFFLINE_REPLY_WINDOW_SECS,
+  } = {},
+) {
+  const key = waMessage?.key;
+  const chatJid = key?.remoteJid;
+  if (!key?.id || typeof chatJid !== 'string') return null;
+  if (chatJid === 'status@broadcast' || chatJid.endsWith('@newsletter')) return null;
+  const fromMe = Boolean(key.fromMe);
+  if (fromMe && sentIds?.has(key.id)) return null;
+  if (type !== 'notify' && (type !== 'append' || fromMe)) return null;
+
+  if (waMessage.messageStubType === CIPHERTEXT_STUB) return droppedEvent('decrypt_failed', key);
+
+  const ev = toMessageEvent(waMessage, ownJid, ownLid);
+  if (!ev) {
+    const content = unwrapMessage(waMessage.message);
+    const visivel = content && Object.keys(content).some((k) => !SILENT_CONTENT.has(k));
+    return visivel && !fromMe ? droppedEvent('unsupported_content', key) : null;
+  }
+  if (type === 'append') {
+    const idade = nowSecs - toSecs(waMessage.messageTimestamp);
+    if (!(idade <= offlineWindowSecs)) return droppedEvent('offline_expired', key);
+  }
+  return ev;
 }
 
 // ---------------------------------------------------------------------------
@@ -438,9 +552,19 @@ export function createBridge({
     connectedAt: 0,
     lastChangeAt: 0,
     pairTimer: null,
+    // Anti-eco (#1813): ids que esta ponte enviou, os mais antigos saem primeiro.
+    sentIds: new Set(),
   };
 
   const log = (level, message) => emit({ type: 'log', level, message: redact(message) });
+
+  function rememberSent(id) {
+    if (typeof id !== 'string' || id === '') return;
+    state.sentIds.add(id);
+    while (state.sentIds.size > SENT_IDS_MAX) {
+      state.sentIds.delete(state.sentIds.values().next().value);
+    }
+  }
 
   function markDirty() {
     state.dirty = true;
@@ -591,9 +715,13 @@ export function createBridge({
     });
     if (state.mode === 'serve') {
       sock.ev.on('messages.upsert', ({ messages, type }) => {
-        if (type !== 'notify') return;
+        const me = state.sock?.user ?? state.auth?.snapshot?.().creds?.me ?? null;
         for (const waMessage of messages ?? []) {
-          const ev = toMessageEvent(waMessage, state.sock?.user?.id ?? null);
+          const ev = triageUpsert(waMessage, type, {
+            ownJid: me?.id ?? null,
+            ownLid: me?.lid ?? null,
+            sentIds: state.sentIds,
+          });
           if (ev) emit(ev);
         }
       });
@@ -653,6 +781,7 @@ export function createBridge({
         }
         try {
           const res = await state.sock.sendMessage(chatJid, { text });
+          rememberSent(res?.key?.id);
           emit({ type: 'sent', request_id: requestId, id: res?.key?.id ?? null });
         } catch (err) {
           emit({ type: 'error', request_id: requestId, code: 'send_failed', message: describeError(err) });

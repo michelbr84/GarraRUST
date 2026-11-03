@@ -614,12 +614,13 @@ pub fn aviso_ninguem_autorizado(lang: Lang) -> String {
     )
 }
 
-/// O aviso do `from_me`: o celular vinculado nao fala com o GarraIA.
+/// O aviso do `from_me`: o celular vinculado so fala com o GarraIA pela
+/// conversa "Voce" (#1813); o que ele manda a terceiros e ignorado.
 fn aviso_do_proprio_numero(lang: Lang) -> &'static str {
     t(
         lang,
-        "⚠ Este parece ser o número do próprio celular vinculado. Mensagens enviadas por ele são ignoradas (elas saem da própria conta), então ele não conversa com o GarraIA — use outro número.",
-        "⚠ This looks like the number of the linked phone itself. Messages it sends are ignored (they come from the account itself), so it cannot chat with GarraIA — use another number.",
+        "⚠ Este parece ser o número do próprio celular vinculado. Ele só conversa com o GarraIA pela conversa \"Você\" (conversa com você mesmo) do WhatsApp; o que ele manda a outras pessoas é ignorado. Para falar de outro celular, autorize aquele número.",
+        "⚠ This looks like the number of the linked phone itself. It only chats with GarraIA through WhatsApp's \"You\" chat (message yourself); what it sends to other people is ignored. To talk from another phone, authorize that number.",
     )
 }
 

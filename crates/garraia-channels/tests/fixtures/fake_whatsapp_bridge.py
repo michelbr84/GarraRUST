@@ -48,7 +48,8 @@ SCENARIOS = (
     "serve-echo",
     # serve-push      conecta e, sem receber nada e sem ecoar nada, empurra UMA
     #                 mensagem de entrada — conteudo por `--push-text`, autoria
-    #                 por `--push-from-me`, remetente `@lid` por `--push-lid`
+    #                 por `--push-from-me` (ou conversa "Voce" por
+    #                 `--push-self-chat`), remetente `@lid` por `--push-lid`
     #                 (com o JID de telefone que o Baileys 7 manda junto em
     #                 `key.remoteJidAlt` por `--push-lid-alt`).
     #
@@ -243,7 +244,28 @@ class Bridge:
         )
         self.status("reconnecting" if will_retry else "disconnected", reason)
 
-    def message(self, text: str, index: int) -> None:
+    def message(self, text: str, index: int, msg_id: str | None = None) -> None:
+        if self.args.push_self_chat:
+            # Conversa "Voce" (#1813): o chat e a propria conta, o remetente e
+            # o proprio aparelho e a ponte marca `self_chat`, como a real.
+            own_user = OWN_JID.split("@")[0].split(":")[0]
+            emit(
+                {
+                    "type": "message",
+                    "id": msg_id or f"FAKEMSG{index:04d}",
+                    "chat_jid": f"{own_user}@s.whatsapp.net",
+                    "sender_jid": OWN_JID,
+                    "sender_phone": f"+{own_user}",
+                    "text": text,
+                    "media_kind": None,
+                    "timestamp": BASE_TIMESTAMP + index,
+                    "is_group": False,
+                    "from_me": True,
+                    "self_chat": True,
+                    "push_name": PUSHNAME,
+                }
+            )
+            return
         # Conversa 1:1: o chat e o remetente sao o mesmo JID, como na ponte.
         remetente = self.args.push_lid or PEER_JID
         emit(
@@ -258,6 +280,7 @@ class Bridge:
                 "timestamp": BASE_TIMESTAMP + index,
                 "is_group": False,
                 "from_me": bool(self.args.push_from_me),
+                "self_chat": False,
                 "push_name": PUSHNAME,
             }
         )
@@ -548,7 +571,10 @@ class Bridge:
                     }
                 )
                 if self.args.scenario == "serve-echo":
-                    self.message(f"echo: {command.get('text', '')}", self.sent)
+                    # Na conversa "Voce" o eco e a propria resposta voltando:
+                    # mesmo id do `sent`, como o WhatsApp faria (#1813).
+                    eco_id = f"FAKESENT{self.sent:04d}" if self.args.push_self_chat else None
+                    self.message(f"echo: {command.get('text', '')}", self.sent, eco_id)
             elif kind in ("read", "typing"):
                 pass  # best-effort, sem resposta — igual a ponte real
             elif kind == "logout":
@@ -579,6 +605,11 @@ def main(argv: list[str]) -> int:
         "--push-from-me",
         action="store_true",
         help="marca toda mensagem emitida como da propria conta (from_me)",
+    )
+    parser.add_argument(
+        "--push-self-chat",
+        action="store_true",
+        help="a mensagem empurrada vem da conversa \"Voce\" (from_me + self_chat, #1813)",
     )
     parser.add_argument(
         "--push-lid",
