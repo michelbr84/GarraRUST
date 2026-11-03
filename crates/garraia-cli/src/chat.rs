@@ -25,6 +25,9 @@ use garraia_hardware::DeviceRegistry;
 use tokio::sync::mpsc;
 
 use crate::defaults::{DEFAULT_CLOUD_PROVIDER, DEFAULT_LOCAL_PROVIDER};
+use crate::sonda_de_provider::{
+    DefaultDescartado, Sonda, avisar_default_descartado, janela_de_sonda, sondar,
+};
 use crate::ui::error_card::ErrorCard;
 use crate::ui::panel;
 use crate::ui::tool_log::{Busca, ToolLog};
@@ -789,9 +792,10 @@ fn autodetect_order(
 
 /// GAR-576 — Construct an [`LlmProvider`] from a config-resolved default.
 ///
-/// Returns `None` when construction is infeasible (e.g. Ollama daemon
-/// unreachable, or required api_key absent at build time); the caller
-/// then falls through to the legacy autodetect chain.
+/// Returns `Err` with the reason when construction is infeasible (e.g. Ollama
+/// daemon unreachable, or required api_key absent at build time); the caller
+/// warns with that reason (#1793) and falls through to the legacy autodetect
+/// chain.
 ///
 /// Endpoint AND credential come from the `llm.<config_key>` entry itself
 /// ([`provider_binding::bind_entry`]). This used to read the key from
@@ -804,22 +808,29 @@ async fn try_build_default_provider(
     model: &str,
     env: provider_binding::Env<'_>,
     cliente: &reqwest::Client,
-) -> Option<Arc<dyn LlmProvider>> {
+    janela_sonda: std::time::Duration,
+) -> Result<Arc<dyn LlmProvider>, DefaultDescartado> {
     // GAR-576: return ONLY the trait object — the display strings
     // (config_key, model) are formed at the call site from inputs that
     // never pass through this function. That keeps CodeQL's cleartext-
     // logging dataflow analysis from conservatively tainting the model
     // name through this scope, which also resolves the api_key.
     let binding = provider_binding::bind_entry(config_key, cfg, env);
-    let provider = provider_binding::build_provider(&binding, model, None, None, cliente).ok()?;
+    // A classificacao, nao o texto do erro: este escopo resolve a credencial
+    // e nada dele vai para o log (GAR-576).
+    let provider = provider_binding::build_provider(&binding, model, None, None, cliente)
+        .map_err(|_| DefaultDescartado::Construcao)?;
     // Local daemons are health-checked: a dead one must not win over the
-    // autodetect chain.
+    // autodetect chain. #1793: the probe has its own window
+    // (`timeouts.health`); the provider's client carries the INFERENCE window,
+    // which a hung daemon would otherwise hold for its whole length.
     if matches!(binding.kind(), "ollama" | "llamacpp")
-        && !provider.health_check().await.unwrap_or(false)
+        && let Some(motivo) =
+            DefaultDescartado::da_sonda(sondar(provider.as_ref(), janela_sonda).await)
     {
-        return None;
+        return Err(motivo);
     }
-    Some(provider)
+    Ok(provider)
 }
 
 /// Base URL of the local Ollama daemon. Extracted so the autodetect chain
@@ -828,10 +839,79 @@ fn ollama_base_url() -> String {
     std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://localhost:11434".to_string())
 }
 
-/// How long the "is this tag installed?" probe may take. Local HTTP against
-/// `/api/tags`; 2s is generous and keeps `garra --model …` snappy when the
-/// daemon is down.
-const OLLAMA_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long the "is this tag installed?" probe may take, in seconds. Local
+/// HTTP against `/api/tags`; 2s is generous and keeps `garra --model …`
+/// snappy when the daemon is down.
+const OLLAMA_PROBE_TIMEOUT_SECS: u64 = 2;
+
+/// #1790 item 9: o teto da sonda do atalho `--model`.
+///
+/// A sonda tem orcamento proprio, curto de proposito (ver
+/// [`OLLAMA_PROBE_TIMEOUT_SECS`]). Mas a janela da config
+/// (`timeouts.llm.default_secs`, ou `llm.<nome>.timeout_secs` da entrada do
+/// modelo) e teto de TODA chamada ao provider, e a sonda e uma delas: uma
+/// janela declarada menor que o orcamento vale tambem aqui. `0` na config e
+/// "sem teto" (#1593) — sobra so o orcamento.
+fn teto_da_sonda(janela_efetiva: u64) -> u64 {
+    match janela_efetiva {
+        0 => OLLAMA_PROBE_TIMEOUT_SECS,
+        janela => janela.min(OLLAMA_PROBE_TIMEOUT_SECS),
+    }
+}
+
+/// #1790 item 6: a janela propria (`llm.<nome>.timeout_secs`) que vale para o
+/// modelo escolhido pelo atalho `--model <tag>`.
+///
+/// O atalho escolhe o Ollama local ANTES — e por fora — da escolha de
+/// entrada `llm:`, e por isso o provider dele so recebia a janela global. A
+/// entrada que descreve o modelo pedido e quem diz quanto tempo ele pode
+/// levar:
+///
+/// 1. uma entrada `provider: ollama` cujo `model` e esse mesmo tag
+///    (normalizado: `qwen3.8` e `qwen3.8:latest` sao o mesmo modelo). Ela
+///    decide sozinha — sem `timeout_secs`, a global, como no bootstrap. Entre
+///    varias, a de menor nome, para ser deterministico;
+/// 2. senao, a entrada que descreve o Ollama pelo nome — a mesma que
+///    `-p ollama` usaria ([`provider_binding::bind_named`]);
+/// 3. senao, `None`: vale a janela global.
+fn janela_do_atalho_ollama(
+    config: &AppConfig,
+    tag: &str,
+    env: provider_binding::Env<'_>,
+) -> Option<u64> {
+    let do_modelo = config
+        .llm
+        .iter()
+        .filter(|(_, cfg)| cfg.provider.trim() == "ollama")
+        .filter(|(_, cfg)| {
+            cfg.model
+                .as_deref()
+                .and_then(normalize_ollama_tag)
+                .as_deref()
+                == Some(tag)
+        })
+        .min_by(|a, b| a.0.cmp(b.0));
+    if let Some((_, cfg)) = do_modelo {
+        return cfg.timeout_secs();
+    }
+    provider_binding::bind_named(config, "ollama", env)
+        .filter(|binding| binding.kind() == "ollama")
+        .and_then(|binding| binding.timeout_secs())
+}
+
+/// Os dois clientes do atalho `--model`, dos builders de `cliente_llm`
+/// (#1778): o do modelo, com a janela da entrada dele (`None` = o
+/// compartilhado), e o da sonda, com o [`teto_da_sonda`].
+fn clientes_do_atalho(
+    compartilhado: &reqwest::Client,
+    janela: Option<u64>,
+    janela_efetiva: u64,
+) -> reqwest::Result<(reqwest::Client, reqwest::Client)> {
+    use garraia_agents::cliente_llm::cliente_do_llm;
+    let modelo = cliente_do_llm(compartilhado, janela)?;
+    let sonda = cliente_do_llm(compartilhado, Some(teto_da_sonda(janela_efetiva)))?;
+    Ok((modelo, sonda))
+}
 
 /// True when `model` is the model of a configured *non-Ollama* provider.
 ///
@@ -853,8 +933,13 @@ enum LocalOllamaProbe {
     /// The tag is installed; the provider is ready to use.
     Installed(Box<(String, String, Arc<dyn LlmProvider>)>),
     /// The daemon answered but does not have this tag. Carries the
-    /// normalized tag so the caller can offer to pull it.
-    Missing { tag: String },
+    /// normalized tag so the caller can offer to pull it, and the client the
+    /// pulled model will run on — already with the window of its `llm:`
+    /// entry (#1790).
+    Missing {
+        tag: String,
+        cliente: reqwest::Client,
+    },
     /// Not an Ollama-shaped reference, or the daemon is unreachable.
     NotApplicable,
 }
@@ -867,10 +952,15 @@ enum LocalOllamaProbe {
 ///
 /// Deliberately conservative: it can only ever win on an exact hit in
 /// `/api/tags`, so `--model gpt-4o` is never hijacked to a local provider.
+///
+/// `cliente` is the shared client from `timeouts.llm.default_secs`; `base` is
+/// the daemon address ([`ollama_base_url`] outside tests).
 async fn try_local_ollama_model(
     config: &AppConfig,
     model_override: &str,
     cliente: &reqwest::Client,
+    base: &str,
+    env: provider_binding::Env<'_>,
 ) -> LocalOllamaProbe {
     // `openrouter/auto` and friends belong to another provider — bail before
     // spending a round-trip.
@@ -882,28 +972,40 @@ async fn try_local_ollama_model(
         return LocalOllamaProbe::NotApplicable;
     }
 
-    let base = ollama_base_url();
-    let Ok(probe_client) = reqwest::Client::builder()
-        .timeout(OLLAMA_PROBE_TIMEOUT)
-        .build()
-    else {
-        return LocalOllamaProbe::NotApplicable;
-    };
-    let probe = OllamaProvider::new(None, Some(base.clone())).with_client(probe_client);
+    // #1790: a janela da entrada do modelo pedido vale para o provider que
+    // sair daqui — instalado ou baixado agora — e a sonda nunca passa dela.
+    // Os dois clientes saem de `cliente_llm` (#1778): sem seguir redirect
+    // (regra 14) e com connect timeout, como todo cliente de provider.
+    let janela = janela_do_atalho_ollama(config, &tag, env);
+    let janela_efetiva = janela.unwrap_or(config.timeouts.llm.default_secs);
+    let (cliente_do_modelo, cliente_da_sonda) =
+        match clientes_do_atalho(cliente, janela, janela_efetiva) {
+            Ok(par) => par,
+            Err(e) => {
+                // Sem cliente com a policy certa nao ha atalho: a cadeia normal
+                // segue (e `--model` continua valendo nela).
+                tracing::warn!("atalho --model: cliente HTTP do Ollama nao montou: {e}");
+                return LocalOllamaProbe::NotApplicable;
+            }
+        };
+    let probe = OllamaProvider::new(None, Some(base.to_string())).with_client(cliente_da_sonda);
 
     match probe.resolve_installed_model(&tag).await {
         Ok(Some(found)) => {
-            // Rebuild with the client from `timeouts` (#1778) — the 2s probe
-            // budget must not cap inference, and `::new()` would cap nothing.
-            let provider =
-                OllamaProvider::new(Some(found.clone()), Some(base)).with_client(cliente.clone());
+            // Rebuild with the model's own client — the probe ceiling must not
+            // cap inference, and `::new()` would cap nothing.
+            let provider = OllamaProvider::new(Some(found.clone()), Some(base.to_string()))
+                .with_client(cliente_do_modelo);
             LocalOllamaProbe::Installed(Box::new((
                 "ollama".to_string(),
                 found,
                 Arc::new(provider) as Arc<dyn LlmProvider>,
             )))
         }
-        Ok(None) => LocalOllamaProbe::Missing { tag },
+        Ok(None) => LocalOllamaProbe::Missing {
+            tag,
+            cliente: cliente_do_modelo,
+        },
         // Daemon down: stay quiet and let the regular chain report whatever
         // it finds. `--model` is still honored by every branch below.
         Err(_) => LocalOllamaProbe::NotApplicable,
@@ -919,10 +1021,15 @@ async fn try_local_ollama_model(
 ///
 /// Progress goes to stderr so `ask --json` keeps a single clean JSON line on
 /// stdout.
+///
+/// `cliente` is the one the pulled model will run on — the probe already
+/// applied the window of the model's `llm:` entry to it (#1790). `base` is
+/// the daemon address ([`ollama_base_url`] outside tests).
 async fn offer_pull_ollama_model(
     tag: &str,
     assume_yes: bool,
     cliente: &reqwest::Client,
+    base: &str,
 ) -> Option<(String, String, Arc<dyn LlmProvider>)> {
     use std::io::IsTerminal as _;
 
@@ -953,11 +1060,10 @@ async fn offer_pull_ollama_model(
         }
     }
 
-    let base = ollama_base_url();
     // Default client: no timeout — a cold pull can run for many minutes, e e
     // por isso que o cliente de `timeouts` NAO entra aqui (#1778): a janela de
     // 120s mataria o download no meio. Ela vale para a inferencia, abaixo.
-    let puller = OllamaProvider::new(Some(tag.to_string()), Some(base.clone()));
+    let puller = OllamaProvider::new(Some(tag.to_string()), Some(base.to_string()));
 
     eprintln!("{DIM}Baixando {tag}…{RESET}");
     let mut last_status = String::new();
@@ -979,8 +1085,8 @@ async fn offer_pull_ollama_model(
     match result {
         Ok(()) => {
             eprintln!("{GREEN}  {tag} pronto.{RESET}");
-            let provider =
-                OllamaProvider::new(Some(tag.to_string()), Some(base)).with_client(cliente.clone());
+            let provider = OllamaProvider::new(Some(tag.to_string()), Some(base.to_string()))
+                .with_client(cliente.clone());
             Some((
                 "ollama".to_string(),
                 tag.to_string(),
@@ -1006,12 +1112,15 @@ async fn offer_pull_ollama_model(
 /// (o `max-power`, que tem caminho offline) compara com ela.
 pub(crate) const OLLAMA_ULTIMO_RECURSO: &str = "ollama (offline)";
 
+/// [`detect_provider_with_env`] com o ambiente do processo. So falha quando o
+/// cliente HTTP dos providers nao monta (#1790): sem ele nenhum provider fala
+/// com a policy certa, e cair num cliente padrao seria degradar em silencio.
 pub async fn detect_provider(
     config: &AppConfig,
     url_override: Option<&str>,
     model_override: Option<&str>,
     assume_yes: bool,
-) -> (String, String, Arc<dyn LlmProvider>) {
+) -> Result<(String, String, Arc<dyn LlmProvider>)> {
     detect_provider_with_env(
         config,
         url_override,
@@ -1030,7 +1139,7 @@ async fn detect_provider_with_env(
     model_override: Option<&str>,
     assume_yes: bool,
     env: provider_binding::Env<'_>,
-) -> (String, String, Arc<dyn LlmProvider>) {
+) -> Result<(String, String, Arc<dyn LlmProvider>)> {
     // #1778: um cliente para a deteccao inteira, montado de
     // `timeouts.llm.default_secs` como o bootstrap do gateway faz. Todo
     // provider que sair daqui o recebe por `with_client` — antes cada ramo
@@ -1038,8 +1147,16 @@ async fn detect_provider_with_env(
     // isso era "sem teto de tempo em lugar nenhum". Uma janela propria de
     // entrada (`llm.<nome>.timeout_secs`) ainda vence, dentro de
     // `build_provider`.
+    //
+    // #1790: se o cliente nao monta, o erro sobe. Antes ele virava um cliente
+    // padrao em silencio — seguindo redirect (regra 14) e sem a janela.
     let cliente =
-        garraia_agents::cliente_llm::cliente_compartilhado(config.timeouts.llm.default_secs);
+        garraia_agents::cliente_llm::cliente_compartilhado(config.timeouts.llm.default_secs)
+            .context("montando o cliente HTTP dos providers (timeouts.llm)")?;
+    // #1793: as sondas de disponibilidade (o default local e o Ollama no fim
+    // da cadeia) tem janela propria, `timeouts.health` — nao a de inferencia
+    // que o `cliente` carrega.
+    let janela_sonda = janela_de_sonda(&config.timeouts);
 
     // 0. If a custom URL is provided, use OpenAI-compatible provider (LM Studio, vLLM, etc.)
     if let Some(url) = url_override {
@@ -1066,11 +1183,11 @@ async fn detect_provider_with_env(
                 _ => "default".to_string(),
             },
         };
-        return (
+        return Ok((
             format!("lmstudio ({})", base),
             model,
             Arc::new(provider) as Arc<dyn LlmProvider>,
-        );
+        ));
     }
 
     // 0.5 — an explicitly named, locally-installed Ollama tag beats
@@ -1078,11 +1195,17 @@ async fn detect_provider_with_env(
     // even on a box configured for OpenRouter. Placed after `--url`, which is
     // a more explicit routing instruction than a bare model name.
     if let Some(m) = model_override.filter(|m| !m.is_empty()) {
-        match try_local_ollama_model(config, m, &cliente).await {
-            LocalOllamaProbe::Installed(hit) => return *hit,
-            LocalOllamaProbe::Missing { tag } => {
-                if let Some(hit) = offer_pull_ollama_model(&tag, assume_yes, &cliente).await {
-                    return hit;
+        let base = ollama_base_url();
+        match try_local_ollama_model(config, m, &cliente, &base, env).await {
+            LocalOllamaProbe::Installed(hit) => return Ok(*hit),
+            LocalOllamaProbe::Missing {
+                tag,
+                cliente: cliente_do_modelo,
+            } => {
+                if let Some(hit) =
+                    offer_pull_ollama_model(&tag, assume_yes, &cliente_do_modelo, &base).await
+                {
+                    return Ok(hit);
                 }
                 // Declined / failed / non-interactive: fall through. Every
                 // branch below still honors `--model`.
@@ -1102,27 +1225,46 @@ async fn detect_provider_with_env(
         env_has("OPENROUTER_API_KEY"),
         env_has("ANTHROPIC_API_KEY"),
     );
-    if let DefaultProviderDecision::UseDefault {
-        config_key,
-        provider_kind: _,
-        model,
-    } = decision
-        // `--model` outranks the configured default.
-        && let model = model_override
-            .filter(|m| !m.is_empty())
-            .map(str::to_string)
-            .unwrap_or(model)
-        && let Some(cfg) = config.llm.get(&config_key)
-        && let Some(provider) =
-            try_build_default_provider(&config_key, cfg, &model, env, &cliente).await
-    {
-        // GAR-576: form the display tuple here from the (untainted)
-        // strings returned by `decide_default_provider` — they never
-        // pass through the function that resolves the api_key.
-        return (config_key, model, provider);
-        // If construction fails (e.g. Ollama health-check fails) the
-        // outer `if-let` chain shorts out and we fall through to the
-        // legacy autodetect chain below.
+    match decision {
+        DefaultProviderDecision::UseDefault {
+            config_key,
+            provider_kind: _,
+            model,
+        } => {
+            // `--model` outranks the configured default.
+            let model = model_override
+                .filter(|m| !m.is_empty())
+                .map(str::to_string)
+                .unwrap_or(model);
+            if let Some(cfg) = config.llm.get(&config_key) {
+                match try_build_default_provider(
+                    &config_key,
+                    cfg,
+                    &model,
+                    env,
+                    &cliente,
+                    janela_sonda,
+                )
+                .await
+                {
+                    // GAR-576: form the display tuple here from the (untainted)
+                    // strings returned by `decide_default_provider` — they never
+                    // pass through the function that resolves the api_key.
+                    Ok(provider) => return Ok((config_key, model, provider)),
+                    // If construction fails (e.g. Ollama health-check fails) we
+                    // fall through to the legacy autodetect chain below — no
+                    // longer in silence (#1793).
+                    Err(motivo) => avisar_default_descartado(&config_key, &motivo),
+                }
+            }
+        }
+        // Sem `agent.default_provider` a autodeteccao e o caminho normal; com
+        // ele, cair aqui e uma degradacao e o operador precisa saber por que.
+        DefaultProviderDecision::FallThroughToChain { reason } => {
+            if let Some(default_key) = config.agent.default_provider.as_deref() {
+                avisar_default_descartado(default_key, &DefaultDescartado::Decisao(reason));
+            }
+        }
     }
 
     // Every branch below resolves its model through `explicit_model`, so
@@ -1156,12 +1298,12 @@ async fn detect_provider_with_env(
             AutodetectCandidate::Ollama => {
                 let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url.clone()))
                     .with_client(cliente.clone());
-                if ollama.health_check().await.unwrap_or(false) {
-                    return (
+                if sondar(&ollama, janela_sonda).await == Sonda::Disponivel {
+                    return Ok((
                         DEFAULT_LOCAL_PROVIDER.to_string(),
                         model,
                         Arc::new(ollama) as Arc<dyn LlmProvider>,
-                    );
+                    ));
                 }
                 continue;
             }
@@ -1178,18 +1320,18 @@ async fn detect_provider_with_env(
         else {
             continue;
         };
-        return (name.to_string(), model, provider);
+        return Ok((name.to_string(), model, provider));
     }
 
     // Last resort: Ollama with no health check (user will see the error on
     // the first message). Nothing else is left to try — this is the only
     // provider that needs no credential at all.
     let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url)).with_client(cliente);
-    (
+    Ok((
         OLLAMA_ULTIMO_RECURSO.to_string(),
         model,
         Arc::new(ollama) as Arc<dyn LlmProvider>,
-    )
+    ))
 }
 
 /// Resultado de um turno, do ponto de vista do REPL.
@@ -1470,7 +1612,7 @@ pub async fn run_chat(
             model_override.as_deref(),
             assume_yes,
         )
-        .await
+        .await?
     };
 
     // Keyless local daemons are the "local" mode; everything else is cloud.
@@ -2662,6 +2804,10 @@ mod testes_1225_s2 {
     /// pelo ponto de registro de PRODUCAO. `mode = all` sem backend recusa
     /// todo spawn sem consultar binario nenhum do host — deterministico, e
     /// antes da S2b esta config deixava as tools rodarem no host.
+    ///
+    /// #1762: fora de Unix o wrap e recusado pela plataforma antes de olhar o
+    /// backend (`plataforma_permite_wrap`, #1760). A recusa continua provando
+    /// que a policy chegou a tool; so a mensagem muda.
     async fn roda_recusada(
         tool: std::sync::Arc<dyn garraia_agents::Tool>,
         input: serde_json::Value,
@@ -2683,7 +2829,12 @@ mod testes_1225_s2 {
             }
             Err(e) => e.to_string(),
         };
-        assert!(texto.contains("nenhum backend"), "{}: {texto}", tool.name());
+        let motivo = if cfg!(unix) {
+            "nenhum backend"
+        } else {
+            "nao suportado fora de unix"
+        };
+        assert!(texto.contains(motivo), "{}: {texto}", tool.name());
     }
 
     #[tokio::test]
@@ -3553,6 +3704,7 @@ mod tests {
             "m",
             &|_: &str| None,
             &reqwest::Client::new(),
+            std::time::Duration::from_secs(5),
         )
         .await
         .expect("default provider construivel");
@@ -3584,7 +3736,9 @@ mod tests {
                 "pre-condicao: autodetect"
             );
             let (name, model, provider) =
-                detect_provider_with_env(&cfg, None, None, false, &sem_env).await;
+                detect_provider_with_env(&cfg, None, None, false, &sem_env)
+                    .await
+                    .expect("o cliente HTTP dos providers monta");
             assert_eq!((name.as_str(), model.as_str()), (kind, "m"));
             assert_eq!(texto_da_chamada(&provider).await, SENTINEL, "{kind}");
             assert_eq!(
@@ -3633,11 +3787,146 @@ mod tests {
             ],
         );
         let env = |var: &str| (var == "OPENAI_API_KEY").then(|| "sk-velha-do-env".to_string());
-        let (name, model, provider) = detect_provider_with_env(&cfg, None, None, false, &env).await;
+        let (name, model, provider) = detect_provider_with_env(&cfg, None, None, false, &env)
+            .await
+            .expect("o cliente HTTP dos providers monta");
         assert_eq!((name.as_str(), model.as_str()), ("lmstudio", "modelo-b"));
         texto_da_chamada(&provider).await;
         assert!(a.paths().await.is_empty(), "A nao pode receber nada");
         assert_eq!(b.credentials().await, vec!["chave-b".to_string()]);
+    }
+
+    // ─── #1793: janela das sondas e degradacao com motivo ─────────────────
+
+    /// Uma `llm.openrouter` com chave e `base_url` que ninguem escuta: a
+    /// autodeteccao a monta sem rede e para nela, entao os testes abaixo nao
+    /// dependem de um Ollama de pe (ou travado) na maquina.
+    fn nuvem_sem_rede() -> (&'static str, LlmProviderConfig) {
+        (
+            "openrouter",
+            make_llm_cfg(
+                "openrouter",
+                Some("m"),
+                Some("k"),
+                Some("http://127.0.0.1:9/api/v1"),
+            ),
+        )
+    }
+
+    /// Itens 6/7/8: o default local que aceita a conexao e nao responde. A
+    /// sonda dele tem de morrer na janela de `timeouts.health` (1s), nao na de
+    /// inferencia (`timeouts.llm`, 120s) que o provider carrega — e a queda
+    /// para a autodeteccao sai em `warn`, com o motivo.
+    #[tokio::test]
+    async fn default_local_travado_cai_na_janela_de_sonda_e_avisa_com_motivo() {
+        use crate::sonda_de_provider::tests::{capturar_logs, servidor_que_nao_responde};
+        let travado = servidor_que_nao_responde().await;
+        let mut cfg = config_with_default(
+            "local",
+            &[
+                (
+                    "local",
+                    make_llm_cfg(
+                        "ollama",
+                        Some("m"),
+                        None,
+                        Some(&format!("http://{travado}")),
+                    ),
+                ),
+                nuvem_sem_rede(),
+            ],
+        );
+        cfg.timeouts.health.default_secs = 1;
+        cfg.timeouts.llm.default_secs = 120;
+        let (logs, _guard) = capturar_logs();
+
+        let inicio = std::time::Instant::now();
+        let (nome, _, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            detect_provider_with_env(&cfg, None, None, false, &|_: &str| None),
+        )
+        .await
+        .expect("a sonda do default herdou a janela de inferencia (120s), nao a de timeouts.health")
+        .expect("a deteccao devolve um provider");
+        let gasto = inicio.elapsed();
+        assert!(
+            gasto >= std::time::Duration::from_secs(1)
+                && gasto < std::time::Duration::from_secs(10),
+            "a janela aplicada tem de ser a de 1s da sonda: {gasto:?}"
+        );
+        assert_eq!(nome, "openrouter", "o default travado nao pode vencer");
+
+        let texto = logs.texto();
+        assert!(texto.contains("WARN"), "{texto}");
+        assert!(texto.contains("default_provider=local"), "{texto}");
+        assert!(
+            texto.contains("em 1s (timeouts.health.default_secs)"),
+            "o motivo diz qual janela venceu: {texto}"
+        );
+    }
+
+    /// Item 8: o default configurado que a decisao recusa (entrada ausente,
+    /// tipo que a CLI nao escolhe) tambem caia em silencio na autodeteccao.
+    /// Agora o `warn` diz qual chave e por que.
+    #[tokio::test]
+    async fn default_recusado_pela_decisao_avisa_com_o_motivo() {
+        use crate::sonda_de_provider::tests::capturar_logs;
+        for (default_key, entradas, motivo) in [
+            (
+                "sumiu",
+                vec![nuvem_sem_rede()],
+                "agent.default_provider key not present in llm map",
+            ),
+            (
+                "chatgpt",
+                vec![
+                    (
+                        "chatgpt",
+                        make_llm_cfg("openai-codex", Some("m"), None, None),
+                    ),
+                    nuvem_sem_rede(),
+                ],
+                "unknown provider kind in agent.default_provider",
+            ),
+        ] {
+            let cfg = config_with_default(default_key, &entradas);
+            let (logs, _guard) = capturar_logs();
+            let (nome, _, _) = detect_provider_with_env(&cfg, None, None, false, &|_: &str| None)
+                .await
+                .expect("a deteccao devolve um provider");
+            assert_eq!(nome, "openrouter", "{default_key}");
+            let texto = logs.texto();
+            assert!(texto.contains("WARN"), "{default_key}: {texto}");
+            assert!(
+                texto.contains(&format!("default_provider={default_key}")),
+                "{default_key}: {texto}"
+            );
+            assert!(
+                texto.contains(&format!("motivo={motivo}")),
+                "{default_key}: {texto}"
+            );
+        }
+    }
+
+    /// Negativo do item 8: sem `agent.default_provider` a autodeteccao e o
+    /// caminho normal, nao uma degradacao — e um default que responde
+    /// tambem nao avisa nada.
+    #[tokio::test]
+    async fn autodeteccao_sem_default_e_default_que_responde_nao_avisam() {
+        use crate::sonda_de_provider::tests::capturar_logs;
+        let (logs, _guard) = capturar_logs();
+        let cfg = config_with(&[nuvem_sem_rede()]);
+        let (nome, _, _) = detect_provider_with_env(&cfg, None, None, false, &|_: &str| None)
+            .await
+            .expect("a deteccao devolve um provider");
+        assert_eq!(nome, "openrouter");
+        let cfg = config_with_default("openrouter", &[nuvem_sem_rede()]);
+        let (nome, _, _) = detect_provider_with_env(&cfg, None, None, false, &|_: &str| None)
+            .await
+            .expect("a deteccao devolve um provider");
+        assert_eq!(nome, "openrouter");
+        let texto = logs.texto();
+        assert!(!texto.contains("WARN"), "nada degradou: {texto}");
     }
 
     /// `--url` avulso: a `OPENAI_API_KEY` e a `GARRAIA_EMBEDDING_API_KEY` sao
@@ -3654,7 +3943,8 @@ mod tests {
         let url = format!("{}/v1", mock.uri());
         let (_, _, provider) =
             detect_provider_with_env(&AppConfig::default(), Some(&url), Some("m"), false, &env)
-                .await;
+                .await
+                .expect("o cliente HTTP dos providers monta");
         assert_eq!(texto_da_chamada(&provider).await, SENTINEL);
         assert_eq!(
             mock.credentials().await,
@@ -3722,7 +4012,9 @@ mod tests {
                 ),
             )],
         );
-        let (name, _, provider) = detect_provider_with_env(&cfg, None, None, false, &env).await;
+        let (name, _, provider) = detect_provider_with_env(&cfg, None, None, false, &env)
+            .await
+            .expect("o cliente HTTP dos providers monta");
         assert_eq!(name, "openai");
         texto_da_chamada(&provider).await;
         assert_eq!(
@@ -3746,7 +4038,9 @@ mod tests {
                 ),
                 "{kind}: a env nao e credencial para a base_url da entrada"
             );
-            let (name, _, _) = detect_provider_with_env(&cfg, None, None, false, &env).await;
+            let (name, _, _) = detect_provider_with_env(&cfg, None, None, false, &env)
+                .await
+                .expect("o cliente HTTP dos providers monta");
             assert_ne!(name, kind, "{kind}: nao ha credencial para o proxy");
             assert!(
                 mock.paths().await.is_empty(),
@@ -3767,8 +4061,9 @@ mod tests {
         )]);
         let only_openai_env =
             |var: &str| (var == "OPENAI_API_KEY").then(|| "sk-do-env".to_string());
-        let (name, _, _) =
-            detect_provider_with_env(&cfg, None, None, false, &only_openai_env).await;
+        let (name, _, _) = detect_provider_with_env(&cfg, None, None, false, &only_openai_env)
+            .await
+            .expect("o cliente HTTP dos providers monta");
         assert_ne!(name, "openai", "sem chave propria o proxy nao e candidato");
         let vistas = mock.credentials().await;
         assert!(
@@ -3795,8 +4090,9 @@ mod tests {
                 Some(&format!("{}/api/v1", mock.uri())),
             ),
         )]);
-        let (name, model, provider) =
-            detect_provider_with_env(&cfg, None, None, false, &|_| None).await;
+        let (name, model, provider) = detect_provider_with_env(&cfg, None, None, false, &|_| None)
+            .await
+            .expect("o cliente HTTP dos providers monta");
         assert_eq!((name.as_str(), model.as_str()), ("openrouter", "m"));
         // Registrado com o nome da entrada, como um alias no caminho explicito.
         assert_eq!(provider.provider_id(), "openrouter");
@@ -5203,5 +5499,333 @@ mod testes_evidencia_por_resultado_do_turno {
             },
             true
         ));
+    }
+}
+
+#[cfg(test)]
+mod janela_do_atalho_model_tests {
+    //! #1790 itens 6 e 9: o atalho `--model <tag>` (sonda/pull do Ollama
+    //! local) com a janela da entrada `llm:` do modelo pedido, e a sonda com o
+    //! mesmo mecanismo de cliente da #1778. Rede so de loopback: um Ollama
+    //! falso (wiremock) no lugar do daemon.
+
+    use super::*;
+    use garraia_config::LlmProviderConfig;
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn sem_env(_: &str) -> Option<String> {
+        None
+    }
+
+    fn entrada(
+        provider: &str,
+        model: Option<&str>,
+        timeout_secs: Option<u64>,
+    ) -> LlmProviderConfig {
+        let mut extra = HashMap::new();
+        if let Some(segs) = timeout_secs {
+            extra.insert("timeout_secs".to_string(), serde_json::json!(segs));
+        }
+        LlmProviderConfig {
+            provider: provider.to_string(),
+            model: model.map(str::to_string),
+            api_key: None,
+            base_url: None,
+            extra,
+        }
+    }
+
+    fn config(default_secs: u64, entradas: &[(&str, LlmProviderConfig)]) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        cfg.timeouts.llm.default_secs = default_secs;
+        for (nome, e) in entradas {
+            cfg.llm.insert((*nome).to_string(), e.clone());
+        }
+        cfg
+    }
+
+    fn cliente_global(cfg: &AppConfig) -> reqwest::Client {
+        garraia_agents::cliente_llm::cliente_compartilhado(cfg.timeouts.llm.default_secs)
+            .expect("o cliente HTTP dos providers monta")
+    }
+
+    fn pedido() -> garraia_agents::LlmRequest {
+        garraia_agents::LlmRequest {
+            model: String::new(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: MessagePart::Text("oi".to_string()),
+            }],
+            system: None,
+            max_tokens: Some(16),
+            temperature: None,
+            tools: Vec::new(),
+        }
+    }
+
+    /// Ollama falso: `/api/tags` lista `instalados`; `/api/chat` so responde
+    /// depois de `atraso_do_chat`; `/api/pull` termina na hora.
+    async fn ollama_falso(instalados: &[&str], atraso_do_chat: Duration) -> MockServer {
+        let server = MockServer::start().await;
+        let modelos: Vec<_> = instalados
+            .iter()
+            .map(|m| serde_json::json!({ "name": m }))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "models": modelos })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/pull"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"status\":\"success\"}\n"))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(atraso_do_chat)
+                    .set_body_json(serde_json::json!({
+                        "model": "qwen3.8:latest",
+                        "message": { "role": "assistant", "content": "ok" },
+                        "done": true
+                    })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// Chama o provider e devolve quanto tempo levou e se falhou.
+    async fn cronometra(provider: &Arc<dyn LlmProvider>) -> (Duration, bool) {
+        let inicio = Instant::now();
+        let falhou = provider.complete(&pedido()).await.is_err();
+        (inicio.elapsed(), falhou)
+    }
+
+    // ─── a regra: qual entrada decide a janela do atalho ──────────────────
+
+    #[test]
+    fn a_entrada_do_modelo_pedido_decide_a_janela() {
+        let cfg = config(
+            120,
+            &[
+                ("local", entrada("ollama", Some("qwen3.8"), Some(900))),
+                ("ollama", entrada("ollama", Some("llama3"), Some(300))),
+            ],
+        );
+        // `qwen3.8` e `qwen3.8:latest` sao o mesmo modelo.
+        assert_eq!(
+            janela_do_atalho_ollama(&cfg, "qwen3.8:latest", &sem_env),
+            Some(900)
+        );
+        // Sem entrada do modelo, vale a do Ollama (a que `-p ollama` usaria).
+        assert_eq!(
+            janela_do_atalho_ollama(&cfg, "mistral:latest", &sem_env),
+            Some(300)
+        );
+    }
+
+    #[test]
+    fn entrada_do_modelo_sem_janela_herda_a_global_e_nao_a_do_ollama() {
+        let cfg = config(
+            120,
+            &[
+                ("local", entrada("ollama", Some("qwen3.8:latest"), None)),
+                ("ollama", entrada("ollama", None, Some(300))),
+            ],
+        );
+        assert_eq!(
+            janela_do_atalho_ollama(&cfg, "qwen3.8:latest", &sem_env),
+            None
+        );
+    }
+
+    #[test]
+    fn entrada_de_outro_provider_nao_empresta_a_janela() {
+        let cfg = config(
+            120,
+            &[
+                ("remoto", entrada("openai", Some("qwen3.8"), Some(900))),
+                ("ollama", entrada("openai", None, Some(300))),
+            ],
+        );
+        assert_eq!(
+            janela_do_atalho_ollama(&cfg, "qwen3.8:latest", &sem_env),
+            None
+        );
+    }
+
+    #[test]
+    fn entre_varias_entradas_do_modelo_vence_a_de_menor_nome() {
+        let cfg = config(
+            120,
+            &[
+                ("b-local", entrada("ollama", Some("qwen3.8"), Some(50))),
+                (
+                    "a-local",
+                    entrada("ollama", Some("qwen3.8:latest"), Some(40)),
+                ),
+            ],
+        );
+        assert_eq!(
+            janela_do_atalho_ollama(&cfg, "qwen3.8:latest", &sem_env),
+            Some(40)
+        );
+    }
+
+    #[test]
+    fn a_sonda_nunca_passa_da_janela_nem_do_proprio_orcamento() {
+        assert_eq!(
+            teto_da_sonda(0),
+            OLLAMA_PROBE_TIMEOUT_SECS,
+            "0 = sem teto na config"
+        );
+        assert_eq!(teto_da_sonda(1), 1, "janela menor que o orcamento vale");
+        assert_eq!(teto_da_sonda(120), OLLAMA_PROBE_TIMEOUT_SECS);
+    }
+
+    // ─── fim a fim: o provider que sai do atalho ──────────────────────────
+
+    /// Item 6: tag instalado, entrada do modelo com janela de 1s e global de
+    /// 30s. A inferencia lenta (5s) tem de morrer na janela da ENTRADA. Antes
+    /// o provider saia com a global e a chamada terminava depois dos 5s.
+    #[tokio::test]
+    async fn atalho_instalado_usa_a_janela_da_entrada_do_modelo() {
+        let ollama = ollama_falso(&["qwen3.8:latest"], Duration::from_secs(5)).await;
+        let cfg = config(
+            30,
+            &[("local", entrada("ollama", Some("qwen3.8"), Some(1)))],
+        );
+
+        let LocalOllamaProbe::Installed(hit) = try_local_ollama_model(
+            &cfg,
+            "qwen3.8",
+            &cliente_global(&cfg),
+            &ollama.uri(),
+            &sem_env,
+        )
+        .await
+        else {
+            panic!("o tag esta instalado no Ollama falso");
+        };
+        let (_, modelo, provider) = *hit;
+        assert_eq!(modelo, "qwen3.8:latest");
+
+        let (levou, falhou) = cronometra(&provider).await;
+        assert!(
+            falhou,
+            "a janela de 1s da entrada tinha de cortar a resposta de 5s"
+        );
+        assert!(
+            levou < Duration::from_secs(4),
+            "cortou em {levou:?}: nao foi a janela da entrada"
+        );
+    }
+
+    /// Item 6, ramo do pull: tag ausente, baixado com `-y`. O provider do
+    /// modelo recem-baixado tambem sai com a janela da entrada dele.
+    #[tokio::test]
+    async fn atalho_com_pull_usa_a_janela_da_entrada_do_modelo() {
+        let ollama = ollama_falso(&[], Duration::from_secs(5)).await;
+        let cfg = config(
+            30,
+            &[("local", entrada("ollama", Some("qwen3.8"), Some(1)))],
+        );
+
+        let LocalOllamaProbe::Missing { tag, cliente } = try_local_ollama_model(
+            &cfg,
+            "qwen3.8",
+            &cliente_global(&cfg),
+            &ollama.uri(),
+            &sem_env,
+        )
+        .await
+        else {
+            panic!("o Ollama falso nao tem o tag");
+        };
+        let (_, _, provider) = offer_pull_ollama_model(&tag, true, &cliente, &ollama.uri())
+            .await
+            .expect("o pull do Ollama falso termina com sucesso");
+
+        let (levou, falhou) = cronometra(&provider).await;
+        assert!(
+            falhou,
+            "a janela de 1s da entrada tinha de cortar a resposta de 5s"
+        );
+        assert!(
+            levou < Duration::from_secs(4),
+            "cortou em {levou:?}: nao foi a janela da entrada"
+        );
+    }
+
+    /// Sem janela propria, o atalho continua com a global — que tambem vale.
+    #[tokio::test]
+    async fn atalho_sem_entrada_fica_com_a_janela_global() {
+        let ollama = ollama_falso(&["qwen3.8:latest"], Duration::from_secs(5)).await;
+        let cfg = config(1, &[]);
+
+        let LocalOllamaProbe::Installed(hit) = try_local_ollama_model(
+            &cfg,
+            "qwen3.8",
+            &cliente_global(&cfg),
+            &ollama.uri(),
+            &sem_env,
+        )
+        .await
+        else {
+            panic!("o tag esta instalado no Ollama falso");
+        };
+        let (levou, falhou) = cronometra(&hit.2).await;
+        assert!(
+            falhou && levou < Duration::from_secs(4),
+            "a global de 1s tinha de cortar"
+        );
+    }
+
+    /// Item 9: a sonda sai de `cliente_llm` como todo cliente de provider —
+    /// sem seguir redirect (regra 14 / #1248). Antes era um
+    /// `Client::builder()` cru, que seguia o 302 ate um "Ollama" em outro
+    /// endereco e voltava `Installed`.
+    #[tokio::test]
+    async fn a_sonda_nao_segue_redirect() {
+        let outro = ollama_falso(&["qwen3.8:latest"], Duration::ZERO).await;
+        let ollama = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", format!("{}/api/tags", outro.uri()).as_str()),
+            )
+            .mount(&ollama)
+            .await;
+        let cfg = config(30, &[]);
+
+        let sonda = try_local_ollama_model(
+            &cfg,
+            "qwen3.8",
+            &cliente_global(&cfg),
+            &ollama.uri(),
+            &sem_env,
+        )
+        .await;
+        assert!(
+            matches!(sonda, LocalOllamaProbe::NotApplicable),
+            "a sonda seguiu o redirect"
+        );
+        assert!(
+            outro
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty(),
+            "nenhum pedido pode chegar ao destino do redirect"
+        );
     }
 }

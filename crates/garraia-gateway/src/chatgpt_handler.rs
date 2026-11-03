@@ -109,10 +109,13 @@ fn aplicar_e_registrar(
         .unwrap_or_else(|| MODELO_PADRAO.into());
     let esforco = texto_extra(entrada, "reasoning_effort").unwrap_or_else(|| ESFORCO_PADRAO.into());
     let velocidade = texto_extra(entrada, "speed").unwrap_or_else(|| "thinking".into());
+    // #1790: cliente que nao monta e erro, nao um cliente padrao em silencio.
     let cliente = garraia_agents::cliente_llm::cliente_do_llm(
-        &garraia_agents::cliente_llm::cliente_compartilhado(state.config.timeouts.llm.default_secs),
+        &garraia_agents::cliente_llm::cliente_compartilhado(
+            state.config.timeouts.llm.default_secs,
+        )?,
         entrada.timeout_secs(),
-    );
+    )?;
     let provider = OpenAiCodexProvider::new(
         ConfigLoader::openai_codex_credentials_dir(),
         Some(modelo.clone()),

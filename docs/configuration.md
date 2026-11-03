@@ -195,15 +195,21 @@ mcp:
     env:
       GITHUB_TOKEN: "your-token"
 
-# Timeouts (in seconds) — gateway/server only. The interactive REPL has its
-# own, separate knob: see "Turn timeout in `garra chat`" under CLI Configuration.
+# Timeouts (in seconds). `llm` caps every provider call, in the gateway and in
+# the CLI (#1778). The interactive REPL also has its own turn ceiling: see
+# "Turn timeout in `garra chat`" under CLI Configuration.
 timeouts:
   llm:
     default_secs: 120
   tts:
     default_secs: 120
+  # Window of every call to an MCP server without its own `timeout:` — at
+  # gateway boot and in `garra mcp inspect|resources|prompts` (#1793).
   mcp:
     default_secs: 60
+  # Availability probes: the gateway's `/health` checks and, in the CLI
+  # (`garra chat`, `garra --model`, `garra ask` without `-p`), the probe of a
+  # local Ollama/llama.cpp before picking it as provider (#1793). Minimum 1s.
   health:
     default_secs: 5
 
@@ -494,9 +500,12 @@ evidence are kept in the conversation history (in memory, and in `sessions.db`
 with `--persist`) marked as interrupted, so the next turn and `--resume` see how
 far the answer got instead of losing it.
 
-This is a different knob from the gateway's `timeouts.llm.default_secs` (120s,
-server only) above. `garra ask --timeout-secs` (default 60s, exit 124) and the
-`garra_agent` MCP timeout (300s) are unchanged.
+This is a different knob from `timeouts.llm.default_secs` (120s) above, which
+caps each individual provider call — in the gateway and, since #1778, in the CLI
+too (`llm.<name>.timeout_secs` overrides it per provider). `garra ask
+--timeout-secs` (default 60s) exits 124 when it fires, and also when the
+`timeouts.llm` window cuts the provider call first, with a message naming the
+key to raise (#1790). The `garra_agent` MCP timeout (300s) is unchanged.
 
 ### Validate config
 

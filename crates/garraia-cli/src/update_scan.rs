@@ -275,7 +275,14 @@ mod tests {
             ),
             "{report}"
         );
-        assert!(report.contains("sudo rm /usr/bin/garraia"), "{report}");
+        // A dica de remocao fala o shell do host (`remove_hint`): `sudo rm` em
+        // Unix, `Remove-Item` no Windows (#1762).
+        let remocao = if cfg!(windows) {
+            "Remove-Item \"/usr/bin/garraia\""
+        } else {
+            "sudo rm /usr/bin/garraia"
+        };
+        assert!(report.contains(remocao), "{report}");
         assert!(
             report.contains("/opt/garra/garra (versao desconhecida) vem ANTES de"),
             "{report}"

@@ -20,6 +20,12 @@
 
 /// Qual gerenciador systemd dona a unit — muda o comando que o operador
 /// precisa rodar (`--user` ou nao) e se ele vai precisar de root.
+///
+/// #1762: fora do Linux nao ha systemd, entao o parser, a recusa e as
+/// variantes daqui so tem chamador de producao no Linux (os testes os
+/// exercitam em todo SO). O `allow` e so para esses itens: sem ele o clippy do
+/// Windows acusa codigo morto.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gerente {
     /// `systemctl --user` — unit do proprio usuario (`~/.config/systemd/user`).
@@ -37,6 +43,7 @@ pub struct Unidade {
 
 impl Unidade {
     /// O comando que de fato reinicia este daemon.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn comando_restart(&self) -> String {
         match self.gerente {
             Gerente::Usuario => format!("systemctl --user restart {}", self.nome),
@@ -68,6 +75,7 @@ impl Unidade {
 /// - ultimo componente e o `user@<uid>.service` — esse e o *gerente* do
 ///   usuario, nao o daemon; matar ou reiniciar derrubaria a sessao inteira;
 /// - nao ha componente de unit nenhum.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn unidade_do_cgroup(conteudo: &str) -> Option<Unidade> {
     for linha in conteudo.lines() {
         let Some((prefixo, caminho)) = linha.rsplit_once(':') else {
@@ -126,6 +134,7 @@ fn valor_libera(valor: Option<&str>) -> bool {
 
 /// A recusa, ja com o comando certo. Texto puro para poder ser testado sem
 /// processo nenhum no meio.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn recusa(unidade: &Unidade, pid: u32, porta: u16, bin: &str) -> String {
     format!(
         "{bin}: recusando o restart — o daemon na porta {porta} (PID {pid}) pertence a unit \

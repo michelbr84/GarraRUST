@@ -50,6 +50,16 @@ resposta parcial é descartada (não há como retomar uma resposta HTTP
 interrompida) e o erro diz exatamente qual das duas chaves aumentar —
 `timeouts.llm.default_secs` ou `llm.<provedor>.timeout_secs`.
 
+Essas duas janelas são de **inferência**. Antes do primeiro turno, quando
+`garra chat`, `garra --model <tag>` ou `garra ask` (sem `-p`) perguntam a um
+Ollama ou llama.cpp local se ele está de pé para escolhê-lo como provedor,
+a sonda usa `timeouts.health.default_secs` (5s por padrão, mínimo 1s) — um
+daemon travado não segura a abertura do REPL pela janela de inferência
+(#1793). Se o `agent.default_provider` configurado não puder ser usado
+(sonda sem resposta, entrada ausente, tipo que a CLI não escolhe, sem
+credencial), a escolha cai na autodetecção e o log registra um `warn` com a
+chave e o motivo.
+
 ---
 
 # Provedores nativos

@@ -31,6 +31,7 @@ mod repo_workflow;
 mod runs_cmd;
 #[cfg(unix)]
 mod sigpipe;
+mod sonda_de_provider;
 mod systemd_guard;
 mod team;
 mod tracing_setup;
@@ -48,6 +49,9 @@ use anyhow::{Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use garraia_security::{RedactingMakeWriter, RedactingWriter};
 use tracing_appender::rolling;
+// So o `start_daemon` (unix) monta o filtro aqui; o resto vive em
+// `tracing_setup`. Sem o cfg, o clippy do Windows acusa import morto (#1762).
+#[cfg(unix)]
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -362,9 +366,10 @@ enum Commands {
 
         /// LLM call timeout in seconds. Default 60, range [1, 600].
         /// Exceeding the timeout returns exit code 124. Each provider call is
-        /// also capped by `timeouts.llm.default_secs` from the config (#1778);
-        /// when the config window fires first, the error surfaces as
-        /// provider_error (exit 69), not 124.
+        /// also capped by `timeouts.llm.default_secs` from the config, or by
+        /// `llm.<name>.timeout_secs` (#1778); when that window fires first it
+        /// is a timeout too — exit 124, with a message naming the config key
+        /// to raise (#1790).
         #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=600))]
         timeout_secs: u64,
 
@@ -1379,9 +1384,11 @@ enum SkillCommands {
 
 #[derive(Subcommand)]
 enum McpCommands {
-    /// List configured MCP servers
+    /// List configured MCP servers, with each one's effective timeout
     List,
-    /// Connect to an MCP server and list its tools
+    /// Connect to an MCP server and list its tools. Every call to the server
+    /// is capped by its `timeout:` or, without one, `timeouts.mcp.default_secs`
+    /// (the same window the gateway uses at boot).
     Inspect { name: String },
     /// List resources from a connected MCP server
     Resources { name: String },
@@ -3002,7 +3009,8 @@ async fn async_main(
                             status,
                             target,
                             server.args,
-                            server.timeout.unwrap_or(30),
+                            // #1793: a janela que o servidor tem de fato.
+                            server.timeout_efetivo(&config.timeouts),
                         );
                     }
                 }
@@ -3025,7 +3033,8 @@ async fn async_main(
 
                     println!("Connecting to MCP server '{name}'...");
                     let manager = garraia_agents::McpManager::new();
-                    let timeout_secs = server_config.timeout.unwrap_or(30);
+                    // #1793: a mesma janela do boot do gateway, nao 30s fixos.
+                    let timeout_secs = server_config.timeout_efetivo(&config.timeouts);
 
                     match manager
                         .connect(
@@ -3066,7 +3075,8 @@ async fn async_main(
 
                     println!("Connecting to MCP server '{name}'...");
                     let manager = garraia_agents::McpManager::new();
-                    let timeout_secs = server_config.timeout.unwrap_or(30);
+                    // #1793: a mesma janela do boot do gateway, nao 30s fixos.
+                    let timeout_secs = server_config.timeout_efetivo(&config.timeouts);
 
                     match manager
                         .connect(
@@ -3112,7 +3122,8 @@ async fn async_main(
 
                     println!("Connecting to MCP server '{name}'...");
                     let manager = garraia_agents::McpManager::new();
-                    let timeout_secs = server_config.timeout.unwrap_or(30);
+                    // #1793: a mesma janela do boot do gateway, nao 30s fixos.
+                    let timeout_secs = server_config.timeout_efetivo(&config.timeouts);
 
                     match manager
                         .connect(
@@ -4326,7 +4337,9 @@ mod tests {
     /// sem nome e falharia aqui.
     #[test]
     fn sigpipe_decide_cada_subcomando_aninhado_pelo_nome() {
-        let fonte = include_str!("main.rs");
+        // Fins de linha normalizados: o checkout do Windows e CRLF e o scan
+        // procura `"\n}\n"` (#1762).
+        let fonte = include_str!("main.rs").replace("\r\n", "\n");
         let inicio = fonte
             .find("fn sigpipe_padrao_para(")
             .expect("sigpipe_padrao_para existe");

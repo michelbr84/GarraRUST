@@ -13,6 +13,12 @@ description = "GarraIA — núcleo one-shot de `garra_ask` (CLI, servidor stdio 
 [dependencies]
 garraia-agents = { workspace = true }
 garraia-config = { workspace = true }
+# #1790: o `ProviderObservado` do `ask` implementa `LlmProvider` (trait
+# `#[async_trait]`, erro `garraia_common::Error`, stream do `futures`). As
+# tres ja vem pelo `garraia-agents` — nenhuma crate nova na arvore.
+garraia-common = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
 anyhow = { workspace = true }
 regex = { workspace = true }
 serde_json = { workspace = true }

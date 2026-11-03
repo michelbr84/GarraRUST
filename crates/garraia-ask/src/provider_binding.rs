@@ -44,7 +44,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use garraia_agents::{
     AnthropicProvider, LlamaCppProvider, LlmProvider, OllamaProvider, OpenAiProvider,
 };
@@ -406,7 +406,15 @@ pub fn build_provider(
     let base_url = binding.base_url.clone();
     // A janela propria da entrada vence a global, como no bootstrap do
     // gateway; sem `timeout_secs` na entrada, isto e um clone do compartilhado.
-    let cliente = garraia_agents::cliente_llm::cliente_do_llm(cliente, binding.timeout_secs);
+    // #1790: um cliente que nao monta e erro — nunca o compartilhado com a
+    // janela errada no lugar.
+    let cliente = garraia_agents::cliente_llm::cliente_do_llm(cliente, binding.timeout_secs)
+        .with_context(|| {
+            format!(
+                "{}: montando o cliente HTTP com a janela da entrada",
+                binding.origin()
+            )
+        })?;
     match binding.kind.as_str() {
         "ollama" => Ok(Arc::new(
             OllamaProvider::new(model, base_url).with_client(cliente),

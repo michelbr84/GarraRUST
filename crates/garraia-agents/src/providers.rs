@@ -333,29 +333,75 @@ pub(crate) fn falha_de_transporte(e: &reqwest::Error) -> bool {
     e.is_connect() || e.is_timeout() || e.is_request()
 }
 
+/// #1790: a frase que marca "a janela de `timeouts.llm` cortou a resposta".
+///
+/// So entra numa mensagem a partir do TIPO do `reqwest` (ver
+/// [`janela_de_resposta_estourou`]), nunca de texto de dependencia. Quem
+/// precisa distinguir esse corte de uma falha qualquer do provider — o
+/// `garra ask`, que o reporta como timeout (124) e nao como `provider_error`
+/// (69) — le a marca com [`janela_de_timeout_estourou`]: o runtime e os
+/// providers so carregam texto ate la, e o texto e nosso.
+pub const MARCA_JANELA_DE_TIMEOUT: &str =
+    "a resposta do LLM nao chegou dentro da janela de timeout";
+
+/// O teto TOTAL do cliente — a janela de `timeouts.llm` — disparou, no envio
+/// ou no meio do corpo.
+///
+/// Timeout de CONEXAO fica de fora (#1790): ele e o `CONNECT_TIMEOUT` fixo de
+/// `cliente_llm` (host que nao atende), a janela nao o resolve, e o aviso de
+/// "aumente a janela" seria conselho errado.
+fn janela_de_resposta_estourou(e: &reqwest::Error) -> bool {
+    e.is_timeout() && !e.is_connect()
+}
+
+/// `msg` com o aviso da janela, quando foi ela que cortou.
+fn com_aviso_de_janela(mut msg: String, e: &reqwest::Error) -> String {
+    // #1593: timeout do LLM e o unico erro que o operador consegue resolver
+    // sozinho, trocando a janela — entao o card diz qual chave.
+    if janela_de_resposta_estourou(e) {
+        msg.push_str(" — ");
+        msg.push_str(MARCA_JANELA_DE_TIMEOUT);
+        msg.push_str(
+            " e foi descartada; aumente timeouts.llm.default_secs (global) ou \
+             declare llm.<provider>.timeout_secs com uma janela maior para este \
+             provider",
+        );
+    }
+    msg
+}
+
 /// Erro de envio de requisicao a um provider, com a **classe** preservada.
 ///
 /// `contexto` e o prefixo que o provider ja usava ("openai request failed"),
 /// mantido palavra por palavra: o cartao de erro da CLI classifica pela frase
 /// interna do `reqwest`, e nao pelo prefixo do enum.
 pub(crate) fn erro_de_envio(contexto: &str, e: &reqwest::Error) -> Error {
-    // #1593: timeout do LLM e o unico erro de envio que o operador consegue
-    // resolver sozinho, trocando a janela — entao o card diz qual chave.
-    // O resto do texto do reqwest e mantido palavra por palavra (#1249): o
-    // cartao da CLI classifica pela frase interna, nao pelo prefixo.
-    let mut msg = format!("{contexto}: {e}");
-    if e.is_timeout() {
-        msg.push_str(
-            " — a resposta do LLM nao chegou dentro da janela de timeout e foi \
-             descartada; aumente timeouts.llm.default_secs (global) ou declare \
-             llm.<provider>.timeout_secs com uma janela maior para este provider",
-        );
-    }
+    // O texto do reqwest e mantido palavra por palavra (#1249): o cartao da
+    // CLI classifica pela frase interna, nao pelo prefixo.
+    let msg = com_aviso_de_janela(format!("{contexto}: {e}"), e);
     if falha_de_transporte(e) {
         Error::Transport(msg)
     } else {
         Error::Agent(msg)
     }
+}
+
+/// #1790: erro lendo o CORPO de uma resposta em streaming.
+///
+/// A classe continua `Agent`: corpo que quebra no meio e tratado pelo
+/// consumidor do stream (#1176), nao como transporte. Mas a janela que
+/// dispara no meio do corpo — o caso comum de uma resposta longa — ganha o
+/// mesmo aviso (e a mesma marca) do envio. O `Display` do `reqwest` para esse
+/// erro e so "request or response body error": sem isto, o corte da janela
+/// era indistinguivel de uma conexao que caiu.
+pub(crate) fn erro_de_leitura(contexto: &str, e: &reqwest::Error) -> Error {
+    Error::Agent(com_aviso_de_janela(format!("{contexto}: {e}"), e))
+}
+
+/// #1790: o erro diz que a janela de `timeouts.llm` cortou a chamada (marca
+/// [`MARCA_JANELA_DE_TIMEOUT`], posta a partir do tipo do `reqwest`).
+pub fn janela_de_timeout_estourou(e: &Error) -> bool {
+    e.to_string().contains(MARCA_JANELA_DE_TIMEOUT)
 }
 
 /// O corpo de erro HTTP do provider reduzido ao que pode sair do processo
@@ -767,9 +813,15 @@ mod tests {
             let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind efemero");
             l.local_addr().expect("addr").port()
         };
-        reqwest::Client::new()
+        // So o teto de CONEXAO, nunca o total (#1790): no Windows a porta
+        // fechada do loopback so devolve "recusada" depois de ~2 s de SYNs
+        // repetidos, e um `.timeout()` total dessa ordem corria contra ela —
+        // o erro saia como a janela de `timeouts.llm` e nao como conexao.
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("cliente de teste")
             .get(format!("http://127.0.0.1:{porta}/"))
-            .timeout(std::time::Duration::from_secs(2))
             .send()
             .await
             .expect_err("ninguem esta escutando nessa porta")
@@ -849,6 +901,79 @@ mod tests {
             texto.starts_with("transport error: "),
             "a classe sobrevive; veio: {texto}"
         );
+        assert!(
+            janela_de_timeout_estourou(&erro_de_envio("falha na requisição à Anthropic", &e)),
+            "#1790: a marca da janela esta la; veio: {texto}"
+        );
+    }
+
+    /// #1790: a janela que dispara no MEIO do corpo (cabecalho e parte do
+    /// stream ja chegaram) tambem ganha o aviso e a marca. O `Display` do
+    /// `reqwest` para esse erro nao diz "timeout" — sem a marca, o `garra
+    /// ask` nao tinha como saber que foi a janela.
+    #[tokio::test]
+    async fn janela_no_meio_do_corpo_ganha_a_marca() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(b"HTTP/1.1 200 OK\r\nconnection: close\r\n\r\ndata: um pedaco\n\n")
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+
+        let resposta = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(300))
+            .build()
+            .unwrap()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("o cabecalho chega dentro da janela");
+        let mut corpo = resposta.bytes_stream();
+        let e = loop {
+            match futures::StreamExt::next(&mut corpo).await {
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => break e,
+                None => panic!("o corpo nao pode terminar: o servidor engasgou"),
+            }
+        };
+        assert!(e.is_timeout(), "precondicao: {e}");
+
+        let erro = erro_de_leitura("stream read error", &e);
+        let texto = erro.to_string();
+        assert!(
+            texto.starts_with("agent error: stream read error"),
+            "a classe e o prefixo ficam; veio: {texto}"
+        );
+        assert!(texto.contains("timeouts.llm.default_secs"), "veio: {texto}");
+        assert!(
+            janela_de_timeout_estourou(&erro),
+            "a marca tem de estar la; veio: {texto}"
+        );
+    }
+
+    /// Erro que nao e a janela — conexao recusada — nao leva a marca: o
+    /// `garra ask` continua chamando isso de `provider_error`.
+    #[tokio::test]
+    async fn erro_que_nao_e_a_janela_nao_leva_a_marca() {
+        let e = erro_de_conexao_recusada().await;
+        assert!(!janela_de_timeout_estourou(&erro_de_envio(
+            "ollama request failed",
+            &e
+        )));
+        assert!(!janela_de_timeout_estourou(&erro_de_leitura(
+            "stream error",
+            &e
+        )));
+        assert!(!janela_de_timeout_estourou(&Error::Agent(
+            "all providers failed".into()
+        )));
     }
 
     #[tokio::test]

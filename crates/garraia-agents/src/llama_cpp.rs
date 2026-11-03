@@ -327,7 +327,7 @@ impl LlamaCppProvider {
 
         let stream = res
             .bytes_stream()
-            .map_err(|e| Error::Agent(format!("stream error: {e}")));
+            .map_err(|e| crate::providers::erro_de_leitura("stream error", &e));
         let stream: BoxStream<'static, std::result::Result<Bytes, Error>> = Box::pin(stream);
 
         let lines = futures::stream::unfold(

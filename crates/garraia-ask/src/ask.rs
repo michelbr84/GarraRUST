@@ -5,10 +5,16 @@
 //! emitir o [`AskOutcome`] (linha JSON na CLI, `CallToolResult` no stdio,
 //! envelope HTTP na ponte).
 
-use std::sync::{Arc, LazyLock};
+use std::pin::Pin;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use garraia_agents::{AgentRuntime, ChatMessage, LlmProvider};
+use async_trait::async_trait;
+use futures::{Stream, StreamExt};
+use garraia_agents::providers::janela_de_timeout_estourou;
+use garraia_agents::{
+    AgentRuntime, ChatMessage, LlmProvider, LlmRequest, LlmResponse, StreamEvent, ValidacaoDeModelo,
+};
 use garraia_config::AppConfig;
 use regex::Regex;
 use serde_json::json;
@@ -54,6 +60,12 @@ pub enum AskError {
     ProviderError(String),
     /// A chamada ao LLM estourou o timeout. Saída 124.
     Timeout(u64),
+    /// #1790: a janela de `timeouts.llm` da config (`default_secs` ou
+    /// `llm.<nome>.timeout_secs`) cortou a chamada ao provider ANTES do
+    /// `timeout_secs` do pedido. Para quem chamou é o mesmo desfecho do
+    /// `Timeout` — `kind` `timeout`, saída 124 —, mas a mensagem diz qual
+    /// janela aumentar. Carrega a causa do provider, já sanitizada.
+    ProviderTimeout(String),
     /// Falha de I/O (leitura de stdin, etc.). Saída 74.
     IoError(String),
 }
@@ -63,7 +75,7 @@ impl AskError {
         match self {
             Self::UsageError(_) => 2,
             Self::NoProvider(_) | Self::ProviderError(_) => 69,
-            Self::Timeout(_) => 124,
+            Self::Timeout(_) | Self::ProviderTimeout(_) => 124,
             Self::IoError(_) => 74,
         }
     }
@@ -73,7 +85,7 @@ impl AskError {
             Self::UsageError(_) => "usage",
             Self::NoProvider(_) => "no_provider",
             Self::ProviderError(_) => "provider_error",
-            Self::Timeout(_) => "timeout",
+            Self::Timeout(_) | Self::ProviderTimeout(_) => "timeout",
             Self::IoError(_) => "io",
         }
     }
@@ -85,6 +97,10 @@ impl AskError {
             | Self::ProviderError(m)
             | Self::IoError(m) => m.clone(),
             Self::Timeout(s) => format!("LLM call exceeded {s}s timeout"),
+            Self::ProviderTimeout(causa) => format!(
+                "LLM call exceeded the provider timeout window from config \
+                 (timeouts.llm.default_secs or llm.<name>.timeout_secs): {causa}"
+            ),
         }
     }
 }
@@ -267,6 +283,84 @@ pub async fn ask_oneshot(config: &AppConfig, opts: AskOptions) -> AskOutcome {
     }
 }
 
+/// #1790 item 7: o provider do `ask`, com a última falha observada.
+///
+/// O runtime não devolve o erro do provider: com a janela da config cortando
+/// a abertura do stream e depois a refeita em lote, o que chega ao
+/// [`executar`] é "all providers failed", sem a causa. Este invólucro vê cada
+/// erro que o provider devolve — na abertura e no meio do stream — e guarda
+/// se a ÚLTIMA falha foi a janela de `timeouts.llm`
+/// ([`janela_de_timeout_estourou`]). Só isso: todo o resto é repassado como
+/// veio, e o `provider_id` é o do provider de dentro.
+struct ProviderObservado {
+    interno: Arc<dyn LlmProvider>,
+    /// `Some(causa)` quando a última falha foi a janela; `None` quando foi
+    /// outra coisa (ou ainda não houve falha).
+    janela: Arc<Mutex<Option<String>>>,
+}
+
+impl ProviderObservado {
+    fn observar(janela: &Mutex<Option<String>>, e: &garraia_common::Error) {
+        let causa = janela_de_timeout_estourou(e).then(|| e.to_string());
+        if let Ok(mut ultima) = janela.lock() {
+            *ultima = causa;
+        }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for ProviderObservado {
+    fn provider_id(&self) -> &str {
+        self.interno.provider_id()
+    }
+
+    async fn complete(&self, request: &LlmRequest) -> garraia_common::Result<LlmResponse> {
+        let resultado = self.interno.complete(request).await;
+        if let Err(e) = &resultado {
+            Self::observar(&self.janela, e);
+        }
+        resultado
+    }
+
+    async fn stream_complete(
+        &self,
+        request: &LlmRequest,
+    ) -> garraia_common::Result<
+        Pin<Box<dyn Stream<Item = garraia_common::Result<StreamEvent>> + Send>>,
+    > {
+        match self.interno.stream_complete(request).await {
+            Ok(stream) => {
+                let janela = Arc::clone(&self.janela);
+                Ok(Box::pin(stream.inspect(move |evento| {
+                    if let Err(e) = evento {
+                        Self::observar(&janela, e);
+                    }
+                })))
+            }
+            Err(e) => {
+                Self::observar(&self.janela, &e);
+                Err(e)
+            }
+        }
+    }
+
+    fn configured_model(&self) -> Option<&str> {
+        self.interno.configured_model()
+    }
+
+    async fn available_models(&self) -> garraia_common::Result<Vec<String>> {
+        self.interno.available_models().await
+    }
+
+    async fn validar_modelo(&self, model: &str) -> garraia_common::Result<ValidacaoDeModelo> {
+        self.interno.validar_modelo(model).await
+    }
+
+    async fn health_check(&self) -> garraia_common::Result<bool> {
+        self.interno.health_check().await
+    }
+}
+
 /// GAR-583 — chama o LLM com um provider já resolvido, sob o timeout de
 /// `opts.timeout_secs`. `inicio` é o instante em que a resolução começou, para
 /// a latência cobrir a escolha do provider como antes.
@@ -276,11 +370,17 @@ pub async fn ask_oneshot(config: &AppConfig, opts: AskOptions) -> AskOutcome {
 ///   - Erros do provider passam por [`sanitize_provider_error`].
 ///   - O canal de streaming é drenado em tarefa de fundo, para o produtor
 ///     nunca bloquear num consumidor lento.
+///   - #1790: quando a janela de `timeouts.llm` corta a chamada antes de
+///     `opts.timeout_secs`, o desfecho é timeout (124), não `provider_error`.
 pub async fn executar(provedor: Provedor, inicio: Instant, opts: AskOptions) -> AskOutcome {
     let (provider_name, model_name, provider) = provedor;
 
+    let janela = Arc::new(Mutex::new(None));
     let mut runtime = AgentRuntime::new();
-    runtime.register_provider(provider);
+    runtime.register_provider(Arc::new(ProviderObservado {
+        interno: provider,
+        janela: Arc::clone(&janela),
+    }));
 
     let system_prompt = opts.system_prompt_override.unwrap_or_else(|| {
         "Voce e o GarraIA. Responda de forma concisa, direta e no idioma do usuario.".to_string()
@@ -314,9 +414,19 @@ pub async fn executar(provedor: Provedor, inicio: Instant, opts: AskOptions) -> 
             model: model_name,
             latency_ms,
         },
-        Ok(Err(e)) => AskOutcome::Failure(AskError::ProviderError(sanitize_provider_error(
-            &format!("{e:#}"),
-        ))),
+        Ok(Err(e)) => {
+            // #1790: a última falha do provider foi a janela da config? Então
+            // é timeout — o "all providers failed" do runtime esconde isso.
+            let janela_cortou = janela.lock().ok().and_then(|ultima| ultima.clone());
+            match janela_cortou {
+                Some(causa) => {
+                    AskOutcome::Failure(AskError::ProviderTimeout(sanitize_provider_error(&causa)))
+                }
+                None => AskOutcome::Failure(AskError::ProviderError(sanitize_provider_error(
+                    &format!("{e:#}"),
+                ))),
+            }
+        }
         Err(_elapsed) => AskOutcome::Failure(AskError::Timeout(opts.timeout_secs)),
     }
 }
@@ -337,6 +447,7 @@ mod tests {
             (AskError::NoProvider("x".into()), 69),
             (AskError::ProviderError("x".into()), 69),
             (AskError::Timeout(60), 124),
+            (AskError::ProviderTimeout("x".into()), 124),
             (AskError::IoError("x".into()), 74),
         ];
         for (err, expected) in cases {
@@ -353,6 +464,7 @@ mod tests {
             "provider_error"
         );
         assert_eq!(AskError::Timeout(30).kind_str(), "timeout");
+        assert_eq!(AskError::ProviderTimeout("".into()).kind_str(), "timeout");
         assert_eq!(AskError::IoError("".into()).kind_str(), "io");
     }
 
@@ -482,6 +594,7 @@ mod tests {
             (make_failure(AskError::NoProvider("x".into())), 69),
             (make_failure(AskError::ProviderError("x".into())), 69),
             (make_failure(AskError::Timeout(60)), 124),
+            (make_failure(AskError::ProviderTimeout("x".into())), 124),
             (make_failure(AskError::IoError("x".into())), 74),
         ];
         for (outcome, expected) in cases {
@@ -584,5 +697,205 @@ mod provider_routing_tests {
                 "{name}: credenciais recebidas {creds:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod janela_da_config_tests {
+    //! #1790 item 7: a janela de timeout da config (`timeouts.llm.default_secs`
+    //! ou `llm.<nome>.timeout_secs`) cortando a chamada ANTES do
+    //! `timeout_secs` do pedido. Rede so de loopback: um servidor TCP cru em
+    //! 127.0.0.1 no lugar do provider, para controlar exatamente quando (e se)
+    //! ele responde.
+
+    use super::*;
+    use garraia_agents::OpenAiProvider;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// O cliente que a config entrega aos providers, com a janela `segs`.
+    fn cliente_da_config(segs: u64) -> reqwest::Client {
+        garraia_agents::cliente_llm::cliente_compartilhado(segs).expect("o cliente monta")
+    }
+
+    /// Servidor que aceita, le o pedido e nunca responde. Aceita varias
+    /// conexoes: o runtime tenta o streaming e depois refaz em lote.
+    async fn servidor_mudo() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    tokio::time::sleep(Duration::from_secs(120)).await;
+                    drop(sock);
+                });
+            }
+        });
+        addr
+    }
+
+    /// Servidor que manda o cabecalho e um pedaco do stream SSE e engasga: a
+    /// janela dispara no meio do corpo, com texto ja entregue.
+    async fn servidor_que_engasga() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                              connection: close\r\n\r\n\
+                              data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"oi\"}}]}\n\n",
+                        )
+                        .await;
+                    let _ = sock.flush().await;
+                    tokio::time::sleep(Duration::from_secs(120)).await;
+                    drop(sock);
+                });
+            }
+        });
+        addr
+    }
+
+    /// Servidor que responde 400 na hora: erro de provider que NAO e timeout.
+    async fn servidor_400() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    let corpo = r#"{"error":{"message":"pedido invalido"}}"#;
+                    let resposta = format!(
+                        "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n{corpo}",
+                        corpo.len()
+                    );
+                    let _ = sock.write_all(resposta.as_bytes()).await;
+                });
+            }
+        });
+        addr
+    }
+
+    fn provedor(addr: std::net::SocketAddr, cliente: reqwest::Client) -> Provedor {
+        let provider =
+            OpenAiProvider::new("k", Some("m".to_string()), Some(format!("http://{addr}")))
+                .with_client(cliente);
+        (
+            "openai".to_string(),
+            "m".to_string(),
+            Arc::new(provider) as Arc<dyn LlmProvider>,
+        )
+    }
+
+    fn opcoes(timeout_secs: u64) -> AskOptions {
+        AskOptions {
+            message: "oi".to_string(),
+            provider_override: Some("openai".to_string()),
+            model_override: None,
+            url_override: None,
+            timeout_secs,
+            system_prompt_override: None,
+            assume_yes: false,
+        }
+    }
+
+    fn erro(outcome: AskOutcome) -> AskError {
+        match outcome {
+            AskOutcome::Failure(e) => e,
+            AskOutcome::Success { answer, .. } => panic!("esperava falha; veio sucesso: {answer}"),
+        }
+    }
+
+    /// A janela da config (1s) dispara antes do `timeout_secs` (30s) com o
+    /// provider calado: e timeout para quem chamou — `kind` `timeout`, saida
+    /// 124 — e a mensagem diz qual chave da config aumentar. Antes saia como
+    /// `provider_error` (69), como se o provider estivesse quebrado.
+    #[tokio::test]
+    async fn janela_da_config_antes_da_flag_sai_como_timeout() {
+        let addr = servidor_mudo().await;
+        let inicio = Instant::now();
+        let e = erro(executar(provedor(addr, cliente_da_config(1)), inicio, opcoes(30)).await);
+
+        assert_eq!(e.kind_str(), "timeout", "veio: {e:?}");
+        assert_eq!(e.exit_code(), 124, "veio: {e:?}");
+        let msg = e.message();
+        assert!(
+            msg.contains("timeouts.llm.default_secs") && msg.contains("timeout_secs"),
+            "a mensagem nomeia a janela da config; veio: {msg}"
+        );
+        assert!(
+            msg.contains(garraia_agents::providers::MARCA_JANELA_DE_TIMEOUT),
+            "a causa vem do provider, nao so o prefixo; veio: {msg}"
+        );
+        assert!(
+            inicio.elapsed() < Duration::from_secs(25),
+            "quem cortou foi a janela da config, nao a flag"
+        );
+    }
+
+    /// Mesma janela, disparando no MEIO do corpo, com texto ja entregue — o
+    /// caso comum de uma resposta longa em streaming. Tambem e timeout.
+    #[tokio::test]
+    async fn janela_da_config_no_meio_do_stream_sai_como_timeout() {
+        let addr = servidor_que_engasga().await;
+        let e = erro(
+            executar(
+                provedor(addr, cliente_da_config(1)),
+                Instant::now(),
+                opcoes(30),
+            )
+            .await,
+        );
+
+        assert_eq!(e.kind_str(), "timeout", "veio: {e:?}");
+        assert_eq!(e.exit_code(), 124, "veio: {e:?}");
+        assert!(
+            e.message()
+                .contains(garraia_agents::providers::MARCA_JANELA_DE_TIMEOUT),
+            "veio: {e:?}"
+        );
+    }
+
+    /// A flag menor que a janela continua sendo quem corta: `Timeout(flag)`,
+    /// com a mensagem de sempre.
+    #[tokio::test]
+    async fn flag_menor_que_a_janela_continua_cortando_com_o_proprio_valor() {
+        let addr = servidor_mudo().await;
+        let e = erro(
+            executar(
+                provedor(addr, cliente_da_config(30)),
+                Instant::now(),
+                opcoes(1),
+            )
+            .await,
+        );
+
+        assert_eq!(e, AskError::Timeout(1));
+        assert_eq!(e.message(), "LLM call exceeded 1s timeout");
+    }
+
+    /// Erro de provider que nao e timeout (400) continua `provider_error`: o
+    /// mapeamento nao engole as outras falhas.
+    #[tokio::test]
+    async fn erro_que_nao_e_timeout_continua_provider_error() {
+        let addr = servidor_400().await;
+        let e = erro(
+            executar(
+                provedor(addr, cliente_da_config(30)),
+                Instant::now(),
+                opcoes(30),
+            )
+            .await,
+        );
+
+        assert_eq!(e.kind_str(), "provider_error", "veio: {e:?}");
+        assert_eq!(e.exit_code(), 69);
     }
 }

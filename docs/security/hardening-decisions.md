@@ -153,3 +153,92 @@ excecao.
 ### Avaliacao original (2026-04, #1078)
 
 Nao e decisao tecnica: e quanto risco o produto aceita. Fica com o dono.
+
+## 7. Gate de comandos: familia .NET/PowerShell e o alias `import os as o` (#1791)
+
+O #1786 ancorou o `environ` (`/environ`, `os.environ`, `import environ`) e
+deixou anotado no fonte um residuo sem ancora barata: o alias
+`import os as o; o.environ`. A revisao de seguranca daquele PR tambem mapeou
+os vizinhos .NET/PowerShell que o gate nao cobria. Os dois itens estao
+decididos aqui.
+
+### Item 12 — o alias fica como residuo ACEITO, sem ancora textual
+
+**Decisao:** nenhuma ancora para `import os as X` + `X.environ`.
+
+**Por que:**
+
+1. O texto so e perigoso quando **executa**, e so executa passando por um
+   interpretador. O gate trata interpretador pelo **programa**, nao pelo
+   texto: `python3 -c '...'` (qualquer codigo), script (`python3 x.py`,
+   `-m modulo`), redirecionamento (`python3 < x.py`) e, desde esta issue,
+   pipe (`echo '...' | python3`) exigem confirmacao. Em todas essas portas o
+   alias ja e pego — junto com qualquer outra grafia.
+2. Fora dessas portas o texto e inerte: `echo`, mensagem de commit, `grep`.
+   Uma ancora para o alias so dispararia ai, ou seja, so acrescentaria falso
+   positivo — e em modo fail-closed falso positivo e BLOCK — sem pegar
+   nenhuma execucao a mais.
+3. Ancora textual nao fecha a classe: `__import__('os').environ`,
+   `getattr(os, 'environ')`, `vars(os)['environ']`, `os.getenv('X')`. A
+   regra de programa nao depende da grafia.
+
+**O que a analise achou e esta issue fechou.** O argumento 1 so vale se
+TODA porta de execucao passar por regra de programa. Tres nao passavam, e o
+codigo chegava ao interpretador sem confirmacao nenhuma:
+
+| Porta | Antes | Agora |
+| --- | --- | --- |
+| codigo pelo stdin: `echo '...' \| python3`, `Get-Content x.py \| python` | livre | confirmacao (`pipe into interpreter`, mesmo canal do `\| sh`) |
+| versao no nome: `python3.12 -c`, `/usr/bin/python3.11 x.py`, `perl5.36.0 -e`; e `py -3 -c` (lancador do Windows), `pypy3`, `nodejs` | livre | o tratamento do nome sem versao (`code_interpreter`) |
+| atribuicao na frente: `X=1 python3 -c '...'` | livre | o tratamento sem a atribuicao |
+
+**Residuo que continua, conhecido:** as ancoras textuais que ja existiam
+(`os.environ`, `import environ`, `/environ`) seguem casando tambem em texto
+inerte (`git commit -m "remove os.environ"` pede confirmacao) — residuo desde
+o #1075, e exatamente o custo que este item se recusa a ampliar.
+Interpretadores de shell do Windows com codigo inline (`powershell -c`,
+`cmd /c`) seguem sem desembrulho, como anotado no #1798.
+
+### Item 10 — o nivel de cada forma nova
+
+Cada forma nova entra no **mesmo nivel** da forma equivalente que o gate ja
+tratava. Nenhuma vira bloqueio duro: o DENY_LIST e para o destrutivo
+(`rm -rf /`, `format c:`), e leitura de ambiente e download sao tier de
+confirmacao desde o #1075.
+
+| Forma | Equivalente ja tratado | Nivel | Como casa |
+| --- | --- | --- | --- |
+| `[Environment]::GetEnvironmentVariable(s)` | `os.environ` | confirmacao | `::getenvironmentvariable` — o `::` e nao o nome solto: a busca pela API em codigo C# usa `.` |
+| `reg query HKCU\Environment`, `Get-ItemProperty HKCU:\Environment` | `/etc/environment` (`/environ`) | confirmacao | `\environ`, gemeo Windows do `/environ` |
+| `Get-ChildItem Env:`, `gci env:*KEY*` | `printenv` | confirmacao | programa de listagem + drive `env:` inteiro ou com curinga |
+| `$env:PATH`, `Get-Item env:PATH` | `echo $HOME` | **livre** | — o ambiente do filho ja passou pelo scrub R3 |
+| `WebClient.DownloadString/File/Data`, `.Upload*` | `iwr`, `curl` | confirmacao | a chamada, nao o tipo — criar o objeto nao move byte, e `rg WebClient` nao pode virar BLOCK |
+| `Start-BitsTransfer`, `bitsadmin` | `curl` | confirmacao | programa (cmdlet e CLI juntos, como no #1781) |
+| `Start-Process X ...` | `nohup X ...` | **o de X** | wrapper; os argumentos do `-ArgumentList` voltam ao gate sem as aspas. Sem programa reconhecivel depois dele, confirmacao |
+| `[Diagnostics.Process]::Start(...)` | — | confirmacao | falha fechado: os argumentos vem dentro de uma chamada .NET que o gate nao parseia |
+| `$r = iwr ...`, `FOO=1 curl ...` | `iwr`, `curl` | o do programa | a atribuicao na frente e pulada |
+| `kubectl exec pod -- env` (item 11) | `docker exec` | confirmacao | subcomando, desde o #1798; a paridade em todas as formas (wrapper, `.exe`, `-c`, atribuicao, `Start-Process`) ficou fixada em teste |
+
+Por que `GetEnvironmentVariable` no singular e gated e `$env:X` nao: com o
+segundo argumento (`'User'`/`'Machine'`) ele le o ambiente **persistente**,
+gravado no registro (onde `setx OPENAI_API_KEY ...` deixa a chave), que o
+scrub R3 do processo filho nao alcanca. O alvo pode vir de variavel, enum ou
+inteiro, entao nao da para ancorar so a forma com alvo; o metodo inteiro vai
+para confirmacao, como o `os.environ` inteiro.
+
+### Fora do escopo, encontrado e nao tocado
+
+Formas que escondem o programa de toda regra por programa, e nao so das
+novas — merecem issue propria:
+
+- **Bloco/palavra-chave na frente do programa:** `{ curl x; }`,
+  `if ...; then curl x; fi`, `for ...; do curl x; done` (bash) e os
+  scriptblocks do PowerShell (`& { iwr x }`, `1 | % { iwr x }`,
+  `Start-Job { iwr x }`). O programa do segmento vira `{`/`then`/`do`/`%`.
+- **Metacaractere entre aspas na atribuicao:** `X="a;b" curl x` — o split
+  legado parte dentro das aspas (o mesmo limite documentado no #1078).
+- **Vizinhos de download fora da familia pedida:** `certutil -urlcache`,
+  `[Net.Http.HttpClient]`/`[Net.WebRequest]`.
+- **Indirecao por variavel:** `$m='GetEnvironmentVariable'; [Environment]::$m('X')`
+  — nenhuma ancora textual pega; mesma classe do alias do item 12.
+- `kubectl debug`/`kubectl attach` (ja anotados no #1798) e `docker cp`.
