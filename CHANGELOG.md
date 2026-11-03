@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.2-rc3] - 2026-11-03
+
+Terceiro candidato da v0.5.2, publicado como pre-lancamento: e a rc2 mais as
+correcoes do teste manual dela no Linux, em que o Desktop pareou o WhatsApp e
+o Garra nao respondeu. Nao e servido por `/releases/latest`, nao e oferecido
+pelo `garraia update` nem pelo atualizador do app desktop, e a imagem Docker
+sai so com a tag `0.5.2-rc3` (sem `latest` e sem `0.5`). O binario se
+identifica como `garra 0.5.2` (o `-rc3` vive so na tag).
+
+Instalacao com versao fixa: no Windows,
+`$env:GARRAIA_VERSION='v0.5.2-rc3'; irm https://github.com/michelbr84/GarraRUST/releases/download/v0.5.2-rc3/install.ps1 | iex`;
+no Linux/macOS,
+`curl -fsSL https://github.com/michelbr84/GarraRUST/releases/download/v0.5.2-rc3/install.sh | sh -s -- --version v0.5.2-rc3`.
+
+O que muda desde a rc2 (tudo achado no teste da rc2):
+
+- **WhatsApp no modo "meu proprio numero" conversa pela conversa "Voce"**
+  (#1813, #1819): a tela Pronto pedia um "oi" para o proprio numero, e essa
+  mensagem (`from_me`) era descartada em silencio. Agora a conversa "Voce"
+  vira turno pelo mesmo portao de admissao, sem o Garra responder a si mesmo
+  (anti-eco em duas camadas e marca invisivel nas respostas) e sem nunca
+  responder no lugar do dono a terceiros.
+- **Mensagem enviada durante o restart do gateway e respondida** (#1814): o
+  que chegou "offline" ha ate 10 minutos vira turno; mais velho e descartado
+  com motivo.
+- **Nenhum descarte do WhatsApp e mudo** (#1815): falha de decriptacao,
+  mensagem offline vencida e conteudo sem texto aparecem no log e nas
+  rejeicoes do Web Console e do `/api/diagnostics`.
+- **Assistente do Desktop configura quem responde, sem terminal** (#1700,
+  #1821): passo "Quem responde" com o Ollama local (detectado, com os modelos
+  instalados) ou o OpenRouter (chave guardada pelo stdin do `config
+  set-routing`, nunca em argv nem de volta na tela), testado com uma chamada
+  real. A tela Pronto so diz "pronto para conversar" quando o modelo responde
+  e o gateway que atende registrou o provedor; senao, diz por que nao.
+  `/api/health` avisa quando nao ha provedor.
+- **Outro gateway na porta 3888** (#1816, #1821): o Desktop detecta, avisa a
+  versao que esta atendendo e nao sobe um segundo; `garraia start` recusa
+  porta ocupada e diretorio de config ja em uso antes do boot (exit 69).
+- **AppImage da CLI no duplo clique** (#1817, #1820): abre um terminal (ou
+  avisa que e a versao de linha de comando) em vez de "nao fazer nada".
+- **O release executa os AppImages antes de publicar** (#1818, #1820):
+  desktop sob Xvfb (sidecar, ponte com o Node privado, janela do assistente) e
+  CLI; com o desktop presente, uma falha bloqueia o release.
+
+**Teste manual antes da estavel** (gate de dogfood, `docs/releasing.md` §1.5),
+continua PENDENTE e nao e aprovado por suposicao:
+- Linux, AppImage do Desktop numa maquina SEM outro Garra rodando: "Quem
+  responde" com o OpenRouter (chave real) ou o Ollama; parear o WhatsApp no
+  modo proprio; mandar "oi" pela conversa "Voce" e receber resposta; pedir a
+  um terceiro um "oi" e receber resposta; fechar e abrir o app, mandar um "oi"
+  logo em seguida e receber resposta, sem QR novo (celular fisico).
+- O mesmo no modo dedicado, do celular pessoal para o chip do Garra.
+- Duplo clique no AppImage da CLI num gerenciador de arquivos com FUSE.
+- Os itens da rc2: instalacao no Windows com `garraia doctor` (D2), app
+  desktop (D5/D6), WhatsApp com reinicio sem QR (D1/D3), isolamento por sessao
+  (D7/D10) e a validacao fisica do Voice Chat (microfone, alto-falante,
+  interrupcao, troca de modelo, OpenRouter STT/TTS). Passando, a `v0.5.2` sai
+  como estavel; uma falha reproduzivel vira a `v0.5.2-rc4`.
+
 ## [0.5.2-rc2] - 2026-11-03
 
 Segundo candidato da v0.5.2, publicado como pre-lancamento: e a rc1 mais o

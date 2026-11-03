@@ -494,14 +494,14 @@
       "id": "desktop",
       "name": "App desktop",
       "category": "channels",
-      "summary": "App para Windows, Linux e macOS Apple Silicon com bandeja, papagaio (Alt+G) e Chat Bar (Ctrl+Space); no primeiro uso, um assistente pareia o WhatsApp por QR na tela, define a persona e o modo de acesso, sem terminal.",
+      "summary": "App para Windows, Linux e macOS Apple Silicon com bandeja, papagaio (Alt+G) e Chat Bar (Ctrl+Space); no primeiro uso, um assistente escolhe quem responde (Ollama local ou OpenRouter, testado com uma chamada real), pareia o WhatsApp por QR na tela, define a persona e o modo de acesso, sem terminal.",
       "prerequisites": [
         "instalar o app desktop (.msi ou -setup.exe no Windows, .deb ou AppImage no Linux, .dmg no macOS Apple Silicon); a CLI sozinha não traz a interface"
       ],
       "limitations": [
         "instaladores sem assinatura de code signing: o SmartScreen do Windows e o Gatekeeper do macOS podem avisar",
         "o Node privado embutido serve só à ponte do WhatsApp e é chamado por caminho explícito",
-        "o modo dedicado autoriza o número pessoal informado no assistente; o modo próprio responde qualquer pessoa e exige confirmação explícita"
+        "o modo dedicado autoriza o número pessoal informado no assistente; o modo próprio responde qualquer pessoa e exige confirmação explícita, e o dono fala com o Garra pela conversa \"Você\" do WhatsApp"
       ],
       "availability": "configuravel",
       "operator_only": true
