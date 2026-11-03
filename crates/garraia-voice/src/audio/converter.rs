@@ -10,6 +10,7 @@ impl AudioConverter {
         let output = input.with_extension("wav");
 
         let status = tokio::process::Command::new("ffmpeg")
+            .kill_on_drop(true)
             .args([
                 "-y",
                 "-i",
@@ -52,6 +53,7 @@ impl AudioConverter {
         let output = input.with_extension("ogg");
 
         let status = tokio::process::Command::new("ffmpeg")
+            .kill_on_drop(true)
             .args([
                 "-y",
                 "-i",

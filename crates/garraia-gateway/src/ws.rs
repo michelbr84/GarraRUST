@@ -107,6 +107,9 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
     let mut last_pong = Instant::now();
     // Per-WebSocket sliding window rate limiter
     let mut msg_timestamps: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
+    // #1754: o ultimo turno de voz concluido e a nota de interrupcao para o
+    // proximo. Vive na conexao, como o nonce de aprovacao.
+    let mut voz = VozDaConexao::default();
 
     // Wait for the first message to decide: new session or resume.
     let session_id = match tokio::time::timeout(Duration::from_secs(10), receiver.next()).await {
@@ -291,6 +294,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                     &mut receiver,
                     &mut last_pong,
                     &mut msg_timestamps,
+                    &mut voz,
                 )
                 .await
                 .is_break()
@@ -375,10 +379,16 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                         // guarda ele cairia em `parse_user_message`, que na
                         // falta de `content` usa o JSON inteiro como texto:
                         // o modelo receberia `{"type":"stop"}` como pergunta.
-                        // Fora de turno, `stop` e no-op idempotente.
-                        if parse_stop(&text).is_some() {
+                        // Fora de turno, `stop` e no-op idempotente. Com
+                        // `turn_id` e `heard_chars` de um turno de voz ja
+                        // concluido (barge-in durante a reproducao), vira a
+                        // nota de contexto do proximo turno de voz (#1754).
+                        if let Some(stop) = parse_stop(&text) {
+                            voz.registrar_interrupcao_tardia(&stop);
                             let _ = sender
-                                .send(Message::Text(stopped_frame(&session_id).into()))
+                                .send(Message::Text(
+                                    stopped_frame(&session_id, stop.turn_id_ecoado()).into(),
+                                ))
                                 .await;
                             continue;
                         }
@@ -392,6 +402,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                             &mut receiver,
                             &mut last_pong,
                             &mut msg_timestamps,
+                            &mut voz,
                         )
                         .await
                         .is_break()
@@ -443,6 +454,7 @@ async fn drain_turns(
     receiver: &mut futures::stream::SplitStream<WebSocket>,
     last_pong: &mut Instant,
     msg_timestamps: &mut std::collections::VecDeque<Instant>,
+    voz: &mut VozDaConexao,
 ) -> std::ops::ControlFlow<()> {
     let mut pending: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     pending.push_back(first);
@@ -458,6 +470,7 @@ async fn drain_turns(
             last_pong,
             &mut pending,
             msg_timestamps,
+            voz,
         )
         .await
         {
@@ -516,8 +529,22 @@ async fn process_text_message(
     last_pong: &mut Instant,
     deferred: &mut std::collections::VecDeque<String>,
     msg_timestamps: &mut std::collections::VecDeque<Instant>,
+    voz: &mut VozDaConexao,
 ) -> TurnOutcome {
     let msg = parse_user_message(text);
+
+    // #1754: `turn_id` e opcional, mas quando vem tem de ser um identificador
+    // curto e seguro — ele volta em todo frame do turno.
+    if msg.turn_id_invalido {
+        let err = serde_json::json!({
+            "type": "error",
+            "session_id": session_id,
+            "code": "invalid_turn_id",
+            "message": "turn_id must have 1-64 characters [A-Za-z0-9_-]",
+        });
+        let _ = sender.send(Message::Text(err.to_string().into())).await;
+        return TurnOutcome::Quiet;
+    }
 
     // Input validation
     let user_text = garraia_security::InputValidator::sanitize(&msg.content);
@@ -537,7 +564,25 @@ async fn process_text_message(
     state
         .hydrate_session_history(session_id, Some("web"), None)
         .await;
-    let history: Vec<ChatMessage> = state.session_history(session_id);
+    let mut history: Vec<ChatMessage> = state.session_history(session_id);
+    if msg.voice {
+        // This is an additional presentation hint, never a replacement for the
+        // persona, tool policy, approval scope or configured system prompt.
+        // Providers that only accept a leading system prompt (Anthropic) drop
+        // it; the conversation still works, without the spoken-style hint.
+        history.push(ChatMessage {
+            role: garraia_agents::ChatRole::System,
+            content: garraia_agents::MessagePart::Text(VOICE_STYLE_HINT.to_string()),
+        });
+        // A nota e montada pelo servidor a partir do texto que ele mesmo
+        // gerou; nada vindo do navegador vira instrucao de sistema.
+        if let Some(nota) = voz.nota_pendente.take() {
+            history.push(ChatMessage {
+                role: garraia_agents::ChatRole::System,
+                content: garraia_agents::MessagePart::Text(nota),
+            });
+        }
+    }
     let continuity_key = state.continuity_key();
     // Lido **antes** do `spawn`: dentro da task seguraria o lock do store
     // pelo tempo do turno inteiro (mesma licao do `parrot_ws.rs`).
@@ -556,22 +601,28 @@ async fn process_text_message(
     let text_for_agent = user_text.clone();
     let provider_id = msg.provider.clone();
     let model_override = msg.model.clone();
+    let voice = msg.voice;
     let task = tokio::spawn(async move {
-        agents
-            .process_message_streaming_with_events(
-                &sid,
-                &text_for_agent,
-                &history,
-                events_tx,
-                continuity_key.as_deref(),
-                None,
-                provider_id.as_deref(),
-                model_override.as_deref(),
-                None,
-                None,
-                &exec,
-            )
-            .await
+        let work = agents.process_message_streaming_with_events(
+            &sid,
+            &text_for_agent,
+            &history,
+            events_tx,
+            continuity_key.as_deref(),
+            None,
+            provider_id.as_deref(),
+            model_override.as_deref(),
+            None,
+            voice.then_some(1024),
+            &exec,
+        );
+        if voice {
+            tokio::time::timeout(Duration::from_secs(120), work)
+                .await
+                .map_err(|_| garraia_common::Error::Agent("Voice turn timed out".into()))?
+        } else {
+            work.await
+        }
     });
 
     let turn = run_streaming_turn(
@@ -581,37 +632,152 @@ async fn process_text_message(
         events_rx,
         task,
         msg.stream,
+        msg.turn_id.as_deref(),
         last_pong,
         deferred,
         msg_timestamps,
+        voz,
     )
     .await;
 
     match turn {
         TurnEnd::ClientGone => TurnOutcome::ClientGone,
-        // O parcial nao e persistido: `persist_turn` so roda no caminho de
-        // sucesso, e `remember_turn`/`record_turn_stats` vivem depois do loop
-        // dentro do runtime, entao o abort tambem nao grava memoria.
-        TurnEnd::Stopped => TurnOutcome::Quiet,
+        TurnEnd::Stopped {
+            partial,
+            heard_chars,
+        } => {
+            if msg.voice {
+                // Keep the user's interrupted request for corrections such as
+                // "explain that more simply". Never claim all generated audio
+                // was heard. Legacy text cancellation keeps its old semantics.
+                let interrupted = interrupted_voice_text(&partial, heard_chars);
+                state
+                    .persist_turn(session_id, Some("web"), None, &user_text, &interrupted)
+                    .await;
+            }
+            TurnOutcome::Quiet
+        }
         TurnEnd::Completed(response_text) => {
             state
                 .persist_turn(session_id, Some("web"), None, &user_text, &response_text)
                 .await;
 
-            TurnOutcome::Reply(serde_json::json!({
+            let mut reply = serde_json::json!({
                 "type": "message",
                 "session_id": session_id,
                 "content": response_text,
-            }))
+            });
+            com_turn_id(&mut reply, msg.turn_id.as_deref());
+            if msg.voice {
+                // #1754: quem respondeu de fato. Com `fallback_providers`
+                // configurado pelo operador, o primario pode ter caido e outro
+                // provider respondido — a UI de voz mostra, em vez de trocar
+                // de provider em silencio.
+                if let Some(stats) = state.agents.last_turn_stats(session_id) {
+                    reply["provider"] = serde_json::Value::String(stats.provider.clone());
+                    if let Some(model) = crate::resposta_turno::modelo_do_turno(&stats) {
+                        reply["model"] = serde_json::Value::String(model.to_string());
+                    }
+                    reply["fallback"] = serde_json::Value::Bool(stats.fallback);
+                }
+                if let Some(turn_id) = &msg.turn_id {
+                    voz.ultimo_turno = Some((turn_id.clone(), response_text));
+                }
+            }
+            TurnOutcome::Reply(reply)
         }
         TurnEnd::Failed(message) => {
             warn!("agent error: session={}, error={}", session_id, message);
-            TurnOutcome::Reply(serde_json::json!({
+            let mut reply = serde_json::json!({
                 "type": "error",
                 "session_id": session_id,
                 "code": "agent_error",
                 "message": message,
-            }))
+            });
+            com_turn_id(&mut reply, msg.turn_id.as_deref());
+            TurnOutcome::Reply(reply)
+        }
+    }
+}
+
+/// Dica de apresentacao acrescentada ao historico de um turno de voz.
+const VOICE_STYLE_HINT: &str = "This is a live voice conversation. Answer naturally in the user's language, with short spoken sentences. Prefer a concise first answer and offer detail when useful. Preserve accuracy and necessary qualifications. Avoid reading Markdown syntax or code aloud. Treat an interrupted answer as incomplete; generated text may not have been heard.";
+
+/// Teto do trecho falado citado numa nota de interrupcao.
+const MAX_NOTE_SPOKEN_CHARS: usize = 2000;
+
+/// Mark generated text as interrupted without pretending it was spoken fully.
+///
+/// `heard_chars` e o quanto do texto o cliente efetivamente tocou (#1754):
+/// com ele, o historico separa o trecho falado do gerado e nao ouvido. Sem
+/// ele, o texto inteiro fica marcado como "pode nao ter sido ouvido".
+fn interrupted_voice_text(partial: &str, heard_chars: Option<usize>) -> String {
+    if partial.is_empty() {
+        return "[Voice response interrupted before a reply was delivered.]".to_string();
+    }
+    let Some(heard) = heard_chars else {
+        return format!(
+            "[Voice response interrupted. The following text was generated but may not have been heard:]\n{partial}"
+        );
+    };
+    let spoken: String = partial.chars().take(heard).collect();
+    let unheard: String = partial.chars().skip(heard).collect();
+    match (spoken.is_empty(), unheard.is_empty()) {
+        (true, _) => format!(
+            "[Voice response interrupted before any of it was spoken. Generated but not heard:]\n{unheard}"
+        ),
+        (false, true) => {
+            format!(
+                "[Voice response interrupted by the user after this text was spoken:]\n{spoken}"
+            )
+        }
+        (false, false) => format!(
+            "[Voice response interrupted by the user. Spoken aloud:]\n{spoken}\n[Generated but not heard:]\n{unheard}"
+        ),
+    }
+}
+
+/// Nota de contexto para quando o usuario interrompeu a **reproducao** de uma
+/// resposta que o servidor ja tinha concluido e persistido inteira (#1754).
+///
+/// `None` quando tudo foi falado. O texto citado vem da resposta guardada pelo
+/// servidor, nunca do navegador: o cliente so manda um numero.
+fn nota_de_interrupcao_tardia(resposta: &str, heard_chars: usize) -> Option<String> {
+    let total = resposta.chars().count();
+    if heard_chars >= total {
+        return None;
+    }
+    let mut spoken: String = resposta.chars().take(heard_chars).collect();
+    if heard_chars > MAX_NOTE_SPOKEN_CHARS {
+        let skip = heard_chars - MAX_NOTE_SPOKEN_CHARS;
+        spoken = format!("…{}", spoken.chars().skip(skip).collect::<String>());
+    }
+    Some(format!(
+        "[Voice note: the user interrupted your previous spoken answer. Only about the first {heard_chars} of {total} characters were spoken aloud; the rest was generated but not heard. Spoken part:]\n{spoken}"
+    ))
+}
+
+/// Memoria de voz de uma conexao `/ws` (#1754).
+#[derive(Debug, Default)]
+struct VozDaConexao {
+    /// `turn_id` e texto do ultimo turno de voz concluido nesta conexao.
+    ultimo_turno: Option<(String, String)>,
+    /// Nota de interrupcao para o proximo turno de voz, se houver.
+    nota_pendente: Option<String>,
+}
+
+impl VozDaConexao {
+    /// Um `stop` que chega depois de o turno terminar (barge-in durante a
+    /// reproducao). So vale para o ultimo turno de voz concluido, e uma vez.
+    fn registrar_interrupcao_tardia(&mut self, stop: &PedidoDeStop) {
+        let (AlvoDoStop::Turno(alvo), Some(heard)) = (&stop.alvo, stop.heard_chars) else {
+            return;
+        };
+        if self.ultimo_turno.as_ref().is_none_or(|(id, _)| id != alvo) {
+            return;
+        }
+        if let Some((_, resposta)) = self.ultimo_turno.take() {
+            self.nota_pendente = nota_de_interrupcao_tardia(&resposta, heard);
         }
     }
 }
@@ -621,7 +787,10 @@ async fn process_text_message(
 enum TurnEnd {
     Completed(String),
     Failed(String),
-    Stopped,
+    Stopped {
+        partial: String,
+        heard_chars: Option<usize>,
+    },
     ClientGone,
 }
 
@@ -642,9 +811,11 @@ async fn run_streaming_turn<S, R>(
     mut events_rx: tokio::sync::mpsc::Receiver<TurnEvent>,
     mut task: tokio::task::JoinHandle<garraia_common::Result<String>>,
     stream_frames: bool,
+    turn_id: Option<&str>,
     last_pong: &mut Instant,
     deferred: &mut std::collections::VecDeque<String>,
     msg_timestamps: &mut std::collections::VecDeque<Instant>,
+    voz: &mut VozDaConexao,
 ) -> TurnEnd
 where
     S: futures::Sink<Message> + Unpin,
@@ -653,16 +824,26 @@ where
     let mut rx_open = true;
     let mut finished: Option<Result<garraia_common::Result<String>, tokio::task::JoinError>> = None;
     let mut stopped = false;
+    let mut heard_chars = None;
+    let mut partial = String::new();
     let mut client_gone = false;
 
     while rx_open || finished.is_none() {
         tokio::select! {
             event = events_rx.recv(), if rx_open => match event {
                 Some(event) => {
-                    if stream_frames
+                    if !stopped && let TurnEvent::TextDelta(text) = &event {
+                        let remaining = 32 * 1024_usize - partial.len();
+                        let mut end = text.len().min(remaining);
+                        while !text.is_char_boundary(end) { end -= 1; }
+                        partial.push_str(&text[..end]);
+                    }
+                    if stream_frames && !stopped
                         && !client_gone
                         && sender
-                            .send(Message::Text(turn_event_frame(session_id, &event).into()))
+                            .send(Message::Text(
+                                turn_event_frame(session_id, turn_id, &event).into(),
+                            ))
                             .await
                             .is_err()
                     {
@@ -682,13 +863,9 @@ where
                 Some(Ok(Message::Text(raw))) => {
                     *last_pong = Instant::now();
                     match parse_stop(&raw) {
-                        Some(target)
-                            if target.is_none() || target.as_deref() == Some(session_id) =>
+                        Some(stop)
+                            if stop.session_id.as_deref().is_some_and(|s| s != session_id) =>
                         {
-                            stopped = true;
-                            task.abort();
-                        }
-                        Some(_) => {
                             let err = serde_json::json!({
                                 "type": "error",
                                 "session_id": session_id,
@@ -696,6 +873,22 @@ where
                                 "message": "stop refers to a different session",
                             });
                             let _ = sender.send(Message::Text(err.to_string().into())).await;
+                        }
+                        // #1754: um `stop` com `turn_id` de outro turno e de
+                        // um turno velho (o cliente interrompeu a reproducao
+                        // dele). Nao cancela o turno atual: so confirma.
+                        Some(stop) if !stop.cancela(turn_id) => {
+                            voz.registrar_interrupcao_tardia(&stop);
+                            let _ = sender
+                                .send(Message::Text(
+                                    stopped_frame(session_id, stop.turn_id_ecoado()).into(),
+                                ))
+                                .await;
+                        }
+                        Some(stop) => {
+                            heard_chars = stop.heard_chars;
+                            stopped = true;
+                            task.abort();
                         }
                         // Os mesmos dois guardas do loop principal, na mesma
                         // ordem. Sem eles este braco seria um desvio: a
@@ -767,13 +960,16 @@ where
             );
         }
         if sender
-            .send(Message::Text(stopped_frame(session_id).into()))
+            .send(Message::Text(stopped_frame(session_id, turn_id).into()))
             .await
             .is_err()
         {
             return TurnEnd::ClientGone;
         }
-        return TurnEnd::Stopped;
+        return TurnEnd::Stopped {
+            partial,
+            heard_chars,
+        };
     }
 
     // Os dois ultimos bracos sao, hoje, inalcancaveis, e estao aqui como rede:
@@ -787,7 +983,10 @@ where
         Some(Ok(Err(e))) => TurnEnd::Failed(e.to_string()),
         Some(Err(e)) => {
             if e.is_cancelled() {
-                return TurnEnd::Stopped;
+                return TurnEnd::Stopped {
+                    partial,
+                    heard_chars,
+                };
             }
             warn!("agent task failed: session={}, error={}", session_id, e);
             TurnEnd::Failed("internal agent task failure".to_string())
@@ -839,8 +1038,8 @@ fn too_large_frame() -> String {
 /// `ToolFinished.output` fica **de fora** de proposito: e a saida inteira da
 /// ferramenta, ja redigida mas grande (dezenas de KiB), e o frame existe para
 /// dizer que a ferramenta terminou, nao para transportar o resultado dela.
-fn turn_event_frame(session_id: &str, event: &TurnEvent) -> String {
-    let value = match event {
+fn turn_event_frame(session_id: &str, turn_id: Option<&str>, event: &TurnEvent) -> String {
+    let mut value = match event {
         TurnEvent::TextDelta(content) => serde_json::json!({
             "type": "delta",
             "session_id": session_id,
@@ -867,29 +1066,104 @@ fn turn_event_frame(session_id: &str, event: &TurnEvent) -> String {
             "duration_ms": duration.as_millis() as u64,
         }),
     };
+    com_turn_id(&mut value, turn_id);
     value.to_string()
 }
 
-fn stopped_frame(session_id: &str) -> String {
-    serde_json::json!({ "type": "stopped", "session_id": session_id }).to_string()
+fn stopped_frame(session_id: &str, turn_id: Option<&str>) -> String {
+    let mut value = serde_json::json!({ "type": "stopped", "session_id": session_id });
+    com_turn_id(&mut value, turn_id);
+    value.to_string()
 }
 
-/// Um pedido de cancelamento: `{"type": "stop"}`, com `session_id` opcional.
+/// Poe o `turn_id` no frame quando o turno tem um (#1754). Sem `turn_id` o
+/// frame fica byte-identico ao de antes.
+fn com_turn_id(frame: &mut serde_json::Value, turn_id: Option<&str>) {
+    if let (Some(turn_id), Some(obj)) = (turn_id, frame.as_object_mut()) {
+        obj.insert(
+            "turn_id".to_string(),
+            serde_json::Value::String(turn_id.to_string()),
+        );
+    }
+}
+
+/// `turn_id` aceito: 1 a 64 caracteres `[A-Za-z0-9_-]`. Curto e sem nada que
+/// precise de escape, porque volta em todo frame do turno.
+fn turn_id_valido(turn_id: &str) -> bool {
+    (1..=64).contains(&turn_id.len())
+        && turn_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Para qual turno um `stop` aponta.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AlvoDoStop {
+    /// Sem `turn_id`: o turno em andamento, seja ele qual for (contrato antigo).
+    Atual,
+    /// Um turno especifico.
+    Turno(String),
+    /// `turn_id` presente mas invalido: nao cancela nada.
+    Invalido,
+}
+
+/// Um pedido de cancelamento ja destrinchado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PedidoDeStop {
+    /// Sessao alvo; `None` e "a sessao em que eu estou".
+    session_id: Option<String>,
+    alvo: AlvoDoStop,
+    /// Quantos caracteres da resposta o cliente efetivamente tocou.
+    heard_chars: Option<usize>,
+}
+
+impl PedidoDeStop {
+    /// `true` quando este `stop` cancela o turno `ativo`.
+    fn cancela(&self, ativo: Option<&str>) -> bool {
+        match &self.alvo {
+            AlvoDoStop::Atual => true,
+            AlvoDoStop::Turno(alvo) => ativo == Some(alvo.as_str()),
+            AlvoDoStop::Invalido => false,
+        }
+    }
+
+    /// O `turn_id` que volta no `stopped`.
+    fn turn_id_ecoado(&self) -> Option<&str> {
+        match &self.alvo {
+            AlvoDoStop::Turno(turn_id) => Some(turn_id),
+            _ => None,
+        }
+    }
+}
+
+/// Um pedido de cancelamento: `{"type": "stop"}`, com `session_id`,
+/// `turn_id` e `heard_chars` opcionais (os dois ultimos desde o #1754).
 ///
-/// Devolve `None` quando a mensagem nao e um `stop`, e `Some(alvo)` quando e
-/// — com `alvo` sendo `None` para "a sessao em que eu estou".
-fn parse_stop(raw: &str) -> Option<Option<String>> {
+/// Devolve `None` quando a mensagem nao e um `stop`.
+fn parse_stop(raw: &str) -> Option<PedidoDeStop> {
     let value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
     if value.get("type")?.as_str()? != "stop" {
         return None;
     }
-    Some(
-        value
+    let alvo = match value.get("turn_id") {
+        None | Some(serde_json::Value::Null) => AlvoDoStop::Atual,
+        Some(v) => match v.as_str().filter(|t| turn_id_valido(t)) {
+            Some(t) => AlvoDoStop::Turno(t.to_string()),
+            None => AlvoDoStop::Invalido,
+        },
+    };
+    Some(PedidoDeStop {
+        session_id: value
             .get("session_id")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(str::to_string),
-    )
+        alvo,
+        heard_chars: value
+            .get("heard_chars")
+            .and_then(|v| v.as_u64())
+            .map(|n| usize::try_from(n.min(1_000_000)).unwrap_or(1_000_000)),
+    })
 }
 
 /// Try to parse a resume request: `{"type": "resume", "session_id": "..."}`.
@@ -947,6 +1221,13 @@ struct UserMessage {
     /// `false`: quem nao pede continua vendo so o `message` final, que e o
     /// contrato de antes.
     stream: bool,
+    /// Voice presentation and interrupted-context retention are opt-in.
+    voice: bool,
+    /// Identificador do turno escolhido pelo cliente (#1754); volta em todo
+    /// frame do turno para o cliente descartar o que for de turno velho.
+    turn_id: Option<String>,
+    /// `turn_id` veio, mas fora do formato aceito.
+    turn_id_invalido: bool,
 }
 
 fn parse_user_message(raw: &str) -> UserMessage {
@@ -970,12 +1251,22 @@ fn parse_user_message(raw: &str) -> UserMessage {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
         let stream = v.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+        let (turn_id, turn_id_invalido) = match v.get("turn_id") {
+            None | Some(serde_json::Value::Null) => (None, false),
+            Some(t) => match t.as_str().filter(|t| turn_id_valido(t)) {
+                Some(t) => (Some(t.to_string()), false),
+                None => (None, true),
+            },
+        };
         return UserMessage {
             content: text.to_string(),
             provider,
             model,
             tenant_id,
             stream,
+            voice: v.get("voice").and_then(|v| v.as_bool()).unwrap_or(false),
+            turn_id,
+            turn_id_invalido,
         };
     }
     UserMessage {
@@ -1124,9 +1415,12 @@ mod tests {
 
     #[test]
     fn delta_vira_frame_com_o_texto_do_modelo() {
-        let frame: serde_json::Value =
-            serde_json::from_str(&turn_event_frame("s1", &TurnEvent::TextDelta("um ".into())))
-                .expect("frame valido");
+        let frame: serde_json::Value = serde_json::from_str(&turn_event_frame(
+            "s1",
+            None,
+            &TurnEvent::TextDelta("um ".into()),
+        ))
+        .expect("frame valido");
         assert_eq!(frame["type"], "delta");
         assert_eq!(frame["session_id"], "s1");
         assert_eq!(frame["content"], "um ");
@@ -1136,6 +1430,7 @@ mod tests {
     fn tool_started_vira_frame_com_nome_e_detalhe() {
         let frame: serde_json::Value = serde_json::from_str(&turn_event_frame(
             "s1",
+            None,
             &TurnEvent::ToolStarted {
                 name: "bash".into(),
                 detail: "cargo test".into(),
@@ -1154,6 +1449,7 @@ mod tests {
     fn tool_finished_leva_o_resumo_e_nunca_a_saida_inteira() {
         let frame: serde_json::Value = serde_json::from_str(&turn_event_frame(
             "s1",
+            None,
             &TurnEvent::ToolFinished {
                 name: "bash".into(),
                 duration: std::time::Duration::from_millis(1500),
@@ -1177,7 +1473,7 @@ mod tests {
     #[test]
     fn stopped_frame_nomeia_a_sessao() {
         let frame: serde_json::Value =
-            serde_json::from_str(&stopped_frame("s1")).expect("frame valido");
+            serde_json::from_str(&stopped_frame("s1", None)).expect("frame valido");
         assert_eq!(frame["type"], "stopped");
         assert_eq!(frame["session_id"], "s1");
     }
@@ -1271,9 +1567,11 @@ mod tests {
             eventos,
             task,
             true,
+            None,
             &mut pong,
             &mut fila,
             &mut janela,
+            &mut super::VozDaConexao::default(),
         )
         .await;
 
@@ -1312,9 +1610,11 @@ mod tests {
             eventos,
             task,
             false,
+            None,
             &mut pong,
             &mut fila,
             &mut janela,
+            &mut super::VozDaConexao::default(),
         )
         .await;
 
@@ -1352,15 +1652,17 @@ mod tests {
                 eventos,
                 task,
                 true,
+                None,
                 &mut pong,
                 &mut fila,
                 &mut janela,
+                &mut super::VozDaConexao::default(),
             ),
         )
         .await
         .expect("o stop tem de soltar o turno antes dos 5 s");
 
-        assert!(matches!(fim, TurnEnd::Stopped), "{fim:?}");
+        assert!(matches!(fim, TurnEnd::Stopped { .. }), "{fim:?}");
         drop(sink);
         let tipos = tipos_dos_frames(sink_rx);
         assert_eq!(
@@ -1399,9 +1701,11 @@ mod tests {
                 eventos,
                 task,
                 true,
+                None,
                 &mut pong,
                 &mut fila,
                 &mut janela,
+                &mut super::VozDaConexao::default(),
             ),
         )
         .await
@@ -1447,15 +1751,17 @@ mod tests {
                 eventos_prontos(vec![]),
                 task,
                 true,
+                None,
                 &mut pong,
                 &mut fila,
                 &mut janela,
+                &mut super::VozDaConexao::default(),
             ),
         )
         .await
         .expect("o stop tem de soltar o turno");
 
-        assert!(matches!(fim, TurnEnd::Stopped), "{fim:?}");
+        assert!(matches!(fim, TurnEnd::Stopped { .. }), "{fim:?}");
         assert!(
             fila.is_empty(),
             "mensagem passou do teto e mesmo assim entrou na fila: {fila:?}"
@@ -1497,9 +1803,11 @@ mod tests {
                 eventos_prontos(vec![]),
                 task,
                 true,
+                None,
                 &mut pong,
                 &mut fila,
                 &mut janela,
+                &mut super::VozDaConexao::default(),
             ),
         )
         .await
@@ -1541,15 +1849,17 @@ mod tests {
                 eventos,
                 task,
                 true,
+                None,
                 &mut pong,
                 &mut fila,
                 &mut janela,
+                &mut super::VozDaConexao::default(),
             ),
         )
         .await
         .expect("o stop tem de soltar o turno");
 
-        assert!(matches!(fim, TurnEnd::Stopped), "{fim:?}");
+        assert!(matches!(fim, TurnEnd::Stopped { .. }), "{fim:?}");
         assert_eq!(
             fila.into_iter().collect::<Vec<_>>(),
             [r#"{"content":"a proxima pergunta"}"#.to_string()],
@@ -1560,16 +1870,243 @@ mod tests {
     /// so para aquela. O resto nao e `stop` e segue para a fila de turnos.
     #[test]
     fn parse_stop_distingue_alvo_e_nao_stop() {
-        assert_eq!(parse_stop(r#"{"type":"stop"}"#), Some(None));
+        let stop = |raw| parse_stop(raw).map(|s| s.session_id);
+        assert_eq!(stop(r#"{"type":"stop"}"#), Some(None));
         assert_eq!(
-            parse_stop(r#"{"type":"stop","session_id":"s1"}"#),
+            stop(r#"{"type":"stop","session_id":"s1"}"#),
             Some(Some("s1".to_string()))
         );
         // String vazia e o mesmo que nao mandar.
-        assert_eq!(parse_stop(r#"{"type":"stop","session_id":""}"#), Some(None));
+        assert_eq!(stop(r#"{"type":"stop","session_id":""}"#), Some(None));
         assert_eq!(parse_stop(r#"{"content":"stop"}"#), None);
         assert_eq!(parse_stop(r#"{"type":"resume"}"#), None);
         assert_eq!(parse_stop("stop"), None);
         assert_eq!(parse_stop("{nao e json"), None);
+    }
+
+    // ─── #1754: turno de voz (turn_id, stop por turno, contexto) ─────────
+
+    #[test]
+    fn turn_id_valido_volta_e_invalido_e_marcado() {
+        let msg = parse_user_message(r#"{"content":"oi","voice":true,"turn_id":"v-1_abc"}"#);
+        assert!(msg.voice);
+        assert_eq!(msg.turn_id.as_deref(), Some("v-1_abc"));
+        assert!(!msg.turn_id_invalido);
+        for ruim in [
+            r#"{"content":"oi","turn_id":""}"#,
+            r#"{"content":"oi","turn_id":"tem espaco"}"#,
+            r#"{"content":"oi","turn_id":"<script>"}"#,
+            r#"{"content":"oi","turn_id":7}"#,
+        ] {
+            let msg = parse_user_message(ruim);
+            assert!(msg.turn_id_invalido, "{ruim}");
+            assert_eq!(msg.turn_id, None, "{ruim}");
+        }
+        let longo = format!(r#"{{"content":"oi","turn_id":"{}"}}"#, "a".repeat(65));
+        assert!(parse_user_message(&longo).turn_id_invalido);
+        // Sem o campo, nada muda para o cliente antigo.
+        let antigo = parse_user_message(r#"{"content":"oi"}"#);
+        assert!(!antigo.turn_id_invalido && antigo.turn_id.is_none());
+    }
+
+    #[test]
+    fn frames_levam_o_turn_id_so_quando_o_turno_tem_um() {
+        let com: serde_json::Value = serde_json::from_str(&turn_event_frame(
+            "s1",
+            Some("v-2"),
+            &TurnEvent::TextDelta("oi".into()),
+        ))
+        .expect("frame valido");
+        assert_eq!(com["turn_id"], "v-2");
+        let sem = turn_event_frame("s1", None, &TurnEvent::TextDelta("oi".into()));
+        assert!(!sem.contains("turn_id"), "{sem}");
+        let parou: serde_json::Value =
+            serde_json::from_str(&stopped_frame("s1", Some("v-2"))).expect("frame valido");
+        assert_eq!(parou["turn_id"], "v-2");
+        assert_eq!(
+            stopped_frame("s1", None),
+            r#"{"session_id":"s1","type":"stopped"}"#,
+            "sem turn_id o frame e o de antes"
+        );
+    }
+
+    #[test]
+    fn stop_com_turn_id_so_cancela_o_proprio_turno() {
+        let stop =
+            parse_stop(r#"{"type":"stop","turn_id":"v-1","heard_chars":12}"#).expect("e um stop");
+        assert_eq!(stop.heard_chars, Some(12));
+        assert_eq!(stop.turn_id_ecoado(), Some("v-1"));
+        assert!(stop.cancela(Some("v-1")));
+        assert!(!stop.cancela(Some("v-2")), "stop de turno velho");
+        assert!(
+            !stop.cancela(None),
+            "turno sem id nao e alvo de stop com id"
+        );
+        // Sem turn_id: o contrato antigo, cancela o que estiver rodando.
+        let antigo = parse_stop(r#"{"type":"stop"}"#).expect("e um stop");
+        assert!(antigo.cancela(Some("v-9")) && antigo.cancela(None));
+        // turn_id invalido nao cancela nada.
+        let ruim = parse_stop(r#"{"type":"stop","turn_id":"a b"}"#).expect("e um stop");
+        assert!(!ruim.cancela(Some("a b")) && !ruim.cancela(None));
+        assert_eq!(ruim.turn_id_ecoado(), None);
+        // heard_chars negativo ou nao numerico e ignorado.
+        let sem_numero = parse_stop(r#"{"type":"stop","heard_chars":"10"}"#).expect("e um stop");
+        assert_eq!(sem_numero.heard_chars, None);
+    }
+
+    #[test]
+    fn interrupcao_separa_o_falado_do_gerado_sem_quebrar_unicode() {
+        let parcial = "Olá, tudo bem? Hoje está ótimo 🦀.";
+        let texto = super::interrupted_voice_text(parcial, Some(5));
+        assert!(texto.contains("Spoken aloud:]\nOlá, "), "{texto}");
+        assert!(texto.contains("not heard:]\ntudo bem?"), "{texto}");
+        let nada = super::interrupted_voice_text(parcial, Some(0));
+        assert!(nada.contains("before any of it was spoken"), "{nada}");
+        let tudo = super::interrupted_voice_text(parcial, Some(10_000));
+        assert!(tudo.contains("after this text was spoken"), "{tudo}");
+        let sem_info = super::interrupted_voice_text(parcial, None);
+        assert!(sem_info.contains("may not have been heard"), "{sem_info}");
+        assert!(super::interrupted_voice_text("", Some(3)).contains("before a reply"));
+    }
+
+    #[test]
+    fn interrupcao_tardia_vira_nota_uma_vez_e_so_do_ultimo_turno() {
+        let mut voz = super::VozDaConexao {
+            ultimo_turno: Some(("v-1".into(), "Primeira frase. Segunda frase.".into())),
+            nota_pendente: None,
+        };
+        // Stop de outro turno: ignorado.
+        voz.registrar_interrupcao_tardia(
+            &parse_stop(r#"{"type":"stop","turn_id":"v-0","heard_chars":3}"#).expect("stop"),
+        );
+        assert!(voz.nota_pendente.is_none());
+        // Sem heard_chars nao ha o que anotar.
+        voz.registrar_interrupcao_tardia(
+            &parse_stop(r#"{"type":"stop","turn_id":"v-1"}"#).expect("stop"),
+        );
+        assert!(voz.nota_pendente.is_none());
+        voz.registrar_interrupcao_tardia(
+            &parse_stop(r#"{"type":"stop","turn_id":"v-1","heard_chars":16}"#).expect("stop"),
+        );
+        let nota = voz.nota_pendente.clone().expect("nota registrada");
+        assert!(nota.contains("first 16 of 30 characters"), "{nota}");
+        assert!(nota.ends_with("Primeira frase. "), "{nota}");
+        assert!(
+            !nota.contains("Segunda"),
+            "o nao falado nao e citado: {nota}"
+        );
+        // O mesmo turno nao gera nota de novo.
+        voz.nota_pendente = None;
+        voz.registrar_interrupcao_tardia(
+            &parse_stop(r#"{"type":"stop","turn_id":"v-1","heard_chars":1}"#).expect("stop"),
+        );
+        assert!(voz.nota_pendente.is_none());
+        // Tudo falado: nada a anotar.
+        assert!(super::nota_de_interrupcao_tardia("abc", 3).is_none());
+    }
+
+    /// Barge-in durante a reproducao de um turno concluido manda um `stop`
+    /// com o `turn_id` velho. Se ele chegar durante o turno seguinte, NAO pode
+    /// cancelar o turno novo — so confirma o velho.
+    #[tokio::test]
+    async fn stop_de_turno_velho_nao_cancela_o_turno_atual() {
+        let (mut sink, sink_rx) = futures::channel::mpsc::unbounded::<Message>();
+        let mut cliente = cliente(&[r#"{"type":"stop","turn_id":"v-1","heard_chars":4}"#]);
+        let mut fila = std::collections::VecDeque::new();
+        let mut pong = Instant::now();
+        let mut janela = std::collections::VecDeque::new();
+        let mut voz = super::VozDaConexao {
+            ultimo_turno: Some(("v-1".into(), "resposta antiga".into())),
+            nota_pendente: None,
+        };
+        let eventos = eventos_prontos(vec![TurnEvent::TextDelta("nova".into())]);
+        let task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            Ok("nova".to_string())
+        });
+
+        let fim = super::run_streaming_turn(
+            &mut sink,
+            &mut cliente,
+            "s1",
+            eventos,
+            task,
+            true,
+            Some("v-2"),
+            &mut pong,
+            &mut fila,
+            &mut janela,
+            &mut voz,
+        )
+        .await;
+
+        assert!(
+            matches!(fim, TurnEnd::Completed(ref t) if t == "nova"),
+            "{fim:?}"
+        );
+        assert!(
+            voz.nota_pendente.is_some(),
+            "a interrupcao do v-1 vira nota"
+        );
+        drop(sink);
+        let frames = frames(sink_rx);
+        let parou = frames
+            .iter()
+            .find(|f| f["type"] == "stopped")
+            .expect("stop do turno velho e confirmado");
+        assert_eq!(parou["turn_id"], "v-1");
+        let delta = frames
+            .iter()
+            .find(|f| f["type"] == "delta")
+            .expect("delta do turno novo");
+        assert_eq!(delta["turn_id"], "v-2");
+    }
+
+    #[tokio::test]
+    async fn stop_do_turno_atual_cancela_e_guarda_o_quanto_foi_ouvido() {
+        let (mut sink, sink_rx) = futures::channel::mpsc::unbounded::<Message>();
+        let mut cliente = cliente(&[r#"{"type":"stop","turn_id":"v-3","heard_chars":2}"#]);
+        let mut fila = std::collections::VecDeque::new();
+        let mut pong = Instant::now();
+        let mut janela = std::collections::VecDeque::new();
+        let task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok("nunca".to_string())
+        });
+
+        let fim = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::run_streaming_turn(
+                &mut sink,
+                &mut cliente,
+                "s1",
+                eventos_prontos(vec![TurnEvent::TextDelta("parcial".into())]),
+                task,
+                true,
+                Some("v-3"),
+                &mut pong,
+                &mut fila,
+                &mut janela,
+                &mut super::VozDaConexao::default(),
+            ),
+        )
+        .await
+        .expect("o stop tem de soltar o turno");
+
+        assert!(
+            matches!(
+                fim,
+                TurnEnd::Stopped {
+                    heard_chars: Some(2),
+                    ..
+                }
+            ),
+            "{fim:?}"
+        );
+        drop(sink);
+        let frames = frames(sink_rx);
+        let ultimo = frames.last().expect("frames");
+        assert_eq!(ultimo["type"], "stopped");
+        assert_eq!(ultimo["turn_id"], "v-3");
     }
 }

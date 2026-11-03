@@ -110,12 +110,12 @@ impl VoicePipeline {
         // Garante que o diretório de trabalho existe
         tokio::fs::create_dir_all(&self.work_dir).await?;
 
-        // Gera prefixo único para arquivos intermediários
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let base = self.work_dir.join(format!("voice_{ts}"));
+        // Each invocation owns its files. The directory is removed on every
+        // exit, including a dropped/cancelled future and intermediate errors.
+        let workspace = tempfile::Builder::new()
+            .prefix("voice_")
+            .tempdir_in(&self.work_dir)?;
+        let base = workspace.path().join("voice");
 
         // Copia input para work_dir (preserva original)
         let input_ogg = base.with_extension("input.ogg");
@@ -186,11 +186,15 @@ impl VoicePipeline {
 
         tracing::info!(total_ms, "Voice pipeline complete");
 
-        // ── Limpeza de arquivos intermediários ──────────────────────────
-        let _ = tokio::fs::remove_file(&input_ogg).await;
-        let _ = tokio::fs::remove_file(&input_wav).await;
-        let _ = tokio::fs::remove_file(&output_wav).await;
-
-        Ok((output_ogg, metrics))
+        // Only the completed output outlives the invocation; the caller owns
+        // its cleanup. Reserve a unique destination before copying it there.
+        let final_file = tempfile::Builder::new()
+            .prefix("voice_")
+            .suffix(".ogg")
+            .tempfile_in(&self.work_dir)?;
+        let final_path = final_file.into_temp_path();
+        std::fs::copy(output_ogg, &final_path)?;
+        let final_path = final_path.keep().map_err(|e| VoiceError::Io(e.error))?;
+        Ok((final_path, metrics))
     }
 }

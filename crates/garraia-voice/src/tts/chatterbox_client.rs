@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde_json::Value;
 
+use crate::http::{MAX_AUDIO_BYTES, MAX_METADATA_BYTES, MAX_TEXT_BYTES, bounded_body};
 use crate::pipeline::VoiceError;
 
 /// Async HTTP client for the Chatterbox Multilingual TTS (Gradio) service.
@@ -45,10 +46,7 @@ impl ChatterboxClient {
     pub fn new(endpoint: &str, language: &str) -> Self {
         Self {
             endpoint: endpoint.trim_end_matches('/').to_string(),
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            client: crate::http::client(),
             language: language.to_string(),
             signature_tail: Arc::new(Mutex::new(None)),
         }
@@ -115,7 +113,15 @@ impl ChatterboxClient {
         text: &str,
         language: Option<&str>,
     ) -> Result<Vec<u8>, VoiceError> {
+        if text.trim().is_empty() || text.len() > MAX_TEXT_BYTES {
+            return Err(VoiceError::Tts(
+                "text is empty or exceeds the size limit".into(),
+            ));
+        }
         let lang = language.unwrap_or(&self.language);
+        if lang.len() > 64 {
+            return Err(VoiceError::Tts("invalid language".into()));
+        }
 
         // Monta o `data` com o numero de valores que o servidor realmente
         // espera (descoberto em /gradio_api/info e cacheado).
@@ -160,9 +166,8 @@ impl ChatterboxClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
             return Err(VoiceError::Tts(format!(
-                "Chatterbox submit returned {status}: {body}"
+                "Chatterbox submit returned {status}"
             )));
         }
 
@@ -171,9 +176,19 @@ impl ChatterboxClient {
             event_id: String,
         }
 
-        let submit_result: SubmitResponse = resp.json().await.map_err(|e| {
-            VoiceError::Tts(format!("Failed to parse Chatterbox submit response: {e}"))
-        })?;
+        let submit_bytes = bounded_body(resp, MAX_METADATA_BYTES)
+            .await
+            .map_err(VoiceError::Tts)?;
+        let submit_result: SubmitResponse = serde_json::from_slice(&submit_bytes)
+            .map_err(|_| VoiceError::Tts("Invalid Chatterbox submit response".into()))?;
+        if submit_result.event_id.is_empty()
+            || !submit_result
+                .event_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(VoiceError::Tts("Invalid Chatterbox event id".into()));
+        }
 
         // Step 2: Poll for the result using the event_id
         let result_url = format!(
@@ -190,25 +205,40 @@ impl ChatterboxClient {
 
         if !event_resp.status().is_success() {
             let status = event_resp.status();
-            let body = event_resp.text().await.unwrap_or_default();
             return Err(VoiceError::Tts(format!(
-                "Chatterbox result returned {status}: {body}"
+                "Chatterbox result returned {status}"
             )));
         }
 
         // The event stream returns SSE lines. Parse for the "complete" event
         // containing the audio file path (or an "error" event).
-        let event_text = event_resp
-            .text()
+        let event_bytes = bounded_body(event_resp, MAX_METADATA_BYTES)
             .await
-            .map_err(|e| VoiceError::Tts(format!("Failed to read Chatterbox event stream: {e}")))?;
+            .map_err(VoiceError::Tts)?;
+        let event_text = String::from_utf8(event_bytes)
+            .map_err(|_| VoiceError::Tts("Invalid Chatterbox event encoding".into()))?;
 
         let audio_url = Self::parse_audio_url_from_sse(&event_text, &self.endpoint)?;
+        // A provider response must not turn the gateway into an arbitrary URL
+        // fetcher. Gradio audio must be hosted on the configured origin.
+        let base = reqwest::Url::parse(&self.endpoint)
+            .map_err(|_| VoiceError::Tts("Invalid Chatterbox endpoint".into()))?;
+        let audio_url = base
+            .join(&audio_url)
+            .map_err(|_| VoiceError::Tts("Invalid Chatterbox audio URL".into()))?;
+        if audio_url.origin() != base.origin()
+            || !audio_url.username().is_empty()
+            || audio_url.password().is_some()
+        {
+            return Err(VoiceError::Tts(
+                "Chatterbox audio URL has a different origin".into(),
+            ));
+        }
 
         // Step 3: Download the audio file
         let audio_resp = self
             .client
-            .get(&audio_url)
+            .get(audio_url)
             .send()
             .await
             .map_err(|e| VoiceError::Tts(format!("Failed to download audio: {e}")))?;
@@ -218,12 +248,9 @@ impl ChatterboxClient {
             return Err(VoiceError::Tts(format!("Audio download returned {status}")));
         }
 
-        let audio_bytes = audio_resp
-            .bytes()
+        bounded_body(audio_resp, MAX_AUDIO_BYTES)
             .await
-            .map_err(|e| VoiceError::Tts(format!("Failed to read audio bytes: {e}")))?;
-
-        Ok(audio_bytes.to_vec())
+            .map_err(VoiceError::Tts)
     }
 
     // ─── Descoberta da assinatura ────────────────────────────────────────
@@ -270,7 +297,8 @@ impl ChatterboxClient {
         if !resp.status().is_success() {
             return None;
         }
-        let info: Value = resp.json().await.ok()?;
+        let bytes = bounded_body(resp, MAX_METADATA_BYTES).await.ok()?;
+        let info: Value = serde_json::from_slice(&bytes).ok()?;
         let params = info
             .get("named_endpoints")?
             .get("/generate_tts_audio")?
@@ -401,10 +429,9 @@ impl ChatterboxClient {
             }
         }
 
-        Err(VoiceError::Tts(format!(
-            "Could not parse audio URL from Chatterbox SSE response: {}",
-            &sse_text[..sse_text.len().min(500)]
-        )))
+        Err(VoiceError::Tts(
+            "Could not parse audio URL from Chatterbox SSE response".into(),
+        ))
     }
 
     /// Extrai `url` (ou constroi a partir de `path`) do payload `data` de um

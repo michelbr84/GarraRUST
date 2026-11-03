@@ -216,6 +216,7 @@ test.describe('Garra Glass — webchat redesign', () => {
 const PAGES = [
   'dashboard',
   'chat',
+  'voice',
   'providers',
   'channels',
   'sessions',

@@ -269,6 +269,8 @@ pub struct AppState {
     pub voice_client: Option<Arc<dyn garraia_voice::TtsSynthesizer>>,
     /// Whisper STT client (available when `--with-voice` is used).
     pub stt_client: Option<Arc<garraia_voice::WhisperClient>>,
+    /// Bounded voice requests and short-lived provider capability cache.
+    pub voice_chat: crate::voice_chat::VoiceChat,
     /// Cached health check results (updated by background task).
     pub health_cache: Option<crate::health::HealthCache>,
     /// Central registry for slash commands.
@@ -486,6 +488,7 @@ impl AppState {
             openclaw_config: None,
             voice_client: None,
             stt_client: None,
+            voice_chat: crate::voice_chat::VoiceChat::default(),
             health_cache: None,
             command_registry: {
                 let reg = CommandRegistry::new();

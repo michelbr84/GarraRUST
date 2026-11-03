@@ -339,6 +339,9 @@ pub fn build_router(
 
     let router = Router::new()
         .route("/", get(web_chat))
+        .route("/assets/voice-chat.js", get(voice_chat_script))
+        .route("/assets/voice-pcm-worklet.js", get(voice_worklet_script))
+        .route("/assets/voice-chat.css", get(voice_chat_style))
         .route("/health", get(health))
         .route("/ping", get(ping))
         .route("/api/health", get(crate::health::health_handler))
@@ -398,6 +401,13 @@ pub fn build_router(
         .merge(learning_routes)
         .route("/api/tts", post(crate::voice_handler::synthesize))
         .route("/api/stt", post(crate::voice_handler::transcribe))
+        .route("/api/voice/models", get(crate::voice_chat::models))
+        .route("/api/voice/synthesize", post(crate::voice_chat::synthesize))
+        .route(
+            "/api/voice/transcribe",
+            post(crate::voice_chat::transcribe)
+                .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 + 8192)),
+        )
         .route("/api/providers", get(list_providers).post(add_provider))
         .route("/api/providers/test", post(test_provider))
         .route("/api/providers/default", patch(set_default_provider))
@@ -720,6 +730,28 @@ async fn web_chat() -> Html<String> {
         return Html(content);
     }
     Html(include_str!("webchat.html").to_string())
+}
+
+// Embedded assets keep the installed standalone binary independent of its cwd.
+async fn voice_chat_script() -> impl axum::response::IntoResponse {
+    (
+        [("content-type", "text/javascript; charset=utf-8")],
+        include_str!("../assets/voice-chat.js"),
+    )
+}
+
+async fn voice_worklet_script() -> impl axum::response::IntoResponse {
+    (
+        [("content-type", "text/javascript; charset=utf-8")],
+        include_str!("../assets/voice-pcm-worklet.js"),
+    )
+}
+
+async fn voice_chat_style() -> impl axum::response::IntoResponse {
+    (
+        [("content-type", "text/css; charset=utf-8")],
+        include_str!("../assets/voice-chat.css"),
+    )
 }
 
 async fn status(
