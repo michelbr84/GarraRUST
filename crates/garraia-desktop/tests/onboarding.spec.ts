@@ -54,6 +54,9 @@ async function instalarTauriFalso(page: Page) {
           if (cmd === 'onboarding_testar_provedor') {
             return Promise.resolve(cfg.teste ?? { ok: true, latencia_ms: 900, provedor: 'ollama', modelo: 'qwen3.5:2b' });
           }
+          if (cmd === 'gateway_saude') {
+            return Promise.resolve(cfg.saude ?? { respondeu: true, versao: '0.5.2', provedor: 'ollama' });
+          }
           if (cmd === 'gateway_estado') {
             return Promise.resolve(cfg.gateway ?? { origem: 'proprio', versao_app: '0.5.2' });
           }
@@ -292,4 +295,27 @@ test('gateway de fora do app (#1816) e avisado antes de qualquer passo', async (
   await expect(aviso).toBeVisible();
   await expect(aviso).toContainText('0.5.1');
   await expect(aviso).toContainText('systemctl --user stop garraia');
+});
+
+test('Pronto exige o gateway com o provedor: modelo ok mas gateway sem provedor nao e "pronto"', async ({ page }) => {
+  await comConfig(page, { saude: { respondeu: true, versao: '0.5.2', provedor: null } });
+  await escolheProvedorLocal(page);
+  await page.getByTestId('btn-modo-proprio').click();
+  await page.getByTestId('proprio-confirmo').check();
+  await page.getByTestId('btn-modo-continuar').click();
+  await pareiaAtePronto(page);
+  await expect(page.getByTestId('pronto-status')).toContainText('ainda não subiu', { timeout: 30_000 });
+  await expect(page.getByTestId('pronto-aviso')).toContainText('garraia doctor');
+  await expect(page.getByTestId('pronto-status')).not.toContainText('pronto para conversar');
+});
+
+test('com gateway de fora, Pronto pede para reiniciar o outro em vez de dizer "pronto"', async ({ page }) => {
+  await comConfig(page, { gateway: { origem: 'externo', versao: '0.5.1', versao_app: '0.5.2' } });
+  await escolheProvedorLocal(page);
+  await page.getByTestId('btn-modo-proprio').click();
+  await page.getByTestId('proprio-confirmo').check();
+  await page.getByTestId('btn-modo-continuar').click();
+  await pareiaAtePronto(page);
+  await expect(page.getByTestId('pronto-status')).toContainText('falta reiniciar');
+  await expect(page.getByTestId('pronto-aviso-gateway')).toContainText('systemctl --user restart garraia');
 });

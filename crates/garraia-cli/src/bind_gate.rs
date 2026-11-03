@@ -76,9 +76,9 @@ pub fn mensagem_porta_ocupada(host: &str, port: u16, quem: &PortaOcupada) -> Str
     match quem {
         PortaOcupada::PorGateway(versao) => format!(
             "error: ja existe um gateway GarraIA {versao} ouvindo em {host}:{port}. Nao subo um \
-             segundo na mesma porta. Use esse, ou pare-o antes (`garraia stop`, ou \
-             `systemctl --user stop garraia` se ele for um servico), ou suba este em outra \
-             porta com `--port`."
+             segundo: os dois dividiriam a sessao do WhatsApp e o pidfile, mesmo em outra porta. \
+             Use esse, ou pare-o antes (`garraia stop`, ou `systemctl --user stop garraia` se \
+             ele for um servico)."
         ),
         PortaOcupada::PorOutro => format!(
             "error: a porta {host}:{port} ja esta em uso por outro programa. Libere a porta ou \
@@ -87,9 +87,94 @@ pub fn mensagem_porta_ocupada(host: &str, port: u16, quem: &PortaOcupada) -> Str
     }
 }
 
+/// O resultado de tentar a trava do diretorio de config (#1816, revisao M1).
+#[derive(Debug)]
+pub enum Trava {
+    /// Este processo e o unico gateway deste diretorio enquanto o `File` viver.
+    Obtida(std::fs::File),
+    /// O sistema de arquivos nao suporta trava (ex.: alguns FS de rede): segue
+    /// sem ela — a checagem de porta continua valendo.
+    SemSuporte,
+}
+
+/// A checagem de porta tem janela: o bind de verdade e no FIM do boot, entao
+/// dois `garraia start` ao mesmo tempo (o servico do systemd e o autostart do
+/// Desktop no login) passavam os dois e subiam duas pontes com a mesma sessao.
+/// Uma trava exclusiva em `<dir>/gateway.lock`, segura a vida inteira do
+/// processo, fecha isso — e vale mesmo em portas diferentes, que e o caso em
+/// que os dois dividiriam a sessao e o pidfile sem nada perceber.
+///
+/// Espera ate `espera` pela trava: o restart legitimo (o Desktop matando o
+/// sidecar e subindo outro) pode chegar antes de o processo antigo terminar
+/// de morrer. `Err(())`: outro gateway segura o diretorio.
+pub fn travar_diretorio(dir: &std::path::Path, espera: std::time::Duration) -> Result<Trava, ()> {
+    if std::fs::create_dir_all(dir).is_err() {
+        return Ok(Trava::SemSuporte);
+    }
+    let Ok(arquivo) = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(dir.join("gateway.lock"))
+    else {
+        return Ok(Trava::SemSuporte);
+    };
+    let fim = std::time::Instant::now() + espera;
+    loop {
+        match arquivo.try_lock() {
+            Ok(()) => return Ok(Trava::Obtida(arquivo)),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if std::time::Instant::now() >= fim {
+                    return Err(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(std::fs::TryLockError::Error(_)) => return Ok(Trava::SemSuporte),
+        }
+    }
+}
+
+/// A mensagem do `start` recusado porque outro gateway segura o diretorio.
+pub fn mensagem_diretorio_ocupado(dir: &std::path::Path) -> String {
+    format!(
+        "error: ja existe um gateway GarraIA rodando com o diretorio de configuracao {}. \
+         Nao subo um segundo: os dois dividiriam a sessao do WhatsApp e o pidfile. Use esse, \
+         ou pare-o antes (`garraia stop`, ou `systemctl --user stop garraia` se ele for um \
+         servico).",
+        dir.display()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1816 (revisao M1): a trava e exclusiva por diretorio, vale entre
+    /// handles do mesmo processo (como entre processos) e solta ao fechar.
+    #[test]
+    fn trava_do_diretorio_e_exclusiva_e_solta_ao_fechar() {
+        let dir = tempfile::tempdir().unwrap();
+        let espera = std::time::Duration::from_millis(300);
+        let primeira = travar_diretorio(dir.path(), espera).expect("primeira trava");
+        assert!(matches!(primeira, Trava::Obtida(_)));
+        let inicio = std::time::Instant::now();
+        assert!(
+            travar_diretorio(dir.path(), espera).is_err(),
+            "a segunda espera e desiste"
+        );
+        assert!(inicio.elapsed() >= espera);
+        drop(primeira);
+        assert!(matches!(
+            travar_diretorio(dir.path(), espera),
+            Ok(Trava::Obtida(_))
+        ));
+        let msg = mensagem_diretorio_ocupado(dir.path());
+        assert!(
+            msg.contains("gateway GarraIA") && !msg.contains("--port"),
+            "{msg}"
+        );
+    }
 
     /// #1816: porta livre passa; ocupada por um programa qualquer e recusada
     /// como "outro"; ocupada por um gateway GarraIA diz a versao dele.
@@ -132,7 +217,7 @@ mod tests {
             porta_gw,
             &PortaOcupada::PorGateway("0.5.1".into()),
         );
-        assert!(msg.contains("0.5.1") && msg.contains("--port"), "{msg}");
+        assert!(msg.contains("0.5.1") && !msg.contains("--port"), "{msg}");
         drop(mudo);
     }
 

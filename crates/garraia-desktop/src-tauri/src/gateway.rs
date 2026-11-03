@@ -160,6 +160,17 @@ pub fn restart(app: &AppHandle, handle: &GatewayHandle) {
             break;
         }
     }
+    // Revisao (#1821): se depois da espera AINDA ha um gateway na porta, ele
+    // nao e o nosso (o nosso morreu no `kill`): o app passa a usar esse e nao
+    // sobe um sidecar condenado ao exit 69.
+    if let Some(versao) = gateway_alheio() {
+        eprintln!(
+            "[garra] apos o restart a porta segue com outro gateway ({versao}): o app usa esse"
+        );
+        definir_origem(Origem::Externo { versao });
+        return;
+    }
+    definir_origem(Origem::Proprio);
     spawn(app, handle.clone());
 }
 

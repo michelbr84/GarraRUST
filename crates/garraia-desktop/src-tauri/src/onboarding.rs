@@ -214,11 +214,15 @@ pub async fn onboarding_provedor_status() -> ProvedorStatus {
 #[tauri::command]
 pub async fn onboarding_configurar_provedor(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     provedor: Provedor,
     modelo: String,
     chave: Option<String>,
 ) -> Result<(), String> {
-    let escolha = provedor::validar_escolha(provedor, &modelo, chave.as_deref())?;
+    // Zerada na memoria ao sair de escopo, inclusive no caminho de erro.
+    let chave = chave.map(provedor::Zeroizing::new);
+    so_da_janela_do_assistente(&window)?;
+    let escolha = provedor::validar_escolha(provedor, &modelo, chave.as_ref().map(|c| c.as_str()))?;
     drop(chave);
     let (code, _saida) =
         rodar_sidecar_capturando(&app, escolha.args_set_routing(), escolha.stdin()).await?;
@@ -234,10 +238,54 @@ pub async fn onboarding_configurar_provedor(
 /// O teste de conectividade de verdade: `garraia ask --json` com o provedor
 /// padrao. So volta se conversou, a latencia e, se nao, motivo e dica.
 #[tauri::command]
-pub async fn onboarding_testar_provedor(app: AppHandle) -> provedor::TesteProvedor {
+pub async fn onboarding_testar_provedor(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> provedor::TesteProvedor {
+    if let Err(e) = so_da_janela_do_assistente(&window) {
+        return provedor::interpretar_teste(&e, None);
+    }
     match rodar_sidecar_capturando(&app, provedor::args_teste(), None).await {
         Ok((code, saida)) => provedor::interpretar_teste(&saida, code),
         Err(e) => provedor::interpretar_teste(&e, None),
+    }
+}
+
+/// Revisao de seguranca (#1821): no Tauri v2 todo comando do app vale para
+/// toda janela local. Gravar a chave do provedor e rodar o teste so fazem
+/// sentido no assistente — uma falha em outra tela (chat bar, overlay) nao
+/// pode trocar a chave por uma de outra conta.
+fn so_da_janela_do_assistente(window: &tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() == LABEL {
+        Ok(())
+    } else {
+        Err("este comando so roda no assistente de primeiro uso".to_string())
+    }
+}
+
+/// O que o gateway que esta atendendo diz no `/api/health` (#1700, revisao
+/// M2): "pronto para conversar" exige que ELE tenha registrado o provedor —
+/// nao basta o `config.yml` estar certo.
+#[derive(Debug, Serialize)]
+pub struct GatewaySaude {
+    pub respondeu: bool,
+    pub versao: Option<String>,
+    pub provedor: Option<String>,
+}
+
+#[tauri::command]
+pub async fn gateway_saude() -> GatewaySaude {
+    let porta = garraia_config::bind::endereco_do_cliente().1;
+    let h = tauri::async_runtime::spawn_blocking(move || {
+        provedor::health_na_porta(porta, std::time::Duration::from_millis(1500))
+    })
+    .await
+    .ok()
+    .flatten();
+    GatewaySaude {
+        respondeu: h.is_some(),
+        versao: h.as_ref().map(|h| h.versao.clone()),
+        provedor: h.and_then(|h| h.provedor),
     }
 }
 

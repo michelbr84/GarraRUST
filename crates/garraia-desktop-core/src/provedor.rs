@@ -14,9 +14,10 @@
 use std::fmt;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+pub use zeroize::Zeroizing;
 
 /// Porta padrao do Ollama local.
 pub const OLLAMA_PORTA: u16 = 11434;
@@ -65,7 +66,8 @@ impl Provedor {
 pub struct Escolha {
     pub provedor: Provedor,
     pub modelo: String,
-    chave: Option<String>,
+    /// Zerada na memoria quando a escolha sai de escopo.
+    chave: Option<Zeroizing<String>>,
 }
 
 impl fmt::Debug for Escolha {
@@ -81,7 +83,7 @@ impl fmt::Debug for Escolha {
 impl Escolha {
     /// A chave, para a casca escrever no stdin do sidecar — e so para isso.
     pub fn chave(&self) -> Option<&str> {
-        self.chave.as_deref()
+        self.chave.as_ref().map(|c| c.as_str())
     }
 
     /// Os argumentos do `garraia` que gravam esta escolha. A chave, quando ha,
@@ -103,8 +105,13 @@ impl Escolha {
 
     /// O que a casca escreve no stdin: a chave e uma quebra de linha (o
     /// `set-routing` le a primeira linha).
-    pub fn stdin(&self) -> Option<Vec<u8>> {
-        self.chave.as_ref().map(|c| format!("{c}\n").into_bytes())
+    pub fn stdin(&self) -> Option<Zeroizing<Vec<u8>>> {
+        self.chave.as_ref().map(|c| {
+            let mut bytes = Zeroizing::new(Vec::with_capacity(c.len() + 1));
+            bytes.extend_from_slice(c.as_bytes());
+            bytes.push(b'\n');
+            bytes
+        })
     }
 }
 
@@ -119,8 +126,19 @@ pub fn validar_escolha(
     if modelo.is_empty() {
         return Err("Escolha um modelo.".to_string());
     }
-    if modelo.len() > MODELO_MAX || modelo.chars().any(|c| c.is_control() || c.is_whitespace()) {
-        return Err("Nome de modelo invalido (sem espacos, ate 200 caracteres).".to_string());
+    // Vai como argumento do sidecar: nada de comecar com `-` (pareceria uma
+    // flag) e so o alfabeto de nomes de modelo (ollama `a:b`, openrouter
+    // `org/modelo`, sufixos `@`, `+`).
+    if modelo.len() > MODELO_MAX
+        || modelo.starts_with('-')
+        || !modelo
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._:/@+-".contains(c))
+    {
+        return Err(
+            "Nome de modelo invalido: use so letras, numeros e . _ : / @ + - (ate 200 caracteres)."
+                .to_string(),
+        );
     }
     let chave = chave.map(str::trim).filter(|c| !c.is_empty());
     let chave = match (provedor.precisa_de_chave(), chave) {
@@ -134,7 +152,7 @@ pub fn validar_escolha(
                         .to_string(),
                 );
             }
-            Some(c.to_string())
+            Some(Zeroizing::new(c.to_string()))
         }
         // Ollama local nao usa chave: uma colada por engano e descartada,
         // nunca gravada.
@@ -294,19 +312,37 @@ pub fn interpretar_teste(stdout: &str, code: Option<i32>) -> TesteProvedor {
 /// o corpo, ou `None` quando nao ha ninguem ouvindo (ou ele nao fala HTTP).
 /// So loopback, por construcao: nao ha parametro de host.
 pub fn get_loopback(porta: u16, caminho: &str, prazo: Duration) -> Option<(u16, String)> {
+    // Prazo TOTAL (conexao + escrita + leitura): um servico que pinga um byte
+    // por vez nao segura quem pergunta alem dele.
+    let fim = Instant::now() + prazo;
+    let restante = || {
+        fim.checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+    };
     let endereco = SocketAddr::from((Ipv4Addr::LOCALHOST, porta));
-    let mut conexao = TcpStream::connect_timeout(&endereco, prazo).ok()?;
-    conexao.set_read_timeout(Some(prazo)).ok()?;
-    conexao.set_write_timeout(Some(prazo)).ok()?;
+    let mut conexao = TcpStream::connect_timeout(&endereco, restante()?).ok()?;
+    conexao.set_write_timeout(Some(restante()?)).ok()?;
     let pedido = format!(
         "GET {caminho} HTTP/1.0\r\nHost: 127.0.0.1:{porta}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
     );
     conexao.write_all(pedido.as_bytes()).ok()?;
+    let teto = CORPO_MAX + 16 * 1024;
     let mut bruto = Vec::new();
-    conexao
-        .take((CORPO_MAX + 16 * 1024) as u64)
-        .read_to_end(&mut bruto)
-        .ok()?;
+    let mut pedaco = [0u8; 8192];
+    loop {
+        conexao.set_read_timeout(Some(restante()?)).ok()?;
+        match conexao.read(&mut pedaco) {
+            Ok(0) => break,
+            Ok(n) => {
+                bruto.extend_from_slice(&pedaco[..n]);
+                if bruto.len() > teto {
+                    return None;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        }
+    }
     let texto = String::from_utf8_lossy(&bruto);
     let (cabecalho, corpo) = texto.split_once("\r\n\r\n")?;
     let status = cabecalho
@@ -346,18 +382,55 @@ pub fn detectar_ollama(prazo: Duration) -> Option<Vec<String>> {
 /// A versao de um gateway GarraIA, lida do corpo do `/api/health`. `None`
 /// quando o corpo nao e o health de um gateway GarraIA.
 pub fn versao_do_gateway(corpo: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(corpo).ok()?;
-    v.get("gateway_url")?;
-    v.get("version")?.as_str().map(str::to_string)
+    health_do_gateway(corpo).map(|h| h.versao)
 }
 
-/// Ha um gateway GarraIA ouvindo na porta? Devolve a versao dele (#1816).
-pub fn gateway_na_porta(porta: u16, prazo: Duration) -> Option<String> {
+/// O que interessa do `/api/health` de um gateway GarraIA.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HealthDoGateway {
+    pub versao: String,
+    /// O provedor de LLM que o gateway registrou; `None` = ele nao conversa.
+    pub provedor: Option<String>,
+}
+
+/// Le o `/api/health`. A versao so vale no alfabeto de versao (ela vai para
+/// a tela e para o terminal: nada de sequencia de escape vinda de um servico
+/// qualquer na porta).
+pub fn health_do_gateway(corpo: &str) -> Option<HealthDoGateway> {
+    let v: serde_json::Value = serde_json::from_str(corpo).ok()?;
+    v.get("gateway_url")?;
+    let versao = v.get("version")?.as_str()?;
+    let valida = !versao.is_empty()
+        && versao.len() <= 32
+        && versao
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".+-".contains(c));
+    if !valida {
+        return None;
+    }
+    let provedor = v
+        .get("provider")
+        .and_then(|p| p.as_str())
+        .filter(|p| !p.is_empty() && p.len() <= 64)
+        .map(str::to_string);
+    Some(HealthDoGateway {
+        versao: versao.to_string(),
+        provedor,
+    })
+}
+
+/// O health de um gateway GarraIA na porta, se houver um.
+pub fn health_na_porta(porta: u16, prazo: Duration) -> Option<HealthDoGateway> {
     let (status, corpo) = get_loopback(porta, "/api/health", prazo)?;
     if status != 200 {
         return None;
     }
-    versao_do_gateway(&corpo)
+    health_do_gateway(&corpo)
+}
+
+/// Ha um gateway GarraIA ouvindo na porta? Devolve a versao dele (#1816).
+pub fn gateway_na_porta(porta: u16, prazo: Duration) -> Option<String> {
+    health_na_porta(porta, prazo).map(|h| h.versao)
 }
 
 #[cfg(test)]
@@ -392,7 +465,7 @@ mod tests {
             !args.iter().any(|a| a.contains("sk-or")),
             "a chave nunca entra em argv"
         );
-        assert_eq!(e.stdin().unwrap(), b"sk-or-v1-abc\n");
+        assert_eq!(e.stdin().unwrap().as_slice(), b"sk-or-v1-abc\n");
         assert!(!format!("{e:?}").contains("sk-or"), "nem no Debug");
     }
 
@@ -476,6 +549,82 @@ mod tests {
         let m = t.motivo.unwrap();
         assert!(!m.contains("sk-or-v1-0123"), "{m}");
         assert!(!m.contains("abc123"), "{m}");
+    }
+
+    /// Revisao de seguranca (#1821): modelo que parece flag ou com caractere
+    /// estranho e recusado antes de virar argumento do sidecar.
+    #[test]
+    fn modelo_com_cara_de_flag_ou_caractere_estranho_e_recusado() {
+        for ruim in [
+            "-h",
+            "--dry-run",
+            "--primary-base-url=x",
+            "a;b",
+            "a$(x)",
+            "modelo\u{1b}[31m",
+        ] {
+            assert!(
+                validar_escolha(Provedor::Ollama, ruim, None).is_err(),
+                "{ruim}"
+            );
+        }
+        for bom in [
+            "qwen3.5:0.8b",
+            "z-ai/glm-5.3-flash",
+            "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL",
+            "a@b+c",
+        ] {
+            assert!(
+                validar_escolha(Provedor::Ollama, bom, None).is_ok(),
+                "{bom}"
+            );
+        }
+    }
+
+    #[test]
+    fn health_le_provedor_e_recusa_versao_com_escape() {
+        let ok = r#"{"status":"healthy","version":"0.5.2","gateway_url":"x","provider":"ollama"}"#;
+        assert_eq!(
+            health_do_gateway(ok),
+            Some(HealthDoGateway {
+                versao: "0.5.2".into(),
+                provedor: Some("ollama".into())
+            })
+        );
+        let sem = r#"{"status":"healthy","version":"0.5.2","gateway_url":"x","provider":null}"#;
+        assert_eq!(health_do_gateway(sem).unwrap().provedor, None);
+        let escape = r#"{"version":"0.5\u001b[2J","gateway_url":"x"}"#;
+        assert_eq!(health_do_gateway(escape), None);
+        assert_eq!(
+            health_do_gateway(r#"{"version":"","gateway_url":"x"}"#),
+            None
+        );
+    }
+
+    /// Prazo total: um servico que manda um byte por vez nao segura a sonda.
+    #[test]
+    fn get_loopback_respeita_o_prazo_total() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let porta = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = l.accept() {
+                let mut buf = [0u8; 512];
+                let _ = s.read(&mut buf);
+                for _ in 0..100 {
+                    if s.write_all(b"x").is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+        let inicio = Instant::now();
+        assert_eq!(get_loopback(porta, "/", Duration::from_millis(600)), None);
+        assert!(
+            inicio.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            inicio.elapsed()
+        );
     }
 
     #[test]

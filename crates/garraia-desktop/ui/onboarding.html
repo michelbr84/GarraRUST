@@ -131,7 +131,7 @@
     }
     select option { background: var(--garra-surface); color: var(--garra-text); }
     input[type=text], input[type=password], select {
-      font: inherit; color: var(--garra-text); background: var(--garra-surface);
+      font: inherit; color: var(--garra-text); background-color: var(--garra-surface);
       border: 1px solid var(--garra-border); border-radius: 9px; padding: 10px 12px; font-size: 15px;
     }
     input[type=text]:focus, input[type=password]:focus, select:focus, .cartao-modo:focus-visible, button:focus-visible {
@@ -230,8 +230,8 @@
                  autocomplete="off" spellcheck="false" />
         </label>
         <div class="aviso ativo" role="note">
-          A chave fica só neste computador, no arquivo de configuração do Garra (legível só
-          por você), e nunca volta para esta tela.
+          A chave fica só neste computador, no arquivo de configuração do Garra (no Linux e
+          no macOS, legível só pelo seu usuário), e nunca volta para esta tela.
         </div>
       </div>
 

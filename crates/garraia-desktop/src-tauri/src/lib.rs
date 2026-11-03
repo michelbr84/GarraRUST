@@ -94,6 +94,7 @@ pub fn run() {
             onboarding::onboarding_configurar_provedor,
             onboarding::onboarding_testar_provedor,
             onboarding::gateway_estado,
+            onboarding::gateway_saude,
             onboarding::wa_iniciar_pareamento,
             onboarding::wa_cancelar_pareamento,
             onboarding::onboarding_validar_numero,

@@ -2471,6 +2471,21 @@ const EX_UPDATE_FAILED: i32 = 70;
 /// `EX_UNAVAILABLE` (sysexits): o servico que se pediu nao pode subir agora.
 const EX_UNAVAILABLE: i32 = 69;
 
+/// #1816 (revisao M1): a trava exclusiva do diretorio de config, segura ate o
+/// processo acabar. Sem ela, dois `start` simultaneos passavam pela checagem
+/// de porta e subiam duas pontes com a mesma sessao.
+#[must_use = "a trava vale enquanto o arquivo estiver aberto"]
+fn travar_diretorio_do_gateway(dir: &std::path::Path) -> Option<std::fs::File> {
+    match bind_gate::travar_diretorio(dir, std::time::Duration::from_secs(5)) {
+        Ok(bind_gate::Trava::Obtida(arquivo)) => Some(arquivo),
+        Ok(bind_gate::Trava::SemSuporte) => None,
+        Err(()) => {
+            eprintln!("{}", bind_gate::mensagem_diretorio_ocupado(dir));
+            std::process::exit(EX_UNAVAILABLE);
+        }
+    }
+}
+
 /// #1816: com a porta ja ocupada, sai em menos de um segundo, sem subir canal
 /// nenhum e sem tocar no pidfile de outro gateway.
 fn recusar_porta_ocupada(gateway: &garraia_config::GatewayConfig) {
@@ -2563,8 +2578,10 @@ async fn async_main(
             config.gateway.port = port;
             // #1261: recusa antes do banner, do PID file e do bind.
             preflight_do_bind(&config.gateway, false);
-            // #1816: porta ocupada tambem — antes do boot e do PID file.
+            // #1816: porta ocupada tambem — antes do boot e do PID file. E a
+            // trava do diretorio, que fecha a janela entre a checagem e o bind.
             recusar_porta_ocupada(&config.gateway);
+            let _trava_do_diretorio = travar_diretorio_do_gateway(config_loader.config_dir());
             if with_voice {
                 config.voice.enabled = true;
             }
@@ -2635,6 +2652,9 @@ async fn async_main(
             #[cfg(feature = "telemetry")]
             let (_telemetry_guard, telemetry_config) = init_telemetry_guard();
             try_stop_daemon(port);
+            // #1816 (revisao): mesma recusa do `start`, agora que o antigo saiu.
+            recusar_porta_ocupada(&config.gateway);
+            let _trava_do_diretorio = travar_diretorio_do_gateway(config_loader.config_dir());
             if with_voice {
                 config.voice.enabled = true;
             }
@@ -3567,6 +3587,12 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
         ForkResult::Parent { .. } => std::process::exit(0),
         ForkResult::Child => {}
     }
+
+    // #1816 (revisao M1): a trava do diretorio vale tambem para o daemon; ela
+    // fica aberta ate o fim desta funcao (a vida do daemon).
+    let _trava_do_diretorio = garraia_config::ConfigLoader::new()
+        .ok()
+        .and_then(|l| travar_diretorio_do_gateway(l.config_dir()));
 
     // Daemon grandchild: write PID file, redirect fds, then start the server.
     std::fs::write(&pid_path, format!("{}\n", nix::unistd::getpid()))

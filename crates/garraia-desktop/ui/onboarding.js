@@ -450,9 +450,36 @@ async function finalizar() {
   let r = null;
   try { r = await invoke('onboarding_testar_provedor'); } catch (e) { r = { ok: false, motivo: String(e) }; }
   if (r && r.ok) {
-    txt.textContent = 'Garra conectado e pronto para conversar';
-    status.style.color = 'var(--garra-ok)';
-    anunciar('Garra conectado e pronto para conversar.');
+    // O modelo responde — mas "pronto" e o GATEWAY que atende ter o provedor
+    // (revisao #1821): um gateway de fora nao releu esta config, e o do app
+    // pode nao ter subido.
+    if (gatewayDeFora) {
+      txt.textContent = 'O modelo responde — falta reiniciar o Garra que já estava rodando';
+      status.classList.add('alerta');
+      anunciar('O modelo responde, mas o Garra que já estava rodando precisa ser reiniciado para usar esta configuração.');
+      return;
+    }
+    txt.textContent = 'Conferindo o Garra deste app…';
+    let saude = null;
+    for (let i = 0; i < 20; i++) {
+      try { saude = await invoke('gateway_saude'); } catch (_e) { saude = null; }
+      if (saude && saude.respondeu && saude.provedor) break;
+      await new Promise((res) => setTimeout(res, 1000));
+    }
+    if (saude && saude.respondeu && saude.provedor) {
+      txt.textContent = 'Garra conectado e pronto para conversar';
+      status.style.color = 'var(--garra-ok)';
+      anunciar('Garra conectado e pronto para conversar.');
+      return;
+    }
+    txt.textContent = 'O modelo responde — mas o Garra deste app ainda não subiu com ele';
+    status.classList.add('alerta');
+    preencher(aviso, [saude && saude.respondeu
+      ? 'O Garra está de pé, mas sem o provedor carregado. Feche e abra o app; se continuar, rode '
+      : 'O Garra deste app não respondeu. Feche e abra o app; se continuar, rode ',
+    { tag: 'code', texto: 'garraia doctor' }, '.']);
+    aviso.classList.add('ativo');
+    anunciar('O modelo responde, mas o Garra deste app ainda não está pronto. Veja o aviso.');
     return;
   }
   txt.textContent = 'WhatsApp conectado — mas o Garra ainda não conversa';

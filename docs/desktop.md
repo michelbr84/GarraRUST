@@ -211,7 +211,9 @@ decisão vive em `garraia_desktop_core::onboarding` (puro, testado no CI — ADR
 - **Pronto** aplica a política do modo (+ autorização no dedicado), persiste
   `onboarding.json` (`concluido: true`, `modo`) em `app_config_dir()` e **reinicia
   o gateway** para o canal recém-vinculado entrar no ar. Depois roda o mesmo teste
-  real do provedor: só diz **"pronto para conversar"** quando o modelo respondeu;
+  real do provedor **e** confere no `/api/health` que o gateway que está atendendo
+  registrou o provedor: só diz **"pronto para conversar"** com as duas coisas (com
+  um gateway de fora do app, pede para reiniciá-lo em vez de ficar verde);
   senão mostra **"WhatsApp conectado — mas o Garra ainda não conversa"**, o motivo e
   o botão **Configurar quem responde**. A instrução do primeiro "oi" segue o modo:
   no próprio número, pela conversa **"Você"** (#1813); no dedicado, do celular
@@ -223,7 +225,11 @@ decisão vive em `garraia_desktop_core::onboarding` (puro, testado no CI — ADR
   primeira tela avisa qual versão está atendendo (e, se for outra versão, como
   pará-la). O app também não reinicia esse gateway: a tela Pronto diz para
   reiniciá-lo. Do lado da CLI, `garraia start` recusa porta ocupada **antes** do
-  boot e do pidfile (exit 69), dizendo se é um gateway GarraIA e de que versão.
+  boot e do pidfile (exit 69), dizendo se é um gateway GarraIA e de que versão, e
+  segura uma trava exclusiva em `<config>/gateway.lock` a vida inteira do processo
+  — dois gateways no mesmo diretório dividiriam a sessão do WhatsApp e o pidfile,
+  mesmo em portas diferentes. Os comandos que gravam a chave e rodam o teste só
+  respondem à janela do assistente.
 
 A escolha de modo **persiste e é configurável depois** em `ui/settings.html` →
 seção **WhatsApp** (trocar modo — com a mesma confirmação/numero que o wizard — e
