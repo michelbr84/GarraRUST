@@ -311,7 +311,8 @@ pub async fn gateway_estado(app: AppHandle) -> GatewayEstado {
 async fn rodar_sidecar_capturando(
     app: &AppHandle,
     args: Vec<String>,
-    stdin: Option<Vec<u8>>,
+    // A chave chega aqui ja embrulhada: o buffer e zerado ao sair de escopo.
+    stdin: Option<provedor::Zeroizing<Vec<u8>>>,
 ) -> Result<(Option<i32>, String), String> {
     let subcomando = args.iter().take(2).cloned().collect::<Vec<_>>().join(" ");
     let (mut rx, mut child) = app
