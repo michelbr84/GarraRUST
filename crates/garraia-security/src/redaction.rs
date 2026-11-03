@@ -82,7 +82,37 @@ where
 /// nem forma que os distinga de texto comum, e um regex que tentasse pegar
 /// "o argumento depois de --password" erraria mais do que acertaria. Quem
 /// olha a tela ve o comando como o agente o montou.
+///
+/// Credencial em **query string** (#1792) e a excecao com contexto: depois de
+/// `?`/`&`, um parametro cujo nome e de credencial (`token`, `access_token`,
+/// `api_key`, `key`, `sig`, `password`, `secret`, `X-Amz-Signature`...) tem o
+/// valor redigido e o nome mantido. O diagnostico de 3xx dos providers ecoa o
+/// `Location`, que o servidor remoto escolhe, e URL assinada ou callback de
+/// OAuth carregam o segredo ali sem prefixo nenhum. Fora de uma query (`key=x`
+/// solto num log) o padrao nao casa — seria texto comum demais.
 pub fn redact_secrets(input: &str) -> String {
+    // Roda ANTES dos padroes de formato: o valor de `?key=sk-...` vira
+    // `[REDACTED]` aqui, e o padrao `sk-` depois nao tem mais o que casar. Na
+    // ordem inversa, o `[REDACTED]` ja escrito seria lido como valor de
+    // parametro e ganharia um `]` sobrando.
+    static QUERY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?xi)
+            ( [?&]
+              (?:
+                  (?:[a-z0-9]+[_\-])*            # prefixo: access_, client_, x-amz-security-
+                  (?: token | api[_\-]?key | secret | password | signature )
+                | key | sig | pwd | passwd | auth
+              )
+              =
+            )
+            [^&\#\s;,'\x22<>]+                 # o valor, ate o proximo parametro ou fim da URL
+            ",
+        )
+        .expect("query redaction regex should compile")
+    });
+    let input = QUERY.replace_all(input, "${1}[REDACTED]");
+
     static PATTERNS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
             r"(?x)
@@ -106,7 +136,7 @@ pub fn redact_secrets(input: &str) -> String {
         .expect("redaction regex should compile")
     });
 
-    PATTERNS.replace_all(input, "[REDACTED]").into_owned()
+    PATTERNS.replace_all(&input, "[REDACTED]").into_owned()
 }
 
 /// Menor sequencia de digitos que o log trata como identificador de pessoa.
@@ -747,6 +777,78 @@ mod tests {
             "erro: exit 101",
         ] {
             assert_eq!(redact_secrets(texto), texto, "redigiu texto comum: {texto}");
+        }
+    }
+
+    /// #1792: credencial em query string. O diagnostico de 3xx dos providers
+    /// ecoa o `Location`, que o servidor remoto escolhe — e URL assinada,
+    /// callback de OAuth e API key de query (`?key=` do Google) poem o segredo
+    /// ali, sem prefixo nenhum que os padroes acima reconhecam. O nome do
+    /// parametro fica (e diagnostico); so o valor sai.
+    #[test]
+    fn redige_credencial_em_query_string() {
+        let casos = [
+            (
+                "https://host/x?token=abc123&page=2",
+                "https://host/x?token=[REDACTED]&page=2",
+            ),
+            (
+                "https://host/x?user_id=u1&api_key=k-123#frag",
+                "https://host/x?user_id=u1&api_key=[REDACTED]#frag",
+            ),
+            (
+                "https://h/cb?access_token=a.b.c&refresh_token=r1&id_token=i1",
+                "https://h/cb?access_token=[REDACTED]&refresh_token=[REDACTED]&id_token=[REDACTED]",
+            ),
+            (
+                "https://maps.googleapis.com/x?key=AIzaSyFAKE&q=a",
+                "https://maps.googleapis.com/x?key=[REDACTED]&q=a",
+            ),
+            // SAS do Azure e URL assinada da AWS: o valor e a assinatura.
+            (
+                "https://c.blob.core.windows.net/b?sv=2024&sig=Zm9v%2Bbar",
+                "https://c.blob.core.windows.net/b?sv=2024&sig=[REDACTED]",
+            ),
+            (
+                "https://s3/obj?X-Amz-Signature=deadbeef&X-Amz-Security-Token=tok",
+                "https://s3/obj?X-Amz-Signature=[REDACTED]&X-Amz-Security-Token=[REDACTED]",
+            ),
+            (
+                "https://h/login?user=a&password=hunter2&Secret=s&client_secret=c",
+                "https://h/login?user=a&password=[REDACTED]&Secret=[REDACTED]&client_secret=[REDACTED]",
+            ),
+            (
+                "https://h/x?apikey=1&api-key=2&pwd=3&passwd=4&signature=5&auth=6",
+                "https://h/x?apikey=[REDACTED]&api-key=[REDACTED]&pwd=[REDACTED]\
+                 &passwd=[REDACTED]&signature=[REDACTED]&auth=[REDACTED]",
+            ),
+            // Dentro do diagnostico de 3xx: o `;` que fecha o `Location` fica.
+            (
+                "status=308, location=https://h/v1?user_id=u&token=segredo; redirects desligados",
+                "status=308, location=https://h/v1?user_id=u&token=[REDACTED]; redirects desligados",
+            ),
+        ];
+        for (entrada, esperado) in casos {
+            assert_eq!(redact_secrets(entrada), esperado, "entrada: {entrada}");
+        }
+    }
+
+    /// O outro lado do #1792: parametro de query que nao e credencial fica
+    /// intacto, e `token=`/`key=` fora de uma query (texto de log comum) nao
+    /// e alvo deste padrao.
+    #[test]
+    fn query_string_sem_credencial_fica_intacta() {
+        for texto in [
+            "https://api.github.com/search?q=rust&page=2&per_page=50",
+            "https://h/v1?max_tokens=100&keyword=garra&author=michel&code=BR",
+            "https://h/x?tokens=10&monkey=1&signatures=2",
+            "config key=llm.model token=abc",
+        ] {
+            assert_eq!(
+                redact_secrets(texto),
+                texto,
+                "redigiu o que nao e segredo: {texto}"
+            );
         }
     }
 

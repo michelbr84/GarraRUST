@@ -42,11 +42,10 @@ impl AnthropicProvider {
         // never legitimately 302s to another host, and following one would
         // bypass the SSRF gate. A pinned client from `with_client` already
         // has this; the default covers providers built from config at boot.
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        // #1792: a politica vem de `cliente_llm`, sem o reserva
+        // `Client::new()` que voltava seguindo redirect se o builder falhasse.
+        let client =
+            crate::cliente_llm::cliente_padrao(None).expect(crate::cliente_llm::SEM_CLIENTE_HTTP);
         Self {
             client,
             api_key: api_key.into(),

@@ -15,7 +15,6 @@
 
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
@@ -126,11 +125,11 @@ impl OpenAiCodexProvider {
             }
             None => ESFORCO_PADRAO.to_string(),
         };
-        let cliente = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap_or_default();
+        // #1792: a politica de `cliente_llm`, sem o reserva `unwrap_or_default()`
+        // que voltava seguindo redirect se o builder falhasse. Sem teto total:
+        // a janela chega por `with_client`, como nos outros providers.
+        let cliente =
+            crate::cliente_llm::cliente_padrao(None).expect(crate::cliente_llm::SEM_CLIENTE_HTTP);
         Self {
             armazem: ArmazemDeCredenciais::new(dir_credenciais),
             cliente,

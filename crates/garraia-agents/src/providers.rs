@@ -506,9 +506,10 @@ pub(crate) fn truncar(texto: &str, max: usize) -> String {
 /// erro escritos para 4xx/5xx — onde quem explica e o CORPO. So que corpo de
 /// 3xx e vazio e a explicacao esta no header `Location`, que ninguem lia: o
 /// operador com um `base_url` errado recebia `status=308 Permanent Redirect,
-/// body=` e nao tinha o que agir. (Clientes fora deste caminho que usam
-/// client sem policy seguem o default do reqwest — gap pre-existente,
-/// follow-up fora do escopo da #1779.)
+/// body=` e nao tinha o que agir. Desde a #1792 os clientes fora deste
+/// caminho (embeddings, llama.cpp, A2A, `web_search`) tambem nascem sem
+/// seguir redirect (`cliente_llm::cliente_padrao`), e embeddings, llama.cpp e
+/// A2A usam este mesmo diagnostico.
 ///
 /// O texto comeca em `status={status}` de proposito: e o contrato que
 /// [`status_http_do_erro`] le, e cada chamador so prefixa o proprio rotulo de
@@ -531,11 +532,32 @@ pub(crate) fn diagnostico_de_redirecionamento(
     )
 }
 
+/// #1792: o guard de 3xx das superficies fora do caminho principal
+/// (embeddings, llama.cpp, A2A). Resposta 3xx vira `Err` com
+/// `"{rotulo}: status=3xx, location=...; ..."` — o rotulo que cada uma ja
+/// usava e, logo depois, o texto que [`status_http_do_erro`] le; qualquer
+/// outra resposta passa (`Ok`). Mesma garantia do diagnostico: o redirect nao
+/// e seguido, so o header que ja chegou e formatado.
+pub(crate) fn recusar_redirecionamento(
+    rotulo: &str,
+    res: &reqwest::Response,
+    alvo: &str,
+) -> Result<()> {
+    if res.status().is_redirection() {
+        return Err(Error::Agent(format!(
+            "{rotulo}: {}",
+            diagnostico_de_redirecionamento(res.status(), res.headers(), alvo)
+        )));
+    }
+    Ok(())
+}
+
 /// O `Location` reduzido ao que pode sair do processo.
 ///
 /// E dado remoto influenciavel: quem escolhe o destino e o servidor, que pode
 /// mandar controle de terminal (#995), uma credencial embutida
-/// (`https://user:senha@host`) ou um valor arbitrariamente longo. A ordem
+/// (`https://user:senha@host`, ou na query, `?token=...`, desde a #1792) ou
+/// um valor arbitrariamente longo. A ordem
 /// redigir -> tirar controle -> truncar e a mesma de `turn_events::sanear`, e
 /// pela mesma razao: truncar antes deixaria meia sequencia (ou meio segredo)
 /// passar sem casar. O corte e por CARACTERE — um `Location` com multibyte
@@ -749,10 +771,11 @@ mod tests {
             &headers,
             "a base_url do provider",
         );
+        // #1792: a credencial da query sai redigida; o resto do destino fica.
         assert_eq!(
             msg,
             "status=308 Permanent Redirect, \
-             location=https://host/caminho?user_id=user_x&token=segredo; \
+             location=https://host/caminho?user_id=user_x&token=[REDACTED]; \
              redirects desligados por seguranca - corrija a base_url do provider"
         );
         // O contrato de leitura por texto continua valendo para 3xx.

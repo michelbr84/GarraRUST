@@ -246,12 +246,10 @@ pub struct ArmazemDeCredenciais {
 impl ArmazemDeCredenciais {
     /// `dir` e `<config_dir>/credentials/openai-codex`.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        let cliente = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap_or_default();
+        // #1792: a politica de `cliente_llm`, sem o reserva `unwrap_or_default()`
+        // que voltava seguindo redirect se o builder falhasse.
+        let cliente = crate::cliente_llm::cliente_padrao(Some(Duration::from_secs(30)))
+            .expect(crate::cliente_llm::SEM_CLIENTE_HTTP);
         Self {
             dir: dir.into(),
             endpoints: Endpoints::default(),
