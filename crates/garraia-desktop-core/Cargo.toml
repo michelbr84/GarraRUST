@@ -11,6 +11,12 @@ description = "Desktop Control Center — logica sem Tauri: modulos, estado liga
 # esta fora de todos os gates de CI; arrastar para ca qualquer dependencia
 # pesada — em especial `tauri` — anularia o motivo dela existir.
 serde = { workspace = true }
+# #1700: ler a lista de modelos do Ollama, o `/api/health` e o envelope
+# `garra.ask.v1` do teste de conectividade. Ja esta no workspace.
+serde_json = { workspace = true }
+# #1821 (revisao): a chave do provedor e zerada na memoria ao sair de escopo.
+# Ja esta no Cargo.lock (garraia-channels).
+zeroize = "1.8"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

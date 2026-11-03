@@ -150,7 +150,9 @@ jobs:
           # Cada comando que a webview chama tem de existir e estar registrado.
           for cmd in onboarding_estado onboarding_marcar_exibido wa_iniciar_pareamento \
                      wa_cancelar_pareamento onboarding_validar_numero onboarding_aplicar_persona \
-                     onboarding_aplicar_modo onboarding_fechar onboarding_reabrir; do
+                     onboarding_aplicar_modo onboarding_fechar onboarding_reabrir \
+                     onboarding_provedor_status onboarding_configurar_provedor \
+                     onboarding_testar_provedor gateway_estado; do
             grep -q "pub async fn $cmd" "$cmds" \
               || { echo "::error ::$cmds nao define $cmd (#1636)"; exit 1; }
             grep -q "onboarding::$cmd" "$lib" \
@@ -167,7 +169,12 @@ jobs:
             echo "::error ::a janela 'onboarding' nao pode estar na capability 'default' ampla (F5) — use $caps"; exit 1
           fi
 
-          echo "ok: wizard sem script inline (CSP), ouve NDJSON, desenha o QR, os 9 comandos existem + registrados, e a janela tem capability propria minima"
+          # #1700: a chave do provedor nunca vira argumento de processo — o
+          # comando de gravar usa o stdin do `config set-routing`.
+          grep -q -- '--api-key-stdin' crates/garraia-desktop-core/src/provedor.rs \
+            || { echo "::error ::o passo de provedor deixou de entregar a chave pelo stdin (#1700)"; exit 1; }
+
+          echo "ok: wizard sem script inline (CSP), ouve NDJSON, desenha o QR, os 13 comandos existem + registrados, a chave vai pelo stdin, e a janela tem capability propria minima"
 
   # #1636 (fatia 3): o unico teste AUTOMATIZADO da UI do wizard. Abre
   # `ui/onboarding.html` por file:// com um `window.__TAURI__` falso (sem Tauri,

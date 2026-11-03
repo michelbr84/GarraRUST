@@ -156,8 +156,8 @@ comandos e a entrada em `capabilities` continuam ligados.
 ## Assistente de Primeiro Uso (#1636)
 
 Na primeira execução — sem `onboarding.json` com `concluido: true` em
-`app_config_dir()` — o app abre o wizard `ui/onboarding.html`. São cinco telas:
-**Boas-vindas → Modo → QR → Personalidade → Pronto**, em pt-BR por padrão. O
+`app_config_dir()` — o app abre o wizard `ui/onboarding.html`. São seis telas:
+**Boas-vindas → Quem responde → Modo → QR → Personalidade → Pronto**, em pt-BR por padrão. O
 usuário não-dev instala o `.msi`, abre, escaneia o QR e troca mensagens com o
 Garra **sem abrir terminal nenhuma vez**.
 
@@ -165,6 +165,19 @@ Garra **sem abrir terminal nenhuma vez**.
 decisão vive em `garraia_desktop_core::onboarding` (puro, testado no CI — ADR
 0021). A casca só lança o sidecar, transmite os eventos e grava config/estado.
 
+- **Quem responde** (#1700): sem provedor de LLM o Garra pareia e **nunca**
+  responde, então o provedor vem antes do WhatsApp. A tela oferece o **Ollama
+  local** (a casca pergunta a `127.0.0.1:11434/api/tags` e lista os modelos
+  instalados) e o **OpenRouter** (chave + modelo, sugerido o `DEFAULT_CLOUD_MODEL`
+  do `garraia init`). Gravar é o `garraia config set-routing` do sidecar — o mesmo
+  writer da CLI, arquivo `0600` — com a chave entregue pelo **stdin**
+  (`--api-key-stdin`): ela nunca vira argumento de processo, não volta para a
+  webview (o campo é limpo no envio) e não aparece em erro. O **teste** é uma
+  chamada de verdade: `garraia ask --json` com o provedor padrão; volta só se
+  conversou, a latência e, se não, o motivo (redigido) e uma dica acionável
+  (chave recusada, sem crédito, Ollama parado, modelo inexistente, prazo). Só um
+  teste que passou libera **Continuar**; "Configurar depois" segue sem provedor,
+  e a tela Pronto diz isso.
 - **QR**: a casca lança o sidecar `garraia whatsapp link --machine` (fatia 1,
   mesmo resolver de Node privado) e repassa cada linha NDJSON do stdout à webview
   pelo evento Tauri `wa://ndjson`. A webview rasteriza a **matriz** (`modules`,
@@ -197,7 +210,26 @@ decisão vive em `garraia_desktop_core::onboarding` (puro, testado no CI — ADR
   modo `0600` no Unix).
 - **Pronto** aplica a política do modo (+ autorização no dedicado), persiste
   `onboarding.json` (`concluido: true`, `modo`) em `app_config_dir()` e **reinicia
-  o gateway** para o canal recém-vinculado entrar no ar.
+  o gateway** para o canal recém-vinculado entrar no ar. Depois roda o mesmo teste
+  real do provedor **e** confere no `/api/health` que o gateway que está atendendo
+  registrou o provedor: só diz **"pronto para conversar"** com as duas coisas (com
+  um gateway de fora do app, pede para reiniciá-lo em vez de ficar verde);
+  senão mostra **"WhatsApp conectado — mas o Garra ainda não conversa"**, o motivo e
+  o botão **Configurar quem responde**. A instrução do primeiro "oi" segue o modo:
+  no próprio número, pela conversa **"Você"** (#1813); no dedicado, do celular
+  pessoal.
+- **Gateway de fora do app** (#1816): antes de subir o sidecar, a casca pergunta a
+  `127.0.0.1:<PORT>/api/health`. Se já houver um gateway GarraIA (serviço do
+  systemd, outra instalação, CLI aberta), o app **não** sobe outro — subir rodaria
+  canais e a ponte do WhatsApp com a mesma sessão só para morrer no bind — e a
+  primeira tela avisa qual versão está atendendo (e, se for outra versão, como
+  pará-la). O app também não reinicia esse gateway: a tela Pronto diz para
+  reiniciá-lo. Do lado da CLI, `garraia start` recusa porta ocupada **antes** do
+  boot e do pidfile (exit 69), dizendo se é um gateway GarraIA e de que versão, e
+  segura uma trava exclusiva em `<config>/gateway.lock` a vida inteira do processo
+  — dois gateways no mesmo diretório dividiriam a sessão do WhatsApp e o pidfile,
+  mesmo em portas diferentes. Os comandos que gravam a chave e rodam o teste só
+  respondem à janela do assistente.
 
 A escolha de modo **persiste e é configurável depois** em `ui/settings.html` →
 seção **WhatsApp** (trocar modo — com a mesma confirmação/numero que o wizard — e
@@ -211,8 +243,8 @@ por isso **nenhuma** página do desktop usa `<script>` inline — o JS de cada t
 só `core:default` para IPC + eventos), fora da `default` ampla que concede shell/
 dialog/notification/updater às outras janelas — o pareamento é lançado no Rust
 (`app.shell()`), nunca pela webview. Um grep no job `assert-ui-assets` barra um
-`<script>` inline novo e confere que os nove comandos, a janela e as capabilities
-seguem ligados.
+`<script>` inline novo e confere que os treze comandos, a janela e as capabilities
+seguem ligados (e que a chave do provedor continua indo pelo stdin).
 
 ### Validar o assistente (roteiro manual do dono)
 
@@ -226,7 +258,13 @@ jobs irmãos.
    terminal nenhum.**
 2. **Boas-vindas**: a janela do assistente abre sozinha. Clique **Começar**.
    (Prova sem celular: o app grava `app_config_dir()/onboarding-shown.marker` ao
-   exibir a tela.)
+   exibir a tela.) Se aparecer o aviso "Já existe um Garra rodando nesta
+   máquina", é outra instalação atendendo (#1816): para testar o app, pare-a antes.
+2b. **Quem responde**: escolha o **Ollama** (se instalado, com um modelo) ou o
+   **OpenRouter** (cole a chave de openrouter.ai/keys) e clique **Salvar e
+   testar**. Esperado: "Respondeu (modelo) em N s" e o botão vira **Continuar**.
+   Com uma chave errada, o erro diz que o provedor recusou a chave e o campo vem
+   vazio.
 3. **Modo**:
    - **Meu próprio número** (o Garra responde todo mundo): o aviso amarelo aparece
      e o botão **Continuar** só habilita depois de você **marcar a confirmação**.
@@ -242,13 +280,18 @@ jobs irmãos.
    por "Conectando a sua conta…" e some para a próxima tela.
 5. **Personalidade**: dê um nome, escolha o estilo e deixe **Português (Brasil)**.
    Clique **Continuar**.
-6. **Pronto**: o status deve virar **● Garra conectado** (só vira depois de a
-   admissão + a autorização do seu número terem dado certo). Teste a conversa:
+6. **Pronto**: o status deve virar **● Garra conectado e pronto para conversar**
+   (só vira depois de a admissão + a autorização do seu número terem dado certo
+   **e** de o modelo responder a um teste real). Se o modelo não responder, o
+   status diz que o Garra ainda não conversa e o botão **Configurar quem
+   responde** volta ao passo 2b. Teste a conversa:
    - **dedicado**: do **seu celular pessoal**, mande um **"oi"** para o número do
      chip do Garra e confirme que ele responde.
-   - **próprio**: peça para outra pessoa mandar "oi" para o seu número, **ou** use
-     a conversa **"Você"** ("Conversa com você mesmo") do WhatsApp — `open` admite
-     inclusive o próprio número.
+   - **próprio**: use a conversa **"Você"** ("Conversa com você mesmo") do
+     WhatsApp (#1813), **ou** peça para outra pessoa mandar "oi" para o seu número.
+   - **restart**: feche e abra o app, mande um "oi" logo em seguida e confirme que
+     ele é respondido (mensagem que chega com o gateway reiniciando, #1814) e que
+     a conexão voltou sem QR novo.
 
    Depois clique **Abrir o Garra**.
 7. **Settings**: abra Ajustes → **WhatsApp**, confirme que o modo escolhido está

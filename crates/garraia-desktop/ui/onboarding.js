@@ -15,13 +15,17 @@ const invoke = (cmd, args) => (T.core?.invoke ? T.core.invoke(cmd, args) : Promi
 const listen = (ev, cb) => (T.event?.listen ? T.event.listen(ev, cb) : Promise.resolve(() => {}));
 
 const $ = (id) => document.getElementById(id);
-const telas = ['tela-boas-vindas', 'tela-modo', 'tela-qr', 'tela-personalidade', 'tela-pronto'];
+const telas = ['tela-boas-vindas', 'tela-provedor', 'tela-modo', 'tela-qr', 'tela-personalidade', 'tela-pronto'];
 
 let modoEscolhido = null;   // "proprio" | "dedicado"
 let numeroPessoal = null;   // +digitos normalizado (modo dedicado)
 let confirmoAberto = false; // aviso do modo proprio marcado
 let pareado = false;        // o `done` chegou
 let erroMostrado = false;   // um `error` ja apareceu nesta tentativa
+let provedorEscolhido = null; // "ollama" | "openrouter" | null (#1700)
+let provedorTestado = false;  // o teste de conectividade passou nesta sessao
+let voltarParaPronto = false; // a tela de provedor foi aberta pela tela Pronto
+let gatewayDeFora = null;     // #1816: { versao, versao_app } quando o gateway nao e do app
 
 function anunciar(texto) { $('live-region').textContent = texto; }
 
@@ -35,8 +39,167 @@ function mostrar(tela) {
 invoke('onboarding_marcar_exibido');
 
 // ── Boas-vindas ──────────────────────────────────────────────────────────────
-$('btn-comecar').addEventListener('click', () => mostrar('tela-modo'));
-$('btn-modo-voltar').addEventListener('click', () => mostrar('tela-boas-vindas'));
+$('btn-comecar').addEventListener('click', () => abrirProvedor(false));
+$('btn-modo-voltar').addEventListener('click', () => mostrar('tela-provedor'));
+
+// #1816: ja havia um gateway GarraIA rodando fora deste app. Dizer qual e o que
+// isso muda vem ANTES de qualquer passo — o teste inteiro seria contra ele.
+// Monta um aviso so com texto e <code> — nada que venha de fora (a versao que
+// o servico da porta disse, o motivo do provedor) vira HTML.
+function preencher(el, partes) {
+  el.textContent = '';
+  for (const p of partes) {
+    if (p && typeof p === 'object') {
+      const n = document.createElement(p.tag);
+      n.textContent = p.texto;
+      el.appendChild(n);
+    } else {
+      el.appendChild(document.createTextNode(String(p)));
+    }
+  }
+}
+function partesGatewayDeFora(g) {
+  const partes = ['Já existe um Garra rodando nesta máquina (versão ' + g.versao + '), fora deste app — é ele que vai atender.'];
+  if (g.versao !== g.versao_app) {
+    partes.push(' Ele é de outra versão (este app é a ' + g.versao_app + '). Para usar o Garra deste app, encerre o outro (por exemplo ',
+      { tag: 'code', texto: 'systemctl --user stop garraia' }, ') e abra o app de novo.');
+  }
+  return partes;
+}
+invoke('gateway_estado').then((g) => {
+  if (g && g.origem === 'externo' && typeof g.versao === 'string') {
+    gatewayDeFora = g;
+    const el = $('bv-aviso-gateway');
+    preencher(el, partesGatewayDeFora(g));
+    el.classList.add('ativo');
+  }
+}).catch(() => {});
+
+// ── Quem responde (#1700) ────────────────────────────────────────────────────
+// A chave colada vai UMA vez para o backend (que a entrega pelo stdin do
+// `config set-routing`) e o campo e limpo em seguida: ela nunca volta para ca.
+function esconderErroProv() { const e = $('prov-erro'); e.classList.remove('ativo'); e.textContent = ''; }
+function mostrarErroProv(msg) { const e = $('prov-erro'); e.textContent = msg; e.classList.add('ativo'); anunciar(msg); }
+
+function atualizarBotaoProv() {
+  const btn = $('btn-prov-testar');
+  if (provedorTestado) { btn.disabled = false; btn.textContent = 'Continuar'; return; }
+  if (provedorEscolhido === 'ollama') {
+    btn.disabled = !$('ollama-modelo').value;
+    btn.textContent = 'Salvar e testar';
+  } else if (provedorEscolhido === 'openrouter') {
+    btn.disabled = !$('openrouter-chave').value.trim() || !$('openrouter-modelo').value.trim();
+    btn.textContent = 'Salvar e testar';
+  } else {
+    // Sem escolha nova: com um provedor ja configurado, so testa.
+    btn.disabled = !$('prov-atual').classList.contains('ativo');
+    btn.textContent = 'Testar e continuar';
+  }
+}
+
+function selecionarProvedor(p) {
+  provedorEscolhido = p;
+  provedorTestado = false;
+  esconderErroProv();
+  $('prov-ok').classList.add('hidden');
+  $('btn-prov-ollama').setAttribute('aria-pressed', String(p === 'ollama'));
+  $('btn-prov-openrouter').setAttribute('aria-pressed', String(p === 'openrouter'));
+  $('config-ollama').classList.toggle('hidden', p !== 'ollama');
+  $('config-openrouter').classList.toggle('hidden', p !== 'openrouter');
+  if (p === 'openrouter') $('openrouter-chave').focus();
+  atualizarBotaoProv();
+}
+
+async function abrirProvedor(daTelaPronto) {
+  voltarParaPronto = daTelaPronto;
+  mostrar('tela-provedor');
+  esconderErroProv();
+  let st = null;
+  try { st = await invoke('onboarding_provedor_status'); } catch (_e) { st = null; }
+  st = st || {};
+  const atual = $('prov-atual');
+  if (st.configurado) {
+    atual.textContent = 'Já configurado: ' + st.provedor + (st.modelo ? ' · ' + st.modelo : '') +
+      '. Teste para confirmar que ele responde, ou escolha outro abaixo.';
+    atual.classList.add('ativo');
+  } else {
+    atual.textContent = '';
+    atual.classList.remove('ativo');
+  }
+  const sel = $('ollama-modelo');
+  sel.innerHTML = '';
+  const modelos = Array.isArray(st.ollama_modelos) ? st.ollama_modelos : [];
+  for (const m of modelos) {
+    const o = document.createElement('option');
+    o.value = m; o.textContent = m;
+    sel.appendChild(o);
+  }
+  const temOllama = Boolean(st.ollama_disponivel) && modelos.length > 0;
+  $('btn-prov-ollama').disabled = !temOllama;
+  $('prov-ollama-sub').textContent = temOllama
+    ? 'Roda neste computador: sem chave e sem custo por mensagem. Encontrei ' + modelos.length + ' modelo(s).'
+    : (st.ollama_disponivel
+      ? 'O Ollama está rodando, mas sem nenhum modelo de conversa. Baixe um (ex.: ollama pull qwen3.5:2b) e volte aqui.'
+      : 'Não encontrei o Ollama neste computador (porta 11434). Instale em ollama.com, ou use o OpenRouter.');
+  if (!$('openrouter-modelo').value) $('openrouter-modelo').value = st.modelo_padrao_openrouter || '';
+  atualizarBotaoProv();
+}
+
+$('btn-prov-ollama').addEventListener('click', () => selecionarProvedor('ollama'));
+$('btn-prov-openrouter').addEventListener('click', () => selecionarProvedor('openrouter'));
+$('ollama-modelo').addEventListener('change', atualizarBotaoProv);
+$('openrouter-chave').addEventListener('input', () => { provedorTestado = false; esconderErroProv(); atualizarBotaoProv(); });
+$('openrouter-modelo').addEventListener('input', () => { provedorTestado = false; esconderErroProv(); atualizarBotaoProv(); });
+$('btn-prov-voltar').addEventListener('click', () => mostrar(voltarParaPronto ? 'tela-pronto' : 'tela-boas-vindas'));
+
+function seguirDoProvedor() {
+  if (voltarParaPronto) {
+    voltarParaPronto = false;
+    mostrar('tela-pronto');
+    finalizar(); // reaplica o modo (idempotente), reinicia o gateway e testa de novo
+  } else {
+    mostrar('tela-modo');
+  }
+}
+
+$('btn-prov-depois').addEventListener('click', () => { provedorTestado = false; seguirDoProvedor(); });
+
+$('btn-prov-testar').addEventListener('click', async () => {
+  if (provedorTestado) { seguirDoProvedor(); return; }
+  const btn = $('btn-prov-testar');
+  btn.disabled = true;
+  esconderErroProv();
+  $('prov-ok').classList.add('hidden');
+  try {
+    if (provedorEscolhido === 'ollama') {
+      await invoke('onboarding_configurar_provedor', { provedor: 'ollama', modelo: $('ollama-modelo').value, chave: null });
+    } else if (provedorEscolhido === 'openrouter') {
+      const chave = $('openrouter-chave').value;
+      $('openrouter-chave').value = '';
+      await invoke('onboarding_configurar_provedor', { provedor: 'openrouter', modelo: $('openrouter-modelo').value, chave });
+    }
+  } catch (e) {
+    mostrarErroProv(typeof e === 'string' ? e : 'Não deu para salvar o provedor.');
+    atualizarBotaoProv();
+    return;
+  }
+  $('prov-testando').classList.remove('hidden');
+  anunciar('Testando o modelo.');
+  let r = null;
+  try { r = await invoke('onboarding_testar_provedor'); } catch (e) { r = { ok: false, motivo: String(e) }; }
+  $('prov-testando').classList.add('hidden');
+  if (r && r.ok) {
+    provedorTestado = true;
+    $('prov-ok-texto').textContent = 'Respondeu' + (r.modelo ? ' (' + r.modelo + ')' : '') +
+      (r.latencia_ms != null ? ' em ' + (r.latencia_ms / 1000).toFixed(1) + ' s' : '') + '.';
+    $('prov-ok').classList.remove('hidden');
+    anunciar('O modelo respondeu. Pode continuar.');
+  } else {
+    provedorTestado = false;
+    mostrarErroProv('O modelo não respondeu: ' + ((r && r.motivo) || 'erro desconhecido') + '. ' + ((r && r.dica) || ''));
+  }
+  atualizarBotaoProv();
+});
 
 // ── Modo ───────────────────────────────────────────────────────────────────
 function esconderErroModo() { const e = $('modo-erro'); e.classList.remove('ativo'); e.textContent = ''; }
@@ -233,9 +396,25 @@ $('btn-persona-continuar').addEventListener('click', async () => {
 });
 
 // ── Pronto ─────────────────────────────────────────────────────────────────
+// A instrucao do primeiro "oi" depende do modo (#1813): no proprio numero, o
+// dono fala com o Garra pela conversa "Voce"; no dedicado, do celular pessoal.
+function instrucaoDoModo() {
+  return modoEscolhido === 'dedicado'
+    ? 'Do seu <b>celular pessoal</b>, mande um <b>“oi”</b> para o número do Garra e veja ele responder.'
+    : 'No WhatsApp, abra a conversa <b>“Você”</b> (conversa com você mesmo) e mande um <b>“oi”</b> — ' +
+      'ou peça para alguém te mandar uma mensagem.';
+}
+
 async function finalizar() {
   const txt = $('pronto-status-texto');
+  const status = $('pronto-status');
+  const aviso = $('pronto-aviso');
   txt.textContent = 'Ligando o Garra…';
+  status.classList.remove('alerta');
+  status.style.color = '';
+  aviso.classList.remove('ativo');
+  $('btn-pronto-provedor').classList.add('hidden');
+  $('pronto-instrucao').innerHTML = instrucaoDoModo();
   anunciar('Ligando o Garra.');
   $('pronto-erro').classList.remove('ativo');
   try {
@@ -246,37 +425,71 @@ async function finalizar() {
       numeroPessoal: numeroPessoal,
       confirmoAberto: confirmoAberto,
     });
-    txt.textContent = 'Garra conectado';
-    $('pronto-status').style.color = 'var(--garra-ok)';
-    // #1700: "conectado" nao e "conversa". Sem provedor de LLM no config, o
-    // Garra recebe as mensagens e nunca responde — o doctor do WhatsApp ja
-    // julga isso; a tela Pronto precisa dizer antes do primeiro "oi" sem
-    // resposta. So o booleano volta daqui (a chave nunca atravessa a webview).
-    try {
-      const temProvedor = await invoke('onboarding_provedor_configurado');
-      if (!temProvedor) {
-        const aviso = $('pronto-aviso');
-        aviso.innerHTML =
-          '<b>Último passo:</b> falta dizer quem responde. Sem provedor de LLM ' +
-          'configurado, o Garra recebe suas mensagens e <b>não responde</b>. ' +
-          'No terminal, rode <code>garraia init</code> (Windows: <code>"C:\\Program Files\\garraia-desktop\\garraia.exe" init</code>) ' +
-          'e depois reabra o Garra.';
-        aviso.classList.add('ativo');
-        anunciar('Garra conectado, mas sem provedor de LLM: o Garra não vai responder até configurar. Veja o aviso na tela.');
-      } else {
-        anunciar('Garra conectado e pronto para receber mensagens.');
-      }
-    } catch (_) {
-      // Falhou a checagem (ex.: config ilegível): não inventa — mantém o
-      // anúncio completo e deixa o doctor/settings mostrarem o estado real.
-      anunciar('Garra conectado e pronto para receber mensagens.');
-    }
   } catch (e) {
     txt.textContent = 'Ainda não ficou pronto';
     const el = $('pronto-erro');
     el.textContent = 'O canal foi vinculado, mas faltou autorizar/ligar o Garra: ' + String(e) +
       '. Abra os Ajustes e tente de novo.';
     el.classList.add('ativo');
+    return;
   }
+
+  // #1816: com um gateway de fora do app, quem precisa reiniciar para ligar o
+  // WhatsApp e ELE — o app nao reinicia o que nao e dele.
+  if (gatewayDeFora) {
+    const g = $('pronto-aviso-gateway');
+    preencher(g, ['Quem atende é o Garra que já estava rodando nesta máquina (versão ' + gatewayDeFora.versao +
+      '). Reinicie esse Garra para ele ligar o WhatsApp (por exemplo ',
+    { tag: 'code', texto: 'systemctl --user restart garraia' }, ').']);
+    g.classList.add('ativo');
+  }
+
+  // #1700: "conectado" nao e "conversa". O teste e uma chamada de verdade ao
+  // modelo padrao; so o resultado volta (nunca a chave nem a resposta).
+  txt.textContent = 'Testando se o Garra consegue conversar…';
+  let r = null;
+  try { r = await invoke('onboarding_testar_provedor'); } catch (e) { r = { ok: false, motivo: String(e) }; }
+  if (r && r.ok) {
+    // O modelo responde — mas "pronto" e o GATEWAY que atende ter o provedor
+    // (revisao #1821): um gateway de fora nao releu esta config, e o do app
+    // pode nao ter subido.
+    if (gatewayDeFora) {
+      txt.textContent = 'O modelo responde — falta reiniciar o Garra que já estava rodando';
+      status.classList.add('alerta');
+      anunciar('O modelo responde, mas o Garra que já estava rodando precisa ser reiniciado para usar esta configuração.');
+      return;
+    }
+    txt.textContent = 'Conferindo o Garra deste app…';
+    let saude = null;
+    for (let i = 0; i < 20; i++) {
+      try { saude = await invoke('gateway_saude'); } catch (_e) { saude = null; }
+      if (saude && saude.respondeu && saude.provedor) break;
+      await new Promise((res) => setTimeout(res, 1000));
+    }
+    if (saude && saude.respondeu && saude.provedor) {
+      txt.textContent = 'Garra conectado e pronto para conversar';
+      status.style.color = 'var(--garra-ok)';
+      anunciar('Garra conectado e pronto para conversar.');
+      return;
+    }
+    txt.textContent = 'O modelo responde — mas o Garra deste app ainda não subiu com ele';
+    status.classList.add('alerta');
+    preencher(aviso, [saude && saude.respondeu
+      ? 'O Garra está de pé, mas sem o provedor carregado. Feche e abra o app; se continuar, rode '
+      : 'O Garra deste app não respondeu. Feche e abra o app; se continuar, rode ',
+    { tag: 'code', texto: 'garraia doctor' }, '.']);
+    aviso.classList.add('ativo');
+    anunciar('O modelo responde, mas o Garra deste app ainda não está pronto. Veja o aviso.');
+    return;
+  }
+  txt.textContent = 'WhatsApp conectado — mas o Garra ainda não conversa';
+  status.classList.add('alerta');
+  preencher(aviso, [{ tag: 'b', texto: 'Falta quem responde.' },
+    ' O Garra recebe suas mensagens, mas não vai responder até um modelo de IA funcionar. Motivo: ' +
+    ((r && r.motivo) || 'nenhum provedor configurado') + '. ' + ((r && r.dica) || '')]);
+  aviso.classList.add('ativo');
+  $('btn-pronto-provedor').classList.remove('hidden');
+  anunciar('WhatsApp conectado, mas o Garra ainda não conversa. Configure quem responde.');
 }
+$('btn-pronto-provedor').addEventListener('click', () => abrirProvedor(true));
 $('btn-abrir-garra').addEventListener('click', () => invoke('onboarding_fechar'));

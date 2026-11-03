@@ -55,8 +55,54 @@ pub(crate) fn contain_in_kill_on_close_job(child: &tauri_plugin_shell::process::
     }
 }
 
+/// De onde vem o gateway que este app esta usando (#1816).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "origem", rename_all = "snake_case")]
+pub enum Origem {
+    /// O sidecar deste app (o caso normal).
+    Proprio,
+    /// Ja havia um gateway GarraIA na porta (servico do sistema, outra
+    /// instalacao, CLI aberta): o app NAO sobe outro. Subir outro rodaria o
+    /// boot inteiro — canais e a ponte do WhatsApp com a MESMA sessao — so
+    /// para morrer no bind, e ainda apagaria o pidfile do outro.
+    Externo { versao: String },
+}
+
+static ORIGEM: Mutex<Option<Origem>> = Mutex::new(None);
+
+/// A origem do gateway em uso, para a webview e o onboarding.
+pub fn origem() -> Option<Origem> {
+    ORIGEM.lock().ok().and_then(|o| o.clone())
+}
+
+fn definir_origem(o: Origem) {
+    if let Ok(mut guard) = ORIGEM.lock() {
+        *guard = Some(o);
+    }
+}
+
+/// A porta em que o sidecar subiria (`PORT`, default 3888) — a mesma
+/// resolucao do `garraia start`.
+fn porta() -> u16 {
+    garraia_config::bind::endereco_do_cliente().1
+}
+
+/// Ha um gateway GarraIA (de qualquer versao) ouvindo na porta?
+fn gateway_alheio() -> Option<String> {
+    garraia_desktop_core::provedor::gateway_na_porta(porta(), std::time::Duration::from_millis(800))
+}
+
 pub fn launch(app: &AppHandle) -> GatewayHandle {
     let handle: GatewayHandle = Arc::new(Mutex::new(None));
+    if let Some(versao) = gateway_alheio() {
+        eprintln!(
+            "[garra] ja ha um gateway GarraIA {versao} na porta {}: o app usa esse e nao sobe outro (#1816)",
+            porta()
+        );
+        definir_origem(Origem::Externo { versao });
+        return handle;
+    }
+    definir_origem(Origem::Proprio);
     spawn(app, handle.clone());
     handle
 }
@@ -92,8 +138,39 @@ pub fn spawn(app: &AppHandle, handle: GatewayHandle) {
 }
 
 pub fn restart(app: &AppHandle, handle: &GatewayHandle) {
+    // #1816: um gateway que nao e deste app nao e reiniciado por ele. Se o
+    // outro ja saiu, o app assume com o proprio sidecar.
+    let tinha_filho = handle.lock().map(|g| g.is_some()).unwrap_or(false);
+    if !tinha_filho {
+        if let Some(versao) = gateway_alheio() {
+            eprintln!("[garra] restart ignorado: o gateway na porta e de fora do app ({versao})");
+            definir_origem(Origem::Externo { versao });
+            return;
+        }
+        definir_origem(Origem::Proprio);
+        spawn(app, handle.clone());
+        return;
+    }
     kill(handle);
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    // Espera a porta soltar (ate ~5 s) em vez de um sono cego: subir antes
+    // faria o sidecar novo morrer no bind.
+    for _ in 0..25 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if gateway_alheio().is_none() {
+            break;
+        }
+    }
+    // Revisao (#1821): se depois da espera AINDA ha um gateway na porta, ele
+    // nao e o nosso (o nosso morreu no `kill`): o app passa a usar esse e nao
+    // sobe um sidecar condenado ao exit 69.
+    if let Some(versao) = gateway_alheio() {
+        eprintln!(
+            "[garra] apos o restart a porta segue com outro gateway ({versao}): o app usa esse"
+        );
+        definir_origem(Origem::Externo { versao });
+        return;
+    }
+    definir_origem(Origem::Proprio);
     spawn(app, handle.clone());
 }
 

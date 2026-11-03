@@ -116,11 +116,25 @@
     .aviso.ativo { display: block; }
     .aviso code { background: rgba(255,255,255,0.08); border-radius: 4px; padding: 1px 5px; font-size: 12.5px; }
     label.campo { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--garra-muted); }
-    input[type=text], select {
-      font: inherit; color: var(--garra-text); background: var(--garra-surface);
+    /* O WebKitGTK desenha o <select> com o tema GTK do sistema (fundo claro) e
+       ignora o fundo escuro: o texto ficava quase invisivel. Sem a aparencia
+       nativa, o estilo abaixo vale; a seta e so gradiente (a CSP nao deixa
+       imagem data:). */
+    select {
+      -webkit-appearance: none; appearance: none; color-scheme: dark;
+      padding-right: 34px;
+      background-image: linear-gradient(45deg, transparent 50%, var(--garra-muted) 50%),
+                        linear-gradient(135deg, var(--garra-muted) 50%, transparent 50%);
+      background-position: calc(100% - 19px) 52%, calc(100% - 13px) 52%;
+      background-size: 6px 6px, 6px 6px;
+      background-repeat: no-repeat;
+    }
+    select option { background: var(--garra-surface); color: var(--garra-text); }
+    input[type=text], input[type=password], select {
+      font: inherit; color: var(--garra-text); background-color: var(--garra-surface);
       border: 1px solid var(--garra-border); border-radius: 9px; padding: 10px 12px; font-size: 15px;
     }
-    input[type=text]:focus, select:focus, .cartao-modo:focus-visible, button:focus-visible {
+    input[type=text]:focus, input[type=password]:focus, select:focus, .cartao-modo:focus-visible, button:focus-visible {
       outline: 2px solid var(--garra-cyan); outline-offset: 2px;
     }
     .radios { display: flex; gap: 8px; }
@@ -152,6 +166,9 @@
     .confirmo { display: flex; gap: 9px; align-items: flex-start; font-size: 13px; color: var(--garra-text); cursor: pointer; }
     .confirmo input { margin-top: 3px; flex: 0 0 auto; }
     button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .conectado.alerta { color: #ffe08a; }
+    .conectado.alerta .ponto { background: #ffe08a; }
+    .cartao-modo:disabled:hover { border-color: var(--garra-border); background: var(--garra-surface); }
   </style>
 </head>
 <body>
@@ -162,18 +179,77 @@
     <!-- 1) Boas-vindas -->
     <section class="tela ativa" id="tela-boas-vindas" data-testid="tela-boas-vindas" aria-labelledby="bv-h">
       <h1 id="bv-h" tabindex="-1">Vamos conectar seu WhatsApp ao Garra</h1>
-      <p>Em poucos passos, sem terminal nenhum: você escaneia um QR code e já pode
-         conversar com o seu assistente pessoal pelo WhatsApp.</p>
+      <p>Em poucos passos, sem terminal nenhum: você escolhe quem responde, escaneia
+         um QR code e já pode conversar com o seu assistente pessoal pelo WhatsApp.</p>
       <ul class="passos">
+        <li>Escolha quem responde (um modelo de IA)</li>
         <li>Escolha como o Garra vai atender</li>
         <li>Escaneie o QR code com o seu celular</li>
         <li>Dê um nome e um jeito ao seu assistente</li>
       </ul>
+      <!-- #1816: ja havia um gateway GarraIA rodando fora deste app. -->
+      <div class="aviso" id="bv-aviso-gateway" data-testid="bv-aviso-gateway" role="status"></div>
       <div class="spacer"></div>
       <button class="btn-primario" id="btn-comecar" data-testid="btn-comecar">Começar</button>
     </section>
 
     <!-- 2) Modo -->
+    <!-- 2) Quem responde (#1700): sem provedor, o Garra pareia e nunca conversa. -->
+    <section class="tela" id="tela-provedor" data-testid="tela-provedor" aria-labelledby="prov-h">
+      <h1 id="prov-h" tabindex="-1">Quem vai responder?</h1>
+      <p>O Garra precisa de um modelo de IA para conversar. Escolha um agora — dá para trocar depois.</p>
+      <div class="aviso" id="prov-atual" data-testid="prov-atual" role="status"></div>
+      <button class="cartao-modo" id="btn-prov-ollama" data-testid="btn-prov-ollama" aria-pressed="false">
+        <span class="emoji" aria-hidden="true">💻</span>
+        <span>
+          <span class="titulo">Modelo local (Ollama)</span>
+          <span class="sub" id="prov-ollama-sub">Roda neste computador: sem chave e sem custo por mensagem.</span>
+        </span>
+      </button>
+      <button class="cartao-modo" id="btn-prov-openrouter" data-testid="btn-prov-openrouter" aria-pressed="false">
+        <span class="emoji" aria-hidden="true">☁️</span>
+        <span>
+          <span class="titulo">OpenRouter (nuvem)</span>
+          <span class="sub">Muitos modelos com uma chave só; você paga pelo uso no OpenRouter.</span>
+        </span>
+      </button>
+
+      <div class="modo-config hidden" id="config-ollama" data-testid="config-ollama">
+        <label class="campo">Modelo instalado
+          <select id="ollama-modelo" data-testid="ollama-modelo"></select>
+        </label>
+      </div>
+
+      <div class="modo-config hidden" id="config-openrouter" data-testid="config-openrouter">
+        <label class="campo">Chave do OpenRouter (openrouter.ai/keys)
+          <input type="password" id="openrouter-chave" data-testid="openrouter-chave"
+                 autocomplete="off" spellcheck="false" placeholder="sk-or-v1-…" />
+        </label>
+        <label class="campo">Modelo
+          <input type="text" id="openrouter-modelo" data-testid="openrouter-modelo"
+                 autocomplete="off" spellcheck="false" />
+        </label>
+        <div class="aviso ativo" role="note">
+          A chave fica só neste computador, no arquivo de configuração do Garra (no Linux e
+          no macOS, legível só pelo seu usuário), e nunca volta para esta tela.
+        </div>
+      </div>
+
+      <div class="status hidden" id="prov-testando" data-testid="prov-testando">
+        <span class="pulso"></span><span>Testando o modelo de verdade…</span>
+      </div>
+      <div class="conectado hidden" id="prov-ok" data-testid="prov-ok">
+        <span class="ponto"></span><span id="prov-ok-texto"></span>
+      </div>
+      <div class="erro" id="prov-erro" data-testid="prov-erro" role="alert"></div>
+      <div class="spacer"></div>
+      <div class="barra-botoes">
+        <button class="btn-secundario" id="btn-prov-voltar" data-testid="btn-prov-voltar">Voltar</button>
+        <button class="btn-primario" id="btn-prov-testar" data-testid="btn-prov-testar" disabled>Salvar e testar</button>
+      </div>
+      <button class="btn-secundario" id="btn-prov-depois" data-testid="btn-prov-depois">Configurar depois (o Garra não vai conversar até lá)</button>
+    </section>
+
     <section class="tela" id="tela-modo" data-testid="tela-modo" aria-labelledby="modo-h">
       <h1 id="modo-h" tabindex="-1">Como o Garra vai usar o WhatsApp?</h1>
       <button class="cartao-modo" id="btn-modo-proprio" data-testid="btn-modo-proprio" aria-pressed="false">
@@ -193,7 +269,7 @@
 
       <!-- Confirmação do modo "próprio": a admissão só abre com o aviso marcado. -->
       <div class="modo-config hidden" id="config-proprio" data-testid="config-proprio">
-        <div class="aviso" role="note">
+        <div class="aviso ativo" role="note">
           No modo <b>Meu próprio número</b>, <b>qualquer pessoa</b> que mandar mensagem
           recebe resposta do Garra. No <b>dedicado</b>, só você.
         </div>
@@ -205,7 +281,7 @@
 
       <!-- Número pessoal do modo "dedicado": autorizado via `whatsapp allow`. -->
       <div class="modo-config hidden" id="config-dedicado" data-testid="config-dedicado">
-        <div class="aviso" role="note">
+        <div class="aviso ativo" role="note">
           Você vai parear o <b>chip dedicado</b> do Garra no próximo passo. Para falar com
           ele pelo seu WhatsApp pessoal, informe seu número — só ele será autorizado.
         </div>
@@ -281,14 +357,16 @@
       <div class="conectado" id="pronto-status" data-testid="pronto-status">
         <span class="ponto"></span><span id="pronto-status-texto">Preparando o Garra…</span>
       </div>
-      <p style="text-align:center">Mande um <b>“oi”</b> para o seu WhatsApp pelo celular e veja o Garra responder.</p>
+      <p style="text-align:center" id="pronto-instrucao" data-testid="pronto-instrucao"></p>
       <div class="conversa" aria-hidden="true">
         <div class="bolha eu">oi</div>
         <div class="bolha garra">Oi! Eu sou o seu Garra. Em que posso ajudar? 😊</div>
       </div>
       <div class="aviso" id="pronto-aviso" data-testid="pronto-aviso" role="status"></div>
+      <div class="aviso" id="pronto-aviso-gateway" data-testid="pronto-aviso-gateway" role="status"></div>
       <div class="erro" id="pronto-erro" data-testid="pronto-erro" role="alert"></div>
       <div class="spacer"></div>
+      <button class="btn-secundario hidden" id="btn-pronto-provedor" data-testid="btn-pronto-provedor">Configurar quem responde</button>
       <button class="btn-primario" id="btn-abrir-garra" data-testid="btn-abrir-garra">Abrir o Garra</button>
     </section>
   </div>

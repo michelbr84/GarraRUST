@@ -51,6 +51,7 @@ pub mod detect;
 pub mod jobobject;
 pub mod locate;
 pub mod onboarding;
+pub mod provedor;
 pub mod state;
 pub mod supervise;
 

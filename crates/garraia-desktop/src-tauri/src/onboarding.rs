@@ -27,6 +27,7 @@ use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 
 use garraia_desktop_core::onboarding as core;
+use garraia_desktop_core::provedor::{self, Provedor};
 use garraia_desktop_core::{EstiloPersona, Idioma, Modo, OnboardingPersistido, Personalidade};
 
 /// Label da janela do wizard. Tem de estar em `capabilities/default.json` para a
@@ -157,6 +158,191 @@ pub async fn onboarding_provedor_configurado() -> bool {
         .and_then(|l| l.load().ok())
         .map(|c| !c.llm.is_empty())
         .unwrap_or(false)
+}
+
+// ── "Quem responde": provedor de LLM sem terminal (#1700) ──────────────────
+
+/// O que a tela "Quem responde" precisa saber para abrir. Nunca carrega
+/// chave: `configurado` diz so se ha um provedor padrao no config.
+#[derive(Debug, Serialize)]
+pub struct ProvedorStatus {
+    pub configurado: bool,
+    pub provedor: Option<String>,
+    pub modelo: Option<String>,
+    /// O modelo que a tela sugere para o OpenRouter (o mesmo do `garraia init`).
+    pub modelo_padrao_openrouter: String,
+    pub ollama_disponivel: bool,
+    pub ollama_modelos: Vec<String>,
+}
+
+/// Estado do provedor e o que ha de local para oferecer.
+#[tauri::command]
+pub async fn onboarding_provedor_status() -> ProvedorStatus {
+    let config = garraia_config::ConfigLoader::new()
+        .ok()
+        .and_then(|l| l.load().ok());
+    let padrao = config
+        .as_ref()
+        .and_then(|c| c.agent.default_provider.clone())
+        .filter(|p| config.as_ref().is_some_and(|c| c.llm.contains_key(p)));
+    let modelo = padrao.as_ref().and_then(|p| {
+        config
+            .as_ref()
+            .and_then(|c| c.llm.get(p))
+            .and_then(|e| e.model.clone())
+    });
+    let ollama = tauri::async_runtime::spawn_blocking(|| {
+        provedor::detectar_ollama(std::time::Duration::from_millis(1500))
+    })
+    .await
+    .ok()
+    .flatten();
+    ProvedorStatus {
+        configurado: padrao.is_some(),
+        provedor: padrao,
+        modelo,
+        modelo_padrao_openrouter: garraia_config::defaults::DEFAULT_CLOUD_MODEL.to_string(),
+        ollama_disponivel: ollama.is_some(),
+        ollama_modelos: ollama.unwrap_or_default(),
+    }
+}
+
+/// Grava o provedor escolhido pelo `garraia config set-routing` do sidecar —
+/// o mesmo writer da CLI (arquivo 0600). A chave vai pelo **stdin**
+/// (`--api-key-stdin`), nunca em argumento de processo, e nao volta para a
+/// webview nem aparece em erro.
+#[tauri::command]
+pub async fn onboarding_configurar_provedor(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    provedor: Provedor,
+    modelo: String,
+    chave: Option<String>,
+) -> Result<(), String> {
+    // Zerada na memoria ao sair de escopo, inclusive no caminho de erro.
+    let chave = chave.map(provedor::Zeroizing::new);
+    so_da_janela_do_assistente(&window)?;
+    let escolha = provedor::validar_escolha(provedor, &modelo, chave.as_ref().map(|c| c.as_str()))?;
+    drop(chave);
+    let (code, _saida) =
+        rodar_sidecar_capturando(&app, escolha.args_set_routing(), escolha.stdin()).await?;
+    if code == Some(0) {
+        Ok(())
+    } else {
+        Err(format!(
+            "nao consegui gravar o provedor (codigo {code:?}). Confira se o config.yml esta legivel."
+        ))
+    }
+}
+
+/// O teste de conectividade de verdade: `garraia ask --json` com o provedor
+/// padrao. So volta se conversou, a latencia e, se nao, motivo e dica.
+#[tauri::command]
+pub async fn onboarding_testar_provedor(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> provedor::TesteProvedor {
+    if let Err(e) = so_da_janela_do_assistente(&window) {
+        return provedor::interpretar_teste(&e, None);
+    }
+    match rodar_sidecar_capturando(&app, provedor::args_teste(), None).await {
+        Ok((code, saida)) => provedor::interpretar_teste(&saida, code),
+        Err(e) => provedor::interpretar_teste(&e, None),
+    }
+}
+
+/// Revisao de seguranca (#1821): no Tauri v2 todo comando do app vale para
+/// toda janela local. Gravar a chave do provedor e rodar o teste so fazem
+/// sentido no assistente — uma falha em outra tela (chat bar, overlay) nao
+/// pode trocar a chave por uma de outra conta.
+fn so_da_janela_do_assistente(window: &tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() == LABEL {
+        Ok(())
+    } else {
+        Err("este comando so roda no assistente de primeiro uso".to_string())
+    }
+}
+
+/// O que o gateway que esta atendendo diz no `/api/health` (#1700, revisao
+/// M2): "pronto para conversar" exige que ELE tenha registrado o provedor —
+/// nao basta o `config.yml` estar certo.
+#[derive(Debug, Serialize)]
+pub struct GatewaySaude {
+    pub respondeu: bool,
+    pub versao: Option<String>,
+    pub provedor: Option<String>,
+}
+
+#[tauri::command]
+pub async fn gateway_saude() -> GatewaySaude {
+    let porta = garraia_config::bind::endereco_do_cliente().1;
+    let h = tauri::async_runtime::spawn_blocking(move || {
+        provedor::health_na_porta(porta, std::time::Duration::from_millis(1500))
+    })
+    .await
+    .ok()
+    .flatten();
+    GatewaySaude {
+        respondeu: h.is_some(),
+        versao: h.as_ref().map(|h| h.versao.clone()),
+        provedor: h.and_then(|h| h.provedor),
+    }
+}
+
+/// De onde vem o gateway em uso (#1816): o do app, ou um de fora.
+#[derive(Debug, Serialize)]
+pub struct GatewayEstado {
+    #[serde(flatten)]
+    pub origem: Option<crate::gateway::Origem>,
+    pub versao_app: String,
+}
+
+#[tauri::command]
+pub async fn gateway_estado(app: AppHandle) -> GatewayEstado {
+    GatewayEstado {
+        origem: crate::gateway::origem(),
+        versao_app: app.package_info().version.to_string(),
+    }
+}
+
+/// Roda o sidecar ate o fim, escrevendo `stdin` (se houver) e juntando o
+/// stdout. O stdout so serve ao chamador (o envelope do `ask`); nada aqui e
+/// logado.
+async fn rodar_sidecar_capturando(
+    app: &AppHandle,
+    args: Vec<String>,
+    // A chave chega aqui ja embrulhada: o buffer e zerado ao sair de escopo.
+    stdin: Option<provedor::Zeroizing<Vec<u8>>>,
+) -> Result<(Option<i32>, String), String> {
+    let subcomando = args.iter().take(2).cloned().collect::<Vec<_>>().join(" ");
+    let (mut rx, mut child) = app
+        .shell()
+        .sidecar("garraia")
+        .map_err(|e| format!("sidecar garraia ausente: {e}"))?
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("falha ao rodar `garraia {subcomando}`: {e}"))?;
+    if let Some(bytes) = stdin {
+        child
+            .write(&bytes)
+            .map_err(|_| format!("falha ao entregar a chave ao `garraia {subcomando}`"))?;
+    }
+    let mut saida = String::new();
+    let mut code = None;
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(bytes) => {
+                saida.push_str(&String::from_utf8_lossy(&bytes));
+                saida.push('\n');
+            }
+            CommandEvent::Terminated(payload) => {
+                code = payload.code;
+                break;
+            }
+            _ => {}
+        }
+    }
+    Ok((code, saida))
 }
 
 /// Inicia o pareamento: lanca `garraia whatsapp link --machine` e transmite cada
@@ -345,8 +531,9 @@ pessoa que mandar mensagem; marque a confirmacao na tela para continuar"
         },
     )?;
 
-    // Reinicia o gateway (thread bloqueante: `restart` dorme 800ms antes de
-    // respawnar — nunca no executor async).
+    // Reinicia o gateway (thread bloqueante: `restart` espera a porta soltar
+    // antes de respawnar — nunca no executor async). Um gateway de fora do app
+    // (#1816) nao e reiniciado por aqui: a tela Pronto diz o que fazer.
     let app_restart = app.clone();
     let gw = app
         .try_state::<crate::gateway::GatewayHandle>()
