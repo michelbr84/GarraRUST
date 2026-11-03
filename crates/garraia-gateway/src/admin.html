@@ -2292,6 +2292,9 @@ var WA_REASON_LABEL = {
   channel_disabled: 'Channel disabled',
   prompt_injection: 'Prompt injection (text refused)',
   policy_not_admitted: 'Policy did not admit',
+  offline_expired: 'Arrived while offline (too old)',
+  decrypt_failed: 'Could not decrypt',
+  unsupported_content: 'Not text (unsupported)',
 };
 function waRejectionsCard(rej, canEdit) {
   var card = el('div', { className: 'card', 'data-testid': 'wa-rejections' });

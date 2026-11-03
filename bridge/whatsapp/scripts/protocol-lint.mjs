@@ -55,7 +55,14 @@ const SCHEMA = {
     timestamp: int,
     is_group: bool,
     from_me: bool,
+    self_chat: bool,
     push_name: optStr,
+  },
+  dropped: {
+    reason: oneOf('offline_expired', 'decrypt_failed', 'unsupported_content'),
+    chat_last4: optStr,
+    is_group: bool,
+    from_me: bool,
   },
   sent: { request_id: optStr, id: optStr },
   error: {

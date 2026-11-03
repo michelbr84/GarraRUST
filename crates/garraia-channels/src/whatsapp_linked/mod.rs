@@ -76,11 +76,13 @@ pub use health::{
 };
 pub use permissions::LooseMode;
 pub use protocol::{
-    BridgeCommand, BridgeEvent, DisconnectReason, InboundMessage, Jid, PROTOCOL_VERSION, StartMode,
-    UNAUTHORIZED_REASON_CODES, session_is_dead,
+    BridgeCommand, BridgeEvent, DisconnectReason, DropReason, InboundMessage, Jid,
+    PROTOCOL_VERSION, StartMode, UNAUTHORIZED_REASON_CODES, session_is_dead,
 };
 pub use qr::{Style as QrStyle, render as render_qr};
-pub use runner::{InboundSink, PairOptions, PairOutcome, PairUi, RunError, pair, pair_with, serve};
+pub use runner::{
+    DroppedInbound, InboundSink, PairOptions, PairOutcome, PairUi, RunError, pair, pair_with, serve,
+};
 pub use session::{
     DEFAULT_ACCOUNT, KeyOrigin, KeyPlan, SessionBlob, SessionError, SessionKey, SessionStore,
 };

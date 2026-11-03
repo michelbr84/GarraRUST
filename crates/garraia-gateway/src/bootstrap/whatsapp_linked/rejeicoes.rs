@@ -43,17 +43,31 @@ pub enum Motivo {
     /// divergente do portao; nunca deveria acontecer, e por isso e contado).
     #[serde(rename = "policy_not_admitted")]
     Politica,
+    /// #1814: chegou com a ponte fora (entrega "offline") e passou da janela
+    /// de resposta — o Garra nao acorda respondendo conversa velha.
+    #[serde(rename = "offline_expired")]
+    OfflineExpirada,
+    /// #1815: o WhatsApp entregou, mas este aparelho nao conseguiu decriptar.
+    #[serde(rename = "decrypt_failed")]
+    FalhaDecriptacao,
+    /// #1815: nao e texto (audio, foto, enquete...) — esta fatia so conversa
+    /// por texto.
+    #[serde(rename = "unsupported_content")]
+    ConteudoNaoSuportado,
 }
 
 impl Motivo {
     /// Todos, na ordem em que o console os mostra.
-    pub const TODOS: [Motivo; 6] = [
+    pub const TODOS: [Motivo; 9] = [
         Motivo::Restrita,
         Motivo::LidSemNumero,
         Motivo::Bloqueado,
         Motivo::CanalDesligado,
         Motivo::Injecao,
         Motivo::Politica,
+        Motivo::OfflineExpirada,
+        Motivo::FalhaDecriptacao,
+        Motivo::ConteudoNaoSuportado,
     ];
 
     /// A grafia serializada (a mesma do JSON e do `data-reason` da UI).
@@ -65,6 +79,9 @@ impl Motivo {
             Motivo::CanalDesligado => "channel_disabled",
             Motivo::Injecao => "prompt_injection",
             Motivo::Politica => "policy_not_admitted",
+            Motivo::OfflineExpirada => "offline_expired",
+            Motivo::FalhaDecriptacao => "decrypt_failed",
+            Motivo::ConteudoNaoSuportado => "unsupported_content",
         }
     }
 
@@ -82,6 +99,15 @@ impl Motivo {
             Motivo::CanalDesligado => "ligue `channels.whatsapp_linked.enabled: true`",
             Motivo::Injecao => "nada a fazer: o texto foi recusado, o remetente continua admitido",
             Motivo::Politica => "revise a politica de acesso; se persistir, abra uma issue",
+            Motivo::OfflineExpirada => {
+                "peca para mandar de novo: o Garra so responde o que chegou com ele fora do ar ha poucos minutos"
+            }
+            Motivo::FalhaDecriptacao => {
+                "costuma se resolver com o reenvio automatico; se repetir, peca para a pessoa mandar de novo ou pareie de novo"
+            }
+            Motivo::ConteudoNaoSuportado => {
+                "o WhatsApp vinculado so conversa por texto: peca a pergunta escrita"
+            }
         }
     }
 
@@ -144,7 +170,7 @@ impl Resumo {
 /// O estado que o runtime guarda atras de um `Mutex`.
 #[derive(Debug, Default)]
 pub struct Rejeicoes {
-    totais: [u64; 6],
+    totais: [u64; Motivo::TODOS.len()],
     recentes: VecDeque<Rejeicao>,
     ultimo_reset: Option<String>,
 }
@@ -188,7 +214,7 @@ impl Rejeicoes {
     /// Zera contadores e recentes; devolve quantas rejeicoes foram apagadas.
     pub fn zerar(&mut self, agora: &str) -> u64 {
         let apagadas = self.totais.iter().sum();
-        self.totais = [0; 6];
+        self.totais = [0; Motivo::TODOS.len()];
         self.recentes.clear();
         self.ultimo_reset = Some(agora.to_string());
         apagadas

@@ -230,6 +230,38 @@ test('serve entrega messages.upsert type notify e ignora o resto', async () => {
   await h.bridge.shutdown(EXIT_OK);
 });
 
+test('serve: resposta enviada pela ponte nao volta como entrada na conversa "Voce" (#1813)', async () => {
+  const h = harness();
+  const sock = await started(h, 'serve');
+  sock.fire('connection.update', { connection: 'open' });
+  const self = '5511999990000@s.whatsapp.net';
+  await h.bridge.handleCommand({ type: 'send', request_id: 'r1', chat_jid: self, text: 'resposta' });
+  sock.fire('messages.upsert', {
+    type: 'notify',
+    messages: [
+      { key: { id: 'FAKEMSGID', remoteJid: self, fromMe: true }, message: { conversation: 'resposta' }, messageTimestamp: 1 },
+      { key: { id: 'DONO1', remoteJid: self, fromMe: true }, message: { conversation: 'oi' }, messageTimestamp: 1 },
+    ],
+  });
+  const msgs = h.of('message');
+  assert.deepEqual(msgs.map((m) => m.id), ['DONO1'], 'so o que o dono digitou');
+  assert.equal(msgs[0].self_chat, true);
+  await h.bridge.shutdown(EXIT_OK);
+});
+
+test('serve: append antigo vira dropped e nunca message (#1814)', async () => {
+  const h = harness();
+  const sock = await started(h, 'serve');
+  sock.fire('connection.update', { connection: 'open' });
+  sock.fire('messages.upsert', {
+    type: 'append',
+    messages: [{ key: { id: 'V', remoteJid: '5511888880000@s.whatsapp.net' }, message: { conversation: 'oi' }, messageTimestamp: 1 }],
+  });
+  assert.equal(h.of('message').length, 0);
+  assert.deepEqual(h.of('dropped').map((d) => d.reason), ['offline_expired']);
+  await h.bridge.shutdown(EXIT_OK);
+});
+
 test('pair nao assina messages.upsert', async () => {
   const h = harness();
   const sock = await started(h, 'pair');
