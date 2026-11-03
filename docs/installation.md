@@ -614,6 +614,30 @@ chmod +x garraia-linux-x86_64.AppImage
 ./garraia-linux-x86_64.AppImage --version
 ```
 
+**The CLI AppImage is a terminal program (#1817).** `garraia-linux-x86_64.AppImage`
+is the same `garraia` binary as the `.deb`/`.rpm`, with no window of its own --
+the app with a window (tray, Chat Bar, first-use assistant, WhatsApp without a
+terminal) is `garraia-desktop-linux-x86_64.AppImage`. Run it from a terminal:
+with no arguments it opens the interactive chat (`garraia chat`); everything
+else is a subcommand (`./garraia-linux-x86_64.AppImage start`, `... doctor`,
+`... --help`). Double-clicking it in a file manager opens a terminal emulator
+running it (the first one found among `x-terminal-emulator`, `gnome-terminal`,
+`konsole`, `xfce4-terminal`, `mate-terminal`, `tilix`, `kitty`, `alacritty`,
+`xterm`); with none installed, it shows a notification explaining it is the
+command-line build and exits 64. Set `GARRAIA_APPRUN_DIRETO=1` to skip that
+detection in a graphical session without a TTY. To use it like the packages,
+put it on the `PATH` -- the `garra` short name is just a symlink:
+
+```bash
+install -Dm755 garraia-linux-x86_64.AppImage ~/.local/bin/garraia
+ln -sf garraia ~/.local/bin/garra
+```
+
+The AppImage itself needs FUSE 2 (`sudo apt install libfuse2t64` on Ubuntu
+24.04+, `libfuse2` on 22.04) or `--appimage-extract-and-run`. `garraia update`
+does not replace a running AppImage (the image is read-only): download the next
+release's AppImage instead.
+
 Both packages install `/usr/bin/garraia`, the `/usr/bin/garra` symlink to it
 (the short name the docs use), plus `LICENSE`/`README.md` under
 `/usr/share/doc/garraia/`. aarch64 variants (`garraia-linux-aarch64.deb` /

@@ -1,0 +1,42 @@
+#!/bin/sh
+# AppRun do AppImage da CLI (#1817).
+#
+# Com argumentos, ou com qualquer ponta num terminal, e o `garraia` direto —
+# exatamente o que o symlink fazia. So o duplo clique no gerenciador de
+# arquivos muda: ali o AppImage roda sem terminal nenhum (o `Terminal=true` do
+# .desktop interno so vale quando uma ferramenta de integracao instala o
+# atalho), o `garraia` sem argumento abria o chat, lia fim de arquivo e saia —
+# e a pessoa via "nada acontecer". Agora ele abre um terminal com o `garraia`,
+# ou, sem terminal na maquina, avisa que esta e a versao de linha de comando.
+#
+# GARRAIA_APPRUN_DIRETO=1 desliga a deteccao (scripts que rodam sem TTY numa
+# sessao grafica e querem o comportamento antigo).
+HERE="$(dirname "$(readlink -f "$0")")"
+BIN="$HERE/usr/bin/garraia"
+
+if [ "$#" -gt 0 ] || [ -t 0 ] || [ -t 1 ] || [ -t 2 ] \
+  || [ -n "${GARRAIA_APPRUN_DIRETO:-}" ] \
+  || { [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; }; then
+  exec "$BIN" "$@"
+fi
+
+# Duplo clique: nenhuma ponta e terminal e ha uma sessao grafica.
+ALVO="${APPIMAGE:-$BIN}"
+for t in x-terminal-emulator gnome-terminal konsole xfce4-terminal mate-terminal \
+  tilix kitty alacritty xterm; do
+  if command -v "$t" >/dev/null 2>&1; then
+    case "$t" in
+      gnome-terminal | mate-terminal | tilix) exec "$t" -- "$ALVO" ;;
+      *) exec "$t" -e "$ALVO" ;;
+    esac
+  fi
+done
+
+MSG="Este é o GarraIA de linha de comando. Abra um terminal e rode: \"$ALVO\" --help. Para o app com janela, use o garraia-desktop-linux-x86_64.AppImage."
+if command -v notify-send >/dev/null 2>&1; then
+  notify-send "GarraIA (linha de comando)" "$MSG" || true
+elif command -v zenity >/dev/null 2>&1; then
+  zenity --info --title="GarraIA (linha de comando)" --text="$MSG" || true
+fi
+echo "$MSG" >&2
+exit 64
