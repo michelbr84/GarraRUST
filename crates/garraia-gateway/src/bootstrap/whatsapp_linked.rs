@@ -60,8 +60,9 @@ use garraia_channels::whatsapp_linked::health::{
     BridgeView, DiskFacts, LinkHealth, MotivoTerminal, SaudeDoCanal, classify,
 };
 use garraia_channels::whatsapp_linked::{
-    BridgeCommand, DEFAULT_ACCOUNT, DisconnectReason, InboundMessage, Jid, NodeLauncher, RunError,
-    SessionError, SessionKey, SessionStore, bridge, runner::InboundSink, runner::serve,
+    BridgeCommand, DEFAULT_ACCOUNT, DisconnectReason, DropReason, DroppedInbound, InboundMessage,
+    Jid, NodeLauncher, RunError, SessionError, SessionKey, SessionStore, bridge,
+    runner::InboundSink, runner::serve,
 };
 use garraia_config::{AppConfig, ExecutionProfile};
 use garraia_security::{InputValidator, PairingManager};
@@ -1360,9 +1361,13 @@ fn avisar_escolha_do_operador(
 /// Separada do sink para ser testavel sem runtime. Cada `false` aqui e um
 /// incidente que nao acontece:
 ///
-/// - `from_me`: a conta vinculada e a do proprio operador, entao **a resposta
-///   do bot volta como mensagem recebida**. Sem este filtro o canal responde a
-///   si mesmo para sempre, no primeiro "oi".
+/// - `from_me` fora da conversa "Voce": e o dono escrevendo a terceiros pelo
+///   proprio celular. O Garra nunca responde no lugar dele.
+/// - `from_me` na conversa "Voce" (`self_chat`, #1813) **vira** turno: e como o
+///   dono fala com o Garra no modo "meu proprio numero". O eco da resposta do
+///   proprio Garra nesse chat nunca chega aqui — a ponte e o runner descartam
+///   os ids que eles mesmos enviaram (anti-eco em duas camadas); sem isso o
+///   canal responderia a si mesmo para sempre, no primeiro "oi".
 /// - `is_group` sem opt-in: ver [`LinkedSettings::reply_in_groups`].
 /// - sem `text`: midia nao vai ao modelo nesta fatia.
 pub fn deve_responder(msg: &InboundMessage, settings: &LinkedSettings) -> bool {
@@ -1376,7 +1381,64 @@ pub fn deve_responder(msg: &InboundMessage, settings: &LinkedSettings) -> bool {
 /// os grupos a quente nao valia ate o restart, e desliga-los a quente nao
 /// impedia o turno.
 pub fn merece_turno(msg: &InboundMessage) -> bool {
-    !msg.from_me && msg.text.as_deref().is_some_and(|t| !t.trim().is_empty())
+    por_que_sem_turno(msg).is_none()
+}
+
+/// A marca invisivel (U+2063, separador invisivel) no comeco de toda resposta
+/// do Garra na conversa "Voce" (#1813, revisao). Uma mensagem da conversa
+/// "Voce" que comeca com ela e de outro Garra na mesma conta — nunca turno.
+pub const MARCA_DO_GARRA: char = '\u{2063}';
+
+/// Por que uma mensagem nao virou turno no `deliver` (#1815). Antes, todos
+/// estes casos sumiam sem log nenhum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemTurno {
+    /// O dono escrevendo a terceiros pelo proprio celular (`from_me` fora da
+    /// conversa "Voce"): esperado no modo "meu proprio numero", so `debug`.
+    DaPropriaConta,
+    /// Midia ou outro conteudo sem texto, de terceiro, em 1:1: quem mandou
+    /// fica sem resposta — por isso `info` e contagem.
+    SemTexto,
+    /// Texto vazio, ou midia em grupo/da propria conta: ruido, so `debug`.
+    Vazia,
+    /// Na conversa "Voce", a resposta de OUTRO Garra vinculado a mesma conta
+    /// (comeca com [`MARCA_DO_GARRA`]): responder seria o ping-pong entre os
+    /// dois.
+    EcoDeOutroGarra,
+}
+
+/// `None` quando a mensagem merece turno; senao, o porque.
+pub fn por_que_sem_turno(msg: &InboundMessage) -> Option<SemTurno> {
+    if msg.from_me && !msg.self_chat {
+        return Some(SemTurno::DaPropriaConta);
+    }
+    if msg.self_chat
+        && msg
+            .text
+            .as_deref()
+            .is_some_and(|t| t.starts_with(MARCA_DO_GARRA))
+    {
+        return Some(SemTurno::EcoDeOutroGarra);
+    }
+    if msg.text.as_deref().is_some_and(|t| !t.trim().is_empty()) {
+        return None;
+    }
+    if !msg.from_me && !msg.is_group && msg.media_kind.is_some() {
+        Some(SemTurno::SemTexto)
+    } else {
+        Some(SemTurno::Vazia)
+    }
+}
+
+/// O motivo de rejeicao que um descarte da ponte conta (#1815). `None` para
+/// motivo que esta versao nao conhece: loga, mas nao inventa categoria.
+pub fn motivo_do_descarte(reason: DropReason) -> Option<rejeicoes::Motivo> {
+    match reason {
+        DropReason::OfflineExpired => Some(rejeicoes::Motivo::OfflineExpirada),
+        DropReason::DecryptFailed => Some(rejeicoes::Motivo::FalhaDecriptacao),
+        DropReason::UnsupportedContent => Some(rejeicoes::Motivo::ConteudoNaoSuportado),
+        DropReason::Unknown => None,
+    }
 }
 
 /// Os settings que valem para **um turno** (#1345).
@@ -1474,7 +1536,21 @@ impl GatewaySink {
 
     /// Responde num chat. Erro de fila nao derruba nada: a ponte caida descarta
     /// de proposito (ver `runner::serve`).
-    async fn responder(outbound: &mpsc::Sender<BridgeCommand>, chat: &Jid, texto: String) {
+    async fn responder(
+        outbound: &mpsc::Sender<BridgeCommand>,
+        chat: &Jid,
+        conversa_propria: bool,
+        texto: String,
+    ) {
+        // Na conversa "Voce" a resposta sai marcada (#1813, revisao): outra
+        // instancia do Garra vinculada a mesma conta reconhece a marca e nao
+        // responde a resposta desta — sem isso as duas conversariam entre si
+        // para sempre (o anti-eco por id so conhece os ids da PROPRIA ponte).
+        let texto = if conversa_propria {
+            format!("{MARCA_DO_GARRA}{texto}")
+        } else {
+            texto
+        };
         let comando = BridgeCommand::Send {
             request_id: uuid::Uuid::new_v4().to_string(),
             chat_jid: chat.clone(),
@@ -1550,7 +1626,11 @@ impl GatewaySink {
                 return;
             };
             gate.recarregar(&settings);
-            let admissao = admitir(&mut gate, &mut pair, &remetente, &bruto);
+            // Revisao da #1819: um codigo de 6 digitos digitado na conversa
+            // "Voce" (um OTP anotado, por exemplo) nao e pedido de pareamento
+            // — nao gasta tentativa nem queima codigo de ninguem.
+            let texto_do_codigo = if msg.from_me { "" } else { bruto.as_str() };
+            let admissao = admitir(&mut gate, &mut pair, &remetente, texto_do_codigo);
             // O que o portao sabe e que a config nao diz: entrou por codigo.
             (
                 admissao,
@@ -1596,6 +1676,7 @@ impl GatewaySink {
                 Self::responder(
                     &outbound,
                     &msg.chat_jid,
+                    msg.self_chat,
                     "Pronto! Voce tem acesso a este GarraIA. Mande sua pergunta.".to_string(),
                 )
                 .await;
@@ -1617,6 +1698,7 @@ impl GatewaySink {
             Self::responder(
                 &outbound,
                 &msg.chat_jid,
+                msg.self_chat,
                 "Nao consegui processar essa mensagem.".to_string(),
             )
             .await;
@@ -1676,7 +1758,7 @@ impl GatewaySink {
                 DecisaoDeComando::NaoEComando => {}
                 DecisaoDeComando::Negado(motivo) => {
                     info!(phone_last4 = %last4, principal = quem, "whatsapp_linked: comando recusado");
-                    Self::responder(&outbound, &msg.chat_jid, motivo).await;
+                    Self::responder(&outbound, &msg.chat_jid, msg.self_chat, motivo).await;
                     return;
                 }
                 DecisaoDeComando::Roteia => {
@@ -1688,7 +1770,7 @@ impl GatewaySink {
                         .map(|r| r.content)
                         .unwrap_or_else(|| "Comando nao reconhecido.".to_string());
                     info!(phone_last4 = %last4, principal = quem, "whatsapp_linked: comando roteado");
-                    Self::responder(&outbound, &msg.chat_jid, resposta).await;
+                    Self::responder(&outbound, &msg.chat_jid, msg.self_chat, resposta).await;
                     return;
                 }
             }
@@ -1725,9 +1807,7 @@ impl GatewaySink {
                 cadencia::JANELA.as_secs()
             );
             if primeiro_corte {
-                Self::responder(
-                    &outbound,
-                    &msg.chat_jid,
+                Self::responder(&outbound, &msg.chat_jid, msg.self_chat,
                     "Muitas mensagens em pouco tempo; vou pausar as respostas nesta conversa por um instante."
                         .to_string(),
                 )
@@ -1799,13 +1879,14 @@ impl GatewaySink {
                 state
                     .persist_turn(&sid, Some(CONFIG_KEY), Some(&remetente), &texto, &resposta)
                     .await;
-                Self::responder(&outbound, &msg.chat_jid, resposta).await;
+                Self::responder(&outbound, &msg.chat_jid, msg.self_chat, resposta).await;
             }
             Err(e) => {
                 warn!(phone_last4 = %last4, "whatsapp_linked: o agente falhou: {e}");
                 Self::responder(
                     &outbound,
                     &msg.chat_jid,
+                    msg.self_chat,
                     "Tive um problema para responder agora. Tente de novo em instantes."
                         .to_string(),
                 )
@@ -1818,8 +1899,28 @@ impl GatewaySink {
 impl InboundSink for GatewaySink {
     fn deliver(&self, message: InboundMessage) {
         // So o que nao depende da politica; o filtro de grupo e do turno,
-        // com a config viva (#1412/#1423).
-        if !merece_turno(&message) {
+        // com a config viva (#1412/#1423). Nenhum descarte e mudo (#1815).
+        if let Some(motivo) = por_que_sem_turno(&message) {
+            // So o final entra no log, e ele sai antes da macro.
+            let final4 = message.chat_jid.last4();
+            if motivo == SemTurno::SemTexto {
+                info!(
+                    chat_last4 = %final4,
+                    media_kind = message.media_kind.as_deref().unwrap_or("?"),
+                    "whatsapp_linked: mensagem sem texto descartada (o canal so conversa por texto)"
+                );
+                self.runtime.registrar_rejeicao(
+                    rejeicoes::Motivo::ConteudoNaoSuportado,
+                    &final4,
+                    false,
+                );
+            } else {
+                tracing::debug!(
+                    chat_last4 = %final4,
+                    motivo = ?motivo,
+                    "whatsapp_linked: mensagem sem turno"
+                );
+            }
             return;
         }
         let state = Arc::clone(&self.state);
@@ -1854,6 +1955,22 @@ impl InboundSink for GatewaySink {
 
     fn on_terminal(&self, motivo: MotivoTerminal) {
         self.runtime.registra_terminal(motivo);
+    }
+
+    fn on_dropped(&self, d: &DroppedInbound) {
+        // So digitos e no maximo quatro: o valor vem da ponte (revisao).
+        let last4 = rejeicoes::so_final4(d.chat_last4.as_deref().unwrap_or(""));
+        let last4 = last4.as_str();
+        let motivo_ponte = d.reason.as_str();
+        info!(
+            motivo = motivo_ponte,
+            chat_last4 = last4,
+            grupo = d.is_group,
+            "whatsapp_linked: mensagem recebida e descartada pela ponte"
+        );
+        if let Some(motivo) = motivo_do_descarte(d.reason) {
+            self.runtime.registrar_rejeicao(motivo, last4, d.is_group);
+        }
     }
 
     fn on_connection(&self, jid: Option<&Jid>, connected: bool) {

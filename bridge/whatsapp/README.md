@@ -28,7 +28,24 @@ o do **NDJSON v1** descrito no ADR 0023. Resumo operacional:
 
 Eventos bridge -> Rust: `started`, `qr`, `status`, `authenticated`, `connected`,
 `disconnected`, `logged_out`, `session_update`, `message`, `sent`, `error`,
-`log`.
+`log`, `pong` e `dropped`.
+
+- `message` traz `self_chat` (#1813): `true` quando o `key.remoteJid` (so ele,
+  nunca o `remoteJidAlt`) e a propria conta (a conversa "Voce"), por telefone
+  ou LID, e a mensagem nao e encaminhada. E o unico caso em que o Rust
+  transforma uma mensagem `from_me` em turno. Os ids que a ponte envia ficam
+  lembrados (teto de 512) e nunca voltam como `message` (anti-eco). Um `append`
+  da propria conta so vira `message` na conversa "Voce" e com mais de
+  `ECO_LOCAL_MAX_SECS` (5 s) de idade: o eco local de um envio tem o carimbo
+  de agora.
+- `messages.upsert` com `type: append` e o eco local de um envio **ou** o que
+  ficou na fila do servidor com a ponte fora. Da propria conta, nunca vira
+  `message`; de terceiro, vira `message` se tiver ate
+  `OFFLINE_REPLY_WINDOW_SECS` (10 min), senao `dropped` (#1814).
+- `dropped` (#1815): `{reason, chat_last4, is_group, from_me}`, com `reason`
+  em `offline_expired`, `decrypt_failed` (stub `CIPHERTEXT` do Baileys) ou
+  `unsupported_content`. Nunca leva texto nem numero inteiro. Reacao,
+  `protocolMessage` e afins somem sem evento: nao sao mensagem de ninguem.
 Comandos Rust -> bridge: `session_load`, `start`, `send`, `read`, `typing`,
 `logout`, `shutdown`.
 

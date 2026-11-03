@@ -26,6 +26,7 @@ test('mensagem de texto direta', () => {
     timestamp: 1780000000,
     is_group: false,
     from_me: false,
+    self_chat: false,
     push_name: 'Fulano',
   });
 });

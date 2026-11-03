@@ -69,6 +69,7 @@ fn msg(texto: Option<&str>) -> InboundMessage {
         timestamp: 0,
         is_group: false,
         from_me: false,
+        self_chat: false,
         push_name: Some("Ana".into()),
         media_kind: None,
     }
@@ -925,6 +926,134 @@ fn mensagem_propria_nunca_gera_turno() {
     let mut m = msg(Some("oi"));
     m.from_me = true;
     assert!(!deve_responder(&m, &LinkedSettings::default()));
+    assert_eq!(por_que_sem_turno(&m), Some(SemTurno::DaPropriaConta));
+}
+
+/// #1813: a conversa "Voce" e a excecao — o dono falando com o Garra no modo
+/// "meu proprio numero". Fora dela, `from_me` continua fora (o dono
+/// escrevendo a terceiros). Em grupo nunca ha conversa "Voce".
+#[test]
+fn conversa_voce_gera_turno_e_o_resto_da_propria_conta_nao() {
+    let mut voce = msg(Some("oi"));
+    voce.from_me = true;
+    voce.self_chat = true;
+    assert!(merece_turno(&voce));
+    assert!(deve_responder(&voce, &LinkedSettings::default()));
+
+    let mut vazia = voce.clone();
+    vazia.text = Some("  ".into());
+    assert_eq!(por_que_sem_turno(&vazia), Some(SemTurno::Vazia));
+
+    let mut a_terceiro = msg(Some("oi"));
+    a_terceiro.from_me = true;
+    a_terceiro.self_chat = false;
+    assert!(!merece_turno(&a_terceiro));
+}
+
+/// #1813 (revisao): a resposta de OUTRO Garra na mesma conta chega na
+/// conversa "Voce" com a marca invisivel e nunca vira turno; sem a marca, o
+/// dono digitando, vira.
+#[test]
+fn conversa_voce_com_a_marca_e_outro_garra_e_nao_vira_turno() {
+    let mut de_outro = msg(Some(&format!("{MARCA_DO_GARRA}Oi! Em que posso ajudar?")));
+    de_outro.from_me = true;
+    de_outro.self_chat = true;
+    assert_eq!(
+        por_que_sem_turno(&de_outro),
+        Some(SemTurno::EcoDeOutroGarra)
+    );
+
+    let mut do_dono = de_outro.clone();
+    do_dono.text = Some("oi".into());
+    assert_eq!(por_que_sem_turno(&do_dono), None);
+
+    // Fora da conversa "Voce" a marca nao muda nada (terceiro nao e eco).
+    let mut de_terceiro = msg(Some(&format!("{MARCA_DO_GARRA}oi")));
+    de_terceiro.self_chat = false;
+    assert_eq!(por_que_sem_turno(&de_terceiro), None);
+}
+
+/// #1813 (revisao): toda resposta na conversa "Voce" sai com a marca; nos
+/// demais chats, o texto sai intacto.
+#[tokio::test]
+async fn resposta_na_conversa_voce_sai_marcada() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let jid = Jid::new("5511999990000@s.whatsapp.net");
+    GatewaySink::responder(&tx, &jid, true, "oi".to_string()).await;
+    GatewaySink::responder(&tx, &jid, false, "oi".to_string()).await;
+    let texto = |c: BridgeCommand| match c {
+        BridgeCommand::Send { text, .. } => text,
+        outro => panic!("{outro:?}"),
+    };
+    assert_eq!(
+        texto(rx.recv().await.unwrap()),
+        format!("{MARCA_DO_GARRA}oi")
+    );
+    assert_eq!(texto(rx.recv().await.unwrap()), "oi");
+}
+
+/// #1815: cada descarte do `deliver` tem motivo. So a midia de terceiro em
+/// 1:1 deixa alguem sem resposta — e so ela conta como rejeicao.
+#[test]
+fn por_que_sem_turno_separa_midia_de_ruido() {
+    let mut audio = msg(None);
+    audio.media_kind = Some("audio".into());
+    assert_eq!(por_que_sem_turno(&audio), Some(SemTurno::SemTexto));
+
+    let mut audio_em_grupo = audio.clone();
+    audio_em_grupo.is_group = true;
+    assert_eq!(por_que_sem_turno(&audio_em_grupo), Some(SemTurno::Vazia));
+
+    let mut audio_do_dono = audio.clone();
+    audio_do_dono.from_me = true;
+    assert_eq!(
+        por_que_sem_turno(&audio_do_dono),
+        Some(SemTurno::DaPropriaConta)
+    );
+
+    assert_eq!(por_que_sem_turno(&msg(Some("oi"))), None);
+    assert_eq!(por_que_sem_turno(&msg(None)), Some(SemTurno::Vazia));
+}
+
+/// #1815: o descarte da ponte vira o motivo de rejeicao certo; motivo
+/// desconhecido so loga.
+#[test]
+fn descarte_da_ponte_mapeia_para_o_motivo_de_rejeicao() {
+    use garraia_channels::whatsapp_linked::DropReason;
+    assert_eq!(
+        motivo_do_descarte(DropReason::OfflineExpired),
+        Some(rejeicoes::Motivo::OfflineExpirada)
+    );
+    assert_eq!(
+        motivo_do_descarte(DropReason::DecryptFailed),
+        Some(rejeicoes::Motivo::FalhaDecriptacao)
+    );
+    assert_eq!(
+        motivo_do_descarte(DropReason::UnsupportedContent),
+        Some(rejeicoes::Motivo::ConteudoNaoSuportado)
+    );
+    assert_eq!(motivo_do_descarte(DropReason::Unknown), None);
+}
+
+/// #1815, ponta do sink: o descarte que a ponte avisa entra nas rejeicoes
+/// (o que o Web Console e o `/api/diagnostics` mostram), so com o final.
+#[test]
+fn on_dropped_conta_a_rejeicao_com_o_final_do_chat() {
+    use garraia_channels::whatsapp_linked::{DropReason, DroppedInbound};
+    let rt = WhatsAppLinkedRuntime::default();
+    let d = DroppedInbound {
+        reason: DropReason::OfflineExpired,
+        chat_last4: Some("0000".into()),
+        is_group: false,
+        from_me: false,
+    };
+    if let Some(m) = motivo_do_descarte(d.reason) {
+        rt.registrar_rejeicao(m, d.chat_last4.as_deref().unwrap_or("????"), d.is_group);
+    }
+    let r = rt.rejeicoes();
+    assert_eq!(r.de(rejeicoes::Motivo::OfflineExpirada), 1);
+    assert_eq!(r.recent[0].identity_last4, "…0000");
+    assert!(r.remediation.contains_key("offline_expired"));
 }
 
 #[test]
@@ -2191,6 +2320,8 @@ mod ponta_a_ponta {
         push_text: Option<String>,
         /// So vale em `serve-push`: marca a mensagem como da propria conta.
         push_from_me: bool,
+        /// A mensagem (e o eco do `serve-echo`) vem da conversa "Voce" (#1813).
+        push_self_chat: bool,
         /// So vale em `serve-push`: o remetente chega como este `@lid`.
         push_lid: Option<&'static str>,
         /// E o `key.remoteJidAlt` que o Baileys 7 manda junto com ele.
@@ -2204,6 +2335,7 @@ mod ponta_a_ponta {
                 cenario: "serve-echo",
                 push_text: None,
                 push_from_me: false,
+                push_self_chat: false,
                 push_lid: None,
                 push_lid_alt: None,
             }
@@ -2222,6 +2354,7 @@ mod ponta_a_ponta {
                 cenario: "serve-push",
                 push_text: Some(texto.to_string()),
                 push_from_me: false,
+                push_self_chat: false,
                 push_lid: None,
                 push_lid_alt: None,
             }
@@ -2239,6 +2372,13 @@ mod ponta_a_ponta {
         /// exata em que o operador ve as proprias respostas.
         fn da_propria_conta(mut self) -> Self {
             self.push_from_me = true;
+            self
+        }
+
+        /// A mensagem vem da conversa "Voce" da conta vinculada (#1813): o
+        /// dono falando com o Garra no modo "meu proprio numero".
+        fn na_conversa_propria(mut self) -> Self {
+            self.push_self_chat = true;
             self
         }
     }
@@ -2267,6 +2407,9 @@ mod ponta_a_ponta {
             }
             if self.roteiro.push_from_me {
                 cmd.arg("--push-from-me");
+            }
+            if self.roteiro.push_self_chat {
+                cmd.arg("--push-self-chat");
             }
             if let Some(lid) = self.roteiro.push_lid {
                 cmd.arg("--push-lid").arg(lid);
@@ -2877,6 +3020,120 @@ mod ponta_a_ponta {
     /// ao numero do operador, que esta no `allow`, entao ela **passa na
     /// admissao** — cada resposta do bot vira uma nova mensagem recebida, que
     /// vira outro turno, sem teto e sem nenhum teste vermelho.
+    /// O numero da conta vinculada na fixture (`OWN_JID` sem o aparelho).
+    const PROPRIO: &str = "5511999990000";
+
+    /// **#1813, ponta a ponta.** No modo "meu proprio numero" o dono fala com
+    /// o Garra pela conversa "Voce": a mensagem e `from_me`, mas no proprio
+    /// chat. Ela passa pelo MESMO portao (aqui `restricted` com o numero
+    /// proprio autorizado), vira turno e a sessao e a desse chat.
+    #[tokio::test]
+    async fn conversa_voce_do_dono_vira_turno_no_proprio_chat() {
+        let c = Montagem {
+            roteiro: Roteiro::empurra("oi").na_conversa_propria(),
+            allow_extra: vec![PROPRIO.to_string()],
+            ..Montagem::default()
+        }
+        .sobe(|_| {})
+        .await;
+
+        assert!(
+            ate(|| !turnos(&c.provider).is_empty()).await,
+            "a conversa \"Voce\" vira turno: {:?}",
+            recebidas(&c)
+        );
+        let recebida = &recebidas(&c)[0];
+        assert!(
+            recebida.from_me && recebida.self_chat,
+            "premissa: {recebida:?}"
+        );
+        let sid = format!("whatsapp-linked-{PROPRIO}@s.whatsapp.net");
+        assert!(
+            ate(|| c.state.sessions.contains_key(&sid)).await,
+            "a sessao e a da conversa \"Voce\", e a resposta sai nela"
+        );
+
+        encerra(c).await;
+    }
+
+    /// **#1813 (revisao): em `restricted` o numero proprio nao se autoriza
+    /// sozinho.** Sem ele no `allow`, a conversa "Voce" e recusada pelo MESMO
+    /// portao de qualquer remetente — nada chega ao modelo, e a recusa e
+    /// contada como `restricted_policy`.
+    #[tokio::test]
+    async fn conversa_voce_em_restricted_sem_o_numero_proprio_e_recusada() {
+        let c = Montagem {
+            roteiro: Roteiro::empurra("oi").na_conversa_propria(),
+            ..Montagem::default()
+        }
+        .sobe(|_| {})
+        .await;
+
+        assert!(
+            ate(|| !recebidas(&c).is_empty()).await,
+            "a mensagem precisa chegar para o teste ter o que provar"
+        );
+        assert!(recebidas(&c)[0].self_chat, "premissa: conversa \"Voce\"");
+        assert!(
+            ate(|| c
+                .state
+                .whatsapp_linked
+                .rejeicoes()
+                .de(rejeicoes::Motivo::Restrita)
+                >= 1)
+            .await,
+            "a recusa e contada: {:?}",
+            c.state.whatsapp_linked.rejeicoes()
+        );
+        assert!(
+            turnos(&c.provider).is_empty(),
+            "nada chega ao modelo: {:?}",
+            turnos(&c.provider)
+        );
+
+        encerra(c).await;
+    }
+
+    /// **#1813: o anti-eco do runner.** Na conversa "Voce" a resposta do Garra
+    /// e `from_me` no mesmo chat; a fixture devolve o eco com o MESMO id do
+    /// `sent`, como o WhatsApp. Sem o anti-eco, cada resposta viraria outro
+    /// turno, sem fim. Com ele: um turno, e so.
+    #[tokio::test]
+    async fn resposta_do_garra_na_conversa_voce_nao_vira_outro_turno() {
+        let c = Montagem {
+            roteiro: Roteiro::eco().na_conversa_propria(),
+            allow_extra: vec![PROPRIO.to_string()],
+            ..Montagem::default()
+        }
+        .sobe(|_| {})
+        .await;
+        assert!(
+            ate(|| c.state.whatsapp_linked.bridge() == BridgeView::Connected).await,
+            "a ponte precisa estar de pe para a resposta ter por onde sair"
+        );
+
+        let mut oi = msg(Some("oi"));
+        oi.chat_jid = Jid::new(format!("{PROPRIO}@s.whatsapp.net"));
+        oi.sender_jid = Jid::new(format!("{PROPRIO}:1@s.whatsapp.net"));
+        oi.sender_phone = Some(format!("+{PROPRIO}"));
+        oi.from_me = true;
+        oi.self_chat = true;
+        InboundSink::deliver(&*c.espiao, oi);
+
+        assert_eq!(
+            turnos_estaveis_em(&c, 1).await,
+            1,
+            "um turno so: o eco da propria resposta nao pode virar entrada"
+        );
+        assert!(
+            recebidas(&c).len() == 1,
+            "o eco nem chega ao sink: {:?}",
+            recebidas(&c)
+        );
+
+        encerra(c).await;
+    }
+
     #[tokio::test]
     async fn mensagem_from_me_vinda_pela_ponte_nao_gera_resposta() {
         let c = sobe_com(Roteiro::empurra("oi").da_propria_conta(), true).await;
