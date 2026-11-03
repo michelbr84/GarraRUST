@@ -65,6 +65,24 @@
       "gate": "config:provedor de voz (tts/stt)"
     },
     {
+      "id": "voice-chat-web",
+      "name": "Voice Chat no Web Console",
+      "category": "chat",
+      "summary": "Chamada de voz contínua na página Voice Chat do Web Console (/#/voice): fala sem apertar botão a cada turno, interrompe o GarraIA falando por cima e troca STT, modelo de conversa, TTS, voz e idioma no meio da chamada sem perder a sessão.",
+      "prerequisites": [
+        "STT e TTS disponíveis: garra start --with-voice com Whisper e Chatterbox/LM Studio locais, ou uma instância provider: openrouter já registrada em llm: (paga, só por escolha explícita)",
+        "permissão de microfone no navegador (HTTPS ou localhost)"
+      ],
+      "limitations": [
+        "sem fallback de STT/TTS: se o modelo escolhido falhar, a chamada mostra o erro em vez de trocar de provedor",
+        "não faz transcrição parcial em tempo real nem speech-to-speech: modelos speech-to-speech aparecem como indisponíveis",
+        "cada fala vai até 30 s; a chamada encerra com 5 min sem atividade, 60 min de duração ou 30 s em segundo plano",
+        "nas rotas de áudio do OpenRouter a política de roteamento aceita só zdr e data_collection"
+      ],
+      "availability": "configuravel",
+      "gate": "config:provedor de voz (tts/stt)"
+    },
+    {
       "id": "model-routing",
       "name": "Seleção de modelo e roteamento (/model)",
       "category": "chat",

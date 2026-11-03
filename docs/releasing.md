@@ -28,12 +28,15 @@ Como cortar uma release `vX.Y.Z` do GarraIA. Tudo depois do tag é automático.
 4. `CHANGELOG.md`: mover o conteúdo de `## [Unreleased]` para uma nova seção
    `## [X.Y.Z] - AAAA-MM-DD` (data narrativa em horário da Flórida,
    ver CLAUDE.md §Convenção de datas). `[Unreleased]` volta vazio.
-5. Abrir PR, aguardar CI verde e mergear. A ruleset "Protect main" exige **7
+5. Abrir PR, aguardar CI verde e mergear. A ruleset "Protect main" exige **8
    checks obrigatorios** (confira na API: `GET /repos/michelbr84/GarraRUST/rulesets`
    → o ruleset ativo): **Format Check**, **Clippy Linting**, **Test (ubuntu-latest)**,
    **Test (windows-latest)**, **Security Gate (BOLA & Tenant Isolation)**,
-   **Auth Integration (test-support)** e **Gateway Integration (Postgres)**.
-   Preserve os sete — o RC nao afrouxa gate obrigatorio.
+   **Auth Integration (test-support)**, **Gateway Integration (Postgres)** e
+   **Unit tests (windows-latest)** (obrigatorio desde 2026-11-03, depois de 5
+   rodadas verdes na `main` do job que a #1762 ampliou com os testes do binario
+   `garra` e o clippy da CLI e do gateway no Windows).
+   Preserve os oito — o RC nao afrouxa gate obrigatorio.
 
 ## 1.5 Gate de dogfood — obrigatório antes do tag (#1439)
 
@@ -173,7 +176,7 @@ Runbook (exemplo `v0.4.10-rc1`):
    Florida) com um paragrafo de abertura — o `scripts/release/notes.py` extrai
    so a prosa antes da primeira subsecao `###`. Nao mova os fragmentos para
    dentro dela.
-5. **Merge da PR com os 7 checks verdes** (§1 passo 5).
+5. **Merge da PR com os 8 checks verdes** (§1 passo 5).
 6. **Dogfood no CI (§1.5):** Actions → **Dogfood Linux (clean install)** → Run
    workflow, `ref = release/v0.4.10` (antes do tag) ou `ref = v0.4.10-rc1`
    (depois). Roda `scripts/dogfood/linux-clean-install.sh --source local` num
