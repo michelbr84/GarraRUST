@@ -25,6 +25,9 @@ use garraia_hardware::DeviceRegistry;
 use tokio::sync::mpsc;
 
 use crate::defaults::{DEFAULT_CLOUD_PROVIDER, DEFAULT_LOCAL_PROVIDER};
+use crate::sonda_de_provider::{
+    DefaultDescartado, Sonda, avisar_default_descartado, janela_de_sonda, sondar,
+};
 use crate::ui::error_card::ErrorCard;
 use crate::ui::panel;
 use crate::ui::tool_log::{Busca, ToolLog};
@@ -789,9 +792,10 @@ fn autodetect_order(
 
 /// GAR-576 — Construct an [`LlmProvider`] from a config-resolved default.
 ///
-/// Returns `None` when construction is infeasible (e.g. Ollama daemon
-/// unreachable, or required api_key absent at build time); the caller
-/// then falls through to the legacy autodetect chain.
+/// Returns `Err` with the reason when construction is infeasible (e.g. Ollama
+/// daemon unreachable, or required api_key absent at build time); the caller
+/// warns with that reason (#1793) and falls through to the legacy autodetect
+/// chain.
 ///
 /// Endpoint AND credential come from the `llm.<config_key>` entry itself
 /// ([`provider_binding::bind_entry`]). This used to read the key from
@@ -804,22 +808,29 @@ async fn try_build_default_provider(
     model: &str,
     env: provider_binding::Env<'_>,
     cliente: &reqwest::Client,
-) -> Option<Arc<dyn LlmProvider>> {
+    janela_sonda: std::time::Duration,
+) -> Result<Arc<dyn LlmProvider>, DefaultDescartado> {
     // GAR-576: return ONLY the trait object — the display strings
     // (config_key, model) are formed at the call site from inputs that
     // never pass through this function. That keeps CodeQL's cleartext-
     // logging dataflow analysis from conservatively tainting the model
     // name through this scope, which also resolves the api_key.
     let binding = provider_binding::bind_entry(config_key, cfg, env);
-    let provider = provider_binding::build_provider(&binding, model, None, None, cliente).ok()?;
+    // A classificacao, nao o texto do erro: este escopo resolve a credencial
+    // e nada dele vai para o log (GAR-576).
+    let provider = provider_binding::build_provider(&binding, model, None, None, cliente)
+        .map_err(|_| DefaultDescartado::Construcao)?;
     // Local daemons are health-checked: a dead one must not win over the
-    // autodetect chain.
+    // autodetect chain. #1793: the probe has its own window
+    // (`timeouts.health`); the provider's client carries the INFERENCE window,
+    // which a hung daemon would otherwise hold for its whole length.
     if matches!(binding.kind(), "ollama" | "llamacpp")
-        && !provider.health_check().await.unwrap_or(false)
+        && let Some(motivo) =
+            DefaultDescartado::da_sonda(sondar(provider.as_ref(), janela_sonda).await)
     {
-        return None;
+        return Err(motivo);
     }
-    Some(provider)
+    Ok(provider)
 }
 
 /// Base URL of the local Ollama daemon. Extracted so the autodetect chain
@@ -1142,6 +1153,10 @@ async fn detect_provider_with_env(
     let cliente =
         garraia_agents::cliente_llm::cliente_compartilhado(config.timeouts.llm.default_secs)
             .context("montando o cliente HTTP dos providers (timeouts.llm)")?;
+    // #1793: as sondas de disponibilidade (o default local e o Ollama no fim
+    // da cadeia) tem janela propria, `timeouts.health` — nao a de inferencia
+    // que o `cliente` carrega.
+    let janela_sonda = janela_de_sonda(&config.timeouts);
 
     // 0. If a custom URL is provided, use OpenAI-compatible provider (LM Studio, vLLM, etc.)
     if let Some(url) = url_override {
@@ -1210,27 +1225,46 @@ async fn detect_provider_with_env(
         env_has("OPENROUTER_API_KEY"),
         env_has("ANTHROPIC_API_KEY"),
     );
-    if let DefaultProviderDecision::UseDefault {
-        config_key,
-        provider_kind: _,
-        model,
-    } = decision
-        // `--model` outranks the configured default.
-        && let model = model_override
-            .filter(|m| !m.is_empty())
-            .map(str::to_string)
-            .unwrap_or(model)
-        && let Some(cfg) = config.llm.get(&config_key)
-        && let Some(provider) =
-            try_build_default_provider(&config_key, cfg, &model, env, &cliente).await
-    {
-        // GAR-576: form the display tuple here from the (untainted)
-        // strings returned by `decide_default_provider` — they never
-        // pass through the function that resolves the api_key.
-        return Ok((config_key, model, provider));
-        // If construction fails (e.g. Ollama health-check fails) the
-        // outer `if-let` chain shorts out and we fall through to the
-        // legacy autodetect chain below.
+    match decision {
+        DefaultProviderDecision::UseDefault {
+            config_key,
+            provider_kind: _,
+            model,
+        } => {
+            // `--model` outranks the configured default.
+            let model = model_override
+                .filter(|m| !m.is_empty())
+                .map(str::to_string)
+                .unwrap_or(model);
+            if let Some(cfg) = config.llm.get(&config_key) {
+                match try_build_default_provider(
+                    &config_key,
+                    cfg,
+                    &model,
+                    env,
+                    &cliente,
+                    janela_sonda,
+                )
+                .await
+                {
+                    // GAR-576: form the display tuple here from the (untainted)
+                    // strings returned by `decide_default_provider` — they never
+                    // pass through the function that resolves the api_key.
+                    Ok(provider) => return Ok((config_key, model, provider)),
+                    // If construction fails (e.g. Ollama health-check fails) we
+                    // fall through to the legacy autodetect chain below — no
+                    // longer in silence (#1793).
+                    Err(motivo) => avisar_default_descartado(&config_key, &motivo),
+                }
+            }
+        }
+        // Sem `agent.default_provider` a autodeteccao e o caminho normal; com
+        // ele, cair aqui e uma degradacao e o operador precisa saber por que.
+        DefaultProviderDecision::FallThroughToChain { reason } => {
+            if let Some(default_key) = config.agent.default_provider.as_deref() {
+                avisar_default_descartado(default_key, &DefaultDescartado::Decisao(reason));
+            }
+        }
     }
 
     // Every branch below resolves its model through `explicit_model`, so
@@ -1264,7 +1298,7 @@ async fn detect_provider_with_env(
             AutodetectCandidate::Ollama => {
                 let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url.clone()))
                     .with_client(cliente.clone());
-                if ollama.health_check().await.unwrap_or(false) {
+                if sondar(&ollama, janela_sonda).await == Sonda::Disponivel {
                     return Ok((
                         DEFAULT_LOCAL_PROVIDER.to_string(),
                         model,
@@ -2770,6 +2804,10 @@ mod testes_1225_s2 {
     /// pelo ponto de registro de PRODUCAO. `mode = all` sem backend recusa
     /// todo spawn sem consultar binario nenhum do host — deterministico, e
     /// antes da S2b esta config deixava as tools rodarem no host.
+    ///
+    /// #1762: fora de Unix o wrap e recusado pela plataforma antes de olhar o
+    /// backend (`plataforma_permite_wrap`, #1760). A recusa continua provando
+    /// que a policy chegou a tool; so a mensagem muda.
     async fn roda_recusada(
         tool: std::sync::Arc<dyn garraia_agents::Tool>,
         input: serde_json::Value,
@@ -2791,7 +2829,12 @@ mod testes_1225_s2 {
             }
             Err(e) => e.to_string(),
         };
-        assert!(texto.contains("nenhum backend"), "{}: {texto}", tool.name());
+        let motivo = if cfg!(unix) {
+            "nenhum backend"
+        } else {
+            "nao suportado fora de unix"
+        };
+        assert!(texto.contains(motivo), "{}: {texto}", tool.name());
     }
 
     #[tokio::test]
@@ -3661,6 +3704,7 @@ mod tests {
             "m",
             &|_: &str| None,
             &reqwest::Client::new(),
+            std::time::Duration::from_secs(5),
         )
         .await
         .expect("default provider construivel");
@@ -3750,6 +3794,139 @@ mod tests {
         texto_da_chamada(&provider).await;
         assert!(a.paths().await.is_empty(), "A nao pode receber nada");
         assert_eq!(b.credentials().await, vec!["chave-b".to_string()]);
+    }
+
+    // ─── #1793: janela das sondas e degradacao com motivo ─────────────────
+
+    /// Uma `llm.openrouter` com chave e `base_url` que ninguem escuta: a
+    /// autodeteccao a monta sem rede e para nela, entao os testes abaixo nao
+    /// dependem de um Ollama de pe (ou travado) na maquina.
+    fn nuvem_sem_rede() -> (&'static str, LlmProviderConfig) {
+        (
+            "openrouter",
+            make_llm_cfg(
+                "openrouter",
+                Some("m"),
+                Some("k"),
+                Some("http://127.0.0.1:9/api/v1"),
+            ),
+        )
+    }
+
+    /// Itens 6/7/8: o default local que aceita a conexao e nao responde. A
+    /// sonda dele tem de morrer na janela de `timeouts.health` (1s), nao na de
+    /// inferencia (`timeouts.llm`, 120s) que o provider carrega — e a queda
+    /// para a autodeteccao sai em `warn`, com o motivo.
+    #[tokio::test]
+    async fn default_local_travado_cai_na_janela_de_sonda_e_avisa_com_motivo() {
+        use crate::sonda_de_provider::tests::{capturar_logs, servidor_que_nao_responde};
+        let travado = servidor_que_nao_responde().await;
+        let mut cfg = config_with_default(
+            "local",
+            &[
+                (
+                    "local",
+                    make_llm_cfg(
+                        "ollama",
+                        Some("m"),
+                        None,
+                        Some(&format!("http://{travado}")),
+                    ),
+                ),
+                nuvem_sem_rede(),
+            ],
+        );
+        cfg.timeouts.health.default_secs = 1;
+        cfg.timeouts.llm.default_secs = 120;
+        let (logs, _guard) = capturar_logs();
+
+        let inicio = std::time::Instant::now();
+        let (nome, _, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            detect_provider_with_env(&cfg, None, None, false, &|_: &str| None),
+        )
+        .await
+        .expect("a sonda do default herdou a janela de inferencia (120s), nao a de timeouts.health")
+        .expect("a deteccao devolve um provider");
+        let gasto = inicio.elapsed();
+        assert!(
+            gasto >= std::time::Duration::from_secs(1)
+                && gasto < std::time::Duration::from_secs(10),
+            "a janela aplicada tem de ser a de 1s da sonda: {gasto:?}"
+        );
+        assert_eq!(nome, "openrouter", "o default travado nao pode vencer");
+
+        let texto = logs.texto();
+        assert!(texto.contains("WARN"), "{texto}");
+        assert!(texto.contains("default_provider=local"), "{texto}");
+        assert!(
+            texto.contains("em 1s (timeouts.health.default_secs)"),
+            "o motivo diz qual janela venceu: {texto}"
+        );
+    }
+
+    /// Item 8: o default configurado que a decisao recusa (entrada ausente,
+    /// tipo que a CLI nao escolhe) tambem caia em silencio na autodeteccao.
+    /// Agora o `warn` diz qual chave e por que.
+    #[tokio::test]
+    async fn default_recusado_pela_decisao_avisa_com_o_motivo() {
+        use crate::sonda_de_provider::tests::capturar_logs;
+        for (default_key, entradas, motivo) in [
+            (
+                "sumiu",
+                vec![nuvem_sem_rede()],
+                "agent.default_provider key not present in llm map",
+            ),
+            (
+                "chatgpt",
+                vec![
+                    (
+                        "chatgpt",
+                        make_llm_cfg("openai-codex", Some("m"), None, None),
+                    ),
+                    nuvem_sem_rede(),
+                ],
+                "unknown provider kind in agent.default_provider",
+            ),
+        ] {
+            let cfg = config_with_default(default_key, &entradas);
+            let (logs, _guard) = capturar_logs();
+            let (nome, _, _) = detect_provider_with_env(&cfg, None, None, false, &|_: &str| None)
+                .await
+                .expect("a deteccao devolve um provider");
+            assert_eq!(nome, "openrouter", "{default_key}");
+            let texto = logs.texto();
+            assert!(texto.contains("WARN"), "{default_key}: {texto}");
+            assert!(
+                texto.contains(&format!("default_provider={default_key}")),
+                "{default_key}: {texto}"
+            );
+            assert!(
+                texto.contains(&format!("motivo={motivo}")),
+                "{default_key}: {texto}"
+            );
+        }
+    }
+
+    /// Negativo do item 8: sem `agent.default_provider` a autodeteccao e o
+    /// caminho normal, nao uma degradacao — e um default que responde
+    /// tambem nao avisa nada.
+    #[tokio::test]
+    async fn autodeteccao_sem_default_e_default_que_responde_nao_avisam() {
+        use crate::sonda_de_provider::tests::capturar_logs;
+        let (logs, _guard) = capturar_logs();
+        let cfg = config_with(&[nuvem_sem_rede()]);
+        let (nome, _, _) = detect_provider_with_env(&cfg, None, None, false, &|_: &str| None)
+            .await
+            .expect("a deteccao devolve um provider");
+        assert_eq!(nome, "openrouter");
+        let cfg = config_with_default("openrouter", &[nuvem_sem_rede()]);
+        let (nome, _, _) = detect_provider_with_env(&cfg, None, None, false, &|_: &str| None)
+            .await
+            .expect("a deteccao devolve um provider");
+        assert_eq!(nome, "openrouter");
+        let texto = logs.texto();
+        assert!(!texto.contains("WARN"), "nada degradou: {texto}");
     }
 
     /// `--url` avulso: a `OPENAI_API_KEY` e a `GARRAIA_EMBEDDING_API_KEY` sao

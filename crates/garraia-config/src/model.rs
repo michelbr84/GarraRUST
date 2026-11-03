@@ -1439,9 +1439,9 @@ fn default_health_timeout() -> u64 {
 ///   stt:
 ///     default_secs: 30
 ///   mcp:
-///     default_secs: 60
+///     default_secs: 60   # sem `mcp.<nome>.timeout`; boot e `garra mcp` (#1793)
 ///   health:
-///     default_secs: 5
+///     default_secs: 5    # sondas: `/health` e a escolha de provider da CLI (#1793)
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimeoutConfig {
@@ -1663,7 +1663,11 @@ pub struct McpServerConfig {
     /// Whether this server is enabled (default: true)
     pub enabled: Option<bool>,
 
-    /// Connection timeout in seconds (default: 30)
+    /// Window, in seconds, of every call to this server (spawn + handshake,
+    /// `tools/list`, `resources/*`, `prompts/*`, each `tools/call`). Absent =
+    /// `timeouts.mcp.default_secs` (60 by default) — see
+    /// [`McpServerConfig::timeout_efetivo`]. This line used to say "default:
+    /// 30", the value the `garra mcp` subcommands hard-coded (#1793).
     ///
     /// #1273: deliberately NO `alias = "timeoutSecs"` here. The gateway's
     /// registry writer emits `timeoutSecs` on every entry with its own
@@ -1733,6 +1737,21 @@ pub struct McpServerConfig {
     pub inherit_env: bool,
 }
 
+impl McpServerConfig {
+    /// #1793: a janela, em segundos, de cada chamada a este servidor — o
+    /// `timeout` da entrada quando declarado, `timeouts.mcp.default_secs`
+    /// quando nao.
+    ///
+    /// Um lugar so para a regra que o boot do gateway aplicava inline: os
+    /// subcomandos `garra mcp inspect|resources|prompts` usavam 30s fixos no
+    /// lugar da config — um servidor que o gateway sobe em 45s (cache npx
+    /// frio) "falhava" no `inspect` — e o `garra mcp list` mostrava esse 30
+    /// como se fosse o timeout do servidor.
+    pub fn timeout_efetivo(&self, timeouts: &TimeoutConfig) -> u64 {
+        self.timeout.unwrap_or(timeouts.mcp.default_secs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::AppConfig;
@@ -1772,6 +1791,28 @@ mod tests {
             .expect("yaml should parse");
         assert_eq!(config.timeouts.llm.default_secs, 90);
         assert_eq!(config.timeouts.embeddings.default_secs, 30);
+    }
+
+    /// #1793: a janela de um servidor MCP e o `timeout` da entrada quando
+    /// declarado e `timeouts.mcp.default_secs` quando nao — nunca um 30 fixo,
+    /// que era o que os subcomandos `garra mcp` aplicavam no lugar da config.
+    #[test]
+    fn janela_do_servidor_mcp_vem_da_entrada_ou_de_timeouts_mcp() {
+        let config: AppConfig = serde_norway::from_str(
+            "timeouts:\n  mcp:\n    default_secs: 77\n\
+             mcp:\n  sem_janela:\n    command: x\n  com_janela:\n    command: x\n    timeout: 9\n",
+        )
+        .expect("yaml should parse");
+        let sem = config.mcp.get("sem_janela").expect("entrada");
+        let com = config.mcp.get("com_janela").expect("entrada");
+        assert_eq!(sem.timeout_efetivo(&config.timeouts), 77);
+        assert_eq!(com.timeout_efetivo(&config.timeouts), 9);
+
+        // Sem a secao `timeouts:`, o default documentado (60s), nao 30.
+        let padrao: AppConfig =
+            serde_norway::from_str("mcp:\n  s:\n    command: x\n").expect("yaml should parse");
+        let s = padrao.mcp.get("s").expect("entrada");
+        assert_eq!(s.timeout_efetivo(&padrao.timeouts), 60);
     }
 
     /// #1593: `llm.<nome>.timeout_secs` chega pelo `extra` (flatten) e o

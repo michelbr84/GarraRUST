@@ -2346,9 +2346,9 @@ pub async fn build_mcp_tools(
             continue;
         }
 
-        let timeout_secs = server_config
-            .timeout
-            .unwrap_or(config.timeouts.mcp.default_secs);
+        // #1793: a regra mora no config, para os subcomandos `garra mcp`
+        // aplicarem a MESMA janela que este boot.
+        let timeout_secs = server_config.timeout_efetivo(&config.timeouts);
         // GAR-293: resource limit config (with defaults).
         let memory_limit_mb = server_config.memory_limit_mb;
         let max_restarts = server_config.max_restarts.unwrap_or(5);
@@ -3114,6 +3114,9 @@ mod tests {
     /// pelo ponto de registro de PRODUCAO. `mode = all` sem backend recusa
     /// todo spawn sem consultar binario nenhum do host — deterministico, e
     /// antes da S2b esta config deixava as tools rodarem no host.
+    // #1762: mesmo `cfg` do unico teste que a usa (o sandbox e recusado fora
+    // de Unix por desenho); sem ele o clippy do Windows acusa funcao morta.
+    #[cfg(unix)]
     async fn roda_recusada(
         tool: std::sync::Arc<dyn garraia_agents::Tool>,
         input: serde_json::Value,
