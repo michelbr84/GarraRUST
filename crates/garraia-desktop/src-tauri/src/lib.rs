@@ -58,7 +58,13 @@ pub fn run() {
             // ignora `GARRAIA_CONFIG_DIR` e o diretorio legado `~/.garraia`.
             // Com as duas pontas divergindo, o desktop leria a chave de um
             // arquivo e o gateway exigiria a do outro — de novo o 401 mudo.
-            if let Ok(resource_dir) = app.path().resource_dir() {
+            //
+            // #1824: com um gateway de fora do app, a pasta e a DELE — copiar o
+            // default ali (outro `default_provider`, `tool_confirmation_enabled:
+            // false`) mudaria a outra instalacao no proximo restart dela.
+            let gateway_de_fora =
+                matches!(gateway::origem(), Some(gateway::Origem::Externo { .. }));
+            if let (false, Ok(resource_dir)) = (gateway_de_fora, app.path().resource_dir()) {
                 let config_file =
                     garraia_config::ConfigLoader::default_config_dir().join("config.yml");
                 if !config_file.exists() {

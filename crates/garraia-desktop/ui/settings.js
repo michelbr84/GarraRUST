@@ -37,9 +37,30 @@ invoke('onboarding_estado').then((st) => {
 
 waModoSel?.addEventListener('change', waRender);
 
+// #1824: com um gateway de fora do app, "Aplicar modo" muda a configuracao
+// DELE — so com a confirmacao marcada (o backend recusa sem ela).
+let waExterno = null;
+invoke('gateway_estado').then((g) => {
+  if (g && g.origem === 'externo' && typeof g.versao === 'string') {
+    waExterno = g;
+    const row = document.getElementById('wa-externo-row');
+    const txt = document.getElementById('wa-externo-texto');
+    if (txt) txt.textContent = 'Este modo vale para o Garra ' + g.versao + ' que já estava rodando nesta máquina, '
+      + 'fora deste app. Antes de mudar, o app guarda uma cópia do config.yml na pasta backups.';
+    if (row) row.style.display = '';
+  }
+}).catch(() => {});
+
 document.getElementById('wa-aplicar')?.addEventListener('click', async () => {
   const modo = waModoSel.value;
-  const args = { modo, numeroPessoal: null, confirmoAberto: false };
+  const args = { modo, numeroPessoal: null, confirmoAberto: false, confirmoExterno: false };
+  if (waExterno) {
+    if (!document.getElementById('wa-externo-confirmo')?.checked) {
+      waStatus.textContent = 'Marque a confirmação: este modo muda o Garra ' + waExterno.versao + ' que já estava rodando.';
+      return;
+    }
+    args.confirmoExterno = true;
+  }
   if (modo === 'proprio') {
     if (!waConfirmo.checked) { waStatus.textContent = 'Marque a confirmação antes de abrir o Garra para todos.'; return; }
     args.confirmoAberto = true;

@@ -149,6 +149,13 @@
           Entendo que qualquer pessoa que mandar mensagem recebe resposta.
         </label>
       </div>
+      <!-- #1824: com um Garra de fora do app, aplicar o modo muda a configuracao DELE. -->
+      <div class="row" id="wa-externo-row" data-testid="wa-externo-row" style="display:none">
+        <label style="font-size:13px">
+          <input type="checkbox" id="wa-externo-confirmo" data-testid="wa-externo-confirmo" />
+          <span id="wa-externo-texto">Este modo vale para o Garra que já estava rodando nesta máquina. Antes de mudar, o app guarda uma cópia do config.yml na pasta backups.</span>
+        </label>
+      </div>
       <!-- Numero pessoal para "dedicado". -->
       <div class="row" id="wa-dedicado-row" data-testid="wa-dedicado-row" style="display:none">
         <label for="wa-numero" style="font-size:13px">Seu número (com DDI)</label>

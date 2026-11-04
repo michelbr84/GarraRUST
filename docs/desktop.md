@@ -230,6 +230,31 @@ decisão vive em `garraia_desktop_core::onboarding` (puro, testado no CI — ADR
   — dois gateways no mesmo diretório dividiriam a sessão do WhatsApp e o pidfile,
   mesmo em portas diferentes. Os comandos que gravam a chave e rodam o teste só
   respondem à janela do assistente.
+- **Configuração de outra instalação** (#1824): o gateway de fora usa o mesmo
+  `config.yml` da pasta padrão, então os passos do assistente gravariam nele (no
+  teste da rc2, a persona trocou o prompt de sistema de um bot do Telegram 0.5.1).
+  Com um gateway de fora, a primeira tela pede uma confirmação explícita
+  ("Quero configurar esse Garra por aqui") antes de **Começar**, e a casca exige
+  essa confirmação em cada comando que grava: provedor (`config set-routing`),
+  persona (`agent.system_prompt`) e modo/acesso (`whatsapp access`, inclusive o
+  `open` do modo próprio). Sem ela, o comando recusa sem tocar em nada; com ela,
+  o app copia o `config.yml` para
+  `<config>/backups/config_<AAAAMMDD>T<HHMMSS>Z_antes-do-desktop-<passo>.yml`
+  (modo `0600`, pasta `0700`, nunca sobrescreve outro backup, não duplica um
+  conteúdo já copiado e recusa uma pasta `backups` que seja link simbólico) e só
+  então grava. Se a cópia falhar, o passo não grava. O **pareamento** com um
+  gateway de fora é recusado mesmo confirmado: o `whatsapp link` abriria uma
+  segunda ponte com a sessão viva do outro, que o backup não protege; a tela do
+  QR diz para parar o outro Garra e abrir o app de novo. Se o outro usa
+  `config.toml`, o assistente também recusa (gravar criaria um `config.yml` que
+  passaria a valer no lugar dele), e o app não copia mais o `config.default.yml`
+  para a pasta de um gateway de fora. **Ajustes → Aplicar modo** pede a mesma
+  confirmação. Para restaurar, pare o outro Garra, copie o backup de volta para
+  `config.yml` e suba-o de novo. A regra e o backup moram em
+  `garraia_desktop_core::config_alheia`, testados no CI; os construtores de
+  argumentos que gravam exigem a prova da guarda (`Liberado`), então um comando
+  que pule a guarda não compila. A detecção do gateway de fora continua sendo a
+  da porta na abertura do app (#1816); um serviço parado nessa hora não conta.
 
 A escolha de modo **persiste e é configurável depois** em `ui/settings.html` →
 seção **WhatsApp** (trocar modo — com a mesma confirmação/numero que o wizard — e
