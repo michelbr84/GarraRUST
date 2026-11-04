@@ -262,11 +262,13 @@ jobs:
 
       - name: O script sai != 0 quando um passo nao passa
         run: |
-          set -uo pipefail
+          set -euo pipefail
           export DOGFOOD_EVIDENCE_ROOT="${RUNNER_TEMP}/dogfood-reprova"
+          # O runner roda o step com `bash -e`: captura o codigo em vez de
+          # deixar a falha esperada encerrar o step antes da conferencia.
+          rc=0
           DOGFOOD_OLLAMA_BASE_URL=http://127.0.0.1:9/v1 \
-            scripts/dogfood/linux-clean-install.sh --source local
-          rc=$?
+            scripts/dogfood/linux-clean-install.sh --source local || rc=$?
           cat "${DOGFOOD_EVIDENCE_ROOT}"/*/resumo.txt
           if [ "$rc" -eq 0 ]; then
             echo "::error ::o dogfood saiu 0 com passo que nao passou (#1830)"; exit 1
