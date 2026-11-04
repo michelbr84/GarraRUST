@@ -1,0 +1,1 @@
+- Os jobs `Clippy Linting` e `Test (ubuntu-latest)` do CI passam a liberar espaco em disco do runner (mesma limpeza inline do job de cobertura) antes de compilar, evitando `No space left on device` intermitente (#1832).
