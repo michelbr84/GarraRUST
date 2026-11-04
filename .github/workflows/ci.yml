@@ -246,6 +246,40 @@ jobs:
       - name: Testes do check_files.py
         run: python3 -m pytest scripts/release/tests -q
 
+  # #1830: o dogfood Linux e gate de release, e o script saia 0 com passo
+  # FALHOU (o contador ficava num subshell do `tee`). Aqui o script REAL roda
+  # num cenario que tem de falhar — Ollama numa porta fechada, entao o P0 cai e
+  # o resto e pulado — e o job exige saida != 0 e FALHOU no resumo. Sem
+  # docker pull nem build: para no P0, em segundos.
+  dogfood-reprova-falha:
+    name: Dogfood reprova passo que falhou
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: O script sai != 0 quando um passo nao passa
+        run: |
+          set -euo pipefail
+          export DOGFOOD_EVIDENCE_ROOT="${RUNNER_TEMP}/dogfood-reprova"
+          # O runner roda o step com `bash -e`: captura o codigo em vez de
+          # deixar a falha esperada encerrar o step antes da conferencia.
+          rc=0
+          DOGFOOD_OLLAMA_BASE_URL=http://127.0.0.1:9/v1 \
+            scripts/dogfood/linux-clean-install.sh --source local || rc=$?
+          cat "${DOGFOOD_EVIDENCE_ROOT}"/*/resumo.txt
+          if [ "$rc" -eq 0 ]; then
+            echo "::error ::o dogfood saiu 0 com passo que nao passou (#1830)"; exit 1
+          fi
+          grep -q '^P0   FALHOU' "${DOGFOOD_EVIDENCE_ROOT}"/*/resumo.txt \
+            || { echo "::error ::o resumo nao registrou o P0 como FALHOU"; exit 1; }
+          jq -e '[.steps[] | select(.result != "PASSOU")] | length > 0' \
+            "${DOGFOOD_EVIDENCE_ROOT}"/*/resumo.json >/dev/null \
+            || { echo "::error ::o resumo.json nao registrou a falha"; exit 1; }
+          echo "ok: o dogfood reprovou (exit ${rc}) e o resumo registrou a falha"
+
   # Plan 0127 (PR-B) — shellcheck `install.sh` and the bash test harness.
   # `install.sh` is the public `curl | sh` entry point and has been
   # historically linted by hand; promoting that to a blocking CI step
