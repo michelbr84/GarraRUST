@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.2-rc4] - 2026-11-03
+
+Quarto candidato da v0.5.2, publicado como pre-lancamento: e a rc3 mais a
+correcao de um defeito achado depois do teste da rc2, em que o assistente do
+Desktop gravou na configuracao de outra instalacao do Garra. Nao e servido por
+`/releases/latest`, nao e oferecido pelo `garraia update` nem pelo atualizador
+do app desktop, e a imagem Docker sai so com a tag `0.5.2-rc4` (sem `latest` e
+sem `0.5`). O binario se identifica como `garra 0.5.2` (o `-rc4` vive so na
+tag).
+
+Instalacao com versao fixa: no Windows,
+`$env:GARRAIA_VERSION='v0.5.2-rc4'; irm https://github.com/michelbr84/GarraRUST/releases/download/v0.5.2-rc4/install.ps1 | iex`;
+no Linux/macOS,
+`curl -fsSL https://github.com/michelbr84/GarraRUST/releases/download/v0.5.2-rc4/install.sh | sh -s -- --version v0.5.2-rc4`.
+
+O que muda desde a rc3:
+
+- **O assistente do Desktop nao grava mais na configuracao de outra instalacao
+  sem perguntar** (#1824, #1827): com um Garra de fora do app na porta (um
+  servico do systemd, outra versao), a pasta de config padrao e a dele, e no
+  teste da rc2 a persona trocou em silencio o prompt de sistema de um bot do
+  Telegram 0.5.1. Agora a primeira tela pede uma confirmacao explicita; quem
+  responde, a persona e o modo de acesso recusam sem ela e, com ela, o app
+  guarda uma copia do `config.yml` em `backups/` antes de cada mudanca. O
+  pareamento do WhatsApp com um Garra de fora e recusado (abriria uma segunda
+  conexao com a mesma conta), um `config.toml` do outro nao ganha um
+  `config.yml` por cima, e o app nao copia mais o config padrao para a pasta
+  dele. Os Ajustes pedem a mesma confirmacao.
+
+**Teste manual antes da estavel** (gate de dogfood, `docs/releasing.md` §1.5),
+continua PENDENTE e nao e aprovado por suposicao: os mesmos itens da rc3
+(Desktop Linux numa maquina sem outro Garra, com "Quem responde", pareamento no
+modo proprio e no dedicado, "oi" pela conversa "Voce", de um terceiro e depois
+de fechar e abrir o app sem QR novo; duplo clique no AppImage da CLI; Windows
+D2/D5/D6; Voice Chat fisico), mais: com um Garra ja rodando na maquina, abrir o
+assistente, conferir que ele pede a confirmacao, que o backup aparece em
+`backups/` e que o QR e recusado com a orientacao de parar o outro Garra.
+Passando, a `v0.5.2` sai como estavel; uma falha reproduzivel vira a
+`v0.5.2-rc5`.
+
 ## [0.5.2-rc3] - 2026-11-03
 
 Terceiro candidato da v0.5.2, publicado como pre-lancamento: e a rc2 mais as

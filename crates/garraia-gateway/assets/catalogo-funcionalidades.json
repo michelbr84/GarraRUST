@@ -501,7 +501,8 @@
       "limitations": [
         "instaladores sem assinatura de code signing: o SmartScreen do Windows e o Gatekeeper do macOS podem avisar",
         "o Node privado embutido serve só à ponte do WhatsApp e é chamado por caminho explícito",
-        "o modo dedicado autoriza o número pessoal informado no assistente; o modo próprio responde qualquer pessoa e exige confirmação explícita, e o dono fala com o Garra pela conversa \"Você\" do WhatsApp"
+        "o modo dedicado autoriza o número pessoal informado no assistente; o modo próprio responde qualquer pessoa e exige confirmação explícita, e o dono fala com o Garra pela conversa \"Você\" do WhatsApp",
+        "com outro Garra já rodando na máquina, o assistente só muda a configuração dele com confirmação explícita e backup em backups/, e o pareamento do WhatsApp exige parar esse outro Garra"
       ],
       "availability": "configuravel",
       "operator_only": true
