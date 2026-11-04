@@ -114,6 +114,17 @@ jobs:
           scripts/dogfood/linux-clean-install.sh --source local || rc=$?
           echo "--- resumo.txt ---"
           cat dogfood/linux/*/resumo.txt 2>/dev/null || echo "(sem resumo: o dogfood falhou antes de gera-lo)"
+          # #1830: segunda camada, independente do codigo de saida do script
+          # (que ja saiu 0 com passo FALHOU): o resumo.json tem de existir e
+          # todo passo tem de ter PASSOU.
+          resumo=$(ls dogfood/linux/*/resumo.json 2>/dev/null | head -1 || true)
+          if [ -z "$resumo" ]; then
+            echo "::error ::sem resumo.json: o dogfood nao chegou ao fim"; exit 1
+          fi
+          nao_passou=$(jq -r '[.steps[] | select(.result != "PASSOU") | "\(.id) \(.result)"] | join(", ")' "$resumo")
+          if [ -n "$nao_passou" ]; then
+            echo "::error ::dogfood com passo que nao passou: ${nao_passou}"; exit 1
+          fi
           exit "$rc"
 
       - name: Upload dogfood evidence

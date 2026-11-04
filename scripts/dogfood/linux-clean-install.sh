@@ -562,7 +562,13 @@ collect_evidence
 # ─── Resumo ─────────────────────────────────────────────────────────────────
 
 TOTAL_SECS=$(( $(date +%s) - STARTED_AT ))
+# #1830: conta no shell PAI. O bloco `{ … } | tee` abaixo roda num subshell, e
+# um `FAILS` incrementado la dentro nunca voltava para a ultima linha: o
+# script saia 0 com passo FALHOU e o job do dogfood ficava verde.
 FAILS=0
+for r in "${STEP_RESULTS[@]}"; do
+    [ "$r" = "PASSOU" ] || FAILS=$((FAILS + 1))
+done
 {
     echo "GarraIA dogfood Linux — ${STAMP}"
     echo "pacote: ${PKG_SOURCE:-nao obtido}"
@@ -571,7 +577,6 @@ FAILS=0
     echo
     for i in "${!STEP_IDS[@]}"; do
         printf '%-4s %-7s %4ss  %s\n' "${STEP_IDS[$i]}" "${STEP_RESULTS[$i]}" "${STEP_SECS[$i]}" "${STEP_DESCS[$i]}"
-        [ "${STEP_RESULTS[$i]}" = "PASSOU" ] || FAILS=$((FAILS + 1))
     done
     echo
     echo "tempo total: ${TOTAL_SECS}s   passos nao-PASSOU: ${FAILS}"
