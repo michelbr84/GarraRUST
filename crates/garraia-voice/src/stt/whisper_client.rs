@@ -167,18 +167,22 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = [0u8; 4096];
-            assert!(socket.read(&mut request).await.unwrap() > 0);
-            // Keep the original socket open without responding. A fallback
-            // would open another connection and hide the original timeout.
+            // On a slow runner the client may time out before sending the
+            // request (read returns 0), so the byte count is not asserted:
+            // the invariant is only that no second connection follows (#1829).
+            let _ = socket.read(&mut request).await;
+            // A fallback would open another connection and hide the original
+            // timeout.
             assert!(
-                tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                tokio::time::timeout(Duration::from_millis(500), listener.accept())
                     .await
                     .is_err()
             );
+            drop(socket);
         });
         let mut client = WhisperClient::new(&endpoint, "pt");
         client.client = reqwest::Client::builder()
-            .timeout(Duration::from_millis(30))
+            .timeout(Duration::from_millis(100))
             .build()
             .unwrap();
         let error = client

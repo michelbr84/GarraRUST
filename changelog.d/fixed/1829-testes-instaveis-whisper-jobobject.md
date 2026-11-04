@@ -1,0 +1,1 @@
+- Testes instaveis do CI: o do cliente whisper nao exige mais bytes lidos quando o timeout vence a requisicao, e o do Job Object passa a achar o neto pelo nome `ping.exe` em vez do primeiro filho do `cmd` (#1829).
