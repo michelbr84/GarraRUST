@@ -159,6 +159,18 @@ jobs:
               || { echo "::error ::$cmd nao esta no invoke_handler! de $lib — o invoke da webview falharia (#1636)"; exit 1; }
           done
 
+          # #1824: com um gateway de fora do app, o config.yml da pasta padrao e o
+          # DELE. Todo comando que grava nele (ou troca a sessao do WhatsApp) pega a
+          # prova da guarda de confirmacao + backup; os construtores de argumentos
+          # do core exigem essa prova (`Liberado`), entao pular a guarda nem compila
+          # — este check pega o caso de a guarda sumir do comando sem compilar a casca.
+          for cmd in onboarding_configurar_provedor wa_iniciar_pareamento \
+                     onboarding_aplicar_persona onboarding_aplicar_modo; do
+            corpo=$(awk -v c="pub async fn $cmd(" 'index($0, c) {d=1} d {print} d && /^}/ {exit}' "$cmds")
+            grep -Eq '^[[:space:]]+let liberado = guardar_config_alheia\(confirmo_externo, Passo::[A-Za-z]+\)\?;' <<<"$corpo" \
+              || { echo "::error ::$cmd grava sem passar por guardar_config_alheia: a config de outra instalacao ficaria sem confirmacao nem backup (#1824)"; exit 1; }
+          done
+
           # A janela abre no primeiro uso e tem a capability PROPRIA minima (F5),
           # separada da `default` ampla (que NAO pode mais listar a janela).
           grep -q "abrir_se_primeiro_uso" "$lib" \
@@ -174,7 +186,7 @@ jobs:
           grep -q -- '--api-key-stdin' crates/garraia-desktop-core/src/provedor.rs \
             || { echo "::error ::o passo de provedor deixou de entregar a chave pelo stdin (#1700)"; exit 1; }
 
-          echo "ok: wizard sem script inline (CSP), ouve NDJSON, desenha o QR, os 13 comandos existem + registrados, a chave vai pelo stdin, e a janela tem capability propria minima"
+          echo "ok: wizard sem script inline (CSP), ouve NDJSON, desenha o QR, os 13 comandos existem + registrados, os 4 que gravam pedem confirmacao com gateway de fora (#1824), a chave vai pelo stdin, e a janela tem capability propria minima"
 
   # #1636 (fatia 3): o unico teste AUTOMATIZADO da UI do wizard. Abre
   # `ui/onboarding.html` por file:// com um `window.__TAURI__` falso (sem Tauri,

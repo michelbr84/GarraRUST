@@ -189,6 +189,14 @@
       </ul>
       <!-- #1816: ja havia um gateway GarraIA rodando fora deste app. -->
       <div class="aviso" id="bv-aviso-gateway" data-testid="bv-aviso-gateway" role="status"></div>
+      <!-- #1824: com um Garra de fora, nada grava na configuracao dele sem esta confirmacao. -->
+      <label class="confirmo hidden" id="bv-confirmo-externo" data-testid="bv-confirmo-externo">
+        <input type="checkbox" id="externo-confirmo" data-testid="externo-confirmo" />
+        <span>Quero configurar esse Garra por aqui. Os próximos passos mudam a configuração dele:
+          quem responde, quem pode falar com ele no WhatsApp e a persona. Antes de cada mudança, o
+          app guarda uma cópia do <code>config.yml</code> na pasta <code>backups</code>. O QR code do
+          WhatsApp só pode ser lido com esse Garra parado.</span>
+      </label>
       <div class="spacer"></div>
       <button class="btn-primario" id="btn-comecar" data-testid="btn-comecar">Começar</button>
     </section>

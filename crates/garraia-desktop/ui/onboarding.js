@@ -26,6 +26,8 @@ let provedorEscolhido = null; // "ollama" | "openrouter" | null (#1700)
 let provedorTestado = false;  // o teste de conectividade passou nesta sessao
 let voltarParaPronto = false; // a tela de provedor foi aberta pela tela Pronto
 let gatewayDeFora = null;     // #1816: { versao, versao_app } quando o gateway nao e do app
+let confirmoExterno = false;  // #1824: a pessoa aceitou configurar o Garra de fora (com backup)
+let gatewayLido = false;      // o gateway_estado ja respondeu (ou falhou)
 
 function anunciar(texto) { $('live-region').textContent = texto; }
 
@@ -40,6 +42,16 @@ invoke('onboarding_marcar_exibido');
 
 // ── Boas-vindas ──────────────────────────────────────────────────────────────
 $('btn-comecar').addEventListener('click', () => abrirProvedor(false));
+// #1824: com um Garra de fora, so comeca depois da confirmacao explicita — cada
+// passo grava na configuracao DELE. O backend recusa sem ela (e faz backup com ela).
+function atualizarComecar() {
+  $('btn-comecar').disabled = !gatewayLido || (gatewayDeFora !== null && !confirmoExterno);
+}
+atualizarComecar();
+$('externo-confirmo').addEventListener('change', () => {
+  confirmoExterno = $('externo-confirmo').checked;
+  atualizarComecar();
+});
 $('btn-modo-voltar').addEventListener('click', () => mostrar('tela-provedor'));
 
 // #1816: ja havia um gateway GarraIA rodando fora deste app. Dizer qual e o que
@@ -72,8 +84,9 @@ invoke('gateway_estado').then((g) => {
     const el = $('bv-aviso-gateway');
     preencher(el, partesGatewayDeFora(g));
     el.classList.add('ativo');
+    $('bv-confirmo-externo').classList.remove('hidden');
   }
-}).catch(() => {});
+}).catch(() => {}).finally(() => { gatewayLido = true; atualizarComecar(); });
 
 // ── Quem responde (#1700) ────────────────────────────────────────────────────
 // A chave colada vai UMA vez para o backend (que a entrega pelo stdin do
@@ -172,11 +185,11 @@ $('btn-prov-testar').addEventListener('click', async () => {
   $('prov-ok').classList.add('hidden');
   try {
     if (provedorEscolhido === 'ollama') {
-      await invoke('onboarding_configurar_provedor', { provedor: 'ollama', modelo: $('ollama-modelo').value, chave: null });
+      await invoke('onboarding_configurar_provedor', { provedor: 'ollama', modelo: $('ollama-modelo').value, chave: null, confirmoExterno });
     } else if (provedorEscolhido === 'openrouter') {
       const chave = $('openrouter-chave').value;
       $('openrouter-chave').value = '';
-      await invoke('onboarding_configurar_provedor', { provedor: 'openrouter', modelo: $('openrouter-modelo').value, chave });
+      await invoke('onboarding_configurar_provedor', { provedor: 'openrouter', modelo: $('openrouter-modelo').value, chave, confirmoExterno });
     }
   } catch (e) {
     mostrarErroProv(typeof e === 'string' ? e : 'Não deu para salvar o provedor.');
@@ -263,7 +276,7 @@ function iniciarPareamento() {
   esconderErro();
   setStatus('Preparando a conexão…', true);
   $('btn-tentar-novamente').style.display = 'none';
-  invoke('wa_iniciar_pareamento').catch((e) => mostrarErro(String(e)));
+  invoke('wa_iniciar_pareamento', { confirmoExterno }).catch((e) => mostrarErro(String(e)));
 }
 
 function setStatus(texto, pulsando) {
@@ -383,7 +396,7 @@ $('btn-persona-continuar').addEventListener('click', async () => {
   btn.disabled = true;
   $('persona-erro').classList.remove('ativo');
   try {
-    await invoke('onboarding_aplicar_persona', { nome, estilo, idioma });
+    await invoke('onboarding_aplicar_persona', { nome, estilo, idioma, confirmoExterno });
     mostrar('tela-pronto');
     finalizar();
   } catch (e) {
@@ -424,6 +437,7 @@ async function finalizar() {
       modo: modoEscolhido,
       numeroPessoal: numeroPessoal,
       confirmoAberto: confirmoAberto,
+      confirmoExterno: confirmoExterno,
     });
   } catch (e) {
     txt.textContent = 'Ainda não ficou pronto';

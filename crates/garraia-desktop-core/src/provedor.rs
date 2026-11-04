@@ -17,6 +17,8 @@ use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+
+use crate::config_alheia::{Liberado, Passo};
 pub use zeroize::Zeroizing;
 
 /// Porta padrao do Ollama local.
@@ -87,8 +89,10 @@ impl Escolha {
     }
 
     /// Os argumentos do `garraia` que gravam esta escolha. A chave, quando ha,
-    /// vai pelo stdin (`--api-key-stdin`), nunca aqui.
-    pub fn args_set_routing(&self) -> Vec<String> {
+    /// vai pelo stdin (`--api-key-stdin`), nunca aqui. Exige a prova da guarda
+    /// da #1824 (com um gateway de fora, o config e o dele).
+    pub fn args_set_routing(&self, liberado: &Liberado) -> Vec<String> {
+        debug_assert_eq!(liberado.passo(), Passo::Provedor);
         let mut args = vec![
             "config".to_string(),
             "set-routing".to_string(),
@@ -448,7 +452,7 @@ mod tests {
             Some(" sk-or-v1-abc "),
         )
         .unwrap();
-        let args = e.args_set_routing();
+        let args = e.args_set_routing(&Liberado::para_teste(Passo::Provedor));
         assert_eq!(
             args,
             [
@@ -475,7 +479,7 @@ mod tests {
         assert_eq!(e.chave(), None);
         assert_eq!(e.stdin(), None);
         assert!(
-            !e.args_set_routing()
+            !e.args_set_routing(&Liberado::para_teste(Passo::Provedor))
                 .contains(&"--api-key-stdin".to_string())
         );
     }

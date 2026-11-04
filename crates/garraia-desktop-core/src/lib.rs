@@ -43,6 +43,9 @@
 //!
 //! [`docs/adr/0021-garraia-desktop-control-center.md`]: https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0021-garraia-desktop-control-center.md
 
+/// #1824: o assistente nao grava na config de outra instalacao sem
+/// confirmacao explicita e backup.
+pub mod config_alheia;
 pub mod detect;
 /// Job Object do Windows para conter o processo supervisionado (e sua arvore)
 /// em morte abrupta do pai. So existe no Windows; no Unix o papel seria do
@@ -60,9 +63,9 @@ pub use detect::{AgentKind, Confidence, DetectedAgent, Detector, Evidence, Files
 pub use jobobject::KillOnCloseJob;
 pub use locate::{DESKTOP_BINARY, DesktopApp, EnvDirs, Locator, Platform, Source, install_dirs};
 pub use onboarding::{
-    ARGS_PAREAMENTO, ARQUIVO_ONBOARDING, EstiloPersona, EventoNdjson, FaseQr, Idioma, Modo,
-    NOME_MAX_CHARS, Onboarding, OnboardingPersistido, Personalidade, Tela, VERSAO_PERSISTIDA,
-    args_aplicar_modo, args_autorizar_numero, arquivo_onboarding, montar_system_prompt,
+    ARQUIVO_ONBOARDING, EstiloPersona, EventoNdjson, FaseQr, Idioma, Modo, NOME_MAX_CHARS,
+    Onboarding, OnboardingPersistido, Personalidade, Tela, VERSAO_PERSISTIDA, args_aplicar_modo,
+    args_autorizar_numero, args_pareamento, arquivo_onboarding, montar_system_prompt,
     normalizar_numero, primeiro_uso, sanitizar_nome,
 };
 pub use state::{Desired, ModuleId, ModuleState, Modules, Power, PowerEvent};

@@ -26,6 +26,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 
+use garraia_desktop_core::config_alheia::{self, Passo};
 use garraia_desktop_core::onboarding as core;
 use garraia_desktop_core::provedor::{self, Provedor};
 use garraia_desktop_core::{EstiloPersona, Idioma, Modo, OnboardingPersistido, Personalidade};
@@ -218,14 +219,17 @@ pub async fn onboarding_configurar_provedor(
     provedor: Provedor,
     modelo: String,
     chave: Option<String>,
+    confirmo_externo: Option<bool>,
 ) -> Result<(), String> {
     // Zerada na memoria ao sair de escopo, inclusive no caminho de erro.
     let chave = chave.map(provedor::Zeroizing::new);
     so_da_janela_do_assistente(&window)?;
     let escolha = provedor::validar_escolha(provedor, &modelo, chave.as_ref().map(|c| c.as_str()))?;
     drop(chave);
+    let liberado = guardar_config_alheia(confirmo_externo, Passo::Provedor)?;
     let (code, _saida) =
-        rodar_sidecar_capturando(&app, escolha.args_set_routing(), escolha.stdin()).await?;
+        rodar_sidecar_capturando(&app, escolha.args_set_routing(&liberado), escolha.stdin())
+            .await?;
     if code == Some(0) {
         Ok(())
     } else {
@@ -261,6 +265,44 @@ fn so_da_janela_do_assistente(window: &tauri::WebviewWindow) -> Result<(), Strin
     } else {
         Err("este comando so roda no assistente de primeiro uso".to_string())
     }
+}
+
+/// #1824: com um gateway de fora do app (#1816), o `config.yml` da pasta padrao
+/// e o DELE. Todo passo que grava passa por aqui antes e recebe a prova
+/// ([`config_alheia::Liberado`]) que os construtores de argumentos do core
+/// exigem: sem `confirmo_externo` recusa sem tocar em nada; confirmado, copia o
+/// `config.yml` para `backups/` e so entao libera; o pareamento com gateway de
+/// fora e recusado sempre. A regra e o backup moram no core (testados no CI).
+fn guardar_config_alheia(
+    confirmo_externo: Option<bool>,
+    passo: Passo,
+) -> Result<config_alheia::Liberado, String> {
+    let externo = match crate::gateway::origem() {
+        Some(crate::gateway::Origem::Externo { versao }) => Some(versao),
+        _ => None,
+    };
+    // A mesma pasta que o writer de config e o sidecar usam
+    // (`GARRAIA_CONFIG_DIR` ou o padrao).
+    let loader = garraia_config::ConfigLoader::new().map_err(|e| format!("abrir config: {e}"))?;
+    let agora = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let liberado = config_alheia::preparar_gravacao(
+        externo.as_deref(),
+        confirmo_externo.unwrap_or(false),
+        passo,
+        loader.config_dir(),
+        agora,
+    )?;
+    if let Some(copia) = liberado.backup() {
+        eprintln!(
+            "[garra] #1824: backup do config.yml antes de mudar {}: {}",
+            passo.slug(),
+            copia.display()
+        );
+    }
+    Ok(liberado)
 }
 
 /// O que o gateway que esta atendendo diz no `/api/health` (#1700, revisao
@@ -348,13 +390,23 @@ async fn rodar_sidecar_capturando(
 /// Inicia o pareamento: lanca `garraia whatsapp link --machine` e transmite cada
 /// linha NDJSON do stdout como evento `wa://ndjson`. Idempotente: um pareamento
 /// anterior e substituido e morto na troca.
+///
+/// #1824: o `link` liga o canal no `config.yml` e grava a sessao; com um
+/// gateway de fora ele e recusado (abriria uma segunda ponte com a sessao viva
+/// do outro). So a janela do assistente pareia.
 #[tauri::command]
-pub async fn wa_iniciar_pareamento(app: AppHandle) -> Result<(), String> {
+pub async fn wa_iniciar_pareamento(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    confirmo_externo: Option<bool>,
+) -> Result<(), String> {
+    so_da_janela_do_assistente(&window)?;
+    let liberado = guardar_config_alheia(confirmo_externo, Passo::Pareamento)?;
     let (mut rx, child) = app
         .shell()
         .sidecar("garraia")
         .map_err(|e| format!("sidecar garraia ausente: {e}"))?
-        .args(core::ARGS_PAREAMENTO)
+        .args(core::args_pareamento(&liberado))
         .spawn()
         .map_err(|e| format!("falha ao iniciar o pareamento: {e}"))?;
 
@@ -455,16 +507,20 @@ pub async fn wa_cancelar_pareamento(app: AppHandle) {
 /// core (puro, testado); aqui so se escreve pelo writer de config padrao.
 #[tauri::command]
 pub async fn onboarding_aplicar_persona(
+    window: tauri::WebviewWindow,
     nome: String,
     estilo: EstiloPersona,
     idioma: Idioma,
+    confirmo_externo: Option<bool>,
 ) -> Result<(), String> {
+    so_da_janela_do_assistente(&window)?;
     let persona = Personalidade {
         nome,
         estilo,
         idioma,
     };
-    let prompt = core::montar_system_prompt(&persona);
+    let liberado = guardar_config_alheia(confirmo_externo, Passo::Persona)?;
+    let prompt = core::montar_system_prompt(&persona, &liberado);
     let loader = garraia_config::ConfigLoader::new().map_err(|e| format!("abrir config: {e}"))?;
     loader
         .set_agent_system_prompt(&prompt)
@@ -495,6 +551,7 @@ pub async fn onboarding_aplicar_modo(
     modo: Modo,
     numero_pessoal: Option<String>,
     confirmo_aberto: bool,
+    confirmo_externo: Option<bool>,
 ) -> Result<(), String> {
     match modo {
         Modo::Proprio => {
@@ -503,7 +560,13 @@ pub async fn onboarding_aplicar_modo(
 pessoa que mandar mensagem; marque a confirmacao na tela para continuar"
                     .to_string());
             }
-            rodar_sidecar(&app, to_owned_args(core::args_aplicar_modo(Modo::Proprio))).await?;
+            // #1824: `access open` num Garra de fora afrouxaria a admissao DELE.
+            let liberado = guardar_config_alheia(confirmo_externo, Passo::Acesso)?;
+            rodar_sidecar(
+                &app,
+                to_owned_args(core::args_aplicar_modo(Modo::Proprio, &liberado)),
+            )
+            .await?;
         }
         Modo::Dedicado => {
             let numero = numero_pessoal
@@ -515,9 +578,14 @@ pessoa que mandar mensagem; marque a confirmacao na tela para continuar"
                         .to_string()
                 })?;
             let numero = core::normalizar_numero(numero)?;
+            let liberado = guardar_config_alheia(confirmo_externo, Passo::Acesso)?;
             // Fecha a admissao primeiro, autoriza o dono depois.
-            rodar_sidecar(&app, to_owned_args(core::args_aplicar_modo(Modo::Dedicado))).await?;
-            rodar_sidecar(&app, core::args_autorizar_numero(&numero)).await?;
+            rodar_sidecar(
+                &app,
+                to_owned_args(core::args_aplicar_modo(Modo::Dedicado, &liberado)),
+            )
+            .await?;
+            rodar_sidecar(&app, core::args_autorizar_numero(&numero, &liberado)).await?;
         }
     }
 

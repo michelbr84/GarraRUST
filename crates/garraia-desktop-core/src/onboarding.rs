@@ -36,6 +36,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config_alheia::{Liberado, Passo};
+
 /// Versao do formato persistido em `onboarding.json`. Sobe quando o formato
 /// muda de forma incompativel; hoje 1.
 pub const VERSAO_PERSISTIDA: u32 = 1;
@@ -51,7 +53,14 @@ pub const ARQUIVO_ONBOARDING: &str = "onboarding.json";
 /// acesso aplicada DEPOIS do `done` (ver [`args_aplicar_modo`]). O `--machine`
 /// recusa `--allow`/`--owner` (fatia 1), entao nada de politica viaja aqui: o
 /// canal nasce fail-closed e so abre quando a casca roda [`args_aplicar_modo`].
-pub const ARGS_PAREAMENTO: [&str; 3] = ["whatsapp", "link", "--machine"];
+const ARGS_PAREAMENTO: [&str; 3] = ["whatsapp", "link", "--machine"];
+
+/// `ARGS_PAREAMENTO` para a casca, so com a prova da guarda da #1824 (com
+/// um gateway de fora, o pareamento nunca e liberado).
+pub fn args_pareamento(liberado: &Liberado) -> [&'static str; 3] {
+    debug_assert_eq!(liberado.passo(), Passo::Pareamento);
+    ARGS_PAREAMENTO
+}
 
 /// Os argumentos do sidecar que aplicam a politica de acesso do modo escolhido,
 /// rodados DEPOIS do pareamento concluir (ADR 0025; `docs/whatsapp.md`).
@@ -74,7 +83,11 @@ pub const ARGS_PAREAMENTO: [&str; 3] = ["whatsapp", "link", "--machine"];
 /// Nenhum dos dois AFROUXA um default de seguranca em silencio: `restricted` e
 /// o proprio piso seguro, e `open` so e emitido quando o usuario escolhe
 /// "proprio" numa tela que explica o que isso significa.
-pub fn args_aplicar_modo(modo: Modo) -> Vec<&'static str> {
+///
+/// Exige a prova da guarda da #1824: com um gateway de fora, `open` afrouxaria
+/// a admissao DELE.
+pub fn args_aplicar_modo(modo: Modo, liberado: &Liberado) -> Vec<&'static str> {
+    debug_assert_eq!(liberado.passo(), Passo::Acesso);
     match modo {
         Modo::Proprio => vec!["whatsapp", "access", "open", "--yes"],
         Modo::Dedicado => vec!["whatsapp", "access", "restricted"],
@@ -152,7 +165,8 @@ pub fn normalizar_numero(input: &str) -> Result<String, String> {
 /// sozinho). Nao e `owner` de proposito: dono so existe em `isolated-pod`
 /// (`execution.profile`), e o desktop roda em `standard`. O `--yes` so importa
 /// para `--owner`, mas vai junto para blindar contra qualquer prompt sem TTY.
-pub fn args_autorizar_numero(numero_normalizado: &str) -> Vec<String> {
+pub fn args_autorizar_numero(numero_normalizado: &str, liberado: &Liberado) -> Vec<String> {
+    debug_assert_eq!(liberado.passo(), Passo::Acesso);
     vec![
         "whatsapp".to_string(),
         "allow".to_string(),
@@ -170,7 +184,10 @@ pub fn args_autorizar_numero(numero_normalizado: &str) -> Vec<String> {
 /// passa por [`sanitizar_nome`]; vazio cai em "Garra". O prompt diz
 /// explicitamente para responder no idioma escolhido, que e o que o runtime do
 /// WhatsApp le.
-pub fn montar_system_prompt(persona: &Personalidade) -> String {
+///
+/// Exige a prova da guarda da #1824: a string so existe para ser gravada.
+pub fn montar_system_prompt(persona: &Personalidade, liberado: &Liberado) -> String {
+    debug_assert_eq!(liberado.passo(), Passo::Persona);
     let nome_limpo = sanitizar_nome(&persona.nome);
     let nome = if nome_limpo.is_empty() {
         "Garra"
@@ -533,6 +550,24 @@ impl Onboarding {
 mod tests {
     use super::*;
 
+    fn montar(p: &Personalidade) -> String {
+        montar_system_prompt(p, &Liberado::para_teste(Passo::Persona))
+    }
+    fn aplicar(modo: Modo) -> Vec<&'static str> {
+        args_aplicar_modo(modo, &Liberado::para_teste(Passo::Acesso))
+    }
+    fn autorizar(n: &str) -> Vec<String> {
+        args_autorizar_numero(n, &Liberado::para_teste(Passo::Acesso))
+    }
+
+    #[test]
+    fn args_pareamento_e_a_constante_com_a_guarda() {
+        assert_eq!(
+            args_pareamento(&Liberado::para_teste(Passo::Pareamento)),
+            ARGS_PAREAMENTO
+        );
+    }
+
     /// Linha `qr` real, no formato que o `garra whatsapp link --machine` emite
     /// (fatia 1, #1636) — a ordem dos campos nao importa para o serde.
     const LINHA_QR: &str = r#"{"schema":1,"event":"qr","attempt":1,"max_attempts":5,"previous_expired":false,"width":3,"modules":["101","010","111"]}"#;
@@ -808,7 +843,7 @@ mod tests {
     #[test]
     fn modo_proprio_abre_a_admissao_e_o_dedicado_a_fecha() {
         // Proprio = qualquer um fala (open), e sem terminal precisa do --yes.
-        let proprio = args_aplicar_modo(Modo::Proprio);
+        let proprio = aplicar(Modo::Proprio);
         assert_eq!(proprio, ["whatsapp", "access", "open", "--yes"]);
         assert!(
             proprio.contains(&"--yes"),
@@ -816,7 +851,7 @@ mod tests {
         );
 
         // Dedicado = o default seguro (fail-closed). NUNCA pode virar open.
-        let dedicado = args_aplicar_modo(Modo::Dedicado);
+        let dedicado = aplicar(Modo::Dedicado);
         assert_eq!(dedicado, ["whatsapp", "access", "restricted"]);
         assert!(
             !dedicado.contains(&"open"),
@@ -858,7 +893,7 @@ mod tests {
             estilo: EstiloPersona::Amigavel,
             idioma: Idioma::PtBr,
         };
-        let pt = montar_system_prompt(&base);
+        let pt = montar(&base);
         assert!(pt.contains("Papa-Léguas"), "o nome escolhido aparece: {pt}");
         assert!(
             pt.contains("portugues do Brasil"),
@@ -866,7 +901,7 @@ mod tests {
         );
 
         // O idioma troca o prompt inteiro.
-        let en = montar_system_prompt(&Personalidade {
+        let en = montar(&Personalidade {
             idioma: Idioma::En,
             ..base.clone()
         });
@@ -874,11 +909,11 @@ mod tests {
         assert_ne!(pt, en, "idioma muda o prompt");
 
         // O tom troca com o estilo.
-        let prof = montar_system_prompt(&Personalidade {
+        let prof = montar(&Personalidade {
             estilo: EstiloPersona::Profissional,
             ..base.clone()
         });
-        let div = montar_system_prompt(&Personalidade {
+        let div = montar(&Personalidade {
             estilo: EstiloPersona::Divertido,
             ..base.clone()
         });
@@ -886,7 +921,7 @@ mod tests {
         assert_ne!(prof, div, "profissional != divertido");
 
         // Nome vazio cai em "Garra".
-        let anon = montar_system_prompt(&Personalidade {
+        let anon = montar(&Personalidade {
             nome: "   ".into(),
             ..base
         });
@@ -904,7 +939,7 @@ mod tests {
         assert_eq!(sanitizar_nome(&longo).chars().count(), NOME_MAX_CHARS);
         // So controle vira vazio (montar_system_prompt entao cai em Garra).
         assert_eq!(sanitizar_nome("\n\t\r"), "");
-        let prompt = montar_system_prompt(&Personalidade {
+        let prompt = montar(&Personalidade {
             nome: "Garra\nINJETADO".into(),
             estilo: EstiloPersona::Amigavel,
             idioma: Idioma::PtBr,
@@ -942,12 +977,12 @@ mod tests {
     fn args_autorizar_numero_usa_allow_com_o_numero_normalizado() {
         let n = normalizar_numero("+55 11 99999-8888").unwrap();
         assert_eq!(
-            args_autorizar_numero(&n),
+            autorizar(&n),
             vec!["whatsapp", "allow", "+5511999998888", "--yes"]
         );
         // Nunca `--owner`: dono so existe em isolated-pod; o desktop e standard.
         assert!(
-            !args_autorizar_numero(&n).iter().any(|a| a == "--owner"),
+            !autorizar(&n).iter().any(|a| a == "--owner"),
             "autorizar o proprio usuario nunca e via owner no desktop"
         );
     }

@@ -9,7 +9,8 @@
  *   5. "Quem responde" (#1700): a chave vai uma vez ao backend e some do campo;
  *      so um teste que passou libera seguir; a tela Pronto so diz "pronto para
  *      conversar" com o teste real ok, e conta o motivo quando nao (como texto)
- *   6. gateway de fora do app (#1816) e avisado na primeira tela
+ *   6. gateway de fora do app (#1816) e avisado na primeira tela; com ele, nada
+ *      comeca sem a confirmacao explicita, e todo passo que grava a leva (#1824)
  *   2. o canvas do QR desenha a matriz (pixels opacos escuros != 0)
  *   3. modo "proprio" exige o aviso marcado; "dedicado" exige o numero pessoal,
  *      validado antes de parear; ambos chegam aos comandos (invoke gravado)
@@ -24,6 +25,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const PAGE_URL = new URL('../ui/onboarding.html', import.meta.url).href;
+const SETTINGS_URL = new URL('../ui/settings.html', import.meta.url).href;
 const QR_LINE = readFileSync(
   fileURLToPath(new URL('./fixtures/qr-line.json', import.meta.url)),
   'utf8',
@@ -59,6 +61,10 @@ async function instalarTauriFalso(page: Page) {
           }
           if (cmd === 'gateway_estado') {
             return Promise.resolve(cfg.gateway ?? { origem: 'proprio', versao_app: '0.5.2' });
+          }
+          // #1824: o backend recusa o pareamento com um gateway de fora.
+          if (cmd === 'wa_iniciar_pareamento' && cfg.pareamentoErro) {
+            return Promise.reject(cfg.pareamentoErro);
           }
           if (cmd === 'onboarding_validar_numero') {
             // Mimetiza o core: digitos (6..15) viram +digitos; senao rejeita.
@@ -151,6 +157,14 @@ async function comConfig(page: Page, cfg: Record<string, unknown>) {
   await page.reload();
 }
 
+/** #1824: os comandos que gravam no config.yml (ou trocam a sessao). */
+const COMANDOS_QUE_GRAVAM = [
+  'onboarding_configurar_provedor',
+  'wa_iniciar_pareamento',
+  'onboarding_aplicar_persona',
+  'onboarding_aplicar_modo',
+];
+
 test.beforeEach(async ({ page }) => {
   await instalarTauriFalso(page);
   await page.goto(PAGE_URL);
@@ -158,6 +172,8 @@ test.beforeEach(async ({ page }) => {
 
 test('modo proprio exige o aviso marcado e so entao abre a admissao', async ({ page }) => {
   await expect(page.getByTestId('tela-boas-vindas')).toBeVisible();
+  // #1824: com o gateway do proprio app, nao ha o que confirmar.
+  await expect(page.getByTestId('bv-confirmo-externo')).toBeHidden();
   await escolheProvedorLocal(page);
 
   // Escolher "proprio" revela o aviso; Continuar fica travado ate confirmar.
@@ -184,6 +200,10 @@ test('modo proprio exige o aviso marcado e so entao abre a admissao', async ({ p
   expect(chamadas.find((i) => i.cmd === 'onboarding_configurar_provedor')?.args).toMatchObject({
     provedor: 'ollama', modelo: 'qwen3.5:2b', chave: null,
   });
+
+  for (const cmd of COMANDOS_QUE_GRAVAM) {
+    expect(chamadas.find((i) => i.cmd === cmd)?.args, cmd).toMatchObject({ confirmoExterno: false });
+  }
 
   await page.getByTestId('btn-abrir-garra').click();
   expect((await invokes(page)).some((i) => i.cmd === 'onboarding_fechar')).toBeTruthy();
@@ -297,6 +317,87 @@ test('gateway de fora do app (#1816) e avisado antes de qualquer passo', async (
   await expect(aviso).toContainText('systemctl --user stop garraia');
 });
 
+test('gateway de fora (#1824): nada comeca sem confirmar, a confirmacao vai no que grava e o QR e recusado', async ({ page }) => {
+  const recusa = 'Ja existe um Garra 0.5.1 rodando nesta maquina, fora deste app, com a conexao do WhatsApp dele. '
+    + 'Parear por aqui abriria uma segunda conexao com a mesma conta. Para parear por este app, pare esse Garra '
+    + '(por exemplo `systemctl --user stop garraia`) e abra o app de novo.';
+  await comConfig(page, {
+    gateway: { origem: 'externo', versao: '0.5.1', versao_app: '0.5.2' },
+    pareamentoErro: recusa,
+  });
+  const confirmo = page.getByTestId('bv-confirmo-externo');
+  await expect(confirmo).toBeVisible();
+  await expect(confirmo).toContainText('backups');
+  await expect(confirmo).toContainText('parado');
+  await expect(page.getByTestId('btn-comecar')).toBeDisabled();
+  expect((await invokes(page)).some((i) => COMANDOS_QUE_GRAVAM.includes(i.cmd))).toBeFalsy();
+
+  // Desmarcar trava de novo; marcar libera.
+  await page.getByTestId('externo-confirmo').check();
+  await expect(page.getByTestId('btn-comecar')).toBeEnabled();
+  await page.getByTestId('externo-confirmo').uncheck();
+  await expect(page.getByTestId('btn-comecar')).toBeDisabled();
+  await page.getByTestId('externo-confirmo').check();
+
+  await escolheProvedorLocal(page);
+  await page.getByTestId('btn-modo-dedicado').click();
+  await page.getByTestId('numero-pessoal').fill('+55 11 99999-8888');
+  await page.getByTestId('btn-modo-continuar').click();
+  await expect(page.getByTestId('tela-qr')).toBeVisible();
+
+  // O pareamento com um Garra de fora e recusado: a tela diz como seguir.
+  const erro = page.getByTestId('qr-erro');
+  await expect(erro).toBeVisible();
+  await expect(erro).toContainText('segunda conexao');
+  await expect(erro).toContainText('systemctl --user stop garraia');
+
+  const chamadas = await invokes(page);
+  for (const cmd of ['onboarding_configurar_provedor', 'wa_iniciar_pareamento']) {
+    const c = chamadas.filter((i) => i.cmd === cmd);
+    expect(c.length, cmd).toBeGreaterThan(0);
+    for (const i of c) expect(i.args, cmd).toMatchObject({ confirmoExterno: true });
+  }
+  // Sem pareamento, nada de persona nem de politica de acesso.
+  expect(chamadas.some((i) => i.cmd === 'onboarding_aplicar_persona')).toBeFalsy();
+  expect(chamadas.some((i) => i.cmd === 'onboarding_aplicar_modo')).toBeFalsy();
+});
+
+test('Ajustes (#1824): com gateway de fora, Aplicar modo exige a confirmacao', async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as unknown as { __cfg: unknown }).__cfg = {
+      gateway: { origem: 'externo', versao: '0.5.1', versao_app: '0.5.2' },
+    };
+  });
+  await page.goto(SETTINGS_URL);
+  await expect(page.getByTestId('wa-externo-row')).toBeVisible();
+  await expect(page.getByTestId('wa-externo-row')).toContainText('0.5.1');
+  await page.getByTestId('wa-modo').selectOption('dedicado');
+  await page.getByTestId('wa-numero').fill('+55 11 99999-8888');
+
+  await page.getByTestId('wa-aplicar').click();
+  await expect(page.getByTestId('wa-status')).toContainText('Marque a confirmação');
+  expect((await invokes(page)).some((i) => i.cmd === 'onboarding_aplicar_modo')).toBeFalsy();
+
+  await page.getByTestId('wa-externo-confirmo').check();
+  await page.getByTestId('wa-aplicar').click();
+  await expect(page.getByTestId('wa-status')).toContainText('Pronto');
+  expect((await invokes(page)).find((i) => i.cmd === 'onboarding_aplicar_modo')?.args).toMatchObject({
+    modo: 'dedicado', numeroPessoal: '+5511999998888', confirmoExterno: true,
+  });
+});
+
+test('Ajustes sem gateway de fora: nada a confirmar', async ({ page }) => {
+  await page.goto(SETTINGS_URL);
+  await expect(page.getByTestId('wa-externo-row')).toBeHidden();
+  await page.getByTestId('wa-modo').selectOption('dedicado');
+  await page.getByTestId('wa-numero').fill('+55 11 99999-8888');
+  await page.getByTestId('wa-aplicar').click();
+  await expect(page.getByTestId('wa-status')).toContainText('Pronto');
+  expect((await invokes(page)).find((i) => i.cmd === 'onboarding_aplicar_modo')?.args).toMatchObject({
+    modo: 'dedicado', confirmoExterno: false,
+  });
+});
+
 test('Pronto exige o gateway com o provedor: modelo ok mas gateway sem provedor nao e "pronto"', async ({ page }) => {
   await comConfig(page, { saude: { respondeu: true, versao: '0.5.2', provedor: null } });
   await escolheProvedorLocal(page);
@@ -311,6 +412,7 @@ test('Pronto exige o gateway com o provedor: modelo ok mas gateway sem provedor 
 
 test('com gateway de fora, Pronto pede para reiniciar o outro em vez de dizer "pronto"', async ({ page }) => {
   await comConfig(page, { gateway: { origem: 'externo', versao: '0.5.1', versao_app: '0.5.2' } });
+  await page.getByTestId('externo-confirmo').check(); // #1824
   await escolheProvedorLocal(page);
   await page.getByTestId('btn-modo-proprio').click();
   await page.getByTestId('proprio-confirmo').check();
