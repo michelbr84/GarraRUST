@@ -289,7 +289,16 @@ mod tests {
         // SAFETY: `snap` valido, `entry` vivo com `dwSize` setado.
         if unsafe { Process32FirstW(snap, &mut entry) } != 0 {
             loop {
-                if entry.th32ParentProcessID == pai {
+                // Filtra pelo nome: o primeiro filho do `cmd` pode ser o
+                // `conhost.exe`, que nao e neto de ping e nao pertence a
+                // subarvore verificada (causa do falso "neto sobreviveu", #1829).
+                let len = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let nome = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                if entry.th32ParentProcessID == pai && nome.eq_ignore_ascii_case("ping.exe") {
                     achou = Some(entry.th32ProcessID);
                     break;
                 }
