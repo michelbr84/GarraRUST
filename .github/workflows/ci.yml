@@ -451,6 +451,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # #1832: o runner ubuntu-latest vem com ~14 GB livres e este job enche o
+      # disco (`No space left on device`). Mesma limpeza inline do job de
+      # cobertura (sem action externa); `df -h` fica no log.
+      - name: Free up disk space (ubuntu runner)
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -846,6 +858,19 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      # #1832: o runner ubuntu-latest vem com ~14 GB livres e este job enche o
+      # disco (`No space left on device`). Mesma limpeza inline do job de
+      # cobertura (sem action externa); `df -h` fica no log.
+      - name: Free up disk space (ubuntu runner)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
