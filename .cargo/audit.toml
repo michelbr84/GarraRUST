@@ -191,4 +191,9 @@ ignore = [
     # EXPIRA 2026-12-31 (espelho do deny.toml, renovado 2026-10-30). Acompanhamento: #1667.
     "RUSTSEC-2026-0381",
 
+    # --- astral-tokio-tar 0.6.2 (RUSTSEC-2026-0440) — unmaintained, dev-only ---
+    # Espelho do deny.toml: via testcontainers (apenas testes de integracao).
+    # EXPIRA 2026-12-31. Acompanhamento: #1667.
+    "RUSTSEC-2026-0440",
+
 ]
