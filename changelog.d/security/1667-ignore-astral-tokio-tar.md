@@ -1,0 +1,1 @@
+- Excecao temporaria (expira 2026-12-31) para RUSTSEC-2026-0440 (astral-tokio-tar sem manutencao, apenas dev-dependency via testcontainers) em `deny.toml` e `.cargo/audit.toml`, para destravar o gate cargo-deny (#1667).
