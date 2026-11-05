@@ -1,0 +1,1 @@
+Desktop: o assistente passa a detectar a outra instalacao tambem pela trava `gateway.lock` da pasta de config, e nao so pela porta na abertura (#1826). Com a trava segurada por um processo que nao e o sidecar do app (outra porta, servico que voltou depois, sidecar morto no bind), os passos que gravam pedem confirmacao, fazem backup e recusam o pareamento.

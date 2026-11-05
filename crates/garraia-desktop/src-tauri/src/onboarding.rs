@@ -277,13 +277,11 @@ fn guardar_config_alheia(
     confirmo_externo: Option<bool>,
     passo: Passo,
 ) -> Result<config_alheia::Liberado, String> {
-    let externo = match crate::gateway::origem() {
-        Some(crate::gateway::Origem::Externo { versao }) => Some(versao),
-        _ => None,
-    };
     // A mesma pasta que o writer de config e o sidecar usam
     // (`GARRAIA_CONFIG_DIR` ou o padrao).
     let loader = garraia_config::ConfigLoader::new().map_err(|e| format!("abrir config: {e}"))?;
+    // #1826: alem da porta da abertura, a trava `gateway.lock` da pasta.
+    let externo = crate::gateway::externo_efetivo(loader.config_dir());
     let agora = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

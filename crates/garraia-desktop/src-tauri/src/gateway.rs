@@ -81,6 +81,27 @@ fn definir_origem(o: Origem) {
     }
 }
 
+/// O sidecar deste app esta de pe (#1826)? Distingue a trava `gateway.lock`
+/// do proprio filho (nao conta) da de outro processo (conta como de fora).
+static FILHO_VIVO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A versao do gateway de fora do app, se ha um: pela porta (#1816, decidida na
+/// abertura) ou, agora, pela trava `gateway.lock` de `config_dir` segurada por
+/// um processo que nao e o filho deste app (#1826). Consultada antes de cada
+/// passo que grava, pega a mesma pasta em outra porta e o servico que voltou
+/// depois da abertura. A regra mora em `config_alheia::externo_efetivo`.
+pub fn externo_efetivo(config_dir: &std::path::Path) -> Option<String> {
+    let declarado = match origem() {
+        Some(Origem::Externo { versao }) => Some(versao),
+        _ => None,
+    };
+    garraia_desktop_core::config_alheia::externo_efetivo(
+        declarado.as_deref(),
+        garraia_desktop_core::config_alheia::sondar_trava(config_dir),
+        FILHO_VIVO.load(std::sync::atomic::Ordering::SeqCst),
+    )
+}
+
 /// A porta em que o sidecar subiria (`PORT`, default 3888) — a mesma
 /// resolucao do `garraia start`.
 fn porta() -> u16 {
@@ -121,10 +142,22 @@ pub fn spawn(app: &AppHandle, handle: GatewayHandle) {
                 .args(["start", "--exit-with-parent", &parent_pid])
                 .spawn()
             {
-                Ok((_, child)) => {
+                Ok((mut rx, child)) => {
                     #[cfg(windows)]
                     contain_in_kill_on_close_job(&child);
                     *handle.lock().unwrap() = Some(child);
+                    FILHO_VIVO.store(true, std::sync::atomic::Ordering::SeqCst);
+                    // #1826: o filho que morre (ex.: no bind) deixa de contar
+                    // como dono da trava.
+                    tauri::async_runtime::spawn(async move {
+                        use tauri_plugin_shell::process::CommandEvent;
+                        while let Some(ev) = rx.recv().await {
+                            if matches!(ev, CommandEvent::Terminated(_) | CommandEvent::Error(_)) {
+                                break;
+                            }
+                        }
+                        FILHO_VIVO.store(false, std::sync::atomic::Ordering::SeqCst);
+                    });
                 }
                 Err(e) => {
                     eprintln!("[garra] gateway spawn failed: {e}");
@@ -178,6 +211,7 @@ pub fn kill(handle: &GatewayHandle) {
     if let Ok(mut guard) = handle.lock() {
         if let Some(child) = guard.take() {
             let _ = child.kill();
+            FILHO_VIVO.store(false, std::sync::atomic::Ordering::SeqCst);
         }
     }
 }

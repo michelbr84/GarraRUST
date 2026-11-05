@@ -135,6 +135,58 @@ antes de gravar, o app guarda uma copia do config.yml na pasta backups.",
     Ok(())
 }
 
+/// Quem segura `<config>/gateway.lock` (#1826). O `garraia start` segura essa
+/// trava exclusiva a vida inteira do processo (`bind_gate::travar_diretorio`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trava {
+    /// Ninguem segura (ou o arquivo nem existe).
+    Livre,
+    /// Algum processo segura a trava agora.
+    Ocupada,
+    /// O sistema de arquivos nao suporta trava: sem sinal, nao decide nada.
+    Indeterminada,
+}
+
+/// Sonda a trava de `config_dir` sem deixar rastro: nao cria arquivo nem
+/// diretorio, e solta a trava na hora se a obteve. Quem decide o que a trava
+/// significa e [`externo_efetivo`].
+pub fn sondar_trava(config_dir: &Path) -> Trava {
+    let arquivo = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(config_dir.join("gateway.lock"))
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Trava::Livre,
+        Err(_) => return Trava::Indeterminada,
+    };
+    match arquivo.try_lock() {
+        // Obteve: ninguem segurava. Fechar o arquivo (fim do escopo) solta.
+        Ok(()) => Trava::Livre,
+        Err(fs::TryLockError::WouldBlock) => Trava::Ocupada,
+        Err(fs::TryLockError::Error(_)) => Trava::Indeterminada,
+    }
+}
+
+/// O texto usado no lugar da versao quando so a trava denuncia o gateway de
+/// fora (nao houve `/api/health` para perguntar).
+pub const VERSAO_DESCONHECIDA: &str = "(versao desconhecida)";
+
+/// Junta o sinal da porta (#1816) com o da trava (#1826): a versao do gateway
+/// de fora, se ha um. `declarado` e o que o app decidiu pela porta; `trava` e o
+/// resultado de [`sondar_trava`]; `filho_vivo` diz se o sidecar DESTE app esta
+/// de pe — nesse caso a trava ocupada e dele e nao conta. Sidecar morto com a
+/// trava ocupada e outro gateway (a corrida no bind) e conta como de fora.
+pub fn externo_efetivo(declarado: Option<&str>, trava: Trava, filho_vivo: bool) -> Option<String> {
+    if let Some(v) = declarado {
+        return Some(v.to_string());
+    }
+    if trava == Trava::Ocupada && !filho_vivo {
+        return Some(VERSAO_DESCONHECIDA.to_string());
+    }
+    None
+}
+
 /// O trecho que identifica os backups feitos pelo assistente.
 const SUFIXO_BACKUP: &str = "_antes-do-desktop-";
 
@@ -549,5 +601,51 @@ mod tests {
         );
         let p: Passo = serde_json::from_str("\"acesso\"").unwrap();
         assert_eq!(p, Passo::Acesso);
+    }
+
+    #[test]
+    fn externo_efetivo_decide_pela_porta_e_pela_trava() {
+        // So a porta (comportamento da #1816, intacto).
+        assert_eq!(
+            externo_efetivo(Some("0.5.1"), Trava::Livre, true).as_deref(),
+            Some("0.5.1")
+        );
+        // Trava de outro processo (sem filho do app): de fora.
+        assert_eq!(
+            externo_efetivo(None, Trava::Ocupada, false).as_deref(),
+            Some(VERSAO_DESCONHECIDA)
+        );
+        // Trava do filho do app: nao e falso positivo.
+        assert_eq!(externo_efetivo(None, Trava::Ocupada, true), None);
+        // Sem trava, ou sem sinal: nada a dizer.
+        assert_eq!(externo_efetivo(None, Trava::Livre, false), None);
+        assert_eq!(externo_efetivo(None, Trava::Indeterminada, false), None);
+        // A porta vence a trava quando conhece a versao.
+        assert_eq!(
+            externo_efetivo(Some("0.5.1"), Trava::Ocupada, false).as_deref(),
+            Some("0.5.1")
+        );
+    }
+
+    #[test]
+    fn sondar_trava_ve_o_outro_handle_e_nao_deixa_rastro() {
+        let dir = tempfile::tempdir().unwrap();
+        // Sem arquivo: livre, e a sonda nao cria nada.
+        assert_eq!(sondar_trava(dir.path()), Trava::Livre);
+        assert!(!dir.path().join("gateway.lock").exists());
+        // Com o arquivo e uma trava exclusiva segurada: ocupada.
+        let f = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(dir.path().join("gateway.lock"))
+            .unwrap();
+        f.try_lock().unwrap();
+        assert_eq!(sondar_trava(dir.path()), Trava::Ocupada);
+        drop(f);
+        // Solta: livre de novo, e a sonda nao ficou segurando.
+        assert_eq!(sondar_trava(dir.path()), Trava::Livre);
+        assert_eq!(sondar_trava(dir.path()), Trava::Livre);
     }
 }

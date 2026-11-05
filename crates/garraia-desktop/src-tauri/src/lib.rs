@@ -63,7 +63,8 @@ pub fn run() {
             // default ali (outro `default_provider`, `tool_confirmation_enabled:
             // false`) mudaria a outra instalacao no proximo restart dela.
             let gateway_de_fora =
-                matches!(gateway::origem(), Some(gateway::Origem::Externo { .. }));
+                gateway::externo_efetivo(&garraia_config::ConfigLoader::default_config_dir())
+                    .is_some();
             if let (false, Ok(resource_dir)) = (gateway_de_fora, app.path().resource_dir()) {
                 let config_file =
                     garraia_config::ConfigLoader::default_config_dir().join("config.yml");
