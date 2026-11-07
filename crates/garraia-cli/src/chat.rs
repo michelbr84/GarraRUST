@@ -28,6 +28,7 @@ use crate::defaults::{DEFAULT_CLOUD_PROVIDER, DEFAULT_LOCAL_PROVIDER};
 use crate::sonda_de_provider::{
     DefaultDescartado, Sonda, avisar_default_descartado, janela_de_sonda, sondar,
 };
+use crate::tool_history::{self, Modo, ToolRecord, ToolTrail};
 use crate::ui::error_card::ErrorCard;
 use crate::ui::panel;
 use crate::ui::tool_log::{Busca, ToolLog};
@@ -512,8 +513,15 @@ fn persist_assistant_turn(
     store: &SessionStore,
     session_id: &str,
     assistant_text: &str,
+    trail: &[ToolRecord],
 ) -> Result<()> {
-    let meta = serde_json::json!({ "channel_id": "cli", "user_id": "local" });
+    let mut meta = serde_json::json!({ "channel_id": "cli", "user_id": "local" });
+    if !trail.is_empty() {
+        // #1708: a trilha vai no metadata da propria mensagem do assistant.
+        // Assim a ordem user → assistant (com a trilha) e preservada pelo
+        // rowid, sem tabela nova e sem migracao destrutiva.
+        meta["tool_trail"] = serde_json::to_value(tool_history::para_persistencia(trail))?;
+    }
     store.append_message(
         session_id,
         "assistant",
@@ -580,6 +588,7 @@ fn id_inicial_da_sessao(
 /// papel inventado.
 fn load_history(store: &SessionStore, session_id: &str, limit: usize) -> Result<Vec<ChatMessage>> {
     let gravadas = store.load_recent_messages(session_id, limit)?;
+    let modo = tool_history::modo();
     Ok(gravadas
         .into_iter()
         .filter_map(|m| {
@@ -588,10 +597,23 @@ fn load_history(store: &SessionStore, session_id: &str, limit: usize) -> Result<
                 "assistant" | "tool_evidence" => ChatRole::Assistant,
                 _ => return None,
             };
-            Some(ChatMessage {
+            Some((role, m))
+        })
+        .flat_map(|(role, m)| {
+            let mut mensagens: Vec<ChatMessage> = Vec::new();
+            // #1708: a trilha gravada no metadata da mensagem do assistant
+            // reconstroi o par ToolUse/ToolResult na ordem em que aconteceu.
+            // Sessao antiga (sem a chave) cai no texto puro de sempre.
+            if role == ChatRole::Assistant && modo == Modo::Structured && m.direction == "assistant"
+            {
+                let trilha = tool_history::do_metadata(&m.metadata);
+                mensagens.extend(tool_history::mensagens_de_ferramentas(&trilha));
+            }
+            mensagens.push(ChatMessage {
                 role,
                 content: MessagePart::Text(m.content),
-            })
+            });
+            mensagens
         })
         .collect())
 }
@@ -1379,6 +1401,30 @@ fn turno_deixa_par_no_history<T, E>(outcome: &TurnOutcome<T, E>, tem_evidencia: 
     }
 }
 
+/// Fecha um turno no `history`: pergunta, chamadas/resultados de ferramenta
+/// (modo estruturado) e a resposta final. A ordem é a que os provedores
+/// esperam — user, assistant com `ToolUse`, user com `ToolResult`, assistant
+/// com o texto — e o pareamento é feito pelo `call_id` de cada registro.
+fn anexar_turno(
+    history: &mut Vec<ChatMessage>,
+    input: &str,
+    resposta: &str,
+    registros: &[ToolRecord],
+    modo: Modo,
+) {
+    history.push(ChatMessage {
+        role: ChatRole::User,
+        content: MessagePart::Text(input.to_string()),
+    });
+    if modo == Modo::Structured {
+        history.extend(tool_history::mensagens_de_ferramentas(registros));
+    }
+    history.push(ChatMessage {
+        role: ChatRole::Assistant,
+        content: MessagePart::Text(resposta.to_string()),
+    });
+}
+
 /// Await the streaming LLM call while concurrently draining `rx`, writing
 /// each delta to `out` as it arrives. The runtime pushes deltas through a
 /// bounded channel with `send().await` (runtime.rs), so the receiver MUST be
@@ -1415,6 +1461,7 @@ async fn stream_turn<F, T, E>(
     out: &mut (impl io::Write + ?Sized),
     renderer: &mut TerminalRenderer,
     tool_log: &mut ToolLog,
+    trail: &mut ToolTrail,
     cancel: &tokio::sync::Notify,
 ) -> TurnOutcome<T, E>
 where
@@ -1491,6 +1538,7 @@ where
                     if let TurnEvent::TextDelta(t) = &evento {
                         parcial.push_str(t);
                     }
+                    trail.observar(&evento);
                     render_turn_event(&evento, renderer, tool_log, out);
                 }
                 None => rx_open = false,
@@ -1506,6 +1554,7 @@ where
             if let TurnEvent::TextDelta(t) = &evento {
                 parcial.push_str(t);
             }
+            trail.observar(&evento);
             render_turn_event(&evento, renderer, tool_log, out);
         }
     }
@@ -1547,7 +1596,7 @@ fn render_turn_event(
 ) {
     let ui = match evento {
         TurnEvent::TextDelta(texto) => UiEvent::TextDelta(texto),
-        TurnEvent::ToolStarted { name, detail } => {
+        TurnEvent::ToolStarted { name, detail, .. } => {
             tool_log.iniciar(name, detail);
             UiEvent::ToolStarted { name, detail }
         }
@@ -1557,6 +1606,7 @@ fn render_turn_event(
             success,
             summary,
             output,
+            ..
         } => {
             // Guardar acontece **aqui**, e nao no renderer, porque o renderer
             // desenha e nao lembra (ADR 0017). O indice volta para a linha
@@ -1741,6 +1791,10 @@ pub async fn run_chat(
     // A saida completa das ferramentas do turno, para o `/tool` (#938).
     // Limitada em entradas e em bytes — ver `ui::tool_log`.
     let mut tool_log = ToolLog::new();
+    // #1708: trilha estruturada da sessão, alimentada pelos eventos do
+    // executor. `GARRAIA_TOOL_HISTORY` escolhe o modo (structured/text/off).
+    let mut trail = ToolTrail::default();
+    let modo_historico = tool_history::modo();
     // Semente do indicador de atividade: roda a mensagem de abertura a
     // cada turno, para dois envios seguidos não começarem com a mesma frase.
     let mut turn_index: usize = 0;
@@ -2597,6 +2651,7 @@ pub async fn run_chat(
         turn_index = turn_index.wrapping_add(1);
 
         let inicio_evidencias = tool_log.proximo_indice();
+        trail.iniciar_turno();
         let (tx, rx) = mpsc::channel::<TurnEvent>(100);
 
         // The runtime appends the user message on top of the given history
@@ -2638,10 +2693,15 @@ pub async fn run_chat(
             &mut stdout,
             &mut renderer,
             &mut tool_log,
+            &mut trail,
             &cancel,
         )
         .await;
         turn_active.store(false, std::sync::atomic::Ordering::SeqCst);
+        // Fecha o turno na trilha: chamadas sem `ToolFinished` viram
+        // `interrupted` (nunca sucesso) e os registros seguem para o
+        // histórico e para o SQLite.
+        let registros = trail.fim_do_turno();
 
         // A evidencia das ferramentas e lida uma vez: ela decide, junto com o
         // parcial, se o turno deixa par no history, e e o mesmo texto anexado
@@ -2659,7 +2719,7 @@ pub async fn run_chat(
             .map(|marcador| texto_preservado(parcial_do_outcome(&outcome), marcador));
         if let Some(ref store) = store
             && let Some(ref texto) = texto_inacabado
-            && let Err(e) = persist_assistant_turn(store, &session_id, texto)
+            && let Err(e) = persist_assistant_turn(store, &session_id, texto, &registros)
         {
             renderer.handle(
                 UiEvent::Warning(&format!("Marcador de interrupcao nao gravado: {e}")),
@@ -2716,8 +2776,12 @@ pub async fn run_chat(
                 // `save_session_summary`: sem um resumidor no CLI (ele mora
                 // no gateway) nao ha resumo honesto para gravar.
                 if let Some(ref store) = store
-                    && let Err(e) =
-                        persist_assistant_turn(store, &session_id, full_response.as_str())
+                    && let Err(e) = persist_assistant_turn(
+                        store,
+                        &session_id,
+                        full_response.as_str(),
+                        &registros,
+                    )
                 {
                     renderer.handle(
                         UiEvent::Warning(&format!("Resposta nao gravada: {e}")),
@@ -2725,14 +2789,13 @@ pub async fn run_chat(
                     );
                 }
 
-                history.push(ChatMessage {
-                    role: ChatRole::User,
-                    content: MessagePart::Text(input.clone()),
-                });
-                history.push(ChatMessage {
-                    role: ChatRole::Assistant,
-                    content: MessagePart::Text(full_response.clone()),
-                });
+                anexar_turno(
+                    &mut history,
+                    &input,
+                    full_response,
+                    &registros,
+                    modo_historico,
+                );
             }
             TurnOutcome::Done(Err(e)) => {
                 // O #941 tirou daqui o `err_str.contains(...)` solto: a
@@ -2759,14 +2822,7 @@ pub async fn run_chat(
         // SQLite. O `Done(Ok)` ja empurrou o seu par no braço acima, e para ele
         // `texto_inacabado` e `None`, entao nada se duplica.
         if deixa_par && let Some(texto) = texto_inacabado {
-            history.push(ChatMessage {
-                role: ChatRole::User,
-                content: MessagePart::Text(input.clone()),
-            });
-            history.push(ChatMessage {
-                role: ChatRole::Assistant,
-                content: MessagePart::Text(texto),
-            });
+            anexar_turno(&mut history, &input, &texto, &registros, modo_historico);
         }
 
         // A resposta do LLM e o registro de ferramentas possuem proveniencias
@@ -2774,7 +2830,10 @@ pub async fn run_chat(
         // anterior prova que o arquivo ainda existe neste instante. A evidencia
         // segue o mesmo criterio do par (nunca Assistant isolado — #1300): so
         // entra quando o turno deixou par no history.
-        if deixa_par && let Some(evidence) = evidencia {
+        if deixa_par
+            && modo_historico == Modo::Text
+            && let Some(evidence) = evidencia
+        {
             let evidence = format!("turno {}:\n{evidence}", uuid::Uuid::new_v4());
             if let Some(ref store) = store
                 && let Err(e) = persist_tool_evidence(store, &session_id, &evidence)
@@ -4202,6 +4261,7 @@ mod tests {
                 &mut out,
                 &mut test_renderer(test_spinner()),
                 &mut ToolLog::new(),
+                &mut ToolTrail::default(),
                 &tokio::sync::Notify::new(),
             ),
         )
@@ -4247,6 +4307,7 @@ mod tests {
                 &mut out,
                 &mut test_renderer(None),
                 &mut ToolLog::new(),
+                &mut ToolTrail::default(),
                 &tokio::sync::Notify::new(),
             ),
         )
@@ -4297,12 +4358,15 @@ mod tests {
                 .await
                 .map_err(|_| "receiver dropped")?;
             tx.send(TurnEvent::ToolStarted {
+                id: "call-teste".into(),
                 name: "bash".into(),
                 detail: "cargo test".into(),
+                input: serde_json::json!({ "command": "cargo test" }),
             })
             .await
             .map_err(|_| "receiver dropped")?;
             tx.send(TurnEvent::ToolFinished {
+                id: "call-teste".into(),
                 name: "bash".into(),
                 duration: std::time::Duration::from_millis(6300),
                 success: true,
@@ -4327,6 +4391,7 @@ mod tests {
                 &mut out,
                 &mut TerminalRenderer::with_prefix(crate::ui::Capabilities::PLAIN, None, ""),
                 &mut ToolLog::new(),
+                &mut ToolTrail::default(),
                 &tokio::sync::Notify::new(),
             ),
         )
@@ -4422,6 +4487,7 @@ mod tests {
             &mut out,
             &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
             &mut ToolLog::new(),
+            &mut ToolTrail::default(),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -4464,6 +4530,7 @@ mod tests {
             &mut out,
             &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
             &mut ToolLog::new(),
+            &mut ToolTrail::default(),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -4505,6 +4572,7 @@ mod tests {
             &mut out,
             &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
             &mut ToolLog::new(),
+            &mut ToolTrail::default(),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -4539,6 +4607,7 @@ mod tests {
                 &mut out,
                 &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
                 &mut ToolLog::new(),
+                &mut ToolTrail::default(),
                 &tokio::sync::Notify::new(),
             ),
         )
@@ -4588,6 +4657,7 @@ mod tests {
                 &mut out,
                 &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
                 &mut ToolLog::new(),
+                &mut ToolTrail::default(),
                 &cancel,
             ),
         )
@@ -4638,6 +4708,7 @@ mod tests {
                 &mut out,
                 &mut test_renderer(None),
                 &mut ToolLog::new(),
+                &mut ToolTrail::default(),
                 &cancel,
             ),
         )
@@ -4685,6 +4756,7 @@ mod tests {
                 &mut out,
                 &mut test_renderer(None),
                 &mut ToolLog::new(),
+                &mut ToolTrail::default(),
                 &cancel,
             ),
         )
@@ -4722,6 +4794,7 @@ mod tests {
             // exatamente o que `Capabilities::detect` devolve num pipe: sem animacao
             &mut TerminalRenderer::with_prefix(crate::ui::Capabilities::PLAIN, None, "garra > "),
             &mut ToolLog::new(),
+            &mut ToolTrail::default(),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -4761,6 +4834,7 @@ mod tests {
             &mut out,
             &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
             &mut ToolLog::new(),
+            &mut ToolTrail::default(),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -4787,6 +4861,7 @@ mod tests {
             &mut out,
             &mut test_renderer(None),
             &mut ToolLog::new(),
+            &mut ToolTrail::default(),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -4867,6 +4942,7 @@ mod persist_tests {
     //! diretorio temporario quando o que esta em jogo e o arquivo em si.
 
     use super::*;
+    use garraia_agents::ContentBlock;
 
     fn config_no_dir(dir: &std::path::Path) -> AppConfig {
         AppConfig {
@@ -4941,9 +5017,9 @@ mod persist_tests {
     fn dois_turnos_voltam_em_ordem() {
         let store = SessionStore::in_memory().expect("store em memoria");
         persist_user_turn(&store, "cli-teste", "oi").expect("pergunta 1");
-        persist_assistant_turn(&store, "cli-teste", "ola").expect("resposta 1");
+        persist_assistant_turn(&store, "cli-teste", "ola", &[]).expect("resposta 1");
         persist_user_turn(&store, "cli-teste", "tudo bem?").expect("pergunta 2");
-        persist_assistant_turn(&store, "cli-teste", "tudo").expect("resposta 2");
+        persist_assistant_turn(&store, "cli-teste", "tudo", &[]).expect("resposta 2");
 
         let historico = load_history(&store, "cli-teste", RESUME_LIMIT).expect("carrega");
         assert_eq!(historico.len(), 4, "dois turnos sao quatro mensagens");
@@ -4956,7 +5032,7 @@ mod persist_tests {
     fn resume_hidrata_registro_do_executor_separado_da_resposta() {
         let store = SessionStore::in_memory().expect("store em memoria");
         persist_user_turn(&store, "cli-evidencia", "crie pagina.html").expect("user");
-        persist_assistant_turn(&store, "cli-evidencia", "arquivo criado").expect("assistant");
+        persist_assistant_turn(&store, "cli-evidencia", "arquivo criado", &[]).expect("assistant");
         persist_tool_evidence(
             &store,
             "cli-evidencia",
@@ -5014,6 +5090,67 @@ mod persist_tests {
             vec!["primeiro", "segundo", "terceiro"],
             "timestamp identico nao pode reordenar a sessao"
         );
+    }
+
+    /// #1708: a trilha gravada no metadata da mensagem do assistant volta do
+    /// `--resume` como o mesmo par ToolUse/ToolResult, com o id preservado e
+    /// sem virar texto solto. Sessao antiga (sem `tool_trail`) continua texto.
+    #[test]
+    fn trilha_estruturada_sobrevive_ao_resume() {
+        let store = SessionStore::in_memory().expect("store em memoria");
+        store
+            .upsert_session("cli-1708", "cli", "local", &serde_json::json!({}))
+            .expect("upsert da sessao");
+        let t = chrono::Utc::now();
+        let meta = serde_json::json!({ "channel_id": "cli", "user_id": "local" });
+        store
+            .append_message("cli-1708", "user", "crie pagina.html", t, &meta)
+            .expect("pergunta");
+
+        let registro = ToolRecord {
+            call_id: "call-1708".to_string(),
+            name: "file_write".to_string(),
+            input: serde_json::json!({ "path": "pagina.html" }),
+            detail: "pagina.html".to_string(),
+            status: tool_history::Status::Ok,
+            summary: "713 bytes".to_string(),
+            output: "escreveu 713 bytes em pagina.html".to_string(),
+            turno: 1,
+            ordem: 1,
+        };
+        persist_assistant_turn(&store, "cli-1708", "Criei pagina.html.", &[registro])
+            .expect("assistant com trilha");
+
+        let hist = load_history(&store, "cli-1708", 10).expect("carrega");
+        assert_eq!(hist.len(), 4, "user + tool_use + tool_result + texto");
+        assert_eq!(hist[0].role, ChatRole::User);
+
+        let MessagePart::Parts(usos) = &hist[1].content else {
+            panic!("esperava ToolUse em Parts, veio {:?}", hist[1].content);
+        };
+        let ContentBlock::ToolUse { id, name, .. } = &usos[0] else {
+            panic!("esperava ToolUse");
+        };
+        assert_eq!(id, "call-1708");
+        assert_eq!(name, "file_write");
+        assert_eq!(hist[1].role, ChatRole::Assistant);
+
+        let MessagePart::Parts(resultados) = &hist[2].content else {
+            panic!("esperava ToolResult em Parts");
+        };
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+        } = &resultados[0]
+        else {
+            panic!("esperava ToolResult");
+        };
+        assert_eq!(tool_use_id, "call-1708");
+        assert!(content.contains("713 bytes"));
+        assert_eq!(hist[2].role, ChatRole::User);
+
+        assert_eq!(hist[3].role, ChatRole::Assistant);
+        assert!(matches!(&hist[3].content, MessagePart::Text(t) if t == "Criei pagina.html."));
     }
 
     /// #1227 (slice 1): abrir o `sessions.db` no CLI tambem e uma subida —
@@ -5220,7 +5357,7 @@ mod persist_tests {
         };
         let marcador = marcador_de_interrupcao(&outcome).expect("timeout tem marcador");
         let texto = texto_preservado(parcial_do_outcome(&outcome), marcador);
-        persist_assistant_turn(&store, "cli-crash", &texto).expect("marcador persistido");
+        persist_assistant_turn(&store, "cli-crash", &texto, &[]).expect("marcador persistido");
         let msgs = store
             .load_recent_messages("cli-crash", 10)
             .expect("carrega apos marcador");
@@ -5240,7 +5377,7 @@ mod persist_tests {
         };
         let marcador = marcador_de_interrupcao(&outcome).expect("cancelado tem marcador");
         let texto = texto_preservado(parcial_do_outcome(&outcome), marcador);
-        persist_assistant_turn(&store, "cli-parcial", &texto).expect("parcial persistido");
+        persist_assistant_turn(&store, "cli-parcial", &texto, &[]).expect("parcial persistido");
         let msgs = store
             .load_recent_messages("cli-parcial", 10)
             .expect("carrega apos parcial");

@@ -1,0 +1,1 @@
+- CLI: histórico entre turnos passa a carregar chamadas e resultados de ferramenta de verdade (`ToolUse`/`ToolResult` pareados por id), em vez de só o texto final do assistant. Vale para a sessão em memória, para `--persist`/`--resume` e para o modo `GARRAIA_TOOL_HISTORY=structured|text|off` (#1708).

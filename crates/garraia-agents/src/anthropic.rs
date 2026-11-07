@@ -706,4 +706,53 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "bash");
     }
+
+    /// #1708: o mesmo par continua ToolUse/ToolResult no formato Anthropic,
+    /// com o `tool_use_id` preservado.
+    #[test]
+    fn historico_estruturado_preserva_tool_use_e_tool_result() {
+        let uso = ChatMessage {
+            role: ChatRole::Assistant,
+            content: MessagePart::Parts(vec![ContentBlock::ToolUse {
+                id: "call-1".to_string(),
+                name: "file_write".to_string(),
+                input: serde_json::json!({ "path": "pagina.html" }),
+            }]),
+        };
+        let msg = to_anthropic_message(&uso);
+        assert_eq!(msg.role, "assistant");
+        match msg.content {
+            AnthropicContent::Blocks(blocos) => match &blocos[0] {
+                AnthropicBlock::ToolUse { id, name, .. } => {
+                    assert_eq!(id, "call-1");
+                    assert_eq!(name, "file_write");
+                }
+                outro => panic!("esperava ToolUse, veio {outro:?}"),
+            },
+            _ => panic!("esperava blocos"),
+        }
+
+        let resultado = ChatMessage {
+            role: ChatRole::User,
+            content: MessagePart::Parts(vec![ContentBlock::ToolResult {
+                tool_use_id: "call-1".to_string(),
+                content: "escreveu 713 bytes".to_string(),
+            }]),
+        };
+        let msg = to_anthropic_message(&resultado);
+        assert_eq!(msg.role, "user");
+        match msg.content {
+            AnthropicContent::Blocks(blocos) => match &blocos[0] {
+                AnthropicBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                } => {
+                    assert_eq!(tool_use_id, "call-1");
+                    assert_eq!(content, "escreveu 713 bytes");
+                }
+                outro => panic!("esperava ToolResult, veio {outro:?}"),
+            },
+            _ => panic!("esperava blocos"),
+        }
+    }
 }
