@@ -319,6 +319,64 @@ async fn make_purge_due(h: &Harness, user_id: Uuid) {
     );
 }
 
+/// Insere uma sessão ativa para o usuário (hash opaco, expira em 1h).
+async fn seed_session(h: &Harness, user_id: Uuid) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, refresh_token_hash, expires_at) \
+         VALUES ($1, $2, $3, now() + interval '1 hour')",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(format!("session-hash-{}", Uuid::now_v7()))
+    .execute(&h.admin_pool)
+    .await
+    .expect("seed session");
+    id
+}
+
+/// Insere uma identidade interna cujo `provider_sub` é o e-mail de login.
+async fn seed_internal_identity(h: &Harness, user_id: Uuid, email: &str) {
+    sqlx::query(
+        "INSERT INTO user_identities (user_id, provider, provider_sub) \
+         VALUES ($1, 'internal', $2)",
+    )
+    .bind(user_id)
+    .bind(email)
+    .execute(&h.admin_pool)
+    .await
+    .expect("seed internal identity");
+}
+
+/// Insere um convite. `accepted` cobre o convite histórico além do pendente;
+/// o handler de anonimização precisa atualizar os dois.
+async fn seed_invite(
+    h: &Harness,
+    group_id: Uuid,
+    email: &str,
+    created_by: Uuid,
+    accepted: bool,
+) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO group_invites \
+             (id, group_id, invited_email, proposed_role, token_hash, expires_at, \
+              created_by, accepted_at) \
+         VALUES ($1, $2, $3, 'member', $4, now() + interval '7 days', $5, \
+                 CASE WHEN $6 THEN now() ELSE NULL END)",
+    )
+    .bind(id)
+    .bind(group_id)
+    .bind(email)
+    .bind(format!("invite-hash-{}", Uuid::now_v7()))
+    .bind(created_by)
+    .bind(accepted)
+    .execute(&h.admin_pool)
+    .await
+    .expect("seed invite");
+    id
+}
+
 // ─── Cenario 1: exportacao com conteudo + delimitacao cross-tenant ──────
 
 async fn export_inclui_conteudo_e_nunca_alcanca_outro_tenant() {
@@ -1466,6 +1524,215 @@ async fn carencia_bloqueia_o_worker_ate_vencer() {
     );
 }
 
+// ─── Cenario 9: POST /v1/me/anonymize pela rota HTTP real ────────────────
+
+/// A rota autenticada, com dois titulares no mesmo harness: Alice pede a
+/// anonimização e Bob não pode ser tocado. Cobre 204/409/401, e-mail e
+/// `provider_sub` determinísticos, sessão revogada, convites pendente e
+/// histórico migrados, auditoria e ausência de corpo na resposta.
+async fn anonymize_http_substitui_pii_revoga_sessoes_e_isola_outro_titular() {
+    let h = Harness::get().await;
+
+    let alice_email = "alice@dsr-anonymize.test";
+    let bob_email = "bob@dsr-anonymize.test";
+    let (alice, alice_group, alice_token) = seed_user_with_group(&h, alice_email)
+        .await
+        .expect("seed alice anonymize");
+    let (bob, bob_group, bob_token) = seed_user_with_group(&h, bob_email)
+        .await
+        .expect("seed bob anonymize");
+
+    seed_internal_identity(&h, alice, alice_email).await;
+    seed_internal_identity(&h, bob, bob_email).await;
+    let alice_session = seed_session(&h, alice).await;
+    let bob_session = seed_session(&h, bob).await;
+    seed_invite(&h, alice_group, alice_email, alice, false).await;
+    seed_invite(&h, alice_group, alice_email, alice, true).await;
+    seed_invite(&h, bob_group, bob_email, bob, false).await;
+
+    // 401 antes de qualquer efeito: requisição sem Authorization.
+    let mut missing = Request::builder()
+        .method("POST")
+        .uri("/v1/me/anonymize")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::empty())
+        .expect("request sem auth");
+    missing
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+            "127.0.0.1:1".parse().expect("fixed test peer"),
+        ));
+    let resp = h
+        .router
+        .clone()
+        .oneshot(missing)
+        .await
+        .expect("oneshot anonymize sem auth");
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "POST /v1/me/anonymize sem JWT deve ser 401"
+    );
+
+    // 204 e corpo vazio: a resposta não pode ecoar PII.
+    let resp = h
+        .router
+        .clone()
+        .oneshot(json_authed("POST", "/v1/me/anonymize", &alice_token, None))
+        .await
+        .expect("oneshot anonymize alice");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NO_CONTENT,
+        "primeira anonimização deve ser 204"
+    );
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("collect anonymize body")
+        .to_bytes();
+    assert!(
+        bytes.is_empty(),
+        "204 não pode devolver corpo nem PII; veio {} bytes",
+        bytes.len()
+    );
+
+    let expected_token = garraia_auth::anon_token(alice);
+
+    let (alice_after, alice_status, alice_display): (String, String, String) =
+        sqlx::query_as("SELECT email::text, status, display_name FROM users WHERE id = $1")
+            .bind(alice)
+            .fetch_one(&h.admin_pool)
+            .await
+            .expect("read alice after anonymize");
+    assert_eq!(
+        alice_after, expected_token,
+        "email deve receber o token único"
+    );
+    assert_eq!(alice_status, "anonymized", "status deve virar anonymized");
+    assert_eq!(
+        alice_display, "Usuário Anônimo",
+        "display_name deve ser o marcador público"
+    );
+
+    let (alice_sub,): (String,) = sqlx::query_as(
+        "SELECT provider_sub FROM user_identities WHERE user_id = $1 AND provider = 'internal'",
+    )
+    .bind(alice)
+    .fetch_one(&h.admin_pool)
+    .await
+    .expect("read alice identity");
+    assert_eq!(
+        alice_sub, expected_token,
+        "provider_sub interno deve usar o mesmo token do e-mail"
+    );
+
+    let (alice_revoked,): (Option<DateTime<Utc>>,) =
+        sqlx::query_as("SELECT revoked_at FROM sessions WHERE id = $1")
+            .bind(alice_session)
+            .fetch_one(&h.admin_pool)
+            .await
+            .expect("read alice session");
+    assert!(
+        alice_revoked.is_some(),
+        "a sessão ativa da Alice deve ser revogada na mesma operação"
+    );
+
+    let (alice_invites,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM group_invites WHERE group_id = $1 AND invited_email = $2",
+    )
+    .bind(alice_group)
+    .bind(&expected_token)
+    .fetch_one(&h.admin_pool)
+    .await
+    .expect("count alice invites");
+    assert_eq!(
+        alice_invites, 2,
+        "convite pendente e convite histórico da Alice devem receber o token"
+    );
+
+    let alice_audit = audit_actions_for_user(&h, alice).await;
+    assert!(
+        alice_audit.iter().any(|a| a == "account.anonymized"),
+        "a operação deve emitir account.anonymized; auditoria={alice_audit:?}"
+    );
+
+    // Bob: e-mail, status, identidade, sessão e convite permanecem intactos.
+    let (bob_after, bob_status, bob_display): (String, String, String) =
+        sqlx::query_as("SELECT email::text, status, display_name FROM users WHERE id = $1")
+            .bind(bob)
+            .fetch_one(&h.admin_pool)
+            .await
+            .expect("read bob after alice anonymize");
+    assert_eq!(
+        bob_after, bob_email,
+        "anonimizar Alice não pode tocar o e-mail de Bob"
+    );
+    assert_eq!(bob_status, "active", "Bob continua ativo");
+    assert_eq!(
+        bob_display,
+        format!("Test {bob_email}"),
+        "display_name de Bob não pode mudar"
+    );
+
+    let (bob_sub,): (String,) = sqlx::query_as(
+        "SELECT provider_sub FROM user_identities WHERE user_id = $1 AND provider = 'internal'",
+    )
+    .bind(bob)
+    .fetch_one(&h.admin_pool)
+    .await
+    .expect("read bob identity");
+    assert_eq!(bob_sub, bob_email, "provider_sub de Bob não pode mudar");
+
+    let (bob_revoked,): (Option<DateTime<Utc>>,) =
+        sqlx::query_as("SELECT revoked_at FROM sessions WHERE id = $1")
+            .bind(bob_session)
+            .fetch_one(&h.admin_pool)
+            .await
+            .expect("read bob session");
+    assert!(
+        bob_revoked.is_none(),
+        "a sessão de Bob não pode ser revogada"
+    );
+
+    let (bob_invites,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM group_invites WHERE group_id = $1 AND invited_email = $2",
+    )
+    .bind(bob_group)
+    .bind(bob_email)
+    .fetch_one(&h.admin_pool)
+    .await
+    .expect("count bob invites");
+    assert_eq!(bob_invites, 1, "o convite de Bob não pode ser migrado");
+
+    // 409 na segunda chamada: a conta já está anonimizada.
+    let resp = h
+        .router
+        .clone()
+        .oneshot(json_authed("POST", "/v1/me/anonymize", &alice_token, None))
+        .await
+        .expect("oneshot anonymize alice segunda vez");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "segunda anonimização deve ser 409"
+    );
+
+    // Bob continua com o token original e consegue usar a própria sessão na rota.
+    let resp = h
+        .router
+        .clone()
+        .oneshot(get_authed("/v1/me/sessions", &bob_token))
+        .await
+        .expect("oneshot bob sessions");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "Bob deve continuar autenticado após a anonimização de Alice"
+    );
+}
+
 // ─── Entrypoint unico ────────────────────────────────────────────────────
 //
 // UMA funcao `#[tokio::test]`, nao oito. Cada `#[tokio::test]` sobe o proprio
@@ -1490,4 +1757,5 @@ async fn direitos_dos_titulares_cenarios() {
     purge_nao_toca_dado_de_terceiro().await;
     purge_sem_object_store_nao_fecha_o_pedido().await;
     carencia_bloqueia_o_worker_ate_vencer().await;
+    anonymize_http_substitui_pii_revoga_sessoes_e_isola_outro_titular().await;
 }
