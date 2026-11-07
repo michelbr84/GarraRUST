@@ -43,6 +43,7 @@ pub enum Status {
 }
 
 impl Status {
+    #[cfg(test)]
     fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -79,10 +80,6 @@ impl ToolTrail {
     pub fn iniciar_turno(&mut self) {
         self.turno = self.turno.saturating_add(1);
         self.ordem = 0;
-    }
-
-    pub fn turno_atual(&self) -> u32 {
-        self.turno
     }
 
     /// Registra o evento do executor. `ToolFinished` casa pelo `id`; se o

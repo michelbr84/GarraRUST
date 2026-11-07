@@ -1056,7 +1056,6 @@ fn turn_event_frame(session_id: &str, turn_id: Option<&str>, event: &TurnEvent) 
             duration,
             success,
             summary,
-            output: _,
             ..
         } => serde_json::json!({
             "type": "tool_finished",
@@ -1433,8 +1432,10 @@ mod tests {
             "s1",
             None,
             &TurnEvent::ToolStarted {
+                id: "call-ws".into(),
                 name: "bash".into(),
                 detail: "cargo test".into(),
+                input: serde_json::json!({ "command": "cargo test" }),
             },
         ))
         .expect("frame valido");
@@ -1452,6 +1453,7 @@ mod tests {
             "s1",
             None,
             &TurnEvent::ToolFinished {
+                id: "call-ws".into(),
                 name: "bash".into(),
                 duration: std::time::Duration::from_millis(1500),
                 success: true,
@@ -1547,10 +1549,13 @@ mod tests {
         let eventos = eventos_prontos(vec![
             TurnEvent::TextDelta("um ".into()),
             TurnEvent::ToolStarted {
+                id: "call-eco".into(),
                 name: "eco".into(),
                 detail: "oi".into(),
+                input: serde_json::json!({ "texto": "oi" }),
             },
             TurnEvent::ToolFinished {
+                id: "call-eco".into(),
                 name: "eco".into(),
                 duration: std::time::Duration::from_millis(7),
                 success: true,

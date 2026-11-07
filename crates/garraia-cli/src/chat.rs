@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use garraia_agents::{
-    AgentRuntime, BashTool, ChatMessage, ChatRole, CodeReviewTool, ContentBlock, DeviceExecuteTool,
+    AgentRuntime, BashTool, ChatMessage, ChatRole, CodeReviewTool, DeviceExecuteTool,
     DeviceListTool, DeviceReadTool, DeviceToolsConfig, FileJail, FileReadTool, FileWriteTool,
     ListDirTool, LlmProvider, MessagePart, OllamaProvider, OpenAiProvider, RepoSearchTool,
     RunTestsTool, ValidacaoDeModelo, WebFetchTool, WebSearchTool, normalize_ollama_tag,
@@ -4942,6 +4942,7 @@ mod persist_tests {
     //! diretorio temporario quando o que esta em jogo e o arquivo em si.
 
     use super::*;
+    use garraia_agents::ContentBlock;
 
     fn config_no_dir(dir: &std::path::Path) -> AppConfig {
         AppConfig {
