@@ -1053,6 +1053,7 @@ mod tests {
 
     fn finished(name: &str, ms: u64, success: bool, summary: &str) -> TurnEvent {
         TurnEvent::ToolFinished {
+            id: format!("call-{name}"),
             name: name.to_string(),
             duration: Duration::from_millis(ms),
             success,
@@ -1066,8 +1067,10 @@ mod tests {
         let events = vec![
             TurnEvent::TextDelta("oi ".into()),
             TurnEvent::ToolStarted {
+                id: "call-bash".into(),
                 name: "bash".into(),
                 detail: "ls".into(),
+                input: serde_json::json!({ "command": "ls" }),
             },
             finished("bash", 120, true, "3 files"),
             finished("file_read", 5, true, "conteudo"),

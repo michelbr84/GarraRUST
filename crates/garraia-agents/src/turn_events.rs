@@ -61,15 +61,22 @@ pub enum TurnEvent {
 
     /// Uma ferramenta comecou a rodar.
     ToolStarted {
+        /// Id da chamada, o mesmo `tool_use_id` que o provedor emitiu (#1708).
+        id: String,
         /// Nome registrado da ferramenta (`bash`, `file_read`, …).
         name: String,
         /// O que ela vai fazer, ja redigido e truncado — o `cargo test` de
         /// `Bash cargo test`. Vazio quando nao ha nada util a dizer.
         detail: String,
+        /// Input original da chamada, como o modelo pediu. Fica em memoria
+        /// para o historico estruturado (#1708); nunca vai para a tela.
+        input: serde_json::Value,
     },
 
     /// Uma ferramenta terminou.
     ToolFinished {
+        /// Id da chamada; casa com o `ToolStarted` correspondente.
+        id: String,
         name: String,
         /// Tempo de parede da execucao.
         duration: Duration,
@@ -114,12 +121,20 @@ impl TurnSink {
     /// Ciclo de vida de ferramenta. **Descartado** num sink de texto — e o
     /// ponto: o canal do Telegram nao ganha ruido por causa de uma feature de
     /// terminal.
-    pub async fn tool_started(&self, name: &str, detail: String) {
+    pub async fn tool_started(
+        &self,
+        id: &str,
+        name: &str,
+        detail: String,
+        input: &serde_json::Value,
+    ) {
         if let Self::Events(tx) = self {
             let _ = tx
                 .send(TurnEvent::ToolStarted {
+                    id: id.to_string(),
                     name: name.to_string(),
                     detail,
+                    input: input.clone(),
                 })
                 .await;
         }
@@ -127,6 +142,7 @@ impl TurnSink {
 
     pub async fn tool_finished(
         &self,
+        id: &str,
         name: &str,
         duration: Duration,
         success: bool,
@@ -136,6 +152,7 @@ impl TurnSink {
         if let Self::Events(tx) = self {
             let _ = tx
                 .send(TurnEvent::ToolFinished {
+                    id: id.to_string(),
                     name: name.to_string(),
                     duration,
                     success,
@@ -1058,9 +1075,16 @@ mod tests {
         let sink = TurnSink::Text(tx);
         assert!(!sink.wants_tool_events());
 
-        sink.tool_started("bash", "cargo test".into()).await;
+        sink.tool_started(
+            "call-1",
+            "bash",
+            "cargo test".into(),
+            &serde_json::json!({ "command": "cargo test" }),
+        )
+        .await;
         sink.text("oi".into()).await;
         sink.tool_finished(
+            "call-1",
             "bash",
             Duration::from_secs(1),
             true,
@@ -1084,8 +1108,15 @@ mod tests {
         assert!(sink.wants_tool_events());
 
         sink.text("antes ".into()).await;
-        sink.tool_started("bash", "cargo test".into()).await;
+        sink.tool_started(
+            "call-2",
+            "bash",
+            "cargo test".into(),
+            &serde_json::json!({ "command": "cargo test" }),
+        )
+        .await;
         sink.tool_finished(
+            "call-2",
             "bash",
             Duration::from_millis(1500),
             true,
@@ -1105,10 +1136,13 @@ mod tests {
             vec![
                 TurnEvent::TextDelta("antes ".into()),
                 TurnEvent::ToolStarted {
+                    id: "call-2".into(),
                     name: "bash".into(),
-                    detail: "cargo test".into()
+                    detail: "cargo test".into(),
+                    input: serde_json::json!({ "command": "cargo test" }),
                 },
                 TurnEvent::ToolFinished {
+                    id: "call-2".into(),
                     name: "bash".into(),
                     duration: Duration::from_millis(1500),
                     success: true,
