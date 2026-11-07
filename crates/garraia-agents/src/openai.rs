@@ -2545,4 +2545,59 @@ mod tests {
         let _ = tx.send(());
         let _ = servidor.await;
     }
+
+    /// #1708: o par ToolUse/ToolResult do historico vira `tool_calls` no
+    /// assistant e `role=tool` com `tool_call_id`, o formato do provedor.
+    #[test]
+    fn historico_estruturado_vira_tool_calls_e_role_tool() {
+        let provider = OpenAiProvider::new(
+            "sk-test",
+            Some("modelo".to_string()),
+            Some("https://exemplo.invalid".to_string()),
+        );
+        let request = LlmRequest {
+            model: "modelo".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: ChatRole::User,
+                    content: MessagePart::Text("crie pagina.html".to_string()),
+                },
+                ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: MessagePart::Parts(vec![ContentBlock::ToolUse {
+                        id: "call-1".to_string(),
+                        name: "file_write".to_string(),
+                        input: serde_json::json!({ "path": "pagina.html" }),
+                    }]),
+                },
+                ChatMessage {
+                    role: ChatRole::User,
+                    content: MessagePart::Parts(vec![ContentBlock::ToolResult {
+                        tool_use_id: "call-1".to_string(),
+                        content: "escreveu 713 bytes".to_string(),
+                    }]),
+                },
+                ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: MessagePart::Text("Criei.".to_string()),
+                },
+            ],
+            system: None,
+            max_tokens: None,
+            temperature: None,
+            tools: vec![],
+        };
+        let out = provider.build_request(&request);
+        assert_eq!(out.messages.len(), 4);
+        let assist = &out.messages[1];
+        assert_eq!(assist.role, "assistant");
+        let calls = assist.tool_calls.as_ref().expect("tool_calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call-1");
+        assert!(calls[0].function.arguments.contains("pagina.html"));
+        let tool = &out.messages[2];
+        assert_eq!(tool.role, "tool");
+        assert_eq!(tool.tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(tool.content.as_deref(), Some("escreveu 713 bytes"));
+    }
 }

@@ -1045,7 +1045,7 @@ fn turn_event_frame(session_id: &str, turn_id: Option<&str>, event: &TurnEvent) 
             "session_id": session_id,
             "content": content,
         }),
-        TurnEvent::ToolStarted { name, detail } => serde_json::json!({
+        TurnEvent::ToolStarted { name, detail, .. } => serde_json::json!({
             "type": "tool_started",
             "session_id": session_id,
             "name": name,
@@ -1057,6 +1057,7 @@ fn turn_event_frame(session_id: &str, turn_id: Option<&str>, event: &TurnEvent) 
             success,
             summary,
             output: _,
+            ..
         } => serde_json::json!({
             "type": "tool_finished",
             "session_id": session_id,

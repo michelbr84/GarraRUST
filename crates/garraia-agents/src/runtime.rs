@@ -874,9 +874,10 @@ async fn desfecho_de_loop(
     };
     warn!(tool = %name, "{resumo}");
     if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
-        sink.tool_started(name, summarize_tool_input(name, input))
+        sink.tool_started(id, name, summarize_tool_input(name, input), input)
             .await;
         sink.tool_finished(
+            id,
             name,
             std::time::Duration::ZERO,
             false,
@@ -916,9 +917,10 @@ async fn desfecho_sem_orcamento(
         "chamada acima do teto do orcamento; nao executada"
     );
     if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
-        sink.tool_started(name, summarize_tool_input(name, input))
+        sink.tool_started(id, name, summarize_tool_input(name, input), input)
             .await;
         sink.tool_finished(
+            id,
             name,
             std::time::Duration::ZERO,
             false,
@@ -3601,7 +3603,7 @@ impl AgentRuntime {
         // #937: o resumo do input so e montado quando alguem vai desenha-lo.
         // `summarize_tool_input` ja redige segredo na origem.
         if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
-            sink.tool_started(name, summarize_tool_input(name, input))
+            sink.tool_started(id, name, summarize_tool_input(name, input), input)
                 .await;
         }
         let iniciado_em = std::time::Instant::now();
@@ -3637,6 +3639,7 @@ impl AgentRuntime {
             // tool + nome do modo), sem saida de ferramenta.
             if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
                 sink.tool_finished(
+                    id,
                     name,
                     iniciado_em.elapsed(),
                     false,
@@ -3662,6 +3665,7 @@ impl AgentRuntime {
             self.observar_recusa(name, Desfecho::Indisponivel);
             if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
                 sink.tool_finished(
+                    id,
                     name,
                     iniciado_em.elapsed(),
                     false,
@@ -3689,6 +3693,7 @@ impl AgentRuntime {
             self.observar_recusa(name, Desfecho::RecusadaPeloBreaker);
             if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
                 sink.tool_finished(
+                    id,
                     name,
                     iniciado_em.elapsed(),
                     false,
@@ -3735,6 +3740,7 @@ impl AgentRuntime {
                         Some(VereditoDeLoop::Avisar(aviso)) => {
                             if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
                                 sink.tool_finished(
+                                    id,
                                     name,
                                     iniciado_em.elapsed(),
                                     false,
@@ -3774,6 +3780,7 @@ impl AgentRuntime {
                     // cru do modelo.
                     if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
                         sink.tool_finished(
+                            id,
                             name,
                             iniciado_em.elapsed(),
                             false,
@@ -3872,6 +3879,7 @@ impl AgentRuntime {
             let ok = !output.is_error;
             let visivel = pedido_ao_humano.as_deref().unwrap_or(&output.content);
             sink.tool_finished(
+                id,
                 name,
                 iniciado_em.elapsed(),
                 ok,

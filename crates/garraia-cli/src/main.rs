@@ -34,6 +34,7 @@ mod sigpipe;
 mod sonda_de_provider;
 mod systemd_guard;
 mod team;
+mod tool_history;
 mod tracing_setup;
 mod ui;
 mod uninstall;
