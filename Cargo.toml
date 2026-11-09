@@ -56,7 +56,7 @@ serde_norway = "0.9.42"
 toml = "1.0"
 
 # Database
-rusqlite = { version = "0.32", features = ["bundled", "vtab"] }
+rusqlite = { version = "0.39", features = ["bundled", "vtab"] }
 sqlite-vec = "0.1"
 
 # CLI
