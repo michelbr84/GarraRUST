@@ -63,7 +63,9 @@ IMAGE="pgvector/pgvector:pg16"
 # Antes de qualquer arquivo de resultado existir: o proprio registro nao pode
 # fazer a arvore parecer suja.
 GIT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
-if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+# Resultados de execucoes anteriores, ainda nao commitados, nao contam: o que
+# importa e se o CODIGO medido e o do SHA.
+if [ -n "$(git -C "$ROOT" status --porcelain -- . ':(exclude)benches/data-export/results')" ]; then
   GIT_TREE="dirty"
 else
   GIT_TREE="clean"
