@@ -308,20 +308,14 @@ async fn export_de_10_mil_mensagens_cabe_na_referencia_e_respeita_o_isolamento()
     .await
     .expect("seed mentions")
     .rows_affected();
-    assert_eq!(mencoes, MENCOES_A_ALICE as u64, "seed de mencoes incompleto");
+    assert_eq!(
+        mencoes, MENCOES_A_ALICE as u64,
+        "seed de mencoes incompleto"
+    );
 
     // Bob: outro tenant.
     let bob_chat = seed_chat(&h, bob_group, bob, "perf-bob").await;
-    seed_mensagens(
-        &h,
-        bob_chat,
-        bob_group,
-        bob,
-        MARCA_BOB,
-        0,
-        MENSAGENS_DO_BOB,
-    )
-    .await;
+    seed_mensagens(&h, bob_chat, bob_group, bob, MARCA_BOB, 0, MENSAGENS_DO_BOB).await;
 
     // Arquivos (so metadado), memorias pessoais e tarefas da Alice.
     sqlx::query(

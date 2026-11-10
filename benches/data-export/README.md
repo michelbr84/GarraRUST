@@ -109,7 +109,7 @@ results/<DATA>-<host>/
 ├── environment-<perfil>-<N>msgs.txt # maquina, versoes, SHA, CARGO_PROFILE_*
 └── raw/
     ├── <perfil>-<N>msgs.json        # relatorio com todas as amostras
-    └── <perfil>-<N>msgs.log         # saida do teste
+    └── <perfil>-<N>msgs.out.txt     # saida do teste
 ```
 
 Qualquer `CARGO_PROFILE_*` exportado na hora do build fica registrado no

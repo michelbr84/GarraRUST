@@ -19,7 +19,7 @@
 ## Estrutura de crates
 
 **22 crates ativos** no workspace (contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`),
-mais o harness `benches/agent-framework-comparison/` (fora do workspace, não é crate).
+mais os harnesses em `benches/` (fora do workspace, não são crates).
 O histórico de entrega (plans, PRs, datas, IDs `GAR-xxx`) vive em `plans/`, `docs/adr/`
 e `CHANGELOG.md` — aqui fica só o estado atual e os invariantes que um agente precisa
 respeitar.
@@ -259,6 +259,11 @@ benches/
                         NÃO é crate nem workspace member. Mede binário, pico de RSS e
                         cold start contra CLIs concorrentes fixados por ref via env var;
                         resultados versionados em `results/<data>-<host>/`.
+  data-export/        — receita (`run.sh`) + resultados da latência de
+                        `GET /v1/me/export` (#1801). O harness é o teste
+                        `rest_v1_me_export_perf` do `garraia-gateway`, que roda
+                        no CI com as suítes `test-helpers` e só afirma a
+                        referência de 30 s; percentis são reportados.
 ```
 
 > `benches/database-poc/` foi removido em 2026-08-16;

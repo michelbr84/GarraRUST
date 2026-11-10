@@ -131,10 +131,11 @@ GARRAIA_EXPORT_PERF_OUT="$RAW/${STEM}.json" \
   cargo test -p garraia-gateway --features test-helpers "${PROFILE_FLAG[@]}" \
     --test rest_v1_me_export_perf -- --nocapture --exact \
     export_de_10_mil_mensagens_cabe_na_referencia_e_respeita_o_isolamento \
-  2>&1 | tee "$RAW/${STEM}.log"
+  2>&1 | tee "$RAW/${STEM}.out.txt"
 
+# (`.out.txt`, nao `.log`: o `.gitignore` da raiz ignora `*.log`.)
 # `1 passed` tem de estar no log: teste filtrado ou zero casos nao e medida.
-if ! grep -q 'test result: ok. 1 passed' "$RAW/${STEM}.log"; then
+if ! grep -q 'test result: ok. 1 passed' "$RAW/${STEM}.out.txt"; then
   echo "o teste nao rodou (zero casos ou filtrado); nada foi medido" >&2
   exit 70
 fi
