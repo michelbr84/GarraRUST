@@ -1,0 +1,1 @@
+- Seguranca: rusqlite 0.32 -> 0.39 (libsqlite3-sys 0.37+), corrige RUSTSEC-2026-0459; `u64`/`usize` deixam de ser `ToSql`/`FromSql` e os dois pontos afetados convertem de forma explicita.
