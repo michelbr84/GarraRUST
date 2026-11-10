@@ -58,9 +58,18 @@ OUT_DIR="$HERE/results/${DATE_FLORIDA}-${HOST_SHORT}"
 RAW="$OUT_DIR/raw"
 STEM="${PERFIL}-${MENSAGENS}msgs"
 
-mkdir -p "$RAW"
-
 IMAGE="pgvector/pgvector:pg16"
+
+# Antes de qualquer arquivo de resultado existir: o proprio registro nao pode
+# fazer a arvore parecer suja.
+GIT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
+if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+  GIT_TREE="dirty"
+else
+  GIT_TREE="clean"
+fi
+
+mkdir -p "$RAW"
 
 {
   echo "# run started (UTC)"
@@ -69,12 +78,8 @@ IMAGE="pgvector/pgvector:pg16"
   TZ=America/New_York date +"%Y-%m-%dT%H:%M:%S%z"
   echo
   echo "# git"
-  echo "sha: $(git -C "$ROOT" rev-parse HEAD)"
-  if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
-    echo "worktree: dirty"
-  else
-    echo "worktree: clean"
-  fi
+  echo "sha: $GIT_SHA"
+  echo "worktree: $GIT_TREE"
   echo
   echo "# cenario"
   echo "perfil: $PERFIL"
