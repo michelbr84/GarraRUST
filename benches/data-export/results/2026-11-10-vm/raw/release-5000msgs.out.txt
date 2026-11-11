@@ -1,0 +1,79 @@
+    Finished `release` profile [optimized] target(s) in 0.51s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running tests/rest_v1_me_export_perf.rs (target/release/deps/rest_v1_me_export_perf-15548b6ee68892d4)
+
+running 1 test
+=== export-perf (#1801) ===
+{
+  "carga": {
+    "arquivos": 100,
+    "chats_da_titular": 4,
+    "grupos_da_titular": 2,
+    "memorias_pessoais": 100,
+    "mencoes_recebidas": 200,
+    "mensagens_da_titular": 5000,
+    "mensagens_de_outro_tenant": 1000,
+    "mensagens_de_terceiro_no_mesmo_chat": 1000,
+    "tarefas": 100
+  },
+  "endpoint": "GET /v1/me/export",
+  "export": {
+    "bytes": 2051146,
+    "mensagens_exportadas": 5000,
+    "teto_de_mensagens": 5000,
+    "truncado": false
+  },
+  "fria_ms": 37.415,
+  "issue": 1801,
+  "perfil_de_build": "release",
+  "preparo_da_carga_ms": 429.621,
+  "quentes": {
+    "amostras_ms": [
+      38.154,
+      228.642,
+      24.291,
+      230.58,
+      24.507,
+      22.616,
+      23.738,
+      20.998,
+      19.509,
+      17.671,
+      18.552,
+      17.169,
+      19.134,
+      22.047,
+      20.151,
+      19.197,
+      18.376,
+      17.803,
+      22.29,
+      24.796,
+      19.952,
+      20.521,
+      18.217,
+      18.288,
+      17.277,
+      17.675,
+      18.546,
+      19.6,
+      17.616,
+      19.775
+    ],
+    "max_ms": 230.58,
+    "media_ms": 34.59,
+    "min_ms": 17.169,
+    "p50_ms": 19.6,
+    "p95_ms": 228.642,
+    "percentil": "nearest-rank",
+    "repeticoes": 30
+  },
+  "referencia_ms": 30000.0,
+  "transporte": "em processo (tower oneshot), sem rede nem TLS"
+}
+=== fim export-perf ===
+test export_de_10_mil_mensagens_cabe_na_referencia_e_respeita_o_isolamento ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.84s
+

@@ -520,6 +520,15 @@ name = "rest_v1_me_data_subject"
 path = "tests/rest_v1_me_data_subject.rs"
 required-features = ["test-helpers"]
 
+# #1801: latencia de `GET /v1/me/export` com 10 mil mensagens, pelo router
+# autenticado e Postgres real. Valida conteudo/isolamento e afirma so a
+# referencia historica de 30 s; percentis sao reportados (`--nocapture`).
+# Receita e resultados em `benches/data-export/`.
+[[test]]
+name = "rest_v1_me_export_perf"
+path = "tests/rest_v1_me_export_perf.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly
