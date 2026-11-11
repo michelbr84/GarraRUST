@@ -3137,6 +3137,45 @@ mod ponta_a_ponta {
         encerra(c).await;
     }
 
+    /// **#1822: outro bot na conversa "Voce".** A marca invisivel so segura
+    /// outra instancia do Garra; outro bot da mesma conta chega como
+    /// mensagens novas, cada uma com id proprio. O teto da conversa "Voce" e
+    /// menor que o do operador — aqui o cenario sobe com teto ilimitado e,
+    /// mesmo assim, a rajada para em `MAX_SELF_CHAT` turnos pagos.
+    #[tokio::test]
+    async fn rajada_na_conversa_voce_para_no_teto_menor() {
+        let c = Montagem {
+            roteiro: Roteiro::eco().na_conversa_propria(),
+            allow_extra: vec![PROPRIO.to_string()],
+            ..Montagem::default()
+        }
+        .sobe(|_| {})
+        .await;
+        assert!(
+            ate(|| c.state.whatsapp_linked.bridge() == BridgeView::Connected).await,
+            "a ponte precisa estar de pe"
+        );
+
+        let teto = super::cadencia::MAX_SELF_CHAT;
+        for i in 0..=teto {
+            let mut m = msg(Some(&format!("bot {i}")));
+            m.chat_jid = Jid::new(format!("{PROPRIO}@s.whatsapp.net"));
+            m.sender_jid = Jid::new(format!("{PROPRIO}:1@s.whatsapp.net"));
+            m.sender_phone = Some(format!("+{PROPRIO}"));
+            m.from_me = true;
+            m.self_chat = true;
+            InboundSink::deliver(&*c.espiao, m);
+        }
+
+        assert_eq!(
+            turnos_estaveis_em(&c, teto).await,
+            teto,
+            "a mensagem alem do teto da conversa Voce nao pode virar turno pago"
+        );
+
+        encerra(c).await;
+    }
+
     #[tokio::test]
     async fn mensagem_from_me_vinda_pela_ponte_nao_gera_resposta() {
         let c = sobe_com(Roteiro::empurra("oi").da_propria_conta(), true).await;

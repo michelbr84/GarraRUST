@@ -25,6 +25,12 @@
 //!   repetiu) e sinal de loop, nao de conversa: essas admitem no maximo
 //!   [`MAX_CONTEUDO_SUSPEITO`] por janela, mesmo quando o teto do operador e
 //!   maior.
+//! - **Conversa "Voce" com teto menor** (#1822): a marca invisivel evita o
+//!   ping-pong entre duas instancias do Garra, mas nao com outro bot da mesma
+//!   conta respondendo na conversa "Voce" (outro Baileys, o self-chat de
+//!   outra ferramenta). Ali so ha um humano, digitando para si mesmo, entao o
+//!   teto e [`MAX_SELF_CHAT`] por janela, mesmo com teto do operador maior —
+//!   o loop e cortado em menos chamadas pagas.
 //! - **Diagnostico por hora**: [`Cadencia::diagnosticar`] devolve
 //!   `turnos_ultima_hora` (janela de 1h dos admitidos) para a tool de
 //!   diagnostico do gateway — o `garraia doctor` offline nao enxerga isto
@@ -42,6 +48,11 @@ pub const JANELA: Duration = Duration::from_secs(60);
 /// vazio — abaixo do teto normal de proposito: humano nao manda 3 vazias
 /// seguidas, loop manda.
 pub const MAX_CONTEUDO_SUSPEITO: usize = 3;
+/// Teto por janela na conversa "Voce" (`self_chat`, #1822). Um humano
+/// escrevendo para o assistente espera cada resposta (segundos de modelo), e
+/// nao passa disso por minuto; dois bots da mesma conta passam em segundos.
+/// Nunca supera o teto do operador.
+pub const MAX_SELF_CHAT: usize = 8;
 /// O marcador interno que o caminho nao-streaming ja publicava como resposta
 /// (ver #1648/#1651): recebido de volta como mensagem inbound, e stub de bot.
 pub const STUB_MARCADOR: &str = "[no textual response provided by the model]";
@@ -81,6 +92,15 @@ pub fn classifica(texto: &str) -> Conteudo {
     }
 }
 
+/// Em que conversa o turno chegou — muda o teto, nunca a chave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Conversa {
+    /// DM ou grupo com outra pessoa.
+    Comum,
+    /// A conversa "Voce" da propria conta (`self_chat`): teto menor.
+    Voce,
+}
+
 /// O que fazer com o turno.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decisao {
@@ -102,6 +122,8 @@ pub struct DiagDeCadencia {
     pub chats_ativos: usize,
     /// Teto efetivo apos o knob do operador.
     pub max_por_janela: usize,
+    /// Teto efetivo na conversa "Voce" (`min(operador, MAX_SELF_CHAT)`).
+    pub max_self_chat: usize,
     /// Janela do teto em segundos.
     pub janela_s: u64,
 }
@@ -182,9 +204,24 @@ impl Cadencia {
         }
     }
 
+    /// Decide e registra numa conversa comum. Ver [`Cadencia::admitir_em`].
+    /// Atalho dos testes: producao sempre diz a conversa.
+    #[cfg(test)]
+    pub fn admitir(&mut self, chat: &str, agora: Instant, conteudo: Conteudo) -> Decisao {
+        self.admitir_em(chat, agora, conteudo, Conversa::Comum)
+    }
+
     /// Decide e registra. Turno cortado **nao** conta na janela: a tempestade
     /// nao se auto-prolonga, e quando o outro lado cala o chat volta sozinho.
-    pub fn admitir(&mut self, chat: &str, agora: Instant, conteudo: Conteudo) -> Decisao {
+    /// Na conversa "Voce" o teto e `min(teto, MAX_SELF_CHAT)` (#1822); o
+    /// backoff e o aviso unico sao os mesmos.
+    pub fn admitir_em(
+        &mut self,
+        chat: &str,
+        agora: Instant,
+        conteudo: Conteudo,
+        conversa: Conversa,
+    ) -> Decisao {
         if self.turnos.len() >= CHATS_MAX && !self.turnos.contains_key(chat) {
             self.varrer(agora);
         }
@@ -204,9 +241,13 @@ impl Cadencia {
         {
             fila.pop_front();
         }
+        let base = match conversa {
+            Conversa::Comum => self.max,
+            Conversa::Voce => self.max.min(MAX_SELF_CHAT),
+        };
         let limite = match conteudo {
-            Conteudo::Texto => self.max,
-            Conteudo::Vazio | Conteudo::Stub => self.max.min(MAX_CONTEUDO_SUSPEITO),
+            Conteudo::Texto => base,
+            Conteudo::Vazio | Conteudo::Stub => base.min(MAX_CONTEUDO_SUSPEITO),
         };
         if fila.len() >= limite {
             let turnos = fila.len();
@@ -278,6 +319,7 @@ impl Cadencia {
             turnos_ultima_hora,
             chats_ativos: self.turnos.len(),
             max_por_janela: self.max,
+            max_self_chat: self.max.min(MAX_SELF_CHAT),
             janela_s: self.janela.as_secs(),
         }
     }
@@ -750,10 +792,104 @@ mod tests {
         let d = c.diagnosticar(t0 + seg(500));
         assert_eq!(d.turnos_ultima_hora, 5, "5 admitidos dentro da hora");
         assert_eq!(d.max_por_janela, 7, "knob do operador no relatorio");
+        assert_eq!(d.max_self_chat, 7, "self-chat nunca supera o operador");
         assert_eq!(d.janela_s, 60);
         assert_eq!(d.chats_ativos, 1);
         // Uma hora depois, a contagem esvazia sozinha.
         let d2 = c.diagnosticar(t0 + seg(4101));
         assert_eq!(d2.turnos_ultima_hora, 0);
+    }
+
+    // ─── conversa "Voce" (#1822) ────────────────────────────────────────
+
+    #[test]
+    fn conversa_voce_tem_teto_menor_que_o_do_operador() {
+        let t0 = Instant::now();
+        let mut c = Cadencia::new(20, seg(60));
+        for i in 0..MAX_SELF_CHAT {
+            assert_eq!(
+                c.admitir_em(CHAT, t0 + seg(i as u64), Conteudo::Texto, Conversa::Voce),
+                Decisao::Admitido
+            );
+        }
+        assert_eq!(
+            c.admitir_em(CHAT, t0 + seg(20), Conteudo::Texto, Conversa::Voce),
+            Decisao::Cortado {
+                turnos: MAX_SELF_CHAT,
+                primeiro_corte: true
+            },
+            "outro bot na conversa Voce e cortado no teto menor"
+        );
+        // Uma conversa comum no mesmo instante segue no teto do operador.
+        let outro = "outro@s.whatsapp.net";
+        for i in 0..20 {
+            assert_eq!(
+                c.admitir(outro, t0 + seg(i), Conteudo::Texto),
+                Decisao::Admitido
+            );
+        }
+        // A janela libera: o humano volta.
+        assert_eq!(
+            c.admitir_em(CHAT, t0 + seg(61), Conteudo::Texto, Conversa::Voce),
+            Decisao::Admitido
+        );
+    }
+
+    #[test]
+    fn teto_da_conversa_voce_nunca_supera_o_do_operador() {
+        let t0 = Instant::now();
+        let mut c = Cadencia::new(50, seg(60));
+        c.set_max(Some(2));
+        for i in 0..2 {
+            assert_eq!(
+                c.admitir_em(CHAT, t0 + seg(i), Conteudo::Texto, Conversa::Voce),
+                Decisao::Admitido
+            );
+        }
+        assert!(matches!(
+            c.admitir_em(CHAT, t0 + seg(2), Conteudo::Texto, Conversa::Voce),
+            Decisao::Cortado { .. }
+        ));
+        assert_eq!(c.diagnosticar(t0 + seg(3)).max_self_chat, 2);
+    }
+
+    #[test]
+    fn conversa_voce_com_stub_fica_no_menor_dos_tetos() {
+        let t0 = Instant::now();
+        let mut c = Cadencia::new(20, seg(60));
+        for i in 0..MAX_CONTEUDO_SUSPEITO {
+            assert_eq!(
+                c.admitir_em(CHAT, t0 + seg(i as u64), Conteudo::Stub, Conversa::Voce),
+                Decisao::Admitido
+            );
+        }
+        assert!(matches!(
+            c.admitir_em(CHAT, t0 + seg(10), Conteudo::Stub, Conversa::Voce),
+            Decisao::Cortado { .. }
+        ));
+    }
+
+    #[test]
+    fn conversa_voce_herda_o_backoff() {
+        let t0 = Instant::now();
+        let mut c = Cadencia::new(20, seg(60));
+        let rajada = |c: &mut Cadencia, base: Duration| {
+            for i in 0..MAX_SELF_CHAT {
+                c.admitir_em(
+                    CHAT,
+                    t0 + base + seg(i as u64),
+                    Conteudo::Texto,
+                    Conversa::Voce,
+                );
+            }
+            c.admitir_em(CHAT, t0 + base + seg(30), Conteudo::Texto, Conversa::Voce)
+        };
+        assert!(matches!(rajada(&mut c, seg(0)), Decisao::Cortado { .. }));
+        // 2a rajada logo depois da janela: segura 120s.
+        assert!(matches!(rajada(&mut c, seg(61)), Decisao::Cortado { .. }));
+        assert!(matches!(
+            c.admitir_em(CHAT, t0 + seg(61 + 100), Conteudo::Texto, Conversa::Voce),
+            Decisao::Cortado { .. }
+        ));
     }
 }
