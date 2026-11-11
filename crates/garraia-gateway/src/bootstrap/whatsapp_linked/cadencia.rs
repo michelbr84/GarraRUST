@@ -205,6 +205,8 @@ impl Cadencia {
     }
 
     /// Decide e registra numa conversa comum. Ver [`Cadencia::admitir_em`].
+    /// Atalho dos testes: producao sempre diz a conversa.
+    #[cfg(test)]
     pub fn admitir(&mut self, chat: &str, agora: Instant, conteudo: Conteudo) -> Decisao {
         self.admitir_em(chat, agora, conteudo, Conversa::Comum)
     }
