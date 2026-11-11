@@ -124,6 +124,11 @@ pub struct DiagDeCadencia {
     pub max_por_janela: usize,
     /// Teto efetivo na conversa "Voce" (`min(operador, MAX_SELF_CHAT)`).
     pub max_self_chat: usize,
+    /// Rajadas que estouraram o teto na conversa "Voce" nas ultimas
+    /// [`JANELA_HORA`] (#1822). Acima de zero e sinal de outro aparelho ou
+    /// bot da mesma conta respondendo ali: um humano sozinho raramente passa
+    /// de [`MAX_SELF_CHAT`] mensagens por minuto para si mesmo.
+    pub rajadas_self_chat_ultima_hora: usize,
     /// Janela do teto em segundos.
     pub janela_s: u64,
 }
@@ -146,6 +151,10 @@ pub struct Cadencia {
     ultimo_corte: HashMap<String, Instant>,
     /// Todos os admitidos na ultima hora (janela do diagnostico).
     por_hora: VecDeque<Instant>,
+    /// Inicio de cada rajada cortada na conversa "Voce" na ultima hora
+    /// (#1822). Uma entrada por rajada, nunca por mensagem cortada: a
+    /// tempestade nao infla a fila.
+    rajadas_voce: VecDeque<Instant>,
 }
 
 impl Default for Cadencia {
@@ -166,6 +175,7 @@ impl Cadencia {
             rajadas: HashMap::new(),
             ultimo_corte: HashMap::new(),
             por_hora: VecDeque::new(),
+            rajadas_voce: VecDeque::new(),
         }
     }
 
@@ -267,6 +277,17 @@ impl Cadencia {
                         .insert(chat.to_string(), agora + Duration::from_secs(segs));
                 }
                 self.ultimo_corte.insert(chat.to_string(), agora);
+                if conversa == Conversa::Voce {
+                    // Diagnostico (#1822): contagem, nunca identidade.
+                    while self
+                        .rajadas_voce
+                        .front()
+                        .is_some_and(|t| agora.saturating_duration_since(*t) >= JANELA_HORA)
+                    {
+                        self.rajadas_voce.pop_front();
+                    }
+                    self.rajadas_voce.push_back(agora);
+                }
             }
             return Decisao::Cortado {
                 turnos,
@@ -315,11 +336,17 @@ impl Cadencia {
             .iter()
             .filter(|t| agora.saturating_duration_since(**t) < JANELA_HORA)
             .count();
+        let rajadas_self_chat_ultima_hora = self
+            .rajadas_voce
+            .iter()
+            .filter(|t| agora.saturating_duration_since(**t) < JANELA_HORA)
+            .count();
         DiagDeCadencia {
             turnos_ultima_hora,
             chats_ativos: self.turnos.len(),
             max_por_janela: self.max,
             max_self_chat: self.max.min(MAX_SELF_CHAT),
+            rajadas_self_chat_ultima_hora,
             janela_s: self.janela.as_secs(),
         }
     }
@@ -851,6 +878,47 @@ mod tests {
             Decisao::Cortado { .. }
         ));
         assert_eq!(c.diagnosticar(t0 + seg(3)).max_self_chat, 2);
+    }
+
+    #[test]
+    fn diagnostico_conta_rajadas_da_conversa_voce_e_esquece_em_uma_hora() {
+        let t0 = Instant::now();
+        let mut c = Cadencia::new(20, seg(60));
+        assert_eq!(c.diagnosticar(t0).rajadas_self_chat_ultima_hora, 0);
+        for i in 0..MAX_SELF_CHAT {
+            c.admitir_em(CHAT, t0 + seg(i as u64), Conteudo::Texto, Conversa::Voce);
+        }
+        // Tres cortes na mesma rajada contam UMA vez: a tempestade nao infla.
+        for i in 0..3 {
+            assert!(matches!(
+                c.admitir_em(CHAT, t0 + seg(20 + i), Conteudo::Texto, Conversa::Voce),
+                Decisao::Cortado { .. }
+            ));
+        }
+        assert_eq!(
+            c.diagnosticar(t0 + seg(30)).rajadas_self_chat_ultima_hora,
+            1
+        );
+        // Uma hora depois, a contagem esvazia sozinha.
+        assert_eq!(
+            c.diagnosticar(t0 + seg(20 + 3600))
+                .rajadas_self_chat_ultima_hora,
+            0
+        );
+    }
+
+    #[test]
+    fn rajada_em_conversa_comum_nao_conta_como_conversa_voce() {
+        let t0 = Instant::now();
+        let mut c = Cadencia::new(2, seg(60));
+        for i in 0..2 {
+            c.admitir(CHAT, t0 + seg(i), Conteudo::Texto);
+        }
+        assert!(matches!(
+            c.admitir(CHAT, t0 + seg(3), Conteudo::Texto),
+            Decisao::Cortado { .. }
+        ));
+        assert_eq!(c.diagnosticar(t0 + seg(4)).rajadas_self_chat_ultima_hora, 0);
     }
 
     #[test]

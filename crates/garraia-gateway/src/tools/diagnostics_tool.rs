@@ -399,21 +399,7 @@ async fn verificacoes_dos_canais(state: &AppState, push: PushMounted) -> Vec<Ver
     // O `garraia doctor` de outro processo nao enxerga este estado (memoria de
     // outro processo); quem mostra e o diagnostico do gateway.
     out.push(match state.whatsapp_linked.cadencia_diagnostico() {
-        Some(d) => Verificacao::nova(
-            "canais.whatsapp_linked.cadencia",
-            EstadoDiag::Ok,
-            serde_json::json!({
-                "turnos_ultima_hora": d.turnos_ultima_hora,
-                "chats_ativos": d.chats_ativos,
-                "max_por_janela": d.max_por_janela,
-                "max_self_chat": d.max_self_chat,
-                "janela_s": d.janela_s,
-            }),
-            format!(
-                "cadencia entre turnos: {} turno(s) admitido(s) na ultima hora; teto {}/{}s por chat ({} na conversa \"Voce\")",
-                d.turnos_ultima_hora, d.max_por_janela, d.janela_s, d.max_self_chat
-            ),
-        ),
+        Some(d) => verificacao_da_cadencia(d),
         None => Verificacao::nova(
             "canais.whatsapp_linked.cadencia",
             EstadoDiag::Erro,
@@ -422,6 +408,46 @@ async fn verificacoes_dos_canais(state: &AppState, push: PushMounted) -> Vec<Ver
         ),
     });
     out
+}
+
+/// A entrada `canais.whatsapp_linked.cadencia`. Pura, para o teste montar o
+/// instantaneo direto.
+///
+/// `degradado` quando a conversa "Voce" estourou o proprio teto na ultima
+/// hora (#1822): a marca invisivel so segura outra instancia do Garra, entao
+/// rajada ali e sinal de outro aparelho ou bot da mesma conta respondendo. O
+/// teto ja cortou o custo; o aviso diz ao operador onde olhar.
+fn verificacao_da_cadencia(d: crate::bootstrap::WhatsAppLinkedDiagDeCadencia) -> Verificacao {
+    let base = format!(
+        "cadencia entre turnos: {} turno(s) admitido(s) na ultima hora; teto {}/{}s por chat ({} na conversa \"Voce\")",
+        d.turnos_ultima_hora, d.max_por_janela, d.janela_s, d.max_self_chat
+    );
+    let (estado, detalhe) = if d.rajadas_self_chat_ultima_hora > 0 {
+        (
+            EstadoDiag::Degradado,
+            format!(
+                "{base}. A conversa \"Voce\" estourou o teto {} vez(es) na ultima hora: sinal de \
+                 outro aparelho ou bot da mesma conta respondendo ali. Confira em WhatsApp > \
+                 Aparelhos conectados e desligue o self-chat da outra ferramenta",
+                d.rajadas_self_chat_ultima_hora
+            ),
+        )
+    } else {
+        (EstadoDiag::Ok, base)
+    };
+    Verificacao::nova(
+        "canais.whatsapp_linked.cadencia",
+        estado,
+        serde_json::json!({
+            "turnos_ultima_hora": d.turnos_ultima_hora,
+            "chats_ativos": d.chats_ativos,
+            "max_por_janela": d.max_por_janela,
+            "max_self_chat": d.max_self_chat,
+            "rajadas_self_chat_ultima_hora": d.rajadas_self_chat_ultima_hora,
+            "janela_s": d.janela_s,
+        }),
+        detalhe,
+    )
 }
 
 // ─── 4. estado dos servidores MCP ───────────────────────────────────────────
@@ -1080,6 +1106,39 @@ async fn verificacao_banco(state: &AppState) -> Verificacao {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn diag_de_cadencia(rajadas: usize) -> crate::bootstrap::WhatsAppLinkedDiagDeCadencia {
+        crate::bootstrap::WhatsAppLinkedDiagDeCadencia {
+            turnos_ultima_hora: 12,
+            chats_ativos: 2,
+            max_por_janela: 20,
+            max_self_chat: 8,
+            rajadas_self_chat_ultima_hora: rajadas,
+            janela_s: 60,
+        }
+    }
+
+    /// #1822: sem rajada na conversa "Voce", a cadencia segue `ok`.
+    #[test]
+    fn cadencia_sem_rajada_na_conversa_voce_e_ok() {
+        let v = verificacao_da_cadencia(diag_de_cadencia(0));
+        assert_eq!(v.id, "canais.whatsapp_linked.cadencia");
+        assert_eq!(v.estado, EstadoDiag::Ok);
+        assert_eq!(v.evidencia["rajadas_self_chat_ultima_hora"], 0);
+        assert!(!v.detalhe.contains("Aparelhos conectados"), "{}", v.detalhe);
+    }
+
+    /// #1822: rajada na conversa "Voce" vira `degradado` com o proximo passo
+    /// — outro aparelho ou bot da mesma conta respondendo ali.
+    #[test]
+    fn cadencia_com_rajada_na_conversa_voce_avisa_do_outro_aparelho() {
+        let v = verificacao_da_cadencia(diag_de_cadencia(2));
+        assert_eq!(v.estado, EstadoDiag::Degradado);
+        assert_eq!(v.evidencia["rajadas_self_chat_ultima_hora"], 2);
+        assert!(v.detalhe.contains("2 vez(es)"), "{}", v.detalhe);
+        assert!(v.detalhe.contains("outro aparelho ou bot"), "{}", v.detalhe);
+        assert!(v.detalhe.contains("Aparelhos conectados"), "{}", v.detalhe);
+    }
     use garraia_agents::AgentRuntime;
     use garraia_agents::McpServerState;
     use garraia_channels::ChannelRegistry;
