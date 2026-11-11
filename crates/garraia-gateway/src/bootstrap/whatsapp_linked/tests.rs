@@ -59,9 +59,12 @@ impl garraia_agents::tools::Tool for ToolDeMentira {
     }
 }
 
+/// Cada chamada gera um `id` novo, como a ponte real: o `deliver` deduplica
+/// por `(chat, id)` (#1822), entao um id fixo faria a 2a mensagem do teste
+/// parecer reentrega da 1a.
 fn msg(texto: Option<&str>) -> InboundMessage {
     InboundMessage {
-        id: "AAA".into(),
+        id: format!("MSG-{}", uuid::Uuid::new_v4()),
         chat_jid: Jid::new("5511888880000@s.whatsapp.net"),
         sender_jid: Jid::new("5511888880000@s.whatsapp.net"),
         sender_phone: Some("+5511888880000".into()),
@@ -3588,6 +3591,40 @@ mod ponta_a_ponta {
     /// Quantas respostas do agente sairam pela ponte (o eco `from_me`).
     fn respostas(c: &Cenario) -> usize {
         recebidas(c).iter().filter(|m| m.from_me).count()
+    }
+
+    /// #1822: a mesma mensagem (mesmo `id`, mesmo chat) entregue duas vezes —
+    /// o acumulado offline repetido na reconexao — vira UM turno e UMA
+    /// resposta. Uma mensagem nova depois dela continua virando turno.
+    #[tokio::test]
+    async fn reentrega_do_mesmo_id_vira_um_turno_so() {
+        let (_tx, rx) = watch::channel(viva(true, &[PEER], &[]));
+        let c = sobe_vivo(true, false, ExecutionProfile::Standard, rx).await;
+
+        let repetida = msg(Some("oi"));
+        for _ in 0..2 {
+            let antes = recebidas(&c).len();
+            InboundSink::deliver(&*c.espiao, repetida.clone());
+            assert!(
+                ate(|| recebidas(&c).len() > antes).await,
+                "a mensagem precisa chegar ao sink"
+            );
+        }
+        assert_eq!(
+            turnos_estaveis_em(&c, 2).await,
+            1,
+            "reentrega do mesmo id nao vira 2o turno"
+        );
+        assert!(ate(|| respostas(&c) == 1).await, "uma resposta so");
+
+        entrega(&c, "mensagem nova").await;
+        assert_eq!(
+            turnos_estaveis_em(&c, 2).await,
+            2,
+            "id novo continua virando turno"
+        );
+
+        encerra(c).await;
     }
 
     /// **O defeito da #1345, ponta a ponta.** O canal sobe com o portao vazio
