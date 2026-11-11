@@ -77,7 +77,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Extensions,
     Implementation, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
-    ServerInfo,
+    ServerConfig,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
@@ -915,8 +915,8 @@ impl ServerHandler for ManipuladorMcpHttp {
     /// `ServerInfo` e `#[non_exhaustive]` no rmcp, entao a identidade e escrita
     /// por mutacao em vez de struct-expression com `..` — que nao compila fora
     /// da crate dele.
-    fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+    fn get_info(&self) -> ServerConfig {
+        let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
         info.server_info = Implementation::new("garraia-gateway", env!("CARGO_PKG_VERSION"));
         info.instructions = Some(
             "Ponte MCP do GarraIA (gateway). Leitura: garra_status, garra_list_chats, \
