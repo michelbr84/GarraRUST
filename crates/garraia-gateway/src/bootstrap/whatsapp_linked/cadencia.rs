@@ -908,6 +908,39 @@ mod tests {
     }
 
     #[test]
+    fn duas_rajadas_na_conversa_voce_contam_duas_e_a_velha_sai_da_fila() {
+        let t0 = Instant::now();
+        let mut c = Cadencia::new(20, seg(60));
+        let rajada = |c: &mut Cadencia, base: u64| {
+            for i in 0..MAX_SELF_CHAT {
+                c.admitir_em(
+                    CHAT,
+                    t0 + seg(base + i as u64),
+                    Conteudo::Texto,
+                    Conversa::Voce,
+                );
+            }
+            c.admitir_em(CHAT, t0 + seg(base + 20), Conteudo::Texto, Conversa::Voce)
+        };
+        assert!(matches!(rajada(&mut c, 0), Decisao::Cortado { .. }));
+        // A janela libera, o chat volta e estoura de novo: segunda rajada.
+        assert!(matches!(rajada(&mut c, 100), Decisao::Cortado { .. }));
+        assert_eq!(
+            c.diagnosticar(t0 + seg(130)).rajadas_self_chat_ultima_hora,
+            2
+        );
+        // A primeira (t0+20) envelhece antes da segunda (t0+120).
+        assert_eq!(
+            c.diagnosticar(t0 + seg(20 + 3600))
+                .rajadas_self_chat_ultima_hora,
+            1
+        );
+        // Uma terceira, muito depois, poda as duas velhas ao entrar.
+        assert!(matches!(rajada(&mut c, 8000), Decisao::Cortado { .. }));
+        assert_eq!(c.rajadas_voce.len(), 1, "a fila se poda no push");
+    }
+
+    #[test]
     fn rajada_em_conversa_comum_nao_conta_como_conversa_voce() {
         let t0 = Instant::now();
         let mut c = Cadencia::new(2, seg(60));

@@ -415,7 +415,7 @@ async fn verificacoes_dos_canais(state: &AppState, push: PushMounted) -> Vec<Ver
 ///
 /// `degradado` quando a conversa "Voce" estourou o proprio teto na ultima
 /// hora (#1822): a marca invisivel so segura outra instancia do Garra, entao
-/// rajada ali e sinal de outro aparelho ou bot da mesma conta respondendo. O
+/// rajada ali e possivel sinal de outro aparelho ou bot da mesma conta respondendo. O
 /// teto ja cortou o custo; o aviso diz ao operador onde olhar.
 fn verificacao_da_cadencia(d: crate::bootstrap::WhatsAppLinkedDiagDeCadencia) -> Verificacao {
     let base = format!(
@@ -426,7 +426,7 @@ fn verificacao_da_cadencia(d: crate::bootstrap::WhatsAppLinkedDiagDeCadencia) ->
         (
             EstadoDiag::Degradado,
             format!(
-                "{base}. A conversa \"Voce\" estourou o teto {} vez(es) na ultima hora: sinal de \
+                "{base}. A conversa \"Voce\" estourou o teto {} vez(es) na ultima hora: possivel sinal de \
                  outro aparelho ou bot da mesma conta respondendo ali. Confira em WhatsApp > \
                  Aparelhos conectados e desligue o self-chat da outra ferramenta",
                 d.rajadas_self_chat_ultima_hora
@@ -1106,6 +1106,11 @@ async fn verificacao_banco(state: &AppState) -> Verificacao {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use garraia_agents::AgentRuntime;
+    use garraia_agents::McpServerState;
+    use garraia_channels::ChannelRegistry;
+    use garraia_channels::whatsapp_linked::health::LinkHealth;
+    use garraia_config::AppConfig;
 
     fn diag_de_cadencia(rajadas: usize) -> crate::bootstrap::WhatsAppLinkedDiagDeCadencia {
         crate::bootstrap::WhatsAppLinkedDiagDeCadencia {
@@ -1139,11 +1144,6 @@ mod tests {
         assert!(v.detalhe.contains("outro aparelho ou bot"), "{}", v.detalhe);
         assert!(v.detalhe.contains("Aparelhos conectados"), "{}", v.detalhe);
     }
-    use garraia_agents::AgentRuntime;
-    use garraia_agents::McpServerState;
-    use garraia_channels::ChannelRegistry;
-    use garraia_channels::whatsapp_linked::health::LinkHealth;
-    use garraia_config::AppConfig;
 
     fn config_no(dir: &Path) -> AppConfig {
         AppConfig {
