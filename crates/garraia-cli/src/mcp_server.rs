@@ -31,7 +31,8 @@ use garraia_config::AppConfig;
 use rmcp::ErrorData as McpError;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
-    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
+    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerConfig,
+    Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -477,8 +478,8 @@ impl ServerHandler for GarraToolHandler {
     /// `tests/common/calculator.rs` (`enable_tools()` flips `tools` to
     /// `Some(ToolsCapability::default())`). No other capabilities are
     /// enabled here on purpose — see `get_info_advertises_only_tools_capability`.
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     }
 
     async fn list_tools(

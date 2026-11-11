@@ -366,13 +366,25 @@ impl ConfigLoader {
     pub fn save(&self, config: &AppConfig) -> Result<()> {
         let yaml_path = self.config_dir.join("config.yml");
 
-        let contents = serde_norway::to_string(config)
+        let full = serde_norway::to_string(config)
             .map_err(|e| Error::Config(format!("failed to serialize config: {e}")))?;
+
+        // #1825: edita so os campos que mudaram, preservando ordem, comentarios
+        // e chaves desconhecidas. Qualquer duvida cai na regravacao inteira.
+        let contents = self.patch_existing(config).unwrap_or(full);
 
         write_atomic_secret(&yaml_path, contents.as_bytes())?;
 
         info!("saved updated config to {}", yaml_path.display());
         Ok(())
+    }
+
+    fn patch_existing(&self, config: &AppConfig) -> Option<String> {
+        let old_text = std::fs::read_to_string(self.config_dir.join("config.yml")).ok()?;
+        let old_cfg: AppConfig = serde_norway::from_str(&old_text).ok()?;
+        let old_canon = serde_norway::to_value(&old_cfg).ok()?;
+        let new = serde_norway::to_value(config).ok()?;
+        crate::preserve::patch(&old_text, &new, &old_canon)
     }
 
     /// Liga ou desliga `channels.<key>.enabled`, sem tocar em mais nada.

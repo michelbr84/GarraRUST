@@ -71,8 +71,14 @@ echo "parse_args.sh: an explicit env var wins over its flag"
 
 # Regression guard: existing automation sets the env var directly; a flag
 # must never clobber a caller's explicit choice.
+#
+# The variable is exported for real, as that automation does. A prefix
+# assignment (`VAR=x parse_args ...`) only lives in the function's temporary
+# environment, and whether it is still set after the function returns
+# depends on the bash version — the CI runner started dropping it (#1846).
 actual="$(
-    GARRAIA_VERSION=v9.9.9 parse_args --version v0.0.1 >/dev/null 2>&1
+    export GARRAIA_VERSION=v9.9.9
+    parse_args --version v0.0.1 >/dev/null 2>&1
     printf '%s' "${GARRAIA_VERSION}"
 )"
 if [ "${actual}" = "v9.9.9" ]; then
