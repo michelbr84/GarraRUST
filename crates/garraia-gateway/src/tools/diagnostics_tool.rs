@@ -406,11 +406,12 @@ async fn verificacoes_dos_canais(state: &AppState, push: PushMounted) -> Vec<Ver
                 "turnos_ultima_hora": d.turnos_ultima_hora,
                 "chats_ativos": d.chats_ativos,
                 "max_por_janela": d.max_por_janela,
+                "max_self_chat": d.max_self_chat,
                 "janela_s": d.janela_s,
             }),
             format!(
-                "cadencia entre turnos: {} turno(s) admitido(s) na ultima hora; teto {}/{}s por chat",
-                d.turnos_ultima_hora, d.max_por_janela, d.janela_s
+                "cadencia entre turnos: {} turno(s) admitido(s) na ultima hora; teto {}/{}s por chat ({} na conversa \"Voce\")",
+                d.turnos_ultima_hora, d.max_por_janela, d.janela_s, d.max_self_chat
             ),
         ),
         None => Verificacao::nova(

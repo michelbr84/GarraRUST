@@ -1795,10 +1795,18 @@ impl GatewaySink {
                 // leitura por turno do allow/reply_in_groups); ausente volta
                 // ao default, nunca vira teto-zero.
                 c.set_max(settings.max_turnos_per_minute);
-                c.admitir(
+                // #1822: na conversa "Voce" o teto e menor — outro bot da
+                // mesma conta ali nao e barrado pela marca invisivel.
+                let conversa = if msg.self_chat {
+                    cadencia::Conversa::Voce
+                } else {
+                    cadencia::Conversa::Comum
+                };
+                c.admitir_em(
                     msg.chat_jid.as_str(),
                     std::time::Instant::now(),
                     cadencia::classifica(&bruto),
+                    conversa,
                 )
             })
             .unwrap_or(cadencia::Decisao::Admitido);
