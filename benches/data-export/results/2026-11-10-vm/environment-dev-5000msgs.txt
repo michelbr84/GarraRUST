@@ -1,0 +1,41 @@
+# run started (UTC)
+2026-11-10T17:41:48Z
+# run started (America/New_York)
+2026-11-10T12:41:48-0500
+
+# git
+sha: 2c6eff21011cdd93a599910bed33ed370343c5fe
+worktree: clean
+
+# cenario
+perfil: dev
+mensagens: 5000
+repeticoes quentes: 30
+
+# CARGO_PROFILE_* no ambiente
+CARGO_PROFILE_DEV_DEBUG=0
+CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+CARGO_PROFILE_RELEASE_LTO=off
+
+# uname
+Linux 6.18.44-fc-v338 x86_64 GNU/Linux
+
+# cpu
+model name	: Intel(R) Xeon(R) Processor @ 2.10GHz
+logical cpus: 4
+
+# memoria
+MemTotal:       16472400 kB
+MemAvailable:   15007560 kB
+
+# toolchain
+rustc 1.97.0 (2d8144b78 2026-07-07)
+cargo 1.97.0 (c980f4866 2026-06-30)
+
+# docker
+server: 29.9.2
+storage driver: overlayfs
+
+# imagem do Postgres
+pgvector/pgvector:pg16
+pgvector/pgvector@sha256:0dd3149a06e4579a0d70d8fef9945636cd514005e7237deb27f9b67886f8dc4f

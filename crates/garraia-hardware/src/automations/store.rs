@@ -147,7 +147,13 @@ impl AutomationStore {
                     spec_json = excluded.spec_json,
                     arquivo = excluded.arquivo,
                     atualizada_em = excluded.atualizada_em",
-                rusqlite::params![spec.name, spec.enabled as i64, spec_json, "", agora,],
+                rusqlite::params![
+                    spec.name,
+                    spec.enabled as i64,
+                    spec_json,
+                    "",
+                    i64::try_from(agora).unwrap_or(i64::MAX),
+                ],
             )
             .map_err(|e| crate::HardwareError::Automations(format!("salvar {}: {e}", spec.name)))?;
         }

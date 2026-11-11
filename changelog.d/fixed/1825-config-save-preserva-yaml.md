@@ -1,0 +1,1 @@
+- Gravar um campo do `config.yml` (`set_agent_system_prompt`, `set_channel_enabled`, `config set-routing`, `whatsapp access`) passa a editar so o trecho alterado: ordem das secoes, comentarios e chaves desconhecidas sao preservados; se a edicao cirurgica nao reproduzir a config nova, cai na regravacao inteira (#1825).

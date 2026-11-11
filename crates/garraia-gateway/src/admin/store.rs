@@ -473,7 +473,11 @@ impl AdminStore {
 
     pub fn user_count(&self) -> usize {
         self.conn
-            .query_row("SELECT COUNT(*) FROM admin_users", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM admin_users", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .ok()
+            .and_then(|n| usize::try_from(n).ok())
             .unwrap_or(0)
     }
 

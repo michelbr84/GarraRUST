@@ -79,6 +79,7 @@ use super::execution::politica_de_execucao;
 /// card "Test WhatsApp" do Web Console rodam.
 pub mod cadencia;
 pub mod doctor;
+pub mod entrada;
 pub mod numero;
 pub mod politica;
 pub mod rejeicoes;
@@ -1497,6 +1498,11 @@ pub struct GatewaySink {
     /// #1650: cadencia entre turnos, por chat.
     cadencia: Arc<std::sync::Mutex<cadencia::Cadencia>>,
     outbound: mpsc::Sender<BridgeCommand>,
+    /// #1822: ids ja entregues, por chat — a reentrega nao vira 2o turno.
+    vistos: Arc<std::sync::Mutex<entrada::IdsVistos>>,
+    /// #1822: teto global de turnos simultaneos do canal. A rajada da
+    /// reconexao espera aqui em vez de abrir N chamadas ao provider.
+    turnos: Arc<tokio::sync::Semaphore>,
 }
 
 impl GatewaySink {
@@ -1519,6 +1525,8 @@ impl GatewaySink {
             portao,
             cadencia,
             outbound,
+            vistos: Arc::new(std::sync::Mutex::new(entrada::IdsVistos::default())),
+            turnos: Arc::new(tokio::sync::Semaphore::new(entrada::MAX_TURNOS_SIMULTANEOS)),
         }
     }
 
@@ -1923,14 +1931,35 @@ impl InboundSink for GatewaySink {
             }
             return;
         }
+        // #1822: a reentrega do mesmo `id` no mesmo chat (o `append` da
+        // reconexao repetindo um `notify` ja visto) nao vira 2o turno. Lock
+        // envenenado nao barra nada: perder a deduplicacao e melhor que perder
+        // a mensagem.
+        let primeira = match self.vistos.lock() {
+            Ok(mut v) => v.primeira_vez(message.chat_jid.as_str(), &message.id),
+            Err(_) => true,
+        };
+        if !primeira {
+            // So o final entra no log, e ele sai antes da macro.
+            let final4 = message.chat_jid.last4();
+            tracing::debug!(
+                chat_last4 = %final4,
+                "whatsapp_linked: mensagem reentregue ignorada (id ja visto)"
+            );
+            return;
+        }
         let state = Arc::clone(&self.state);
         let settings = self.settings.clone();
         let portao = Arc::clone(&self.portao);
         let cadencia = Arc::clone(&self.cadencia);
         let outbound = self.outbound.clone();
-        tokio::spawn(Self::turno(
-            state, settings, portao, cadencia, outbound, message,
-        ));
+        let turnos = Arc::clone(&self.turnos);
+        tokio::spawn(async move {
+            // O semaforo nunca e fechado; `Err` so viria de um `close()` que
+            // nao existe, e nesse caso o turno roda sem a vaga.
+            let _vaga = turnos.acquire_owned().await.ok();
+            Self::turno(state, settings, portao, cadencia, outbound, message).await;
+        });
     }
 
     fn on_drop(

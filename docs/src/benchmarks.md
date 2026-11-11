@@ -122,6 +122,32 @@ com `environment.txt` (CPU, RAM, OS, kernel, versões) e `raw/` (logs hyperfine
 
 ---
 
+## Exportação de dados do titular (`GET /v1/me/export`)
+
+Medição separada do comparativo acima, com harness próprio e resultados
+versionados: [`benches/data-export/`](../../benches/data-export/).
+
+- **O que mede:** a latência do endpoint pelo router autenticado, contra
+  PostgreSQL real (pgvector/pg16 em testcontainer), com o corpo consumido até
+  o último byte. Chamada em processo — sem rede nem TLS.
+- **Carga:** 10 mil mensagens da titular em dois grupos, mais menções,
+  arquivos, memórias e tarefas, e dados de terceiros que não podem sair.
+- **Teto do endpoint:** cada seção sai com no máximo 5 000 linhas e o corte é
+  declarado em `truncated_sections`; o cenário de 10 mil mensagens mede um
+  export truncado. O cenário de 5 000 mede o export completo.
+- **Referência:** o `ROADMAP.md` pede o export em menos de 30 s. O teste
+  `rest_v1_me_export_perf` afirma só isso; p50/p95 são reportados.
+
+Os números, a máquina, as versões e o SHA de cada execução estão em
+`benches/data-export/results/<DATA>-<host>/README.md`. Para reproduzir:
+
+```bash
+benches/data-export/run.sh                  # perfil dev
+PERFIL=release benches/data-export/run.sh   # binário otimizado
+```
+
+---
+
 ## Notas sobre os resultados
 
 - Os números de throughput refletem o gateway isolado (mock LLM). O throughput real é limitado pela latência do provedor LLM, tipicamente 200-2000 ms por resposta.
