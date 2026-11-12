@@ -1,9 +1,11 @@
 //! #1708 — o que o provedor recebe no turno SEGUINTE a uma ferramenta.
 //!
 //! Os testes de `tool_history` provam a conversao registro -> mensagem. Aqui a
-//! prova e de ponta a ponta pelo caminho do REPL: o runtime roda a ferramenta
-//! de verdade, os `TurnEvent` alimentam a `ToolTrail`, `anexar_turno` fecha o
-//! turno no `history`, e o pedido do turno seguinte e gravado pelo provedor.
+//! prova e pelas mesmas funcoes que o REPL chama: o runtime roda a ferramenta
+//! de verdade, o `stream_turn` drena os `TurnEvent` e alimenta a `ToolTrail`,
+//! `anexar_turno` fecha o turno no `history`, e o pedido do turno seguinte e
+//! gravado pelo provedor. O laco de `run_chat` em si (leitura da linha,
+//! persistencia, cartoes de erro) fica de fora.
 //! Se o par `ToolUse`/`ToolResult` nao chega la, o modelo nao tem como saber
 //! que escreveu o arquivo — o defeito relatado na issue.
 //!
@@ -191,38 +193,49 @@ fn sessao() -> Sessao {
     }
 }
 
-/// Um turno pelo mesmo caminho do REPL: eventos -> trilha -> `anexar_turno`.
+/// Um turno pelo mesmo caminho do REPL: o `stream_turn` drena os eventos e
+/// e ELE quem alimenta a trilha; depois vem `fim_do_turno` e `anexar_turno`.
+/// Se o `stream_turn` parar de chamar `trail.observar`, estes testes falham.
 async fn turno(s: &mut Sessao, texto: &str, modo: Modo) {
     s.trilha.iniciar_turno();
-    let (tx, mut rx) = mpsc::channel::<TurnEvent>(64);
-    let dreno = tokio::spawn(async move {
-        let mut eventos = Vec::new();
-        while let Some(e) = rx.recv().await {
-            eventos.push(e);
-        }
-        eventos
-    });
+    let (tx, rx) = mpsc::channel::<TurnEvent>(100);
     let dir = s.dir.path().to_string_lossy().to_string();
     let exec = exec_do_turno(&dir, "cli-1708-e2e");
-    let resposta =
-        s.rt.process_message_streaming_with_events(
-            "cli-1708-e2e",
-            texto,
-            &s.historico,
-            tx,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &exec,
-        )
-        .await
-        .expect("turno");
-    for e in dreno.await.expect("dreno") {
-        s.trilha.observar(&e);
-    }
+    let historico = s.historico.clone();
+    let call = s.rt.process_message_streaming_with_events(
+        "cli-1708-e2e",
+        texto,
+        &historico,
+        tx,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &exec,
+    );
+    let caps = crate::ui::Capabilities {
+        interactive: true,
+        unicode: false,
+        animation: false,
+        width: 80,
+    };
+    let outcome = stream_turn(
+        call,
+        rx,
+        None,
+        &mut Vec::<u8>::new(),
+        &mut TerminalRenderer::with_prefix(caps, None, ""),
+        &mut ToolLog::new(),
+        &mut s.trilha,
+        &tokio::sync::Notify::new(),
+    )
+    .await;
+    let resposta = match outcome {
+        TurnOutcome::Done(Ok(r)) => r,
+        _ => panic!("o turno deveria concluir"),
+    };
     let registros = s.trilha.fim_do_turno();
     anexar_turno(&mut s.historico, texto, &resposta, &registros, modo);
 }
@@ -354,12 +367,16 @@ async fn delecao_externa_nao_apaga_a_escrita_do_historico() {
 }
 
 /// `GARRAIA_TOOL_HISTORY=text|off` continua valendo: nesses modos nenhum
-/// bloco estruturado vai ao provedor no turno seguinte.
+/// bloco estruturado vai ao provedor no turno seguinte. Cobre so o ramo de
+/// `anexar_turno`; a evidencia em texto que o REPL anexa no modo `text` fica
+/// fora daqui.
 #[tokio::test]
 async fn modos_text_e_off_nao_mandam_blocos_estruturados() {
     for modo in [Modo::Text, Modo::Off] {
         let mut s = sessao();
         turno(&mut s, "crie", modo).await;
+        // Sem isto o teste passaria mesmo se nenhuma ferramenta rodasse.
+        assert!(s.dir.path().join("pagina.html").exists(), "a tool escreveu");
         turno(&mut s, "voce criou o arquivo?", modo).await;
         assert_eq!(
             blocos(&s.provedor.ultimo_pedido()),
