@@ -2717,10 +2717,12 @@ pub async fn run_chat(
         // parcial, se o turno deixa par no history, e e o mesmo texto anexado
         // adiante. `resumo_desde` e leitura pura (#1751).
         let evidencia = tool_log.resumo_desde(inicio_evidencias);
-        let deixa_par = turno_deixa_par_no_history(
-            &outcome,
-            turno_tem_evidencia(evidencia.as_deref(), &registros),
-        );
+        // Um valor so para as tres decisoes que dependem dele: o par no
+        // history e as duas mensagens que descrevem isso a pessoa (cartao de
+        // timeout e dica de cancelamento). Divergir aqui faria a tela dizer
+        // "historico intacto" quando o par entrou (#1708).
+        let tem_evidencia = turno_tem_evidencia(evidencia.as_deref(), &registros);
+        let deixa_par = turno_deixa_par_no_history(&outcome, tem_evidencia);
 
         // #1300 + #1751: os fins inacabados gravam, com `--persist`, o texto
         // preservado (parcial + marcador) no lugar do marcador cru. O
@@ -2746,7 +2748,7 @@ pub async fn run_chat(
                     apos.as_secs(),
                     crate::ui::error_card::Preservado::de(
                         !parcial.trim().is_empty(),
-                        evidencia.is_some(),
+                        tem_evidencia,
                     ),
                 );
                 renderer.handle(
@@ -2764,7 +2766,7 @@ pub async fn run_chat(
                 // diz isso para o usuario nao achar que o trabalho sumiu.
                 let hint = match crate::ui::error_card::Preservado::de(
                     !parcial.trim().is_empty(),
-                    evidencia.is_some(),
+                    tem_evidencia,
                 ) {
                     crate::ui::error_card::Preservado::Texto => {
                         "Cancelado. O que ja chegou ficou no historico, marcado como parcial. Manda outra ou /exit para sair."
@@ -5617,6 +5619,46 @@ mod testes_evidencia_por_resultado_do_turno {
     /// fim inacabado so deixa quando ha algo a preservar — parcial que chegou
     /// na tela ou evidencia de ferramenta. A evidencia segue este mesmo
     /// criterio, entao nunca entra como Assistant isolado (#1300).
+    /// #1708: registro na trilha conta como evidencia mesmo sem resumo do
+    /// `tool_log` (chamada que nao terminou), e os tres fins inacabados
+    /// passam a deixar par por isso.
+    #[test]
+    fn trilha_sem_resumo_conta_como_evidencia() {
+        let registro = {
+            let mut trilha = ToolTrail::default();
+            trilha.iniciar_turno();
+            trilha.observar(&TurnEvent::ToolStarted {
+                id: "c1".into(),
+                name: "bash".into(),
+                detail: String::new(),
+                input: serde_json::json!({}),
+            });
+            trilha.fim_do_turno()
+        };
+        assert_eq!(registro.len(), 1);
+        assert!(!turno_tem_evidencia(None, &[]));
+        assert!(turno_tem_evidencia(Some("resumo"), &[]));
+        let tem = turno_tem_evidencia(None, &registro);
+        assert!(tem);
+        assert!(turno_deixa_par_no_history(
+            &TurnOutcome::<(), ()>::Done(Err(())),
+            tem
+        ));
+        assert!(turno_deixa_par_no_history(
+            &TurnOutcome::<(), ()>::Cancelled {
+                parcial: String::new()
+            },
+            tem
+        ));
+        assert!(turno_deixa_par_no_history(
+            &TurnOutcome::<(), ()>::TimedOut {
+                parcial: String::new(),
+                apos: std::time::Duration::from_secs(1)
+            },
+            tem
+        ));
+    }
+
     #[test]
     fn par_no_history_so_quando_ha_algo_a_preservar() {
         // Concluido: sempre deixa par, independente de evidencia.

@@ -490,8 +490,10 @@ async fn modos_text_e_off_nao_mandam_blocos_estruturados() {
     }
 }
 
-/// Criterio 5, recusa de permissao: com `/mode ask` o portao nega
-/// `file_write`. A chamada nao roda, e o turno seguinte recebe o pedido e a
+/// Criterio 5, recusa de permissao: com o modo `ask` no `ExecContext` o portao
+/// de politica do runtime nega `file_write`. O REPL do `garra chat` nao tem
+/// `/mode` (roda sem politica); o modo aqui e posto a mao para exercitar o
+/// mesmo portao que os outros canais usam. A chamada nao roda, e o turno seguinte recebe o pedido e a
 /// recusa pareados pelo id — o modelo sabe que pediu e que foi barrado, em
 /// vez de achar que escreveu ou que nunca pediu.
 #[tokio::test]
