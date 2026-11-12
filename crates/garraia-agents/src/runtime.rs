@@ -2693,7 +2693,6 @@ impl AgentRuntime {
             model = tracing::field::Empty,
         )
     )]
-    #[allow(clippy::too_many_arguments)]
     pub async fn process_message_streaming_with_agent_config(
         &self,
         session_id: &str,
