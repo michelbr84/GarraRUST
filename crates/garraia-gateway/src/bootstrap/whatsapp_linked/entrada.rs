@@ -13,13 +13,19 @@
 //!   tamanho do semaforo do canal. A rajada da reconexao espera na fila em vez
 //!   de abrir N chamadas ao provider ao mesmo tempo.
 //!
+//! A segunda fatia fecha a corrida de historico: [`FilasPorChat`] poe os
+//! turnos de um MESMO chat em fila, na ordem de chegada. Duas mensagens do
+//! mesmo chat nao rodam mais ao mesmo tempo na mesma sessao; chats diferentes
+//! seguem em paralelo, ate o teto global.
+//!
 //! Fica para a fatia seguinte o que pede desenho: juntar varios `append` do
-//! mesmo chat num turno so (responder a ultima, ou concatenar).
+//! mesmo chat num turno so (responder a ultima, ou concatenar). Ate la cada
+//! mensagem ainda vira o proprio turno e a propria resposta, so que em ordem.
 //!
 //! Modulo puro: sem relogio, sem I/O, sem identidade alem do `chat_jid` e do
 //! `id` opaco da mensagem. Estado em memoria; um restart zera, de proposito.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Quantos turnos do canal podem rodar ao mesmo tempo. Acima de uma conversa
 /// humana em varios chats, abaixo de uma rajada de reconexao inteira.
@@ -89,9 +95,112 @@ impl IdsVistos {
     }
 }
 
+/// Fila de espera por chat: um turno por chat de cada vez, em ordem de
+/// chegada (#1822).
+///
+/// O contrato e de dois passos, os dois sob o mesmo lock de quem usa:
+///
+/// - [`entrar`](Self::entrar) devolve `Some(item)` quando o chat estava livre:
+///   quem chamou vira o trabalhador do chat e roda o item. Devolve `None`
+///   quando ja ha um trabalhador: o item ficou na fila dele.
+/// - [`proximo`](Self::proximo), chamado pelo trabalhador ao fim de cada item,
+///   devolve o seguinte ou, com a fila vazia, libera o chat e devolve `None`.
+///
+/// Um chat ocupa memoria so enquanto tem turno rodando ou esperando. Sem teto
+/// proprio: cada item aqui ja ocupava uma task parada no semaforo antes desta
+/// fila, e quem limita a rajada de um chat e a guarda de cadencia, que corta
+/// sem chamar o provider.
+#[derive(Debug)]
+pub struct FilasPorChat<T> {
+    filas: HashMap<String, VecDeque<T>>,
+}
+
+impl<T> Default for FilasPorChat<T> {
+    fn default() -> Self {
+        Self {
+            filas: HashMap::new(),
+        }
+    }
+}
+
+impl<T> FilasPorChat<T> {
+    /// `Some(item)`: o chat estava livre e agora e de quem chamou. `None`: o
+    /// item entrou na fila do trabalhador que ja roda esse chat.
+    pub fn entrar(&mut self, chat: &str, item: T) -> Option<T> {
+        match self.filas.get_mut(chat) {
+            Some(fila) => {
+                fila.push_back(item);
+                None
+            }
+            None => {
+                self.filas.insert(chat.to_string(), VecDeque::new());
+                Some(item)
+            }
+        }
+    }
+
+    /// O proximo item do chat, ou `None` — e nesse caso o chat fica livre e a
+    /// proxima mensagem dele abre um trabalhador novo.
+    pub fn proximo(&mut self, chat: &str) -> Option<T> {
+        let seguinte = self.filas.get_mut(chat).and_then(VecDeque::pop_front);
+        if seguinte.is_none() {
+            self.filas.remove(chat);
+        }
+        seguinte
+    }
+
+    /// Quantos chats tem turno rodando ou esperando.
+    #[cfg(test)]
+    pub fn chats_ocupados(&self) -> usize {
+        self.filas.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primeiro_item_do_chat_roda_e_os_seguintes_esperam_em_ordem() {
+        let mut f = FilasPorChat::default();
+        assert_eq!(f.entrar("chat-a", 1), Some(1), "chat livre: roda ja");
+        assert_eq!(f.entrar("chat-a", 2), None, "chat ocupado: espera");
+        assert_eq!(f.entrar("chat-a", 3), None);
+        assert_eq!(f.proximo("chat-a"), Some(2), "ordem de chegada");
+        assert_eq!(f.proximo("chat-a"), Some(3));
+        assert_eq!(f.proximo("chat-a"), None);
+    }
+
+    #[test]
+    fn fila_vazia_libera_o_chat_e_nao_guarda_memoria() {
+        let mut f = FilasPorChat::default();
+        assert_eq!(f.entrar("chat-a", 1), Some(1));
+        assert_eq!(f.chats_ocupados(), 1);
+        assert_eq!(f.proximo("chat-a"), None);
+        assert_eq!(f.chats_ocupados(), 0, "chat ocioso nao ocupa memoria");
+        assert_eq!(f.entrar("chat-a", 2), Some(2), "livre de novo");
+    }
+
+    #[test]
+    fn chats_diferentes_nao_esperam_um_pelo_outro() {
+        let mut f = FilasPorChat::default();
+        assert_eq!(f.entrar("chat-a", 1), Some(1));
+        assert_eq!(
+            f.entrar("chat-b", 2),
+            Some(2),
+            "outro chat roda em paralelo"
+        );
+        assert_eq!(f.entrar("chat-a", 3), None);
+        assert_eq!(f.proximo("chat-b"), None);
+        assert_eq!(f.proximo("chat-a"), Some(3), "a fila de A segue intacta");
+    }
+
+    #[test]
+    fn proximo_de_chat_desconhecido_e_none() {
+        let mut f: FilasPorChat<u8> = FilasPorChat::default();
+        assert_eq!(f.proximo("ninguem"), None);
+        assert_eq!(f.chats_ocupados(), 0);
+    }
 
     #[test]
     fn reentrega_do_mesmo_id_no_mesmo_chat_e_barrada() {
