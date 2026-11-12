@@ -1503,6 +1503,9 @@ pub struct GatewaySink {
     /// #1822: teto global de turnos simultaneos do canal. A rajada da
     /// reconexao espera aqui em vez de abrir N chamadas ao provider.
     turnos: Arc<tokio::sync::Semaphore>,
+    /// #1822: um turno por chat de cada vez, em ordem de chegada. Duas
+    /// mensagens do mesmo chat nao correm mais pelo mesmo historico.
+    filas: Arc<std::sync::Mutex<entrada::FilasPorChat<InboundMessage>>>,
 }
 
 impl GatewaySink {
@@ -1527,6 +1530,7 @@ impl GatewaySink {
             outbound,
             vistos: Arc::new(std::sync::Mutex::new(entrada::IdsVistos::default())),
             turnos: Arc::new(tokio::sync::Semaphore::new(entrada::MAX_TURNOS_SIMULTANEOS)),
+            filas: Arc::new(std::sync::Mutex::new(entrada::FilasPorChat::default())),
         }
     }
 
@@ -1962,11 +1966,55 @@ impl InboundSink for GatewaySink {
         let cadencia = Arc::clone(&self.cadencia);
         let outbound = self.outbound.clone();
         let turnos = Arc::clone(&self.turnos);
+        // #1822: um turno por chat de cada vez. Se o chat ja tem trabalhador,
+        // a mensagem entra na fila dele e este `deliver` acabou. A ordem e a
+        // de chegada porque a fila e decidida AQUI, sincrono, e nao pela ordem
+        // em que o runtime acorda as tasks. Lock envenenado cai no caminho
+        // antigo (turno avulso): perder a ordem e melhor que perder a mensagem.
+        let chat = message.chat_jid.as_str().to_string();
+        let filas = Arc::clone(&self.filas);
+        let (primeira, na_fila) = match filas.lock() {
+            Ok(mut f) => match f.entrar(&chat, message) {
+                Some(m) => (m, true),
+                None => return,
+            },
+            Err(_) => {
+                warn!("whatsapp_linked: fila por chat envenenada; turno segue fora da fila");
+                // `entrar` nao rodou: a mensagem ainda e nossa.
+                (message, false)
+            }
+        };
         tokio::spawn(async move {
-            // O semaforo nunca e fechado; `Err` so viria de um `close()` que
-            // nao existe, e nesse caso o turno roda sem a vaga.
-            let _vaga = turnos.acquire_owned().await.ok();
-            Self::turno(state, settings, portao, cadencia, outbound, message).await;
+            let mut atual = Some(primeira);
+            while let Some(mensagem) = atual.take() {
+                // O semaforo nunca e fechado; `Err` so viria de um `close()`
+                // que nao existe, e nesse caso o turno roda sem a vaga.
+                let vaga = Arc::clone(&turnos).acquire_owned().await.ok();
+                // Task propria: um panico no turno derruba so ele. Sem isso o
+                // trabalhador morreria com o chat marcado como ocupado e as
+                // proximas mensagens dele ficariam na fila para sempre.
+                let turno = tokio::spawn(Self::turno(
+                    Arc::clone(&state),
+                    settings.clone(),
+                    Arc::clone(&portao),
+                    Arc::clone(&cadencia),
+                    outbound.clone(),
+                    mensagem,
+                ));
+                if turno.await.is_err() {
+                    warn!(
+                        "whatsapp_linked: um turno terminou em panico; o chat segue para a proxima mensagem"
+                    );
+                }
+                drop(vaga);
+                if !na_fila {
+                    break;
+                }
+                atual = match filas.lock() {
+                    Ok(mut f) => f.proximo(&chat),
+                    Err(_) => None,
+                };
+            }
         });
     }
 
