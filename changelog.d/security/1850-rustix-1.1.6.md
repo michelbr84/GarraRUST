@@ -1,0 +1,1 @@
+- Dependencias: `rustix` 1.1.4 -> 1.1.6 no `Cargo.lock`, fechando RUSTSEC-2026-0486 (as funcoes de xattr marcavam bytes nao escritos como inicializados com buffer de tamanho zero). Era uma das duas causas do `Security Audit` vermelho na `main`; a outra, RUSTSEC-2026-0459 em `libsqlite3-sys`, segue aberta na #1850.

@@ -63,6 +63,9 @@ pub use slack::build_slack_channels;
 // Slice 10.e (GAR-479): WhatsApp wiring extracted to `bootstrap::whatsapp`.
 pub use whatsapp::build_whatsapp_channels;
 
+/// #1822: o instantaneo da guarda de cadencia (`DiagDeCadencia`), para o
+/// diagnostico do gateway montar a entrada `canais.whatsapp_linked.cadencia`.
+pub(crate) use whatsapp_linked::cadencia::DiagDeCadencia as WhatsAppLinkedDiagDeCadencia;
 /// #1419/#1420: o motor do `doctor whatsapp` — tipos, tabela (`classificar`),
 /// agregado e exit code, mais a leitura pura da config. A CLI colhe e chama;
 /// o `GET /admin/api/whatsapp/doctor` colhe em processo e chama a MESMA
