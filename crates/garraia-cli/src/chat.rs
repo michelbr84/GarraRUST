@@ -5593,6 +5593,9 @@ mod aprovacao_tests {
 }
 
 #[cfg(test)]
+mod historico_de_ferramentas_tests;
+
+#[cfg(test)]
 mod testes_evidencia_por_resultado_do_turno {
     use super::*;
 
