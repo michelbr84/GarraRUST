@@ -2176,6 +2176,8 @@ mod ponta_a_ponta {
     struct TurnoObservado {
         ferramentas: Vec<String>,
         texto_do_usuario: String,
+        /// Quantas mensagens o pedido trazia: o historico que o turno viu.
+        mensagens: usize,
     }
 
     /// Provider deterministico que **grava o que recebeu**.
@@ -2237,6 +2239,7 @@ mod ponta_a_ponta {
                 v.push(TurnoObservado {
                     ferramentas: request.tools.iter().map(|t| t.name.clone()).collect(),
                     texto_do_usuario: ultimo.clone(),
+                    mensagens: request.messages.len(),
                 });
             }
             // Rodada com `tool_result` na ultima mensagem = segunda rodada:
@@ -3661,6 +3664,49 @@ mod ponta_a_ponta {
             turnos_estaveis_em(&c, 2).await,
             2,
             "id novo continua virando turno"
+        );
+
+        encerra(c).await;
+    }
+
+    /// #1822: uma rajada do MESMO chat (o acumulado offline da reconexao)
+    /// roda um turno de cada vez, na ordem de chegada. Cada turno ve o
+    /// historico do anterior ja gravado; antes da fila por chat os turnos
+    /// corriam juntos pela mesma sessao e o historico saia embaralhado.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rajada_do_mesmo_chat_roda_em_ordem_e_um_turno_por_vez() {
+        let (_tx, rx) = watch::channel(viva(true, &[PEER], &[]));
+        let c = sobe_vivo(true, false, ExecutionProfile::Standard, rx).await;
+
+        let textos = ["um", "dois", "tres", "quatro", "cinco", "seis"];
+        // Sem esperar entre uma e outra: e a rajada que importa.
+        for t in textos {
+            InboundSink::deliver(&*c.espiao, msg(Some(t)));
+        }
+        assert_eq!(
+            turnos_estaveis_em(&c, textos.len()).await,
+            textos.len(),
+            "cada mensagem da rajada continua virando o proprio turno"
+        );
+
+        let vistos = turnos(&c.provider);
+        for (i, t) in textos.iter().enumerate() {
+            assert!(
+                vistos[i].texto_do_usuario.contains(&format!("\"{t}\"")),
+                "turno {i} deveria ser {t:?}, veio {:?}",
+                vistos[i].texto_do_usuario
+            );
+        }
+        for par in vistos.windows(2) {
+            assert!(
+                par[1].mensagens > par[0].mensagens,
+                "cada turno precisa ver o historico do anterior: {:?}",
+                vistos.iter().map(|v| v.mensagens).collect::<Vec<_>>()
+            );
+        }
+        assert!(
+            ate(|| respostas(&c) == textos.len()).await,
+            "uma resposta por mensagem"
         );
 
         encerra(c).await;
