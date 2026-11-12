@@ -78,6 +78,34 @@ impl Tool for Le {
     }
 }
 
+/// Fica rodando ate o turno ser derrubado por fora. Ao comecar, avisa pelo
+/// `Notify` compartilhado — e o "Ctrl+C" do teste de cancelamento, disparado
+/// so depois que o `ToolStarted` ja saiu. O timeout do runtime por ferramenta
+/// e bem maior que a espera do teste, entao quem encerra e sempre o REPL.
+struct Espera(Arc<tokio::sync::Notify>);
+
+#[async_trait::async_trait]
+impl Tool for Espera {
+    fn name(&self) -> &str {
+        "espera"
+    }
+    fn description(&self) -> &str {
+        "stub"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn execute(
+        &self,
+        _c: &ToolContext,
+        _i: serde_json::Value,
+    ) -> garraia_common::Result<ToolOutput> {
+        self.0.notify_one();
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        Ok(ToolOutput::success("nunca chega aqui"))
+    }
+}
+
 const CONTEUDO: &str = "<h1>ola</h1>";
 
 /// Grava cada pedido e segue um roteiro pelo texto da ultima mensagem humana:
@@ -153,6 +181,7 @@ impl LlmProvider for Gravador {
         let content = match (pergunta.as_str(), resultados) {
             ("crie", 0) | ("crie e leia", 0) => tool_use(self.proximo_id(), "file_write"),
             ("crie e leia", 1) | ("leia", 0) => tool_use(self.proximo_id(), "file_read"),
+            ("espere", 0) => tool_use(self.proximo_id(), "espera"),
             _ => vec![ContentBlock::Text {
                 text: "pronto".into(),
             }],
@@ -175,6 +204,8 @@ struct Sessao {
     trilha: ToolTrail,
     historico: Vec<ChatMessage>,
     dir: tempfile::TempDir,
+    /// Disparado pela ferramenta `espera` quando ela comeca a rodar.
+    comecou: Arc<tokio::sync::Notify>,
 }
 
 fn sessao() -> Sessao {
@@ -182,6 +213,8 @@ fn sessao() -> Sessao {
     let rt = AgentRuntime::new();
     rt.register_tool(Box::new(Escreve(dir.path().to_path_buf())));
     rt.register_tool(Box::new(Le(dir.path().to_path_buf())));
+    let comecou = Arc::new(tokio::sync::Notify::new());
+    rt.register_tool(Box::new(Espera(Arc::clone(&comecou))));
     let provedor = Arc::new(Gravador::default());
     rt.register_provider(Arc::clone(&provedor) as Arc<dyn LlmProvider>);
     Sessao {
@@ -190,17 +223,53 @@ fn sessao() -> Sessao {
         trilha: ToolTrail::default(),
         historico: Vec::new(),
         dir,
+        comecou,
     }
+}
+
+/// Como o turno termina, do lado de quem esta no terminal.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Fim {
+    /// Ninguem interfere: o turno precisa concluir.
+    Normal,
+    /// Ctrl+C assim que a ferramenta `espera` comeca.
+    CtrlC,
+    /// Teto de parede do turno (o `--timeout` do REPL) bem curto.
+    Timeout,
+}
+
+/// O que o turno deixou, como o REPL classifica.
+#[derive(PartialEq, Eq, Debug)]
+enum Desfecho {
+    Concluido,
+    Cancelado,
+    EstourouOTempo,
 }
 
 /// Um turno pelo mesmo caminho do REPL: o `stream_turn` drena os eventos e
 /// e ELE quem alimenta a trilha; depois vem `fim_do_turno` e `anexar_turno`.
 /// Se o `stream_turn` parar de chamar `trail.observar`, estes testes falham.
 async fn turno(s: &mut Sessao, texto: &str, modo: Modo) {
+    let desfecho = turno_com(s, texto, modo, None, Fim::Normal).await;
+    assert_eq!(desfecho, Desfecho::Concluido, "o turno deveria concluir");
+}
+
+/// O turno do REPL por inteiro, inclusive os fins inacabados: depois do
+/// `stream_turn`, o par entra no `history` pelas mesmas decisoes de
+/// `run_chat` (`turno_deixa_par_no_history`, `texto_preservado`). `modo_do_agente`
+/// e o modo escolhido pela pessoa (`/mode`), que liga a politica de ferramentas.
+async fn turno_com(
+    s: &mut Sessao,
+    texto: &str,
+    modo: Modo,
+    modo_do_agente: Option<&str>,
+    fim: Fim,
+) -> Desfecho {
     s.trilha.iniciar_turno();
     let (tx, rx) = mpsc::channel::<TurnEvent>(100);
     let dir = s.dir.path().to_string_lossy().to_string();
-    let exec = exec_do_turno(&dir, "cli-1708-e2e");
+    let mut exec = exec_do_turno(&dir, "cli-1708-e2e");
+    exec.agent_mode = modo_do_agente.map(str::to_string);
     let historico = s.historico.clone();
     let call = s.rt.process_message_streaming_with_events(
         "cli-1708-e2e",
@@ -221,23 +290,58 @@ async fn turno(s: &mut Sessao, texto: &str, modo: Modo) {
         animation: false,
         width: 80,
     };
-    let outcome = stream_turn(
+    let cancel = tokio::sync::Notify::new();
+    let timeout = (fim == Fim::Timeout).then(|| std::time::Duration::from_millis(300));
+    let mut tool_log = ToolLog::new();
+    let mut tela = Vec::<u8>::new();
+    let mut renderer = TerminalRenderer::with_prefix(caps, None, "");
+    let rodando = stream_turn(
         call,
         rx,
-        None,
-        &mut Vec::<u8>::new(),
-        &mut TerminalRenderer::with_prefix(caps, None, ""),
-        &mut ToolLog::new(),
+        timeout,
+        &mut tela,
+        &mut renderer,
+        &mut tool_log,
         &mut s.trilha,
-        &tokio::sync::Notify::new(),
-    )
-    .await;
-    let resposta = match outcome {
-        TurnOutcome::Done(Ok(r)) => r,
-        _ => panic!("o turno deveria concluir"),
+        &cancel,
+    );
+    let outcome = if fim == Fim::CtrlC {
+        let comecou = Arc::clone(&s.comecou);
+        let ctrl_c = async {
+            comecou.notified().await;
+            cancel.notify_one();
+            std::future::pending::<()>().await;
+        };
+        tokio::select! {
+            o = rodando => o,
+            _ = ctrl_c => unreachable!("o Ctrl+C nunca termina sozinho"),
+        }
+    } else {
+        rodando.await
     };
     let registros = s.trilha.fim_do_turno();
-    anexar_turno(&mut s.historico, texto, &resposta, &registros, modo);
+    let evidencia = tool_log.resumo_desde(0);
+    let deixa_par = turno_deixa_par_no_history(
+        &outcome,
+        turno_tem_evidencia(evidencia.as_deref(), &registros),
+    );
+    let desfecho = match &outcome {
+        TurnOutcome::Done(Ok(_)) => Desfecho::Concluido,
+        TurnOutcome::Cancelled { .. } => Desfecho::Cancelado,
+        TurnOutcome::TimedOut { .. } => Desfecho::EstourouOTempo,
+        TurnOutcome::Done(Err(e)) => panic!("o turno nao deveria falhar: {e}"),
+    };
+    let resposta = match marcador_de_interrupcao(&outcome) {
+        Some(marcador) => texto_preservado(parcial_do_outcome(&outcome), marcador),
+        None => match outcome {
+            TurnOutcome::Done(Ok(r)) => r,
+            _ => unreachable!("so o turno concluido fica sem marcador"),
+        },
+    };
+    if deixa_par {
+        anexar_turno(&mut s.historico, texto, &resposta, &registros, modo);
+    }
+    desfecho
 }
 
 /// `(id, nome)` de cada `ToolUse` e `(tool_use_id, conteudo)` de cada
@@ -382,6 +486,78 @@ async fn modos_text_e_off_nao_mandam_blocos_estruturados() {
             blocos(&s.provedor.ultimo_pedido()),
             Vec::new(),
             "modo {modo:?} nao leva ToolUse/ToolResult"
+        );
+    }
+}
+
+/// Criterio 5, recusa de permissao: com `/mode ask` o portao nega
+/// `file_write`. A chamada nao roda, e o turno seguinte recebe o pedido e a
+/// recusa pareados pelo id — o modelo sabe que pediu e que foi barrado, em
+/// vez de achar que escreveu ou que nunca pediu.
+#[tokio::test]
+async fn recusa_de_permissao_chega_pareada_como_erro() {
+    let mut s = sessao();
+    let desfecho = turno_com(&mut s, "crie", Modo::Structured, Some("ask"), Fim::Normal).await;
+    assert_eq!(desfecho, Desfecho::Concluido);
+    assert!(
+        !s.dir.path().join("pagina.html").exists(),
+        "a recusa nao pode deixar a ferramenta rodar"
+    );
+
+    turno(&mut s, "voce criou o arquivo?", Modo::Structured).await;
+    let b = blocos(&s.provedor.ultimo_pedido());
+    assert_eq!(b.len(), 2, "{b:?}");
+    assert_eq!(b[0], Bloco::Uso("call-1".into(), "file_write".into()));
+    let Bloco::Resultado(id, conteudo) = &b[1] else {
+        panic!("esperava o resultado da recusa: {b:?}");
+    };
+    assert_eq!(id, "call-1");
+    assert!(
+        conteudo.starts_with("erro:"),
+        "a recusa chega como falha, nunca como sucesso: {conteudo:?}"
+    );
+    assert!(!conteudo.contains("escreveu"), "{conteudo:?}");
+}
+
+/// Criterio 5, cancelamento e timeout: o turno cai com a ferramenta ainda
+/// rodando. A chamada fica no historico como interrompida — nunca como
+/// sucesso, nunca apagada —, e a resposta do turno e o marcador de
+/// interrupcao, para o modelo do turno seguinte nao inventar um resultado.
+#[tokio::test]
+async fn cancelamento_e_timeout_deixam_a_chamada_como_interrompida() {
+    for (fim, esperado, marcador) in [
+        (
+            Fim::CtrlC,
+            Desfecho::Cancelado,
+            "[turno interrompido: cancelado]",
+        ),
+        (
+            Fim::Timeout,
+            Desfecho::EstourouOTempo,
+            "[turno interrompido: timeout]",
+        ),
+    ] {
+        let mut s = sessao();
+        let desfecho = turno_com(&mut s, "espere", Modo::Structured, None, fim).await;
+        assert_eq!(desfecho, esperado, "{fim:?}");
+
+        turno(&mut s, "a espera terminou?", Modo::Structured).await;
+        let pedido = s.provedor.ultimo_pedido();
+        assert_eq!(
+            blocos(&pedido),
+            vec![
+                Bloco::Uso("call-1".into(), "espera".into()),
+                Bloco::Resultado("call-1".into(), "[interrompido: sem resultado]".into()),
+            ],
+            "{fim:?}: a chamada interrompida segue pareada no turno seguinte"
+        );
+        assert!(
+            pedido.iter().any(|m| matches!(
+                m,
+                ChatMessage { role: ChatRole::Assistant, content: MessagePart::Text(t) }
+                    if t == marcador
+            )),
+            "{fim:?}: a resposta do turno interrompido e o marcador: {pedido:?}"
         );
     }
 }

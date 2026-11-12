@@ -1388,6 +1388,16 @@ fn parcial_do_outcome<T, E>(outcome: &TurnOutcome<T, E>) -> &str {
     }
 }
 
+/// Se o turno deixou evidencia de ferramenta: o resumo do `tool_log` ou
+/// qualquer registro da trilha (#1708). O `tool_log` so registra a chamada
+/// quando ela TERMINA; um Ctrl+C ou timeout com a ferramenta ainda rodando
+/// deixava o resumo vazio, e o turno sumia do history em memoria — o modelo
+/// do turno seguinte nao sabia que a chamada comecou, enquanto o `--persist`
+/// ja gravava o mesmo registro como `interrupted`. Com a trilha, o par entra.
+fn turno_tem_evidencia(resumo: Option<&str>, registros: &[ToolRecord]) -> bool {
+    resumo.is_some() || !registros.is_empty()
+}
+
 /// Decide se o turno deixa um par User/Assistant no history da CLI. Um turno
 /// concluido sempre deixa. Um fim inacabado (timeout, Ctrl+C, erro) so deixa
 /// quando ha algo a preservar — parcial que chegou na tela ou evidencia de
@@ -2707,7 +2717,10 @@ pub async fn run_chat(
         // parcial, se o turno deixa par no history, e e o mesmo texto anexado
         // adiante. `resumo_desde` e leitura pura (#1751).
         let evidencia = tool_log.resumo_desde(inicio_evidencias);
-        let deixa_par = turno_deixa_par_no_history(&outcome, evidencia.is_some());
+        let deixa_par = turno_deixa_par_no_history(
+            &outcome,
+            turno_tem_evidencia(evidencia.as_deref(), &registros),
+        );
 
         // #1300 + #1751: os fins inacabados gravam, com `--persist`, o texto
         // preservado (parcial + marcador) no lugar do marcador cru. O
