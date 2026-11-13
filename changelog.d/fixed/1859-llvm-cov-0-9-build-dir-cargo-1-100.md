@@ -1,0 +1,1 @@
+fix(ci): sobe o pin do cargo-llvm-cov de ^0.6 para ^0.9 — com o cargo 1.100.0 (novo layout de build-dir) o 0.6.x não encontra os objetos e a base medida do gate de cobertura colapsou de 176.977 para 103.292 linhas (74,15 % → 32,68 % no agregado do workspace).
