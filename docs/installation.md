@@ -86,12 +86,18 @@ busy` (issue #1862): the new binary is staged next to the destination and
 swapped in with a single rename, so the running process is never interrupted
 and a failure cannot leave the binary truncated halfway. A running gateway
 keeps the **previous** version in memory until it restarts, so the installer
-prints the restart instruction instead of re-running the wizard over a live
-service:
+prints the restart instruction for the layout it detected, instead of
+re-running the wizard over a live service:
 
 ```
-systemctl --user restart garraia.service   # or: garraia stop && garraia start
+systemctl --user restart garraia.service   # user unit
+sudo systemctl restart garraia.service     # system unit (deploy/systemd/garraia.service)
+garraia stop && garraia start              # only where no systemd unit holds it
 ```
+
+Under a systemd unit, `garraia stop && garraia start` is never the answer:
+it would leave an orphan daemon on the port while the unit restart-loops
+(see [Running under systemd](#running-under-systemd)).
 
 ### Windows
 

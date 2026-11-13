@@ -133,21 +133,35 @@ run_install_binary() {
 # The old binary being replaced must be a REAL executable: the kernel's
 # deny_write_access applies to a file being EXECUTED. A script run as
 # `sh script.sh` is only opened for reading by the interpreter, so `cp` over
-# it would succeed and prove nothing. /bin/sleep is present on every Linux
-# runner (macOS: /bin/sleep exists too).
+# it would succeed and prove nothing.
+#
+# The executable copied into the sandbox is the HARNESS's own bash, resolved
+# from /proc/$$/exe ($$ = the bash running this suite): a real ELF on every
+# Linux box that ignores the argv[0] basename. Two other candidates fail:
+#   - copying /bin/sleep breaks on distros whose coreutils ships as a single
+#     multicall binary (the CI runner did: the copy dispatches on argv[0]
+#     and prints "coreutils: unknown program 'garraia'" instead of sleeping);
+#   - `cp /proc/self/exe` is a trap: /proc/self resolves to the process that
+#     OPENS the link — cp copies ITSELF, not the harness.
 case_a_upgrade_while_running() {
     echo ""
     echo "== case (a) upgrade over a running binary -> staged rename, no Text file busy =="
-    if [ ! -x /bin/sleep ]; then
-        skip "case (a): /bin/sleep not available on this system"
+    local harness_exe
+    harness_exe="$(readlink -f "/proc/$$/exe" 2>/dev/null || true)"
+    if [ -z "${harness_exe}" ] || [ ! -x "${harness_exe}" ]; then
+        skip "case (a): cannot resolve the harness executable via /proc/$$/exe"
         return 0
     fi
     local dir
     dir="$(mktemp -d)"
     mkdir -p "${dir}/bin"
-    cp /bin/sleep "${dir}/bin/garraia"
+    cp "${harness_exe}" "${dir}/bin/garraia"
     chmod +x "${dir}/bin/garraia"
-    "${dir}/bin/garraia" 60 &
+    # TWO commands, never one: `bash -c 'sleep 60'` exec-replaces itself with
+    # sleep (the deny_write_access moves off the copied file and the
+    # precondition cp would succeed); with a trailing command bash forks and
+    # STAYS as the executing garraia file, which is what holds ETXTBSY.
+    "${dir}/bin/garraia" -c 'sleep 60; exit' &
     local pid=$!
     sleep 0.5
 
@@ -301,15 +315,60 @@ STUB
         "still running with the previous version" "${dir}/out.log"
     assert_contains "case (d): names the installed version" \
         "the binary on disk is now vTEST-1862" "${dir}/out.log"
-    assert_contains "case (d): names the user unit" \
+    assert_contains "case (d): user unit gets the user-unit restart command" \
         "systemctl --user restart garraia.service" "${dir}/out.log"
-    assert_contains "case (d): offers the stop/start alternative" \
+    assert_absent "case (d): under a unit, stop&&start would orphan the daemon — never offered" \
         "garraia stop && garraia start" "${dir}/out.log"
     if [ -e "${dir}/bin/stub.log" ]; then
         fail "case (d): the wizard/start ran over a live gateway: $(cat "${dir}/bin/stub.log")"
     else
         pass "case (d): neither init nor start ran (no second gateway over a live service)"
     fi
+    rm -rf "${dir}"
+}
+
+# ---- case (d2): SYSTEM unit active -> sudo systemctl, not the user command ----
+# deploy/systemd/garraia.service installs to /etc/systemd/system (system unit,
+# User=garraia) — the reviewer-confirmed B1 gap: the user-unit command would
+# be wrong there, and stop&&start would orphan the daemon.
+case_d2_system_unit_notice() {
+    echo ""
+    echo "== case (d2) system unit running -> sudo systemctl restart =="
+    local dir stubbin
+    dir="$(mktemp -d)"
+    mkdir -p "${dir}/stubbin"
+    stubbin="${dir}/stubbin"
+    cat >"${stubbin}/systemctl" <<'STUB'
+#!/bin/sh
+# Answers only the SYSTEM-unit is-active probe (no --user prefix).
+if [ "${1:-}" = "is-active" ]; then
+    exit 0
+fi
+exit 3
+STUB
+    chmod +x "${stubbin}/systemctl"
+
+    (
+        set +e
+        PATH="${stubbin}:${PATH}"
+        export GARRAIA_INSTALL_SH_LIBRARY=1
+        # shellcheck disable=SC1090
+        . "${install_sh}"
+        set +e
+        INSTALL_PATH="${stub}"
+        VERSION="vTEST-1862"
+        if gateway_running && print_restart_notice; then
+            :
+        fi >"${dir}/out.log" 2>"${dir}/err.log"
+        echo "$?" >"${dir}/rc"
+    )
+    assert_rc_zero "case (d2): probe and notice return 0" "${dir}"
+    assert_contains "case (d2): system unit gets the sudo restart command" \
+        "sudo systemctl restart garraia.service" "${dir}/out.log"
+    assert_absent "case (d2): no user-unit command" \
+        "systemctl --user restart garraia.service" "${dir}/out.log"
+    assert_absent "case (d2): under a unit, stop&&start is never offered" \
+        "garraia stop && garraia start" "${dir}/out.log"
     rm -rf "${dir}"
 }
 
@@ -417,7 +476,8 @@ case_g_pgrep_fallback() {
         . "${install_sh}"
         set +e
         INSTALL_PATH="${stub}"
-        if gateway_running; then
+        VERSION="vTEST-1862"
+        if gateway_running && print_restart_notice; then
             echo "__gateway_running__=yes"
         else
             echo "__gateway_running__=no"
@@ -427,6 +487,9 @@ case_g_pgrep_fallback() {
     assert_rc_zero "case (g): gateway_running probe returns 0" "${dir}"
     assert_contains "case (g): pgrep fallback detects the running gateway" \
         "__gateway_running__=yes" "${dir}/out.log"
+    # No unit can hold the gateway here, so stop&&start IS the right command.
+    assert_contains "case (g): bare process gets stop&&start" \
+        "garraia stop && garraia start" "${dir}/out.log"
     rm -rf "${dir}"
 }
 
@@ -434,6 +497,7 @@ case_a_upgrade_while_running
 case_b_clean_install
 case_c_sudo_branch
 case_d_restart_notice
+case_d2_system_unit_notice
 case_e_no_notice_when_idle
 case_f_kill_switch
 case_g_pgrep_fallback

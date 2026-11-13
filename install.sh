@@ -569,6 +569,12 @@ install_binary_atomically() {
 #      gateway runs foreground in a session, so a match is far more likely
 #      to be the real thing.
 #
+# On success GATEWAY_UNIT_KIND records WHICH thing is running ("user" unit,
+# "system" unit, bare "process") — print_restart_notice needs it to give the
+# restart command that is RIGHT for that layout (docs/installation.md: under
+# a unit, restart through systemd; `garraia stop && garraia start` would
+# orphan the daemon and fight the unit for the port).
+#
 # GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE=1 disables the whole probe — the test
 # harness (tests/install_sh/bootstrap_phase.sh) sets it so a developer (or a
 # CI runner) with a live garraia.service still exercises the normal
@@ -576,24 +582,42 @@ install_binary_atomically() {
 gateway_running() {
     [ "${GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE:-}" = "1" ] && return 1
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl --user is-active --quiet "${BINARY}.service" 2>/dev/null && return 0
-        systemctl is-active --quiet "${BINARY}.service" 2>/dev/null && return 0
+        if systemctl --user is-active --quiet "${BINARY}.service" 2>/dev/null; then
+            GATEWAY_UNIT_KIND="user"
+            return 0
+        fi
+        if systemctl is-active --quiet "${BINARY}.service" 2>/dev/null; then
+            GATEWAY_UNIT_KIND="system"
+            return 0
+        fi
         return 1
     fi
     command -v pgrep >/dev/null 2>&1 || return 1
-    pgrep -x "${BINARY}" >/dev/null 2>&1
+    if pgrep -x "${BINARY}" >/dev/null 2>&1; then
+        GATEWAY_UNIT_KIND="process"
+        return 0
+    fi
+    return 1
 }
 
 # Companion of gateway_running: the instruction that makes the upgrade
 # honest. Printed by bootstrap_phase AFTER the binary is already swapped in,
-# so the message reports a completed install, not an intention.
+# so the message reports a completed install, not an intention. The command
+# matches the detected layout (GATEWAY_UNIT_KIND, set by gateway_running):
+#   user unit    -> systemctl --user restart garraia.service
+#   system unit  -> sudo systemctl restart garraia.service
+#   bare process -> garraia stop && garraia start (only where NO unit can
+#                   hold the gateway; under a unit this orphans the daemon)
 print_restart_notice() {
     echo ""
     echo "Upgrade note: the binary on disk is now ${VERSION}, but a gateway is"
     echo "  still running with the previous version in memory. Restart it to"
     echo "  pick up ${VERSION}:"
-    echo "    systemctl --user restart ${BINARY}.service"
-    echo "  (or: garraia stop && garraia start)"
+    case "${GATEWAY_UNIT_KIND:-process}" in
+        user)   echo "    systemctl --user restart ${BINARY}.service" ;;
+        system) echo "    sudo systemctl restart ${BINARY}.service" ;;
+        *)      echo "    garraia stop && garraia start" ;;
+    esac
 }
 
 # Issue #1328. Leaves ${INSTALL_DIR}/garra -> garraia next to the binary.
