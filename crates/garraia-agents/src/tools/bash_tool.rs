@@ -297,19 +297,48 @@ impl BashTool {
     pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
         self.sandbox = policy;
     }
+}
 
-    /// Check if command matches the hard-block denylist (GAR-236, GAR-497).
-    fn is_dangerous(&self, command: &str) -> bool {
-        matches!(
-            safety_gate::safety_gate(command),
-            Err(garraia_common::SafetyDenied::DangerousCommand { .. })
-        )
+/// O padrão estático da denylist que o comando casou, se casou (GAR-236).
+///
+/// #1861 critério 3: o padrão é devolvido ao modelo na recusa. É texto fixo
+/// do `DENY_LIST` (público no fonte), nunca um trecho do comando — que pode
+/// carregar segredo em argumento posicional.
+fn padrao_perigoso(command: &str) -> Option<&'static str> {
+    match safety_gate::safety_gate(command) {
+        Err(garraia_common::SafetyDenied::DangerousCommand { pattern }) => Some(pattern),
+        _ => None,
     }
+}
 
-    /// GAR-187: Check if command matches the risky confirmation tier (GAR-497).
-    fn is_risky(&self, command: &str) -> bool {
-        safety_gate::is_risky(command).is_err()
+/// O padrão do tier de confirmação que o comando casou, se casou (GAR-187).
+fn padrao_arriscado(command: &str) -> Option<&'static str> {
+    match safety_gate::is_risky(command) {
+        Err(
+            garraia_common::SafetyDenied::RequiresConfirmation { pattern }
+            | garraia_common::SafetyDenied::DangerousCommand { pattern },
+        ) => Some(pattern),
+        Ok(()) => None,
     }
+}
+
+/// Mensagem de recusa da denylist (#1861 critério 3).
+///
+/// Na sessão que originou a #1861 o modelo recebeu ~13 recusas seguidas com
+/// "padrão perigoso detectado" e nenhuma pista do porquê, e ficou em loop.
+/// A recusa diz agora QUAL padrão casou e que o gate lê o texto literal —
+/// inclusive dentro de aspas, heredoc e comentário —, e aponta o caminho
+/// legítimo para quem só está citando o texto. Não ensina a contornar: o
+/// pedido explícito é não reescrever o comando para escapar do bloqueio.
+fn mensagem_de_bloqueio(pattern: &str) -> String {
+    format!(
+        "Comando bloqueado por segurança: padrão perigoso detectado ('{pattern}'). \
+         O bloqueio compara o texto literal do comando, inclusive dentro de aspas, \
+         heredoc e comentários. Se você só está citando esse texto (gravar um \
+         arquivo, documentar), use a tool `file_write` quando ela estiver \
+         disponível. Não reescreva o comando para escapar do bloqueio; se a \
+         operação for realmente necessária, peça ao usuário que a execute."
+    )
 }
 
 /// Tamanho maximo de comando que vai para o log.
@@ -397,11 +426,13 @@ impl Tool for BashTool {
         };
 
         // GAR-236: Security check - deny list (hard block, never executes)
-        if self.is_dangerous(comando) {
-            tracing::error!("Blocked dangerous command: {}", comando_para_log(comando));
-            return Ok(ToolOutput::error(
-                "Comando bloqueado por segurança: padrão perigoso detectado".to_string(),
-            ));
+        if let Some(pattern) = padrao_perigoso(comando) {
+            tracing::error!(
+                pattern,
+                "Blocked dangerous command: {}",
+                comando_para_log(comando)
+            );
+            return Ok(ToolOutput::error(mensagem_de_bloqueio(pattern)));
         }
 
         // #1272 (`ExposicaoDoBash::HostComAllowlist`): bash no host POR CAUSA
@@ -447,7 +478,8 @@ impl Tool for BashTool {
         // para esse caso.
         let aprovado = self.confirmation_enabled && context.approval.covers(self.name(), comando)
             || self.matches_allowlist(comando);
-        if self.is_risky(comando) && !aprovado {
+        let arriscado = padrao_arriscado(comando);
+        if let Some(pattern) = arriscado.filter(|_| !aprovado) {
             if self.confirmation_enabled {
                 tracing::warn!(
                     command = %comando_para_log(comando),
@@ -466,11 +498,12 @@ impl Tool for BashTool {
                 session = %context.session_id,
                 "bash: risky command BLOCKED (fail-closed: confirmation disabled)"
             );
-            return Ok(ToolOutput::error(
-                "Comando bloqueado por segurança: comando sensível exige confirmação e este \
-                 runtime não possui canal de confirmação (fail-closed)."
-                    .to_string(),
-            ));
+            return Ok(ToolOutput::error(format!(
+                "Comando bloqueado por segurança: comando sensível ('{pattern}') exige \
+                 confirmação e este runtime não possui canal de confirmação (fail-closed). \
+                 Não há como aprovar daqui; se a operação for necessária, peça ao usuário \
+                 que a execute ou que declare o comando em agent.bash_allowlist."
+            )));
         }
 
         // GAR-236: a lista read-only desta tool existia como segundo gate e
@@ -653,6 +686,14 @@ fn cwd_do_mount(context: &ToolContext) -> &str {
 mod tests {
     use super::*;
     use crate::tools::approval::ToolApproval;
+
+    // Atalhos de teste sobre a mesma régua que `execute` usa.
+    impl BashTool {
+        /// Check if command matches the hard-block denylist (GAR-236, GAR-497).
+        fn is_dangerous(&self, command: &str) -> bool {
+            padrao_perigoso(command).is_some()
+        }
+    }
 
     /// Review da #1272 (SANDBOX-2/5): sem `working_dir` o mount pedido e
     /// vazio (recusa fail-closed), nunca o cwd do processo.
@@ -878,6 +919,65 @@ mod tests {
             "risky command auto-ran without confirmation: {}",
             output.content
         );
+    }
+
+    // ── #1861 critério 3: a recusa diz ao modelo QUAL padrão casou ─────────
+
+    #[tokio::test]
+    async fn recusa_da_denylist_nomeia_o_padrao_sem_ecoar_o_comando() {
+        let tool = BashTool::new(None);
+        let output = tool
+            .execute(
+                &ctx(false),
+                serde_json::json!({"command": "mkfs.ext4 /dev/sdz --label TOKEN-CANARIO-1861"}),
+            )
+            .await
+            .unwrap();
+        assert!(output.is_error, "{}", output.content);
+        assert!(
+            output.content.contains("bloqueado por segurança"),
+            "{}",
+            output.content
+        );
+        assert!(output.content.contains("'mkfs'"), "{}", output.content);
+        assert!(
+            output.content.contains("texto literal"),
+            "{}",
+            output.content
+        );
+        // O padrão é texto estático da denylist; o comando (que pode levar
+        // segredo em argumento) nunca volta na mensagem.
+        assert!(
+            !output.content.contains("TOKEN-CANARIO-1861"),
+            "recusa ecoou o comando: {}",
+            output.content
+        );
+    }
+
+    #[tokio::test]
+    async fn recusa_fail_closed_do_tier_arriscado_nomeia_o_padrao() {
+        let tool = BashTool::new(None); // confirmation_enabled = false
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "kill 4242"}))
+            .await
+            .unwrap();
+        assert!(output.is_error, "{}", output.content);
+        assert!(output.content.contains("fail-closed"), "{}", output.content);
+        assert!(output.content.contains("('kill "), "{}", output.content);
+        assert!(
+            output.content.contains("agent.bash_allowlist"),
+            "{}",
+            output.content
+        );
+        assert!(!output.content.contains("4242"), "{}", output.content);
+    }
+
+    #[test]
+    fn padroes_casados_vem_da_regua_do_safety_gate() {
+        assert_eq!(padrao_perigoso("rm -rf /"), Some("rm -rf /"));
+        assert_eq!(padrao_perigoso("ls -la"), None);
+        assert!(padrao_arriscado("kill 1").is_some());
+        assert_eq!(padrao_arriscado("ls -la"), None);
     }
 
     #[tokio::test]
