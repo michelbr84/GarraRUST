@@ -19,7 +19,7 @@ pub use handoff::{
 };
 pub use message::{Message, MessageContent, MessageDirection};
 pub use metrics::{EmbedOp, IngestOutcome};
-pub use safety_gate::{SafetyDenied, is_risky, safety_gate};
+pub use safety_gate::{SafetyDenied, adaptation_hint, is_risky, safety_gate};
 #[cfg(feature = "ssrf")]
 pub use ssrf::{
     IpScope, SsrfCategory, SsrfRejection, UrlPolicy, VettedUrl, is_blocked_ip, pinned_client,

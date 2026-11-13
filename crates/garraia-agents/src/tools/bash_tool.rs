@@ -330,6 +330,8 @@ fn padrao_arriscado(command: &str) -> Option<&'static str> {
 /// inclusive dentro de aspas, heredoc e comentário —, e aponta o caminho
 /// legítimo para quem só está citando o texto. Não ensina a contornar: o
 /// pedido explícito é não reescrever o comando para escapar do bloqueio.
+/// #1861 critério 3: acrescenta a dica de adaptação do padrão casado — o
+/// texto é estático (`adaptation_hint`), nunca um trecho do comando.
 fn mensagem_de_bloqueio(pattern: &str) -> String {
     format!(
         "Comando bloqueado por segurança: padrão perigoso detectado ('{pattern}'). \
@@ -337,7 +339,8 @@ fn mensagem_de_bloqueio(pattern: &str) -> String {
          heredoc e comentários. Se você só está citando esse texto (gravar um \
          arquivo, documentar), use a tool `file_write` quando ela estiver \
          disponível. Não reescreva o comando para escapar do bloqueio; se a \
-         operação for realmente necessária, peça ao usuário que a execute."
+         operação for realmente necessária, peça ao usuário que a execute.{}",
+        garraia_common::adaptation_hint(pattern)
     )
 }
 
@@ -502,7 +505,8 @@ impl Tool for BashTool {
                 "Comando bloqueado por segurança: comando sensível ('{pattern}') exige \
                  confirmação e este runtime não possui canal de confirmação (fail-closed). \
                  Não há como aprovar daqui; se a operação for necessária, peça ao usuário \
-                 que a execute ou que declare o comando em agent.bash_allowlist."
+                 que a execute ou que declare o comando em agent.bash_allowlist.{}",
+                garraia_common::adaptation_hint(pattern)
             )));
         }
 
@@ -969,6 +973,15 @@ mod tests {
             "{}",
             output.content
         );
+        // #1861 critério 3: a dica de adaptação do padrão vai na recusa —
+        // "kill " tem dica própria, e o PID do comando NUNCA ecoa (segredo).
+        assert!(
+            output
+                .content
+                .contains("informe o PID e o sinal ao operador"),
+            "{}",
+            output.content
+        );
         assert!(!output.content.contains("4242"), "{}", output.content);
     }
 
@@ -978,6 +991,16 @@ mod tests {
         assert_eq!(padrao_perigoso("ls -la"), None);
         assert!(padrao_arriscado("kill 1").is_some());
         assert_eq!(padrao_arriscado("ls -la"), None);
+    }
+
+    /// #1861 critério 3: a mensagem de bloqueio carrega a dica de adaptação
+    /// do padrão casado (texto estático, por padrão).
+    #[test]
+    fn mensagem_de_bloqueio_carrega_dica_de_adaptacao() {
+        let msg = mensagem_de_bloqueio("rm -rf /");
+        assert!(msg.contains("Nunca apague a raiz"), "{msg}");
+        // Padrão sem entrada na tabela recebe a dica genérica, não vazio.
+        assert!(mensagem_de_bloqueio("padrao-inexistente").contains("Adapte o comando"),);
     }
 
     #[tokio::test]
