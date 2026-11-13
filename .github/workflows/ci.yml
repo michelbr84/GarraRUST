@@ -1282,9 +1282,18 @@ jobs:
 
       - name: Install cargo-llvm-cov
         # `--locked` matches the cargo-audit / cargo-deny installation pattern
-        # for supply-chain hygiene. `^0.6` allows minor bumps within the 0.6.x
-        # line (current 0.6.16 as of 2026-04-28); breaking-change bumps require
+        # for supply-chain hygiene. `^0.9` allows patch bumps within the 0.9.x
+        # line (current 0.9.1 as of 2026-11-13); breaking-change bumps require
         # a deliberate edit.
+        #
+        # Por que não `^0.6` (fix #1859): o cargo 1.100.0 (estável desde
+        # 2026-11-12) mudou o layout do build-dir — os binários saem em
+        # `debug/build/<crate>/<hash>/out/`. O cargo-llvm-cov 0.6.x procura os
+        # objetos no layout antigo, a base medida do lcov colapsou
+        # (176.977 → 103.292 linhas, gate 74,15 % → 32,68 %) e o piso de 70 %
+        # reprovou o job no main. O suporte ao novo layout entrou na linha 0.8.6
+        # upstream; 0.9.1 reproduz localmente (rustc 1.100.0) o relatório que o
+        # 0.6.24 produzia com rustc 1.99.
         #
         # `--force` is required because the cache step above restores
         # `~/.cargo/bin/` whenever the same Cargo.lock hash hits (which is
@@ -1296,7 +1305,7 @@ jobs:
         # cache and failed with `error: binary cargo-llvm-cov already
         # exists in destination`. `--force` makes the step idempotent
         # without sacrificing the supply-chain pin.
-        run: cargo install --locked --force --version '^0.6' cargo-llvm-cov
+        run: cargo install --locked --force --version '^0.9' cargo-llvm-cov
 
       - name: Generate lcov coverage
         run: |
