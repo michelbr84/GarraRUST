@@ -157,6 +157,11 @@ else
 fi
 export GARRAIA_INSTALL_SH_LIBRARY=1
 export GARRAIA_STUB_LOG="${log_dir}/stub.log"
+# Issue #1862: install.sh's bootstrap_phase returns early (upgrade notice)
+# when a gateway is already running on the machine. A developer or CI runner
+# WITH a live garraia.service must still exercise the normal branches here;
+# the notice itself is covered by tests/install_sh/upgrade_etxtbsy.sh.
+export GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE=1
 # shellcheck disable=SC1090
 . "${install_sh}"
 INSTALL_PATH="${stub}"
@@ -223,6 +228,9 @@ GARRAIA_INSTALL_SH_LIBRARY=1
 export GARRAIA_INSTALL_SH_LIBRARY
 GARRAIA_STUB_LOG="${log_dir}/stub.log"
 export GARRAIA_STUB_LOG
+# Issue #1862: see run_bootstrap_in_subshell — keep every case on its own
+# branch even on a host with a live garraia.service.
+export GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE=1
 . "${install_sh}"
 INSTALL_PATH="${stub}"
 bootstrap_phase

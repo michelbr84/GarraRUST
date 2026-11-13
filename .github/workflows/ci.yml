@@ -312,6 +312,7 @@ jobs:
           bash -n tests/install_sh/documented_urls.sh
           bash -n tests/install_sh/detect_platform.sh
           bash -n tests/install_sh/garra_alias.sh
+          bash -n tests/install_sh/upgrade_etxtbsy.sh
 
       - name: Execute installer bootstrap_phase tests
         run: bash tests/install_sh/bootstrap_phase.sh
@@ -352,6 +353,15 @@ jobs:
       # nome. Cobre criar, reapontar, preservar arquivo real e o ramo sudo.
       - name: Execute installer garra-alias tests
         run: bash tests/install_sh/garra_alias.sh
+
+      # Upgrade com o gateway rodando (#1862): cp sobre o binário executando
+      # dava `Text file busy` (ETXTBSY) exatamente no cenário mais comum de
+      # atualização. O instalador agora troca por rename no mesmo filesystem,
+      # e o bootstrap imprime o comando de restart em vez de iniciar um
+      # segundo gateway sobre o serviço vivo. Cobre também a instalação
+      # limpa (regressão), o ramo sudo e o kill-switch do aviso.
+      - name: Execute installer upgrade-txtbsy tests
+        run: bash tests/install_sh/upgrade_etxtbsy.sh
 
   # `install.ps1` is the Windows sibling of `install.sh` and the `irm | iex`
   # entry point, so it gets the same treatment: a blocking lint plus unit tests

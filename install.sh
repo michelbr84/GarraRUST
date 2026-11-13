@@ -18,6 +18,13 @@
 # Optional environment variables:
 #   GARRAIA_VERSION         Pin a specific release tag (e.g. v0.1.0-beta).
 #                           When set, the GitHub API is not queried.
+#                           Caveat: the tag in the URL install.sh is fetched
+#                           FROM does NOT select the installed version — it
+#                           only says where the script comes from. Unpinned,
+#                           the installer resolves the latest STABLE release
+#                           and never installs a prerelease. To install one,
+#                           pin explicitly, e.g.:
+#                             curl -fsSL https://garraia.org/install.sh | GARRAIA_VERSION=v0.5.2-rc4 sh
 #                           Caveat: pins <= v0.2.0 will 404 on Apple Silicon
 #                           (macOS arm64). Pre-v0.2.1 releases published
 #                           `garraia-macos-arm64`; v0.2.1+ aligned with
@@ -480,11 +487,9 @@ install_binary() {
 
     if install_needs_sudo; then
         echo "Installing to ${INSTALL_DIR} (requires sudo to copy ${ARTIFACT} → ${INSTALL_PATH})..."
-        sudo cp "${GARRAIA_TMPDIR}/${ARTIFACT}" "${INSTALL_PATH}"
-        sudo chmod +x "${INSTALL_PATH}"
+        install_binary_atomically "${GARRAIA_TMPDIR}/${ARTIFACT}" "${INSTALL_PATH}" 1
     else
-        cp "${GARRAIA_TMPDIR}/${ARTIFACT}" "${INSTALL_PATH}"
-        chmod +x "${INSTALL_PATH}"
+        install_binary_atomically "${GARRAIA_TMPDIR}/${ARTIFACT}" "${INSTALL_PATH}" 0
     fi
 
     echo ""
@@ -501,6 +506,94 @@ install_binary() {
 # needed sudo for the copy needs it for the link too.
 install_needs_sudo() {
     [ "${INSTALL_DIR}" = "/usr/local/bin" ] && [ "$(id -u)" -ne 0 ]
+}
+
+# Issue #1862. Replaces the destination with rename(2) semantics instead of
+# writing into it. The old path `cp <artifact> <install_path>` opens the
+# TARGET for writing, and the kernel refuses that with ETXTBSY ("Text file
+# busy") while a process is executing the file — precisely the common upgrade
+# case: a machine whose gateway is already running (reproduced by the owner
+# on 2026-11-13; tests/install_sh/upgrade_etxtbsy.sh reproduces it in CI).
+#
+# A staging file NEXT TO the destination takes the write instead (same
+# directory, therefore same filesystem, so `mv` stays a rename and can never
+# degrade into copy+unlink), then one rename swaps the directory entry: the
+# running process keeps executing its old inode until it is restarted, and a
+# failure can no longer leave the target truncated halfway. The staging file
+# is removed on every failure path so a failed upgrade never leaves garbage
+# behind.
+#
+# $3 selects the privilege mode: 1 runs every step under sudo (the
+# /usr/local/bin path), 0 runs it directly. One function for both modes so
+# stage → chmod → rename can never drift between them.
+install_binary_atomically() {
+    ia_src="$1"
+    ia_dst="$2"
+    ia_use_sudo="$3"
+    ia_stage="${ia_dst}.tmp.$$"
+
+    if [ "${ia_use_sudo}" = "1" ]; then
+        ia_run() { sudo "$@"; }
+        ia_clean() { sudo rm -f -- "${ia_stage}"; }
+    else
+        ia_run() { "$@"; }
+        ia_clean() { rm -f -- "${ia_stage}"; }
+    fi
+
+    if ! ia_run cp "${ia_src}" "${ia_stage}"; then
+        ia_clean 2>/dev/null || true
+        error "Failed to stage the new binary next to ${ia_dst}."
+    fi
+    if ! ia_run chmod +x "${ia_stage}"; then
+        ia_clean 2>/dev/null || true
+        error "Failed to mark the staged binary executable."
+    fi
+    if ! ia_run mv -f "${ia_stage}" "${ia_dst}"; then
+        ia_clean 2>/dev/null || true
+        error "Failed to replace ${ia_dst}."
+    fi
+}
+
+# Issue #1862. True when a GarraIA gateway is already running on this
+# machine, so the install is an UPGRADE: the renamed-in binary will NOT take
+# effect until the running process restarts (it keeps the old inode).
+#
+# Detection, in order of precision:
+#   1. systemd (user unit, then system unit) — the documented production
+#      layout. When systemd is present but the unit is inactive, return
+#      WITHOUT the pgrep fallback: pgrep -x garraia also matches an
+#      interactive CLI session (`garraia chat`), and telling someone to
+#      restart their chat is noise, not signal.
+#   2. No systemd (macOS, Termux, plain container): pgrep is the only
+#      signal; it may still match a CLI session, but on those platforms the
+#      gateway runs foreground in a session, so a match is far more likely
+#      to be the real thing.
+#
+# GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE=1 disables the whole probe — the test
+# harness (tests/install_sh/bootstrap_phase.sh) sets it so a developer (or a
+# CI runner) with a live garraia.service still exercises the normal
+# bootstrap branches instead of the upgrade notice.
+gateway_running() {
+    [ "${GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE:-}" = "1" ] && return 1
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user is-active --quiet "${BINARY}.service" 2>/dev/null && return 0
+        systemctl is-active --quiet "${BINARY}.service" 2>/dev/null && return 0
+        return 1
+    fi
+    command -v pgrep >/dev/null 2>&1 || return 1
+    pgrep -x "${BINARY}" >/dev/null 2>&1
+}
+
+# Companion of gateway_running: the instruction that makes the upgrade
+# honest. Printed by bootstrap_phase AFTER the binary is already swapped in,
+# so the message reports a completed install, not an intention.
+print_restart_notice() {
+    echo ""
+    echo "Upgrade note: the binary on disk is now ${VERSION}, but a gateway is"
+    echo "  still running with the previous version in memory. Restart it to"
+    echo "  pick up ${VERSION}:"
+    echo "    systemctl --user restart ${BINARY}.service"
+    echo "  (or: garraia stop && garraia start)"
 }
 
 # Issue #1328. Leaves ${INSTALL_DIR}/garra -> garraia next to the binary.
@@ -698,6 +791,17 @@ has_usable_tty() {
 # `INSTALL_PATH` is set by install_binary(); tests pre-populate it
 # before calling bootstrap_phase via the library guard.
 bootstrap_phase() {
+    # Issue #1862: the install was an upgrade over a running gateway. The
+    # rename swapped the directory entry, but the live process keeps the OLD
+    # inode in memory and will not pick the new version until restarted.
+    # Print the restart instruction and stop: re-running the setup wizard on
+    # a configured machine and exec'ing `garraia start` over a live service
+    # would fight the running gateway instead of upgrading it.
+    if gateway_running; then
+        print_restart_notice
+        return 0
+    fi
+
     if [ "${GARRAIA_SKIP_INIT:-}" = "1" ] && [ "${GARRAIA_SKIP_START:-}" = "1" ]; then
         print_next_steps_legacy
         return 0
