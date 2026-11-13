@@ -97,6 +97,8 @@ mod tests {
     /// `main` has its own drift test pinning that derivation to this list.
     const FLAGS: &[&str] = &[
         "--log-level",
+        // #1858: `--mode <MODE>` tambem.
+        "--mode",
         "--model",
         "--provider",
         // #1088: `--resume` leva o id da sessao, entao tambem come o proximo.
@@ -143,6 +145,7 @@ mod tests {
     fn injects_for_flag_only_invocations() {
         // The headline case.
         assert_injects(&["garra", "--model", "qwen3.8"]);
+        assert_injects(&["garra", "--mode", "search"]);
         assert_injects(&["garra", "-m", "qwen3.8"]);
         assert_injects(&["garra", "--model=qwen3.8"]);
         assert_injects(&["garra", "--debug"]);

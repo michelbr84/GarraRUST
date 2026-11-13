@@ -3864,6 +3864,8 @@ mod tests {
             actual,
             vec![
                 "--log-level",
+                // #1858: `--mode <MODE>` come o proximo argv.
+                "--mode",
                 "--model",
                 "--provider",
                 // #1088: `--resume <SESSION_ID>` tambem come o proximo argv.
