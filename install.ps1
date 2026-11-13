@@ -646,7 +646,10 @@ function Clear-StaleAsideBinary {
 
     $dir = Split-Path -Parent $Destination
     $leaf = Split-Path -Leaf $Destination
-    $stale = @(Get-ChildItem -LiteralPath $dir -Filter "$leaf.old-*" -File -ErrorAction SilentlyContinue)
+    # Where-Object -like rather than -Filter: on Windows -Filter also matches
+    # 8.3 short names, and its case rules differ between the two providers.
+    $stale = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "$leaf.old-*" })
     foreach ($file in $stale) {
         Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
     }
@@ -668,8 +671,11 @@ function Clear-StaleAsideBinary {
 #      it, and Clear-StaleAsideBinary removes it on a later install.
 #
 # Every failure undoes what came before: a failed step 2 leaves <dest>
-# untouched, a failed step 3 renames the aside back, and the stage never
-# outlives the function. <dest> is never absent or truncated on the way out.
+# untouched and removes the stage; a failed step 3 renames the aside back and
+# removes the stage. <dest> is never truncated (only renames touch it). It is
+# absent on the way out in exactly one case - step 3 AND its undo both fail -
+# and then the stage is kept too, and the error names both files so the user
+# can rename either one into place by hand.
 # The aside name is NOT `garraia.old`: that one is the rollback backup owned
 # by `garraia update --rollback`, and the installer must not clobber it.
 function Install-BinaryFile {
@@ -690,8 +696,18 @@ function Install-BinaryFile {
 
     $aside = $null
     if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+        # A second install in the same PowerShell session (irm | iex runs in
+        # the user's own shell, so $PID repeats) finds the aside of the first
+        # still held by the old gateway; MoveFileEx without REPLACE_EXISTING
+        # would refuse it. Pick the next free name - Clear-StaleAsideBinary's
+        # "<leaf>.old-*" sweep covers the suffixed variants too.
         $aside = "$Destination.old-$PID"
         Remove-Item -LiteralPath $aside -Force -ErrorAction SilentlyContinue
+        $n = 0
+        while (Test-Path -LiteralPath $aside) {
+            $n++
+            $aside = "$Destination.old-$PID-$n"
+        }
         try {
             Move-InstallFile -Path $Destination -Destination $aside
         } catch {
@@ -709,9 +725,10 @@ function Install-BinaryFile {
             try {
                 Move-InstallFile -Path $aside -Destination $Destination
             } catch {
-                Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
+                # Keep the stage: it is the only copy of the new binary.
                 Write-InstallError ("Failed to replace ${Destination} ($reason), and could not put the " +
-                    "previous binary back: it is at $aside - rename it to $Destination by hand.")
+                    "previous binary back. Rename one of these to $Destination by hand: " +
+                    "$aside (previous version) or $stage (new version).")
             }
         }
         Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
@@ -749,6 +766,13 @@ function Install-Binary {
         Write-InstallError ("No permission to create $installDir. Re-run from an elevated " +
             'PowerShell, or pass -InstallDir a per-user path.')
     }
+
+    # Install-BinaryFile renames with [IO.File]::Move, which is .NET and not
+    # provider-aware: it resolves a relative path or `~` against
+    # [Environment]::CurrentDirectory, which PowerShell does not keep in sync
+    # with Set-Location. Normalize once, so the stage, the aside, the renames
+    # and the PATH entry all see the same absolute directory.
+    $installDir = (Resolve-Path -LiteralPath $installDir).ProviderPath
 
     $installPath = Join-Path $installDir "$script:Binary.exe"
 

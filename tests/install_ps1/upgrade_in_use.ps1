@@ -83,7 +83,10 @@ try {
     Write-Host 'Install-BinaryFile: plain upgrade (old binary present, not running)'
     Reset-MoveInjection
     Set-Content -LiteralPath $dest -Value 'v1-bytes' -NoNewline
-    Install-BinaryFile -SourcePath $src -Destination $dest
+    # @() around the call: Install-Binary returns its path on the success
+    # stream, so Install-BinaryFile must emit nothing there.
+    $emitted = @(Install-BinaryFile -SourcePath $src -Destination $dest)
+    Assert-Equal 'nothing on the success stream' 0 $emitted.Count
     Assert-Equal 'the destination holds the new bytes' 'v2-bytes' (Get-Text $dest)
     Assert-Equal 'the aside of a stopped binary is deleted' 0 (Get-Leftover $box).Count
     Assert-Equal 'two renames (dest -> aside, stage -> dest)' 2 $script:MoveCalls
@@ -130,10 +133,12 @@ try {
     $threw = $false; $msg = ''
     try { Install-BinaryFile -SourcePath $src -Destination $dest } catch { $threw = $true; $msg = $_.Exception.Message }
     $aside = "$dest.old-$PID"
+    $stage = "$dest.tmp.$PID"
     Assert-True  'the install fails' $threw
     Assert-True  'the message points at the aside copy' ($msg -match [regex]::Escape($aside))
+    Assert-True  'the message points at the staged copy' ($msg -match [regex]::Escape($stage))
     Assert-Equal 'the previous binary is intact at the aside path' 'v1-bytes' (Get-Text $aside)
-    Assert-False 'the stage does not outlive the failure' (Test-Path -LiteralPath "$dest.tmp.$PID")
+    Assert-Equal 'the new binary is kept at the stage path' 'v2-bytes' (Get-Text $stage)
     # Back to the single-failure override for the remaining cases.
     function Move-InstallFile {
         param([string]$Path, [string]$Destination)
@@ -142,6 +147,25 @@ try {
         [IO.File]::Move($Path, $Destination)
     }
     [IO.File]::Move($aside, $dest)
+    Remove-Item -LiteralPath $stage -Force
+
+    Write-Host ''
+    Write-Host 'Install-BinaryFile: the aside name is taken (second install, same session)'
+    Reset-MoveInjection
+    Set-Content -LiteralPath $dest -Value 'v1-bytes' -NoNewline
+    # Stands in for the aside a still-running gateway holds from the first
+    # install. A real one cannot be deleted while that gateway runs; this
+    # placeholder could, so the sweep is stubbed out for this one call to
+    # reproduce "the name is taken and stays taken".
+    $taken = New-Payload -Directory $box -Name "garraia.exe.old-$PID" -Text 'held-by-old-gateway'
+    $realSweep = ${function:Clear-StaleAsideBinary}
+    function Clear-StaleAsideBinary { param([string]$Destination) $null = $Destination }
+    Install-BinaryFile -SourcePath $src -Destination $dest
+    Set-Item -Path function:Clear-StaleAsideBinary -Value $realSweep
+    Assert-Equal 'the upgrade still lands' 'v2-bytes' (Get-Text $dest)
+    Assert-Equal 'the taken aside is left alone' 'held-by-old-gateway' (Get-Text $taken)
+    Clear-StaleAsideBinary -Destination $dest
+    Assert-Equal 'the sweep covers the suffixed name too' 0 (Get-Leftover $box).Count
 
     Write-Host ''
     Write-Host 'Install-BinaryFile: a stale aside from an earlier upgrade is swept'
@@ -158,8 +182,8 @@ try {
         $runBox = New-Sandbox; $sandboxes += $runBox
         $runDest = Join-Path $runBox 'garraia.exe'
         Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\PING.EXE') -Destination $runDest
-        $proc = Start-Process -FilePath $runDest -ArgumentList '-n', '120', '127.0.0.1' `
-            -WindowStyle Hidden -PassThru
+        $proc = Start-Process -FilePath $runDest -ArgumentList '-n', '600', '127.0.0.1' `
+            -NoNewWindow -PassThru
         try {
             Start-Sleep -Milliseconds 500
             Assert-False 'the stand-in gateway is running' $proc.HasExited
@@ -179,7 +203,11 @@ try {
             Assert-False 'GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE=1 disables the probe' (Test-GatewayRunning)
             Remove-Item Env:GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE
 
-            Install-BinaryFile -SourcePath $src -Destination $runDest
+            try {
+                Install-BinaryFile -SourcePath $src -Destination $runDest
+            } catch {
+                Assert-Fail "Install-BinaryFile over the running .exe threw: $($_.Exception.Message)"
+            }
             Assert-Equal 'the destination holds the new bytes' 'v2-bytes' (Get-Text $runDest)
             Assert-False 'the running process was not disturbed' $proc.HasExited
             # Whether Windows lets the aside of a running image be deleted
@@ -194,7 +222,12 @@ try {
             $proc.WaitForExit(10000) | Out-Null
         }
 
-        Clear-StaleAsideBinary -Destination $runDest
+        # Defender can hold a transient handle on a freshly written .exe right
+        # after the process exits; retry the sweep briefly before asserting.
+        for ($i = 0; $i -lt 10 -and (Get-Leftover $runBox).Count -gt 0; $i++) {
+            Clear-StaleAsideBinary -Destination $runDest
+            Start-Sleep -Milliseconds 200
+        }
         Assert-Equal 'once the gateway stopped, the next install sweeps the aside' 0 (Get-Leftover $runBox).Count
     } else {
         Assert-Skip 'upgrade over a running garraia.exe' 'needs a Windows image (windows-latest leg)'
@@ -216,11 +249,8 @@ try {
     Assert-False 'does not start a second gateway'  ($out -match 'Starting GarraIA in the foreground')
     Set-Item -Path function:Test-GatewayRunning -Value $realProbe
 
-    Write-Host ''
-    Write-Host 'Test-GatewayRunning: kill-switch'
-    $env:GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE = '1'
-    Assert-False 'GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE=1 -> false' (Test-GatewayRunning)
-    Remove-Item Env:GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE
+    # The kill-switch is asserted inside the running-exe case above, where a
+    # garraia IS running; on a host with none it would pass vacuously.
 } finally {
     foreach ($dir in $sandboxes) {
         Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue

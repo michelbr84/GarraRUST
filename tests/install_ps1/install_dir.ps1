@@ -80,6 +80,27 @@ try {
         -RequestedDir $target -NoModifyPath $true
     Assert-Equal 'reinstall is idempotent' $installed $again
 
+    # #1865 review: Install-BinaryFile renames with [IO.File]::Move, which
+    # resolves relative paths against [Environment]::CurrentDirectory, NOT the
+    # PowerShell location. Point the two at different places on purpose, so a
+    # relative -InstallDir only works if Install-Binary normalizes it.
+    $savedCwd = [Environment]::CurrentDirectory
+    Push-Location $sandbox
+    try {
+        [Environment]::CurrentDirectory = [IO.Path]::GetTempPath()
+        $rel = Install-Binary -SourcePath $fakeBinary -Version 'v0.0.0-test' `
+            -RequestedDir 'rel-here' -NoModifyPath $true
+        $relAgain = Install-Binary -SourcePath $fakeBinary -Version 'v0.0.0-test' `
+            -RequestedDir 'rel-here' -NoModifyPath $true
+        $expected = Join-Path (Join-Path $sandbox 'rel-here') 'garraia.exe'
+        Assert-True  'a relative -InstallDir resolves against the PowerShell location' (Test-Path -LiteralPath $expected)
+        Assert-True  'the returned path is absolute' ([IO.Path]::IsPathRooted($rel))
+        Assert-Equal 'reinstalling over a relative dir works too' $rel $relAgain
+    } finally {
+        Pop-Location
+        [Environment]::CurrentDirectory = $savedCwd
+    }
+
     $savedRoot2 = $env:SystemRoot
     try {
         $env:SystemRoot = if ($onWindows) { 'C:\Windows' } else { $sandbox }
