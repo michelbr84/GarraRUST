@@ -339,6 +339,16 @@ enum Commands {
         /// (#1300).
         #[arg(long, value_name = "SESSION_ID", num_args = 0..=1, default_missing_value = "latest")]
         resume: Option<String>,
+
+        /// Start in an agent mode (#1858): auto, search, architect, code, ask,
+        /// debug, orchestrator, review or edit — the same modes the gateway
+        /// and the Web Console use, enforced by the same tool gate. `search`
+        /// and `architect` are read-only. Without the flag there is no tool
+        /// policy, as before; `/mode` changes it inside the session. This
+        /// only restricts tools: it never skips the bash confirmation tier
+        /// nor the hard-deny.
+        #[arg(long, value_name = "MODE")]
+        mode: Option<String>,
     },
 
     /// Non-interactive AI query — single message in, single answer out
@@ -3312,6 +3322,7 @@ async fn async_main(
             yes,
             persist,
             resume,
+            mode,
         } => {
             // Without a tracing subscriber, --debug/RUST_LOG silently produce
             // nothing in chat mode. Since #933 the file gets everything while
@@ -3335,6 +3346,7 @@ async fn async_main(
                 yes,
                 persist,
                 resume,
+                mode,
             )
             .await?;
             if code != 0 {
