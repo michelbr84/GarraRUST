@@ -73,7 +73,8 @@ function Assert-Throws {
 function Clear-InstallerEnvironment {
     foreach ($name in @(
         'GARRAIA_SKIP_INIT', 'GARRAIA_SKIP_START', 'GARRAIA_BOOTSTRAP_LOCAL',
-        'GARRAIA_VERSION', 'GARRAIA_INSTALL_DIR', 'GARRAIA_NO_PATH'
+        'GARRAIA_VERSION', 'GARRAIA_INSTALL_DIR', 'GARRAIA_NO_PATH',
+        'GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE'
     )) {
         if (Test-Path "Env:$name") { Remove-Item "Env:$name" }
     }

@@ -439,6 +439,13 @@ jobs:
       - name: Execute installer garra-alias tests
         run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/garra_alias.ps1
 
+      # Espelha tests/install_sh/upgrade_etxtbsy.sh (#1865, CLAUDE.md 16): o
+      # upgrade com garraia.exe rodando. O caso com executavel vivo (e o
+      # controle negativo da recusa do Copy-Item) so roda na perna
+      # windows-latest; no Linux reporta SKIP.
+      - name: Execute installer upgrade-in-use tests
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/upgrade_in_use.ps1
+
   # Lint with clippy (strict — bloqueante desde plan 0049 / GAR-429)
   clippy:
     name: Clippy Linting

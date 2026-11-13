@@ -190,6 +190,24 @@ still download by hand if you need an older version.
 built best-effort, so a given release may ship without it. The MSI is not a
 prerequisite for the CLI; the one-liner above is the supported path.
 
+**Upgrading on Windows with the gateway running.** Windows refuses to
+overwrite a running `garraia.exe`, but it does let a running image be
+**renamed** (issue #1865, the same trick `garraia update` uses). So the
+installer stages the new binary next to the destination, renames the running
+`garraia.exe` aside to `garraia.exe.old-<pid>`, and renames the new one into
+place; any failure in between puts the previous binary back. The running
+gateway keeps the previous version in memory, so instead of re-running the
+wizard the installer prints:
+
+```powershell
+garraia stop; garraia start
+```
+
+(or, for a gateway in the foreground of another window, Ctrl+C there and
+`garraia start` again). The `garraia.exe.old-<pid>` left behind while the old
+gateway still runs is deleted by the next install; `garraia.old`, the rollback
+backup of `garraia update`, is never touched.
+
 ### Android (Termux)
 
 From `v0.3.6` the installer has an Android branch. Run it **inside the
