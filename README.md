@@ -130,7 +130,12 @@ Flags (usable through the pipe with `sh -s --`) and their equivalent env
 toggles: `--skip-setup` (`GARRAIA_SKIP_INIT=1` + `GARRAIA_SKIP_START=1`),
 `--skip-init`, `--skip-start`, `--no-local` (`GARRAIA_BOOTSTRAP_LOCAL=0`),
 `--version <tag>`, `--install-dir <dir>`, `--help`. An env var set by the
-caller wins over the matching flag. For a fully unattended install:
+caller wins over the matching flag. Installing a prerelease (`-rc`/`-beta`)?
+The tag in the installer's URL does **not** select the version — pin it:
+`curl -fsSL https://garraia.org/install.sh | GARRAIA_VERSION=v0.5.2-rc4 sh`.
+Upgrading over a running gateway is safe (staged rename, no `Text file busy`);
+the installer prints the restart command for the service. For a fully
+unattended install:
 
 ```bash
 curl -fsSL https://garraia.org/install.sh | sh -s -- --skip-setup

@@ -59,6 +59,46 @@ curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.s
 curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
 ```
 
+### Pinning a version (prereleases included)
+
+The tag in the installer's URL only says **where the script comes from** — it
+does **not** select what gets installed. Unpinned, the installer always
+resolves the latest **stable** release and never installs a prerelease
+(`-rc`/`-beta`/`-alpha`). To install one, pin the version explicitly:
+
+```bash
+# One-liner, env form (works through the pipe):
+curl -fsSL https://garraia.org/install.sh | GARRAIA_VERSION=v0.5.2-rc4 sh
+
+# Flag form, when you run the downloaded script:
+sh install.sh --version v0.5.2-rc4
+```
+
+Both forms skip the version lookup entirely and download the pinned tag. The
+installer prints the version it installed on success (`GarraIA <version>
+installed to <path>`) — trust that line, not the URL you fetched the script
+from.
+
+### Upgrading with the gateway already running
+
+Re-running the installer over a live gateway does not fail with `Text file
+busy` (issue #1862): the new binary is staged next to the destination and
+swapped in with a single rename, so the running process is never interrupted
+and a failure cannot leave the binary truncated halfway. A running gateway
+keeps the **previous** version in memory until it restarts, so the installer
+prints the restart instruction for the layout it detected, instead of
+re-running the wizard over a live service:
+
+```
+systemctl --user restart garraia.service   # user unit
+sudo systemctl restart garraia.service     # system unit (deploy/systemd/garraia.service)
+garraia stop && garraia start              # only where no systemd unit holds it
+```
+
+Under a systemd unit, `garraia stop && garraia start` is never the answer:
+it would leave an orphan daemon on the port while the unit restart-loops
+(see [Running under systemd](#running-under-systemd)).
+
 ### Windows
 
 ```powershell
