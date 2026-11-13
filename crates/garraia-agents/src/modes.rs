@@ -940,6 +940,9 @@ impl ModeProfile {
                     // um canal em que esta conectado.
                     "garra_status",
                     "cli_inspect",
+                    // #1712: consulta ao catalogo da versao, R0 (dado
+                    // estatico embutido no binario, sem I/O nem rede).
+                    "garra_capabilities",
                 ]
                 .iter()
                 // #1384: a leitura do MCP `filesystem` (lista fechada de
@@ -1003,6 +1006,7 @@ impl ModeProfile {
                     // um canal em que esta conectado.
                     "garra_status".to_string(),
                     "cli_inspect".to_string(),
+                    "garra_capabilities".to_string(),
                 ],
                 // #1129: sem escrita no mundo físico também.
                 denied: vec![
@@ -1125,6 +1129,7 @@ impl ModeProfile {
                     // um canal em que esta conectado.
                     "garra_status".to_string(),
                     "cli_inspect".to_string(),
+                    "garra_capabilities".to_string(),
                 ],
                 denied: vec![
                     "file_write".to_string(),
@@ -1170,6 +1175,7 @@ impl ModeProfile {
                     // um canal em que esta conectado.
                     "garra_status".to_string(),
                     "cli_inspect".to_string(),
+                    "garra_capabilities".to_string(),
                 ],
                 denied: vec![],
                 required: vec![],
@@ -1218,6 +1224,7 @@ impl ModeProfile {
                     // um canal em que esta conectado.
                     "garra_status".to_string(),
                     "cli_inspect".to_string(),
+                    "garra_capabilities".to_string(),
                 ],
                 denied: vec![
                     "file_write".to_string(),
@@ -1266,6 +1273,7 @@ impl ModeProfile {
                     // um canal em que esta conectado.
                     "garra_status".to_string(),
                     "cli_inspect".to_string(),
+                    "garra_capabilities".to_string(),
                 ],
                 denied: vec![],
                 required: vec![],
@@ -2710,6 +2718,13 @@ mod tests {
                 ),
                 "modo '{modo}' esconde cli_inspect (#1712)"
             );
+            assert!(
+                ToolGate::for_mode_name(modo.as_str()).permite_com_capacidades(
+                    "garra_capabilities",
+                    crate::capacidades::capacidades_nativas("garra_capabilities"),
+                ),
+                "modo '{modo}' esconde garra_capabilities (#1712)"
+            );
         }
         assert_eq!(
             com_whitelist, 6,
@@ -2785,7 +2800,12 @@ mod superficie_remota_tests {
         "schedule_recurring",
     ];
 
-    const LEITURA: &[&str] = &["file_read", "garra_status", "web_fetch"];
+    const LEITURA: &[&str] = &[
+        "file_read",
+        "garra_status",
+        "garra_capabilities",
+        "web_fetch",
+    ];
 
     #[test]
     fn remoto_sem_modo_nao_executa_nem_escreve() {

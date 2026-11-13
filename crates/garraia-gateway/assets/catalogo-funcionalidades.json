@@ -703,6 +703,7 @@
       "summary": "Consulta sob demanda ao catálogo de funcionalidades desta versão, com filtro por nome ou categoria (garra_capabilities).",
       "prerequisites": [],
       "limitations": [
+        "só existe no agente do gateway e dos canais, não no agente interativo da CLI (garra chat), que usa o cli_inspect",
         "sem filtro devolve só o resumo (contagens por categoria); com filtro, no máximo 50 itens por resposta (padrão 10)",
         "descreve o que ESTA versão entrega; o estado da instalação vai no garra_status"
       ],
