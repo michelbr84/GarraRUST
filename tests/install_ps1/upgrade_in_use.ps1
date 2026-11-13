@@ -151,21 +151,35 @@ try {
 
     Write-Host ''
     Write-Host 'Install-BinaryFile: the aside name is taken (second install, same session)'
-    Reset-MoveInjection
-    Set-Content -LiteralPath $dest -Value 'v1-bytes' -NoNewline
-    # Stands in for the aside a still-running gateway holds from the first
-    # install. A real one cannot be deleted while that gateway runs; this
-    # placeholder could, so the sweep is stubbed out for this one call to
-    # reproduce "the name is taken and stays taken".
-    $taken = New-Payload -Directory $box -Name "garraia.exe.old-$PID" -Text 'held-by-old-gateway'
-    $realSweep = ${function:Clear-StaleAsideBinary}
-    function Clear-StaleAsideBinary { param([string]$Destination) $null = $Destination }
-    Install-BinaryFile -SourcePath $src -Destination $dest
-    Set-Item -Path function:Clear-StaleAsideBinary -Value $realSweep
-    Assert-Equal 'the upgrade still lands' 'v2-bytes' (Get-Text $dest)
-    Assert-Equal 'the taken aside is left alone' 'held-by-old-gateway' (Get-Text $taken)
-    Clear-StaleAsideBinary -Destination $dest
-    Assert-Equal 'the sweep covers the suffixed name too' 0 (Get-Leftover $box).Count
+    if ($onWindows) {
+        Reset-MoveInjection
+        Set-Content -LiteralPath $dest -Value 'v1-bytes' -NoNewline
+        # Stands in for the aside a still-running gateway holds from the first
+        # install. A real one cannot be deleted while that gateway runs; an
+        # open handle without FileShare.Delete reproduces exactly that on
+        # Windows (Linux deletes open files, hence the SKIP there).
+        $taken = New-Payload -Directory $box -Name "garraia.exe.old-$PID" -Text 'held-by-old-gateway'
+        $hold = [IO.File]::Open($taken, 'Open', 'Read', 'Read')
+        try {
+            try {
+                Install-BinaryFile -SourcePath $src -Destination $dest
+            } catch {
+                Assert-Fail "Install-BinaryFile with the aside name taken threw: $($_.Exception.Message)"
+            }
+            Assert-Equal 'the upgrade still lands' 'v2-bytes' (Get-Text $dest)
+            # The aside of THIS (stopped) binary took the next free name
+            # (.old-<pid>-1) and was deleted on the way out, so only the held
+            # file remains besides the destination.
+            Assert-Equal 'only the held aside remains' 1 (Get-Leftover $box).Count
+        } finally {
+            $hold.Dispose()
+        }
+        Assert-Equal 'the taken aside is left alone' 'held-by-old-gateway' (Get-Text $taken)
+        Clear-StaleAsideBinary -Destination $dest
+        Assert-Equal 'the sweep covers the suffixed name too' 0 (Get-Leftover $box).Count
+    } else {
+        Assert-Skip 'aside name taken by a held file' 'Linux deletes open files (windows-latest leg)'
+    }
 
     Write-Host ''
     Write-Host 'Install-BinaryFile: a stale aside from an earlier upgrade is swept'
