@@ -498,6 +498,12 @@ fn escolher_modo(nome: &str) -> std::result::Result<Option<AgentMode>, String> {
 
 fn rotulo_do_modo(modo: Option<AgentMode>) -> String {
     match modo {
+        // `auto` resolve o modo pela mensagem; quando a heuristica nao decide,
+        // o turno roda sem politica (`ToolGate::para_o_turno`). Dizer isso
+        // aqui, para `auto` nao parecer uma restricao que nem sempre e.
+        Some(AgentMode::Auto) => {
+            "auto (modo pela mensagem; sem politica quando a heuristica nao decide)".to_string()
+        }
         Some(m) => m.as_str().to_string(),
         None => "nenhum (sem politica de ferramentas)".to_string(),
     }
@@ -519,9 +525,14 @@ fn nomes_dos_modos() -> String {
 /// o do CLI primeiro, o do modo depois. Sem modo, ou com modo sem prompt
 /// proprio, `None` — o runtime usa o prompt configurado, como antes.
 fn prompt_do_turno(base: &str, exec: &ExecContext, input: &str) -> Option<String> {
-    let nome = exec.agent_mode.as_deref()?;
+    exec.agent_mode.as_deref()?;
     let portao = garraia_agents::modes::ToolGate::para_o_turno(exec, input);
     let do_modo = portao.system_prompt()?;
+    // O modo EFETIVO do turno: com `auto`, o que a heuristica escolheu.
+    let nome = portao
+        .nome_do_modo()
+        .or(exec.agent_mode.as_deref())
+        .unwrap_or_default();
     Some(format!(
         "{base}\n\n## Modo de execucao: {nome}\n\
          Neste modo algumas ferramentas listadas acima podem estar indisponiveis; \
@@ -2522,11 +2533,12 @@ pub async fn run_chat(
                 continue;
             }
             _ if input.starts_with("/mode ") || input.starts_with("/modo ") => {
-                match escolher_modo(&input[6..]) {
+                let nome = input.split_once(' ').map(|(_, n)| n).unwrap_or_default();
+                match escolher_modo(nome) {
                     Ok(novo) => {
                         modo_do_agente = novo;
                         let aviso = match novo {
-                            Some(m) => format!("Modo: {}.", m.as_str()),
+                            Some(m) => format!("Modo: {}.", rotulo_do_modo(Some(m))),
                             None => "Modo desligado: sem politica de ferramentas.".to_string(),
                         };
                         renderer.handle(UiEvent::Hint(&aviso), &mut io::stdout());
@@ -5771,6 +5783,28 @@ mod modo_do_chat_tests {
             exec.approval_scope
                 == garraia_agents::ApprovalScope::new(CANAL_CLI, "s", REMETENTE_CLI)
         );
+    }
+
+    /// `auto` mostra a ressalva, e o prompt nomeia o modo efetivo do turno.
+    #[test]
+    fn auto_diz_a_ressalva_e_o_prompt_nomeia_o_modo_efetivo() {
+        assert!(rotulo_do_modo(Some(AgentMode::Auto)).contains("sem politica"));
+        let exec = exec_do_turno("/tmp", "s", Some(AgentMode::Auto));
+        let portao = ToolGate::para_o_turno(&exec, "procure onde fica o main");
+        if let (Some(efetivo), Some(p)) = (
+            portao.nome_do_modo(),
+            prompt_do_turno("BASE", &exec, "procure onde fica o main"),
+        ) {
+            assert!(p.contains(&format!("Modo de execucao: {efetivo}")), "{p}");
+        }
+    }
+
+    /// `/model <nome>` nao pode cair no braco do `/mode `.
+    #[test]
+    fn model_nao_e_capturado_pelo_braco_do_mode() {
+        for cmd in ["/model gpt", "/models"] {
+            assert!(!cmd.starts_with("/mode ") && !cmd.starts_with("/modo ") && cmd != "/mode");
+        }
     }
 
     /// O prompt do modo nao pode apagar o do CLI, que carrega o diretorio.

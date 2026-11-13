@@ -344,9 +344,11 @@ enum Commands {
         /// debug, orchestrator, review or edit — the same modes the gateway
         /// and the Web Console use, enforced by the same tool gate. `search`
         /// and `architect` are read-only. Without the flag there is no tool
-        /// policy, as before; `/mode` changes it inside the session. This
-        /// only restricts tools: it never skips the bash confirmation tier
-        /// nor the hard-deny.
+        /// policy, as before; `/mode` changes it inside the session. It only
+        /// restricts: the mode's tool policy, plus its own limits, which can
+        /// lower the turn budget but never raise it. It never skips the bash
+        /// confirmation tier nor the hard-deny. `auto` picks the mode from
+        /// each message and runs without policy when the heuristic can't tell.
         #[arg(long, value_name = "MODE")]
         mode: Option<String>,
     },

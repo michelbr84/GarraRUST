@@ -517,8 +517,11 @@ same `ExecContext::agent_mode` the gateway and the Web Console set, so the
 runtime's tool gate enforces it: `search` and `architect` are read-only and a
 refused call reaches the next turn paired as an error. Without the flag there
 is no tool policy, exactly as before (#1858). An unknown name is an error, never
-a silent "no policy". The mode only **restricts** tools: it does not skip the
-bash confirmation tier nor the hard-deny. `/status` shows the active mode.
+a silent "no policy" — with one caveat: `auto` picks the mode from each message
+and, when the heuristic can't tell, that turn runs without policy (same as in
+the gateway). The mode only **restricts**: its tool policy, and its own limits,
+which can lower the turn budget but never raise it. It does not skip the bash
+confirmation tier nor the hard-deny. `/status` shows the active mode.
 
 ### Validate config
 
