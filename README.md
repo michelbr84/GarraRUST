@@ -195,7 +195,9 @@ platform, resolves the latest release, verifies the download against
 `SHA256SUMS`, installs `garraia.exe` under `%LOCALAPPDATA%\Programs\GarraIA`
 together with a `garra.cmd` shim (so `garra` works too), puts the directory on
 your user PATH, then chains into init and start. No administrator rights
-needed.
+needed. Upgrading over a running gateway works here too: the running
+`garraia.exe` is renamed aside and the new one renamed in, and the installer
+prints the restart command instead of re-running the wizard.
 
 Mirrors (same script, auto-synced): `raw.githubusercontent.com`, jsDelivr, and
 the GitHub release CDN

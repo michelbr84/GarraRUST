@@ -26,6 +26,11 @@ $installerPath = Get-InstallerPath
 
 $onWindows = [IO.Path]::DirectorySeparatorChar -eq '\'
 $script:Interactive = $true
+# #1865: the running-gateway branch comes first in Invoke-BootstrapPhase and
+# has its own suite (upgrade_in_use.ps1). Disable the probe here so these
+# branches never depend on whether a garraia happens to run on the host -- the
+# same kill-switch tests/install_sh/bootstrap_phase.sh exports.
+$env:GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE = '1'
 function Test-InteractiveSession { return $script:Interactive }
 
 # Build a stub `garraia` that records the subcommands it was called with and

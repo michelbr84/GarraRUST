@@ -626,6 +626,103 @@ function Install-GarraAlias {
     Write-Host "$verb $shimPath -> $script:Binary.exe"
 }
 
+# One rename. Split out so tests/install_ps1/upgrade_in_use.ps1 can make a
+# specific step fail and prove the undo paths in Install-BinaryFile; the real
+# work is a plain [IO.File]::Move (MoveFileEx without REPLACE_EXISTING).
+function Move-InstallFile {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Destination
+    )
+    [IO.File]::Move($Path, $Destination)
+}
+
+# Best-effort sweep of the `<binary>.exe.old-<pid>` files a previous upgrade
+# left behind. One of those is the image of a gateway that was still running
+# at the time; Windows refuses to delete it until that process exits, so the
+# failure is expected and silent - the next install tries again.
+function Clear-StaleAsideBinary {
+    param([Parameter(Mandatory)][string]$Destination)
+
+    $dir = Split-Path -Parent $Destination
+    $leaf = Split-Path -Leaf $Destination
+    $stale = @(Get-ChildItem -LiteralPath $dir -Filter "$leaf.old-*" -File -ErrorAction SilentlyContinue)
+    foreach ($file in $stale) {
+        Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Issue #1865 - the Windows half of install_binary_atomically (install.sh,
+# #1862). `Copy-Item -Force` over a running garraia.exe fails ("being used by
+# another process"), which made the most common upgrade - gateway up - abort.
+# Windows refuses to OVERWRITE or DELETE a running image, but it does let the
+# image be RENAMED (the same trick `garraia update` uses, update.rs; #1720).
+# So, all inside the install directory (same volume, so every move is a
+# rename and never a copy):
+#
+#   1. stage the new binary as <dest>.tmp.<pid>;
+#   2. rename the current <dest> aside to <dest>.old-<pid> (works while it
+#      runs - the process keeps executing the renamed file);
+#   3. rename the stage into <dest>;
+#   4. try to delete the aside; it stays if a gateway is still running from
+#      it, and Clear-StaleAsideBinary removes it on a later install.
+#
+# Every failure undoes what came before: a failed step 2 leaves <dest>
+# untouched, a failed step 3 renames the aside back, and the stage never
+# outlives the function. <dest> is never absent or truncated on the way out.
+# The aside name is NOT `garraia.old`: that one is the rollback backup owned
+# by `garraia update --rollback`, and the installer must not clobber it.
+function Install-BinaryFile {
+    param(
+        [Parameter(Mandatory)][string]$SourcePath,
+        [Parameter(Mandatory)][string]$Destination
+    )
+
+    Clear-StaleAsideBinary -Destination $Destination
+
+    $stage = "$Destination.tmp.$PID"
+    try {
+        Copy-Item -LiteralPath $SourcePath -Destination $stage -Force -ErrorAction Stop
+    } catch {
+        Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
+        Write-InstallError "Failed to stage the new binary next to ${Destination}: $($_.Exception.Message)"
+    }
+
+    $aside = $null
+    if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+        $aside = "$Destination.old-$PID"
+        Remove-Item -LiteralPath $aside -Force -ErrorAction SilentlyContinue
+        try {
+            Move-InstallFile -Path $Destination -Destination $aside
+        } catch {
+            Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
+            Write-InstallError ("Could not move the current $Destination aside to replace it: " +
+                "$($_.Exception.Message). Run 'garraia stop', close any running GarraIA, then try again.")
+        }
+    }
+
+    try {
+        Move-InstallFile -Path $stage -Destination $Destination
+    } catch {
+        $reason = $_.Exception.Message
+        if ($aside) {
+            try {
+                Move-InstallFile -Path $aside -Destination $Destination
+            } catch {
+                Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
+                Write-InstallError ("Failed to replace ${Destination} ($reason), and could not put the " +
+                    "previous binary back: it is at $aside - rename it to $Destination by hand.")
+            }
+        }
+        Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
+        Write-InstallError "Failed to replace ${Destination}: $reason"
+    }
+
+    if ($aside) {
+        Remove-Item -LiteralPath $aside -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Install-Binary {
     param(
         [Parameter(Mandatory)][string]$SourcePath,
@@ -655,12 +752,7 @@ function Install-Binary {
 
     $installPath = Join-Path $installDir "$script:Binary.exe"
 
-    try {
-        Copy-Item -Path $SourcePath -Destination $installPath -Force
-    } catch [IO.IOException] {
-        Write-InstallError ("Could not replace $installPath - the file is in use. " +
-            "Run 'garraia stop', close any running GarraIA, then try again.")
-    }
+    Install-BinaryFile -SourcePath $SourcePath -Destination $installPath
 
     if ($NoModifyPath) {
         Write-Host "Skipping PATH registration (-NoModifyPath). Add $installDir yourself."
@@ -679,7 +771,7 @@ function Install-Binary {
     Write-Host ''
     Write-Host "GarraIA $Version installed to $installPath" -ForegroundColor Green
 
-    # Same directory, same privileges: whatever let Copy-Item land garraia.exe
+    # Same directory, same privileges: whatever let Install-BinaryFile land garraia.exe
     # is what the shim gets. Mirrors install_garra_alias sharing
     # install_needs_sudo with install_binary in install.sh.
     Install-GarraAlias -Directory $installDir
@@ -692,6 +784,43 @@ function Write-NextStepsLegacy {
     Write-Host '  garraia init    # interactive setup wizard'
     Write-Host '  garraia start   # start the gateway'
     Write-Host "  'garra' is an alias for 'garraia' - either name works."
+}
+
+# Issue #1865 - Rule 16 counterpart of gateway_running in install.sh (#1862).
+# True when a GarraIA process is running, so this install was an UPGRADE: the
+# swapped-in binary does not take effect until that process restarts.
+#
+# Windows has no garraia service unit, so this is the equivalent of the
+# install.sh fallback for hosts without systemd (`pgrep -x garraia`): match
+# the process name. The name comes from the image the process was started
+# from, so it still reads `garraia` after Install-BinaryFile renamed that
+# image aside. Like pgrep, it can also match an interactive CLI session
+# (`garraia chat`); on a machine with a chat open the wizard is not needed
+# either, so a notice instead of the wizard is the safe side of the error.
+#
+# GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE=1 disables the probe - the same
+# kill-switch install.sh honors, for test harnesses that must reach the
+# wizard/start branches on a machine where a garraia happens to be running.
+function Test-GatewayRunning {
+    if ($env:GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE -eq '1') { return $false }
+    $running = @(Get-Process -Name $script:Binary -ErrorAction SilentlyContinue)
+    return ($running.Count -gt 0)
+}
+
+# Companion of Test-GatewayRunning, printed AFTER the binary was swapped in,
+# so it reports a completed install. Mirrors print_restart_notice in
+# install.sh for the only layout Windows has - a process, foreground or
+# `garraia start -d` - so the command is stop + start (two statements:
+# Windows PowerShell 5.1 has no `&&`).
+function Write-RestartNotice {
+    param([Parameter(Mandatory)][string]$Version)
+    Write-Host ''
+    Write-Host "Upgrade note: the binary on disk is now $Version, but a gateway is"
+    Write-Host '  still running with the previous version in memory. Restart it to'
+    Write-Host "  pick up ${Version}:"
+    Write-Host '    garraia stop; garraia start'
+    Write-Host '  (If it runs in the foreground of another window, press Ctrl+C there'
+    Write-Host "  and run 'garraia start' again.)"
 }
 
 # Is there a human at a console to answer the wizard?
@@ -740,8 +869,18 @@ function Invoke-BootstrapPhase {
     param(
         [Parameter(Mandatory)][string]$InstallPath,
         [bool]$SkipInit = $false,
-        [bool]$SkipStart = $false
+        [bool]$SkipStart = $false,
+        [string]$Version = 'the new version'
     )
+
+    # Issue #1865 (install.sh #1862): this was an upgrade over a running
+    # gateway. Re-running the wizard on a configured machine and starting a
+    # second gateway on top of the live one would fight it instead of
+    # upgrading it - print the restart instruction and stop.
+    if (Test-GatewayRunning) {
+        Write-RestartNotice -Version $Version
+        return
+    }
 
     if ($SkipInit -and $SkipStart) {
         Write-NextStepsLegacy
@@ -838,7 +977,7 @@ function Invoke-Main {
     }
 
     Invoke-BootstrapPhase -InstallPath $installPath `
-        -SkipInit $opts.SkipInit -SkipStart $opts.SkipStart
+        -SkipInit $opts.SkipInit -SkipStart $opts.SkipStart -Version $resolved
 }
 
 # Library mode: when dot-sourced by the Pester suites with
