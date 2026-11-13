@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+use std::ops::Range;
+
 use thiserror::Error;
 
 /// Error returned when a command is rejected by the safety gate.
@@ -67,6 +70,40 @@ const DENY_LIST: &[&str] = &[
 /// Unlike DENY_LIST, these are paused and a confirmation prompt is returned.
 /// Matched case-insensitively against the full lowercased command string.
 const CONFIRM_LIST: &[&str] = &[
+    // Destrutivos em formas que o substring legado nao cobre.
+    " -delete",
+    "dd of=",
+    "rm -r",
+    "del /s",
+    "del /f",
+    "rd /s",
+    "git reset --hard",
+    "git push --force",
+    "git push -f",
+    "git clean -f",
+    "drop table",
+    "drop database",
+    "drop schema",
+    "truncate table",
+    "truncate ",
+    "delete from",
+    "kill ",
+    "taskkill",
+    "stop-process",
+    "remove-item -recurse",
+    "remove-item -r",
+];
+
+/// #1861: padrões do tier de confirmação que são **seletores de recurso** —
+/// o texto citado NÃO é dado: ele nomeia o que o comando vai ler/mover.
+/// `Get-ItemProperty 'HKLM:\...\Environment'` lê o ambiente persistente do
+/// registro com o caminho ENTRE ASPAS — mascarar o argumento desligaria o
+/// gate na forma mais comum de escrever o comando. Estes padrões rodam
+/// sobre o texto INTEIRO (como antes da máscara), não sobre a forma
+/// mascarada. O custo do falso positivo continua no tier de confirmação
+/// (`echo "veja os.environ no código" > doc` exige confirmação), que é o
+/// lado seguro — o recorte do #1861 para substring-citação é o DENY_LIST.
+const CONFIRM_ANCHORED_LIST: &[&str] = &[
     // Leitura do ambiente de processos via procfs (`cat /proc/$PPID/environ`,
     // `strings /proc/1/environ`, `/etc/environment`) e do idioma Python
     // (`os.environ`) — canal de exfilacao que o scrub R3 de env nao fecha por
@@ -115,28 +152,6 @@ const CONFIRM_LIST: &[&str] = &[
     // `[MyProcess]::StartNew()`.
     ".process]::start",
     "[process]::start",
-    // Destrutivos em formas que o substring legado nao cobre.
-    " -delete",
-    "dd of=",
-    "rm -r",
-    "del /s",
-    "del /f",
-    "rd /s",
-    "git reset --hard",
-    "git push --force",
-    "git push -f",
-    "git clean -f",
-    "drop table",
-    "drop database",
-    "drop schema",
-    "truncate table",
-    "truncate ",
-    "delete from",
-    "kill ",
-    "taskkill",
-    "stop-process",
-    "remove-item -recurse",
-    "remove-item -r",
 ];
 
 /// Exfiltration-capable programs — gated on the FIRST token of the
@@ -681,6 +696,440 @@ fn normalize(cmd: &str) -> String {
     out.trim().to_string()
 }
 
+/// #1861 — mapa das regiões do comando cujo conteúdo é **dado** (string entre
+/// aspas, corpo de heredoc, comentário) e não código executado.
+///
+/// O gate legado avalia o `DENY_LIST`/`CONFIRM_LIST` como substring solta
+/// sobre o comando inteiro: `echo 'nunca rode rm -rf /' > aviso.txt` recebe
+/// hard-deny por **citar** o literal, não por executá-lo — e o modelo entra
+/// em loop de negações porque o motivo não é acionável. A correção modela a
+/// fronteira dado/código: o que está dentro de [`QuoteMap::regions`] é texto,
+/// e um padrão perigoso que aparece lá não é efeito de comando nenhum.
+///
+/// Regiões de dado (conteúdo vira espaço na forma mascarada):
+/// - `'...'` e `$'...'` (ANSI-C): literal puro, sem expansão nenhuma;
+/// - `"..."` e `$"..."`: dado com expansão — o conteúdo é dado, MAS as
+///   substituições `$(`...`)` e crase **executam código**; elas voltam em
+///   [`QuoteMap::keeps`], e o texto delas permanece na forma mascarada,
+///   avaliado pelo gate como hoje (`echo "$(env)"` continua gated);
+/// - comentário `#` (no início de palavra) até o fim da **linha** — a quebra
+///   de linha preserva o comando da linha seguinte;
+/// - corpo de heredoc (`<<EOF` até a linha exata do delimitador): dado com
+///   delimitador entre aspas; sem aspas a expansão acontece e as
+///   substituições seguem em `keeps`.
+///
+/// O que NÃO vira dado (o texto segue inteiro no comando avaliado):
+/// - o argumento do `-c` de um shell e os argumentos de `eval` — é código
+///   executado; aspas em torno de código não o tornam dado (as aspas do
+///   argumento do `eval` são separação de palavra, e o código volta avaliado
+///   com TODAS as aspas removidas — sobre-approximação conservadora);
+/// - comando truncado (aspas sem par, heredoc sem delimitador de
+///   fechamento): fail-closed — sem região, o texto segue avaliado como
+///   antes, padrão perigoso dentro dele continua bloqueado.
+struct QuoteMap {
+    /// Regiões de dado; o conteúdo vira espaço na forma mascarada.
+    regions: Vec<Range<usize>>,
+    /// Substituições (`$(...)`, crase) DENTRO de região de dado: o conteúdo
+    /// executa e fica FORA da máscara.
+    keeps: Vec<Range<usize>>,
+}
+
+/// `true` quando a posição inicia palavra — o `#` só é comentário no início
+/// de palavra; `echo a#b` imprime `a#b` (#1861).
+fn word_start(prev: Option<char>) -> bool {
+    match prev {
+        None => true,
+        Some(c) => matches!(c, ' ' | '\t' | '\n' | '\r' | ';' | '|' | '&' | '(' | ')'),
+    }
+}
+
+/// Índice (em chars) do primeiro caractere com byte `>= byte`.
+fn idx_de_byte(chars: &[(usize, char)], byte: usize) -> usize {
+    chars.partition_point(|&(b, _)| b < byte)
+}
+
+/// Delimitador de heredoc depois do `<<`: `-` opcional (`<<-`), aspas
+/// opcionais (`<<'EOF'`/`<<"EOF"` — sem expansão), palavra até whitespace ou
+/// metacaractere. Devolve `(delimitador, com_aspas, byte_fim_do_token)` — o
+/// byte do primeiro caractere DEPOIS do delimitador (e da aspa de
+/// fechamento, quando houver), no `raw` original.
+fn delimitador_de_heredoc(raw: &str, mut byte: usize) -> Option<(String, bool, usize)> {
+    let tail = &raw[byte..];
+    let mut andamento = tail;
+    if let Some(r) = andamento.strip_prefix('-') {
+        andamento = r;
+        byte += 1;
+    }
+    let mut com_aspas = false;
+    let mut aspa = ' ';
+    if let Some(c) = andamento.chars().next()
+        && (c == '\'' || c == '"')
+    {
+        com_aspas = true;
+        aspa = c;
+        andamento = &andamento[1..];
+        byte += 1;
+    }
+    let mut delim = String::new();
+    let mut fim = 0usize;
+    for (i, c) in andamento.char_indices() {
+        if com_aspas && c == aspa {
+            fim = i + c.len_utf8();
+            break;
+        }
+        if !com_aspas
+            && matches!(
+                c,
+                ' ' | '\t' | '\n' | '\r' | ';' | '|' | '&' | '<' | '>' | '(' | ')'
+            )
+        {
+            fim = i;
+            break;
+        }
+        delim.push(c);
+    }
+    if delim.is_empty() {
+        return None;
+    }
+    let fim_absoluto = byte + if fim > 0 { fim } else { andamento.len() };
+    Some((delim, com_aspas, fim_absoluto))
+}
+
+/// Byte onde começa a linha de fechamento do heredoc: a primeira linha após
+/// `a partir_de` cujo conteúdo é o delimitador exato (com tabs à esquerda
+/// permitidos no `<<-`, igual ao bash). `None` quando não fecha — fail-closed.
+fn linha_de_fechamento(raw: &str, a_partir_de: usize, delim: &str, dash: bool) -> Option<usize> {
+    let tail = &raw[a_partir_de..];
+    let mut offset = 0usize;
+    for linha in tail.split_inclusive('\n') {
+        let conteudo = linha.strip_suffix('\n').unwrap_or(linha);
+        let conteudo = conteudo.strip_suffix('\r').unwrap_or(conteudo);
+        let conteudo = if dash {
+            conteudo.trim_start_matches('\t')
+        } else {
+            conteudo
+        };
+        if conteudo == delim {
+            return Some(a_partir_de + offset);
+        }
+        offset += linha.len();
+    }
+    None
+}
+
+/// Substituições (`$(...)` balanceado, crase) dentro de um corpo de dado —
+/// elas EXECUTAM, então o conteúdo fica fora da máscara (#1861).
+fn guardar_substituicoes(texto: &str, comeco: usize, fim: usize, keeps: &mut Vec<Range<usize>>) {
+    let corpo = &texto[comeco..fim];
+    let chars: Vec<(usize, char)> = corpo.char_indices().collect();
+    let mut j = 0usize;
+    while j < chars.len() {
+        let (b, c) = chars[j];
+        match c {
+            // Escape: o caractere seguinte é literal (não fecha nada).
+            '\\' => {
+                j += 2;
+                continue;
+            }
+            '`' => {
+                if let Some(r) = chars[j + 1..].iter().position(|&(_, ch)| ch == '`') {
+                    let fim_keep = chars[j + 1 + r].0 + 1;
+                    keeps.push((comeco + b)..(comeco + fim_keep));
+                    j = j + 1 + r + 1;
+                    continue;
+                }
+                j += 1;
+            }
+            '$' if chars.get(j + 1).is_some_and(|&(_, ch)| ch == '(') => {
+                let mut prof = 1usize;
+                let mut k = j + 2;
+                while k < chars.len() && prof > 0 {
+                    match chars[k].1 {
+                        '(' => prof += 1,
+                        ')' => prof -= 1,
+                        _ => {}
+                    }
+                    k += 1;
+                }
+                if prof == 0 {
+                    keeps.push((comeco + b)..(comeco + chars[k - 1].0 + 1));
+                    j = k;
+                } else {
+                    j += 1;
+                }
+            }
+            _ => j += 1,
+        }
+    }
+}
+
+/// Varre o comando e devolve o mapa de dado (ver [`QuoteMap`]).
+fn scan_quoted(raw: &str) -> QuoteMap {
+    let mut map = QuoteMap {
+        regions: Vec::new(),
+        keeps: Vec::new(),
+    };
+    let chars: Vec<(usize, char)> = raw.char_indices().collect();
+    let mut i = 0usize;
+    let mut prev: Option<char> = None;
+    while i < chars.len() {
+        let (byte, c) = chars[i];
+        match c {
+            // Escape no texto solto: o caractere seguinte é literal (inerte) —
+            // não abre comentário, aspas nem heredoc.
+            '\\' => {
+                prev = chars.get(i + 1).map(|&(_, c)| c);
+                i += 2;
+            }
+            '#' if word_start(prev) => {
+                let fim = raw[byte..]
+                    .find('\n')
+                    .map(|r| byte + r)
+                    .unwrap_or(raw.len());
+                map.regions.push(byte..fim);
+                i = idx_de_byte(&chars, fim);
+                prev = chars.get(i).map(|&(_, c)| c);
+            }
+            '\'' | '"' => {
+                let aspa = c;
+                // `$'...'`/`$"..."`
+                let comeco = if prev == Some('$') && i > 0 {
+                    chars[i - 1].0
+                } else {
+                    byte
+                };
+                match fim_de_aspas(&chars, i + 1, aspa, aspa == '"') {
+                    Some((fim_byte, idx_fim)) => {
+                        if aspa == '"' {
+                            // Dado com expansão: `$(`...`)` e crase executam —
+                            // preservadas fora da máscara. `$'...'` é literal
+                            // puro: nada é preservado.
+                            guardar_substituicoes(raw, byte, fim_byte, &mut map.keeps);
+                        }
+                        // O fechamento entra na região: aspa solta no texto
+                        // mascarado seria ruído para o scan.
+                        map.regions.push(comeco..fim_byte + aspa.len_utf8());
+                        i = idx_fim + 1;
+                        prev = Some(aspa);
+                    }
+                    // Aspas sem par: fail-closed — sem região, o texto segue
+                    // avaliado como antes.
+                    None => {
+                        prev = Some(aspa);
+                        i += 1;
+                    }
+                }
+            }
+            '<' if chars.get(i + 1).is_some_and(|&(_, c)| c == '<') => {
+                if chars.get(i + 2).is_some_and(|&(_, c)| c == '<') {
+                    // Here-string `<<<`: o operando costuma vir entre aspas e
+                    // é tratado pelo ramo das aspas; segue o texto.
+                    prev = Some('<');
+                    i += 3;
+                    continue;
+                }
+                match delimitador_de_heredoc(raw, byte + 2) {
+                    Some((delim, com_aspas, fim_tok)) => {
+                        let Some(nl) = raw[fim_tok..].find('\n').map(|r| fim_tok + r) else {
+                            // Sem quebra de linha: heredoc truncado — sem região.
+                            i = idx_de_byte(&chars, fim_tok);
+                            prev = Some('<');
+                            continue;
+                        };
+                        let corpo = nl + 1;
+                        let dash = raw[..byte].ends_with("<<-");
+                        if let Some(fecha) = linha_de_fechamento(raw, corpo, &delim, dash) {
+                            map.regions.push(corpo..fecha);
+                            if !com_aspas {
+                                guardar_substituicoes(raw, corpo, fecha, &mut map.keeps);
+                            }
+                            i = idx_de_byte(&chars, fecha);
+                            prev = Some('\n');
+                        } else {
+                            // Sem delimitador de fechamento: fail-closed.
+                            i = idx_de_byte(&chars, fim_tok);
+                            prev = Some('<');
+                        }
+                    }
+                    // `2<&1`, `1<<`... sem palavra: não é heredoc.
+                    None => {
+                        prev = Some('<');
+                        i += 2;
+                    }
+                }
+            }
+            _ => {
+                prev = Some(c);
+                i += 1;
+            }
+        }
+    }
+    map
+}
+
+/// Byte e índice da próxima `aspa` a partir de `de`. Aspas simples não têm
+/// escape nenhum (POSIX); nas duplas, `\` escapa o caractere seguinte
+/// (`\"` é literal e não fecha a string). `None` quando não fecha.
+fn fim_de_aspas(
+    chars: &[(usize, char)],
+    de: usize,
+    aspa: char,
+    com_escape: bool,
+) -> Option<(usize, usize)> {
+    let mut j = de;
+    while j < chars.len() {
+        match chars[j].1 {
+            c if c == aspa => return Some((chars[j].0, j)),
+            '\\' if com_escape => j += 2,
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// Devolve o comando com o conteúdo das regiões de dado substituído por
+/// espaço — preservando quebras de linha (a estrutura de linhas importa para
+/// o comentário/heredoc, e o `normalize` vai colapsar do mesmo jeito) e o
+/// texto das regiões `keeps` (substituição que executa).
+fn mask_quoted(raw: &str, map: &QuoteMap) -> String {
+    let mascarado: Vec<Range<usize>> = map
+        .regions
+        .iter()
+        .flat_map(|regiao| fatiar_regiao(regiao, &map.keeps))
+        .collect();
+    let mut out = String::with_capacity(raw.len());
+    let mut cursor = 0usize;
+    for regiao in &mascarado {
+        if regiao.start > cursor {
+            out.push_str(&raw[cursor..regiao.start]);
+        }
+        for c in raw[regiao.start..regiao.end].chars() {
+            out.push(if c == '\n' { '\n' } else { ' ' });
+        }
+        cursor = cursor.max(regiao.end);
+    }
+    out.push_str(&raw[cursor..]);
+    out
+}
+
+/// Uma região de dado menos os trechos `keeps` (substituição) — os trechos
+/// restantes são os que viram espaço.
+fn fatiar_regiao(regiao: &Range<usize>, keeps: &[Range<usize>]) -> Vec<Range<usize>> {
+    let mut pedacos = vec![regiao.clone()];
+    for keep in keeps {
+        let mut proximos = Vec::with_capacity(pedacos.len() + 1);
+        for pedaco in pedacos {
+            if keep.start >= pedaco.end || keep.end <= pedaco.start {
+                proximos.push(pedaco);
+                continue;
+            }
+            if keep.start > pedaco.start {
+                proximos.push(pedaco.start..keep.start);
+            }
+            if keep.end < pedaco.end {
+                proximos.push(keep.end..pedaco.end);
+            }
+        }
+        pedacos = proximos;
+    }
+    pedacos
+}
+
+/// Remove TODAS as aspas do texto — usado no código de `eval`: o eval
+/// concatena os argumentos e executa o resultado, então as aspas do argumento
+/// são separação de palavra, não "dado". A remoção total é sobre-approximação
+/// conservadora: ela só aumenta a chance de um padrão casar.
+fn strip_all_quotes(code: &str) -> String {
+    code.chars().filter(|&c| c != '\'' && c != '"').collect()
+}
+
+/// #1861 — extrai o CÓDIGO que o próprio comando executa: o argumento do
+/// `-c` de um shell e os argumentos de `eval`.
+///
+/// Tokens dentro de região de dado não são programa: `echo 'bash -c x'` não
+/// extrai nada (o `'bash` está dentro da string), mas `bash -c 'x'` extrai
+/// `x` — o argumento do `-c` é o código, mesmo entre aspas. O slice do
+/// `eval` é o resto inteiro da string (todos os argumentos são código); o do
+/// `-c` mantém a semântica do `extract_shell_c_code` que substitui: um par
+/// de aspas envolvente é removido. O chamador re-avalia cada slice pelo
+/// MESMO gate, com teto de profundidade — a recursão cobre o que vier
+/// aninhado dentro do slice. `eval` volta com TODAS as aspas removidas; o
+/// `-c`, com um par envolvente removido (sem par, o texto segue como está).
+fn extract_code_slices<'a>(raw: &'a str, map: &QuoteMap) -> Vec<Cow<'a, str>> {
+    let mut out = Vec::new();
+    let mut prev_shell = false;
+    let mut prev_eval = false;
+    let mut offset = 0usize;
+    for tok in raw.split_whitespace() {
+        let Some(rel) = raw[offset..].find(tok) else {
+            break;
+        };
+        let start = offset + rel;
+        offset = start + tok.len();
+        let base = program_basename(tok);
+        if prev_eval {
+            // Argumentos do `eval`: do token atual até o fim — é tudo código.
+            out.push(Cow::Owned(strip_all_quotes(&raw[start..])));
+            break; // o que vier aninhado o chamador avalia na recursão
+        }
+        if dentro_de_regiao(map, start) {
+            // Token é dado: quebra qualquer cadeia `shell -c` pendente.
+            prev_shell = false;
+            continue;
+        }
+        if base == "eval" {
+            prev_eval = true;
+            prev_shell = false;
+            continue;
+        }
+        if prev_shell && tok == "-c" {
+            let resto = raw[offset..].trim();
+            if !resto.is_empty() {
+                out.push(Cow::Borrowed(strip_matched_quotes(resto)));
+            }
+            break; // o que vier aninhado o chamador avalia na recursão
+        }
+        prev_shell = CODE_SHELLS.contains(&base);
+    }
+    out
+}
+
+/// `true` quando a posição de byte está dentro de uma região de dado.
+fn dentro_de_regiao(map: &QuoteMap, byte: usize) -> bool {
+    map.regions
+        .iter()
+        .any(|regiao| byte >= regiao.start && byte < regiao.end)
+}
+
+/// Varredura do tier de BLOQUEIO sobre o comando — substrings do `DENY_LIST`
+/// sobre a forma MASCARADA (dado entre aspas/heredoc/comentário não bloqueia,
+/// #1861) e o código embutido (`sh -c`, `eval`) avaliado pelo MESMO gate
+/// ANTES da máscara, com teto de profundidade (acima dele: fail-closed para
+/// o tier de confirmação, nunca silêncio).
+fn deny_scan(raw: &str, depth: u8) -> Result<(), SafetyDenied> {
+    let map = scan_quoted(raw);
+    for code in extract_code_slices(raw, &map) {
+        if depth >= MAX_UNWRAP_DEPTH {
+            return Err(SafetyDenied::RequiresConfirmation {
+                pattern: "nested interpreter -c",
+            });
+        }
+        deny_scan(&code, depth + 1)?;
+    }
+    let masked = normalize(&mask_quoted(raw, &map));
+    // A forma canônica de programa (#1791) deriva do texto RAW com as
+    // regiões de dado mascaradas na cópia: o token de programa reescrito
+    // (`"/usr/bin/git" push` → `git push`) sobrevive, e o dado de heredoc/
+    // string/comentário não vaza pelo caminho do canonical.
+    let canonical = canonical_program_form(raw, &map.regions);
+    for &pattern in DENY_LIST {
+        if contains_in_either(&masked, canonical.as_deref(), pattern) {
+            return Err(SafetyDenied::DangerousCommand { pattern });
+        }
+    }
+    Ok(())
+}
+
 /// Check a raw bash/shell command against the safety denylist.
 ///
 /// Returns `Ok(())` if the command is safe to execute, or `Err(SafetyDenied)`
@@ -689,22 +1138,18 @@ fn normalize(cmd: &str) -> String {
 /// `DangerousCommand`.
 ///
 /// Matching runs on the normalized command (lowercase, whitespace-collapsed)
-/// as a substring search, plus program-aware risky detection per
-/// metacharacter segment with wrapper resolution (#1075 R2 + auditoria).
+/// as a substring search over the QUOTE-MASKED form (#1861: dado entre
+/// aspas/heredoc/comentário não é efeito de comando), plus program-aware
+/// risky detection per metacharacter segment with wrapper resolution
+/// (#1075 R2 + auditoria). Código embutido (`sh -c`, `eval`) é re-avaliado
+/// pelo MESMO gate antes da máscara.
 pub fn safety_gate(cmd: &str) -> Result<(), SafetyDenied> {
-    let normalized = normalize(cmd);
-    // #1791: `git.exe push --force origin main` e `format.com c:` tem de
-    // casar os mesmos substrings que `git push ...`/`format c:` no Linux.
-    let canonical = canonical_program_form(&normalized);
-
-    // Hard block takes priority.
-    for &pattern in DENY_LIST {
-        if contains_in_either(&normalized, canonical.as_deref(), pattern) {
-            return Err(SafetyDenied::DangerousCommand { pattern });
-        }
-    }
-
-    risky_tier(&normalized)
+    // Hard block takes priority — sobre a forma mascarada e o código
+    // embutido (deny_scan), depois o tier de confirmação sobre o texto
+    // inteiro (risky_tier: as regras por programa/token não confiam em
+    // máscara nenhuma).
+    deny_scan(cmd, 0)?;
+    risky_tier(cmd)
 }
 
 /// Check only the risky confirmation tier.
@@ -714,14 +1159,15 @@ pub fn safety_gate(cmd: &str) -> Result<(), SafetyDenied> {
 /// env-dump interpolation. Does not check `DENY_LIST` — callers that need
 /// both should call [`safety_gate`] first.
 pub fn is_risky(cmd: &str) -> Result<(), SafetyDenied> {
-    risky_tier(&normalize(cmd))
+    risky_tier(cmd)
 }
 
-/// Risky tier over an ALREADY-normalized command: CONFIRM_LIST substrings,
-/// env-dump interpolation, pipe-to-shell, sensitive/interpreter programs and
-/// program-aware mutating subcommands. (#1075 R2 + auditoria do hardening)
-fn risky_tier(normalized: &str) -> Result<(), SafetyDenied> {
-    risky_tier_depth(normalized, 0)
+/// Risky tier over the RAW command: CONFIRM_LIST substrings (over the
+/// quote-masked form, #1861), env-dump interpolation, pipe-to-shell,
+/// sensitive/interpreter programs and program-aware mutating subcommands
+/// (#1075 R2 + auditoria do hardening).
+fn risky_tier(raw: &str) -> Result<(), SafetyDenied> {
+    risky_tier_depth(raw, &normalize(raw), 0)
 }
 
 /// Teto de recursão para `sh -c 'sh -c ...'` aninhado — acima disso,
@@ -735,20 +1181,38 @@ fn contains_in_either(normalized: &str, canonical: Option<&str>, pattern: &str) 
     normalized.contains(pattern) || canonical.is_some_and(|c| c.contains(pattern))
 }
 
-fn risky_tier_depth(normalized: &str, depth: u8) -> Result<(), SafetyDenied> {
-    let canonical = canonical_program_form(normalized);
+fn risky_tier_depth(raw: &str, normalized: &str, depth: u8) -> Result<(), SafetyDenied> {
+    let map = scan_quoted(raw);
+    // #1861: o scan de substring roda sobre o comando MASCARADO (dado entre
+    // aspas/heredoc/comentário não é efeito de comando); a forma canônica de
+    // programa (#1791) sai do RAW com as regiões mascaradas na cópia.
+    let masked = normalize(&mask_quoted(raw, &map));
+    let canonical = canonical_program_form(raw, &map.regions);
 
     // Legacy substring entries (rm -r, SQL, git push --force, ...), tambem
     // sobre a forma canonica de programa (`git.exe push --force`, #1791).
+    // #1861: sobre a forma MASCARADA — citar o literal dentro de string/
+    // heredoc/comentário não é efeito de comando.
     for &pattern in CONFIRM_LIST {
+        if contains_in_either(&masked, canonical.as_deref(), pattern) {
+            return Err(SafetyDenied::RequiresConfirmation { pattern });
+        }
+    }
+
+    // Seletores de recurso (#1861): o texto citado nomeia o que o comando
+    // vai ler/mover — `Get-ItemProperty 'HKLM:\...\Environment'` — então
+    // rodam sobre o texto INTEIRO, imune à máscara.
+    for &pattern in CONFIRM_ANCHORED_LIST {
         if contains_in_either(normalized, canonical.as_deref(), pattern) {
             return Err(SafetyDenied::RequiresConfirmation { pattern });
         }
     }
 
-    // Environment-dumping interpolation.
+    // Environment-dumping interpolation — sobre a forma mascarada: as
+    // substituições DENTRO de dado (`"$(env)"`) são preservadas, porque
+    // elas executam de verdade.
     for &pattern in ENV_SUBST_PATTERNS {
-        if normalized.contains(pattern) {
+        if masked.contains(pattern) {
             return Err(SafetyDenied::RequiresConfirmation { pattern });
         }
     }
@@ -780,13 +1244,16 @@ fn risky_tier_depth(normalized: &str, depth: u8) -> Result<(), SafetyDenied> {
         });
     }
 
-    if let Some(code) = extract_shell_c_code(normalized) {
+    // #1861: `-c` de shell E os argumentos de `eval` são código executado —
+    // extraídos do texto INTEIRO (aspas em torno de código não o tornam
+    // dado) e re-avaliados pelo MESMO tier, com teto de profundidade.
+    for code in extract_code_slices(raw, &map) {
         if depth >= MAX_UNWRAP_DEPTH {
             return Err(SafetyDenied::RequiresConfirmation {
                 pattern: "nested interpreter -c",
             });
         }
-        risky_tier_depth(&normalize(code), depth + 1)?;
+        risky_tier_depth(&code, &normalize(&code), depth + 1)?;
     }
 
     // Pipe para reservatório de código arbitrário — o substring legado
@@ -851,7 +1318,7 @@ fn risky_tier_depth(normalized: &str, depth: u8) -> Result<(), SafetyDenied> {
                     pattern: "nested interpreter -c",
                 });
             }
-            risky_tier_depth(&normalize(&linha), depth + 1)?;
+            risky_tier_depth(&linha, &normalize(&linha), depth + 1)?;
         }
 
         // Shell com `-c` já foi tratado no nível do comando inteiro
@@ -1047,11 +1514,17 @@ fn segment_tokens(segment: &str) -> Vec<&str> {
 /// cobertura que tem no Linux. So o token de programa e reescrito: um
 /// argumento como `exemplo.com` fica como esta, senao `ping sync.com -n 1`
 /// viraria `sync -n 1` e casaria o `nc -` do `DENY_LIST`.
-fn canonical_program_form(normalized: &str) -> Option<String> {
+///
+/// #1861: roda sobre o texto RAW com as regioes de dado do [`scan_quoted`] —
+/// o texto copiado ao redor do token reescrito sai MASCARADO, senao o dado
+/// da regiao vazaria pelo caminho do canonical (`cat <<'EOF'` parte o
+/// comando no `<<` e o delimitador `'EOF'` viraria "token de programa" de um
+/// segmento falso, levando `rm -rf /` do corpo junto).
+fn canonical_program_form(texto: &str, regions: &[Range<usize>]) -> Option<String> {
     const METACHARS: [char; 7] = [';', '|', '&', '<', '>', '(', ')'];
-    let mut out = String::with_capacity(normalized.len());
+    let mut out = String::with_capacity(texto.len());
     let mut mudou = false;
-    for pedaco in normalized.split_inclusive(METACHARS) {
+    for pedaco in texto.split_inclusive(METACHARS) {
         let (segmento, sep) = match pedaco.char_indices().last() {
             Some((i, c)) if METACHARS.contains(&c) => pedaco.split_at(i),
             _ => (pedaco, ""),
@@ -1073,20 +1546,41 @@ fn canonical_program_form(normalized: &str) -> Option<String> {
                 segmento.get(..off)?,
                 programa,
                 segmento.get(off + tok.len()..)?,
+                off + tok.len(),
             ))
         });
+        let base_absoluta = (pedaco.as_ptr() as usize).checked_sub(texto.as_ptr() as usize)?;
         match troca {
-            Some((antes, programa, depois)) => {
-                out.push_str(antes);
+            Some((antes, programa, depois, fim_relativo)) => {
+                push_com_mascara(&mut out, antes, base_absoluta, regions);
                 out.push_str(programa);
-                out.push_str(depois);
+                push_com_mascara(&mut out, depois, base_absoluta + fim_relativo, regions);
                 mudou = true;
             }
-            None => out.push_str(segmento),
+            None => push_com_mascara(&mut out, segmento, base_absoluta, regions),
         }
-        out.push_str(sep);
+        let sep_absoluto = base_absoluta + pedaco.len() - sep.len();
+        push_com_mascara(&mut out, sep, sep_absoluto, regions);
     }
     mudou.then_some(out)
+}
+
+/// Copia `pedaco` para `out`, trocando por espaço todo caractere cuja
+/// posição absoluta (base + offset no pedaço) caia numa região de dado — a
+/// quebra de linha fica, igual ao `mask_quoted`.
+fn push_com_mascara(
+    out: &mut String,
+    pedaco: &str,
+    base_absoluta: usize,
+    regions: &[Range<usize>],
+) {
+    for (offset, c) in pedaco.char_indices() {
+        let absoluta = base_absoluta + offset;
+        let em_dado = regions
+            .iter()
+            .any(|regiao| absoluta >= regiao.start && absoluta < regiao.end);
+        out.push(if em_dado && c != '\n' { ' ' } else { c });
+    }
 }
 
 /// #1791: o programa de um segmento vem DEPOIS de uma atribuicao na frente.
@@ -1681,34 +2175,6 @@ fn strip_windows_exec_suffix(name: &str) -> Option<&str> {
     })
 }
 
-/// Extrai o argumento do `-c` de um shell (`bash -c 'código'`): a substring
-/// depois do token `-c` imediatamente anterior ao código, com o par de
-/// aspas envolvente removido. Só dispara quando o token ANTERIOR ao `-c`
-/// é um shell conhecido (`grep -c` não é código).
-fn extract_shell_c_code(normalized: &str) -> Option<&str> {
-    let mut prev_was_shell = false;
-    let mut offset = 0;
-    for tok in normalized.split_whitespace() {
-        let start = offset + normalized[offset..].find(tok)?;
-        offset = start + tok.len();
-        if prev_was_shell && tok == "-c" {
-            let rest = normalized[offset..].trim();
-            if rest.is_empty() {
-                return None;
-            }
-            let first = rest.chars().next().unwrap_or(' ');
-            if (first == '\'' || first == '"') && rest.len() >= 2 && rest.ends_with(first) {
-                return Some(&rest[1..rest.len() - 1]);
-            }
-            return Some(rest);
-        }
-        // #1791: pelo basename — `/bin/bash -c` e `bash.exe -c` nao eram
-        // reconhecidos como shell, e o codigo embutido nunca era avaliado.
-        prev_was_shell = CODE_SHELLS.contains(&program_basename(tok));
-    }
-    None
-}
-
 fn is_known_program(tok: &str) -> bool {
     SENSITIVE_PROGRAMS.contains(&tok)
         || RISKY_PROGRAMS.contains(&tok)
@@ -1733,14 +2199,17 @@ fn check_destructive_rm(tokens: &[&str], program: &str) -> Result<(), SafetyDeni
         return Ok(());
     }
     for tok in tokens.iter().skip(1) {
-        if RM_ROOT_TARGETS.contains(tok) {
+        // #1861: o alvo entre aspas é o MESMO alvo (`rm -rf '/etc'` não é
+        // um arquivo chamado `/etc` diferente) — compara sem o par de aspas.
+        let alvo = strip_matched_quotes(tok);
+        if RM_ROOT_TARGETS.contains(&alvo) {
             return Err(SafetyDenied::DangerousCommand {
                 pattern: "rm recursive on /",
             });
         }
         if RM_SYSTEM_TARGETS.iter().any(|root| {
-            *tok == *root
-                || (root.len() > 1 && tok.starts_with(root) && tok[root.len()..].starts_with('/'))
+            alvo == *root
+                || (root.len() > 1 && alvo.starts_with(root) && alvo[root.len()..].starts_with('/'))
         }) {
             return Err(SafetyDenied::RequiresConfirmation {
                 pattern: "rm recursive on system path",
@@ -1749,6 +2218,163 @@ fn check_destructive_rm(tokens: &[&str], program: &str) -> Result<(), SafetyDeni
     }
     Ok(())
 }
+
+/// #1861 critério 3 — a recusa devolve ao modelo o motivo ESTRUTURADO: qual
+/// padrão casou (campo `pattern` do [`SafetyDenied`]) e COMO adaptar o
+/// comando. Na sessão de origem foram ~13 negações seguidas em loop — sinal
+/// de que "padrão perigoso detectado" sem orientação não é acionável.
+///
+/// Tabela fechada por padrão; padrão sem entrada recebe a orientação
+/// genérica. O texto é estático e não repete nada do comando (o comando
+/// pode carregar segredo — ver a doc de [`SafetyDenied`]).
+pub fn adaptation_hint(pattern: &str) -> &'static str {
+    const GENERIC: &str = " Adapte o comando para o efeito desejado sem usar o padrão bloqueado.";
+    for (padrao, dica) in HINTS {
+        if *padrao == pattern {
+            return dica;
+        }
+    }
+    GENERIC
+}
+
+/// Dicas de adaptação por padrão casado — chaves iguais aos `pattern` das
+/// listas e das regras por programa/token (#1861 critério 3).
+const HINTS: &[(&str, &str)] = &[
+    (
+        "rm -rf /",
+        " Nunca apague a raiz: liste e remova caminhos específicos (ex.: rm -rf ./build).",
+    ),
+    (
+        "rm -r /",
+        " Nunca apague a raiz: liste e remova caminhos específicos.",
+    ),
+    (
+        "rm -f /",
+        " Nunca apague a raiz: liste e remova caminhos específicos.",
+    ),
+    (
+        "rm recursive on /",
+        " Nunca apague a raiz: liste e remova caminhos específicos.",
+    ),
+    (
+        "rm -rf ~",
+        " Use um subcaminho específico em vez de ~ (ex.: ~/projeto/tmp).",
+    ),
+    (
+        "rm -rf $home",
+        " Use um subcaminho específico em vez de $HOME.",
+    ),
+    (
+        "rm -rf ${home}",
+        " Use um subcaminho específico em vez de ${HOME}.",
+    ),
+    (
+        "rm recursive on system path",
+        " Caminho de sistema em recursão exige confirmação do operador; se for diretório de projeto, use o caminho específico dele.",
+    ),
+    (
+        "mkfs",
+        " Formatação de disco é ato do operador, fora do agente.",
+    ),
+    (
+        "format c:",
+        " Formatação de disco é ato do operador, fora do agente.",
+    ),
+    (
+        "dd if=",
+        " Escrita em disco bruto é ato do operador; trabalhe com arquivos.",
+    ),
+    (
+        "dd of=",
+        " Escrita em disco bruto é ato do operador; trabalhe com arquivos.",
+    ),
+    (
+        "| sh",
+        " Não encaminhe texto para um shell; extraia a informação e use-a como argumento de um comando específico.",
+    ),
+    (
+        "| bash",
+        " Não encaminhe texto para um shell; extraia a informação e use-a como argumento de um comando específico.",
+    ),
+    (
+        "pipe into shell",
+        " Não encaminhe texto para um shell; extraia a informação e use-a como argumento de um comando específico.",
+    ),
+    (
+        "nc -",
+        " Transferência por socket bruto está fora do escopo do agente; se for necessária, o operador declara a ferramenta na allowlist.",
+    ),
+    (
+        "netcat",
+        " Transferência por socket bruto está fora do escopo do agente; se for necessária, o operador declara a ferramenta na allowlist.",
+    ),
+    ("nmap", " Varredura de rede é ato do operador."),
+    (
+        "ssh root@",
+        " Acesso root remoto é recusado; use a conta declarada pelo operador.",
+    ),
+    ("sudo su", " Elevação a root interativa é recusada."),
+    (
+        "kill -9 -1",
+        " Para encerrar um processo, use o PID específico com sinal padrão (ex.: kill <pid>); -1 atinge processos alheios.",
+    ),
+    (
+        "pkill -9",
+        " Para encerrar um processo, use o PID específico com sinal padrão (ex.: kill <pid>); pkill -9 atinge pelo nome, sem controle de alvo.",
+    ),
+    (
+        "kill ",
+        " Encerrar processo em modo autônomo exige confirmação; informe o PID e o sinal ao operador.",
+    ),
+    (
+        "reboot",
+        " Reiniciar ou desligar a máquina é ato do operador.",
+    ),
+    (
+        "shutdown",
+        " Reiniciar ou desligar a máquina é ato do operador.",
+    ),
+    (
+        "halt",
+        " Reiniciar ou desligar a máquina é ato do operador.",
+    ),
+    (
+        "poweroff",
+        " Reiniciar ou desligar a máquina é ato do operador.",
+    ),
+    (
+        "init 0",
+        " Reiniciar ou desligar a máquina é ato do operador.",
+    ),
+    (
+        "init 6",
+        " Reiniciar ou desligar a máquina é ato do operador.",
+    ),
+    (
+        "git push --force origin main",
+        " Nunca force push na main: crie branch e PR.",
+    ),
+    (
+        "git push --force-with-lease origin main",
+        " Nunca force push na main: crie branch e PR.",
+    ),
+    (
+        "git push -f origin main",
+        " Nunca force push na main: crie branch e PR.",
+    ),
+    (
+        "python -m http",
+        " Servidor HTTP é canal de exfiltração; use as ferramentas declaradas pelo operador.",
+    ),
+    (
+        "script file",
+        " O gate não consegue ler o código de um arquivo; mostre o código inline (ex.: bash -c '...') para ele ser avaliado.",
+    ),
+    (
+        "nested interpreter -c",
+        " Aninhamento de interpretadores demais para avaliar; simplifique o comando em uma camada só.",
+    ),
+];
 
 #[cfg(test)]
 mod tests {
@@ -2079,9 +2705,12 @@ mod tests {
         // Program-aware on purpose: the risky program appears as an ARG of
         // `forja-ask`, not as the invoked program — not gated.
         assert!(is_risky("forja-ask 'git push origin main'").is_ok());
-        // Residual (documented in #1075): bare-substring CONFIRM entries
-        // like `git push --force` still match inside quoted args.
-        assert!(is_risky("forja-ask 'depois roda git push --force origin main'").is_err());
+        // #1861: o texto do pedido é DADO (exibido ao operador, não
+        // executado) — o resíduo do #1075 ("bare-substring CONFIRM entries
+        // still match inside quoted args") era exatamente este falso
+        // positivo, e a máscara de dado o fecha. O que o operador executa
+        // depois é um comando NOVO, avaliado pelo gate no próprio turno.
+        assert!(is_risky("forja-ask 'depois roda git push --force origin main'").is_ok());
     }
 
     // ── R2 follow-ups (auditoria do hardening #1075) ─────────────────────────
@@ -3107,5 +3736,126 @@ mod tests {
         assert!(super::is_mcp_child_env_allowed("Path"));
         #[cfg(not(windows))]
         assert!(!super::is_mcp_child_env_allowed("Path"));
+    }
+
+    // ── #1861: citar o literal não é executar o literal ──────────────────────
+
+    /// Os três repro da issue: string citando `rm -rf /`, string citando
+    /// `mkfs` e grep com padrão `dd if=` — efeito benigno, sem deny.
+    #[test]
+    fn i1861_repro_da_issue_nao_bloqueiam() {
+        assert!(safety_gate("echo 'nunca rode rm -rf /' > aviso.txt").is_ok());
+        assert!(safety_gate(r#"printf '%s\n' '# mkfs' > notas.txt"#).is_ok());
+        assert!(safety_gate(r#"grep -r "dd if=" docs/"#).is_ok());
+    }
+
+    /// Toda a família citada em dado segue limpa: comentário dentro de
+    /// string, ANSI-C, heredoc com delimitador entre aspas, shutdown/netcat
+    /// citados, e código de exemplo (`eval ...`, `bash -c ...`) como TEXTO.
+    #[test]
+    fn i1861_dado_citando_padroes_perigosos_nao_bloqueia() {
+        assert!(safety_gate(r##"echo "# rm -rf /" > doc.md"##).is_ok());
+        assert!(safety_gate(r"echo $'rm -rf /' > doc").is_ok());
+        assert!(safety_gate("echo 'shutdown -h agora' > doc.txt").is_ok());
+        assert!(safety_gate("echo 'nc -l -p 1234' > notas").is_ok());
+        assert!(safety_gate("echo 'eval rm -rf /'").is_ok());
+        assert!(safety_gate(r#"echo 'bash -c "rm -rf /"'"#).is_ok());
+        assert!(safety_gate("cat > aviso.md <<'EOF'\nnunca rode rm -rf /\nEOF").is_ok());
+        // Comentário só engole a PRÓPRIA linha: o comando da linha seguinte
+        // continua valendo — e é inofensivo.
+        assert!(safety_gate("echo inicio # rode rm -rf /\nrmdir /tmp/vazio").is_ok());
+    }
+
+    /// O efeito destrutivo REAL continua hard-deny — nenhum enfraquecimento
+    /// (critério 2 da issue).
+    #[test]
+    fn i1861_efeito_real_continua_bloqueado() {
+        for cmd in [
+            "sh -c 'rm -rf /'",
+            r#"bash -c "mkfs.ext4 /dev/sdb""#,
+            "eval 'rm -rf /'",
+            "echo x && eval 'rm -rf /'",
+            r#"echo "$(rm -rf /)""#,
+            "echo \"`rm -rf /`\"",
+            "echo 'x' | sh",
+            "echo 'oi' && mkfs",
+            "rm -rf / # apagar tudo",
+            "ssh root@host",
+        ] {
+            let err = safety_gate(cmd).unwrap_err();
+            assert!(
+                matches!(err, SafetyDenied::DangerousCommand { .. }),
+                "{cmd} devia ser DangerousCommand, veio {err:?}"
+            );
+        }
+    }
+
+    /// Heredoc com delimitador SEM aspas expande: a substituição no corpo
+    /// EXECUTA e o gate precisa vê-la.
+    #[test]
+    fn i1861_heredoc_sem_aspas_mantem_substituicao() {
+        let err = safety_gate("cat <<EOF\n$(rm -rf /)\nEOF").unwrap_err();
+        assert!(matches!(err, SafetyDenied::DangerousCommand { .. }));
+    }
+
+    /// Comando truncado (aspas sem par, heredoc sem fechamento) fica
+    /// fail-closed: sem região de dado, o texto segue avaliado como antes.
+    #[test]
+    fn i1861_aspas_sem_par_e_heredoc_sem_fim_sao_fail_closed() {
+        assert!(safety_gate("echo 'rm -rf /").is_err());
+        assert!(safety_gate("cat <<'EOF'\nrm -rf /\n").is_err());
+    }
+
+    /// Aninhamento dentro do teto resolve ATÉ O FUNDO: o código do nível
+    /// mais interno é avaliado e o literal destrutivo é achado (deny).
+    #[test]
+    fn i1861_aninhamento_resolve_ate_o_fundo() {
+        let cmd = r#"bash -c "sh -c 'sh -c \"rm -rf /\"'""#;
+        let err = safety_gate(cmd).unwrap_err();
+        assert!(
+            matches!(err, SafetyDenied::DangerousCommand { .. }),
+            "{cmd} devia ser DangerousCommand, veio {err:?}"
+        );
+    }
+
+    /// Acima do teto de profundidade o gate falha FECHADO para o tier de
+    /// confirmação — nunca silêncio.
+    #[test]
+    fn i1861_aninhamento_acima_do_teto_falha_fechado() {
+        let cmd = "eval eval eval eval eval 'rm -rf /'";
+        let err = safety_gate(cmd).unwrap_err();
+        assert!(
+            matches!(err, SafetyDenied::RequiresConfirmation { .. }),
+            "{cmd} devia falhar fechado em confirmacao, veio {err:?}"
+        );
+    }
+
+    /// `rm` com alvo de sistema ENTRE ASPAS: o token rule compara o alvo sem
+    /// as aspas (`rm -rf '/etc'` é o mesmo `rm -rf /etc`).
+    #[test]
+    fn i1861_rm_com_alvo_entre_aspas_segue_gated() {
+        assert!(e_risky("rm -rf '/etc'"));
+        assert!(e_risky("rm -r \"/var/log\""));
+    }
+
+    /// Critério 4: `kill -9 <pid>` em modo autônomo fica no tier de
+    /// confirmação (fail-closed = BLOCK com motivo claro), `kill -9 -1`
+    /// segue hard-deny.
+    #[test]
+    fn i1861_kill_de_processo_especifico_e_confirmacao() {
+        assert!(e_risky("kill -9 1234"));
+        assert!(safety_gate("kill -9 -1").is_err());
+    }
+
+    /// A dica de adaptação é estruturada: padrão conhecido → dica própria;
+    /// padrão sem entrada → dica genérica (critério 3).
+    #[test]
+    fn i1861_dica_de_adaptacao_estruturada() {
+        assert!(super::adaptation_hint("rm -rf /").contains("raiz"));
+        assert!(super::adaptation_hint("reboot").contains("operador"));
+        assert_eq!(
+            super::adaptation_hint("padrao-inexistente"),
+            " Adapte o comando para o efeito desejado sem usar o padrão bloqueado."
+        );
     }
 }
