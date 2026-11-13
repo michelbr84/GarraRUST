@@ -507,6 +507,22 @@ too (`llm.<name>.timeout_secs` overrides it per provider). `garra ask
 `timeouts.llm` window cuts the provider call first, with a message naming the
 key to raise (#1790). The `garra_agent` MCP timeout (300s) is unchanged.
 
+### Agent mode in `garra chat`
+
+`garra chat --mode <mode>` starts the REPL in one of the native agent modes
+(`auto`, `search`, `architect`, `code`, `ask`, `debug`, `orchestrator`,
+`review`, `edit`) and `/mode <mode>` switches it inside the session (`/mode`
+alone shows the current one, `/mode off` goes back to no policy). It is the
+same `ExecContext::agent_mode` the gateway and the Web Console set, so the
+runtime's tool gate enforces it: `search` and `architect` are read-only and a
+refused call reaches the next turn paired as an error. Without the flag there
+is no tool policy, exactly as before (#1858). An unknown name is an error, never
+a silent "no policy" — with one caveat: `auto` picks the mode from each message
+and, when the heuristic can't tell, that turn runs without policy (same as in
+the gateway). The mode only **restricts**: its tool policy, and its own limits,
+which can lower the turn budget but never raise it. It does not skip the bash
+confirmation tier nor the hard-deny. `/status` shows the active mode.
+
 ### Validate config
 
 ```bash

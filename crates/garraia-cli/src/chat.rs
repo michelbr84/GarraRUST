@@ -4,6 +4,7 @@
 //! that streams responses from Ollama (offline) or cloud providers (online).
 
 use garraia_agents::exec_context::ExecContext;
+use garraia_agents::modes::AgentMode;
 use std::future::Future;
 use std::io::{self, Write as _};
 use std::sync::Arc;
@@ -155,6 +156,10 @@ const COMANDOS: &[(&str, &str)] = &[
     ("/logs", "Onde fica o log, e como segui-lo"),
     ("/models", "Modelos que este provider lista"),
     ("/model <nome>", "Trocar de modelo sem reiniciar"),
+    (
+        "/mode [nome]",
+        "Modo de execucao (search, code...) ou o atual; `off` desliga",
+    ),
     (
         "/provider <nome>",
         "Como trocar de provider (pede reinicio)",
@@ -456,10 +461,83 @@ pub(crate) const CANAL_CLI: &str = "cli";
 /// arquivo (**nao e sandbox** — ver `ExecContext::working_dir`). #1343: o
 /// escopo de aprovacao faz o "sim" do turno seguinte rodar o pedido pausado,
 /// uma vez.
-fn exec_do_turno(cwd: &str, session_id: &str) -> ExecContext {
+///
+/// #1858: `modo` e o que a pessoa escolheu com `--mode` ou `/mode`. Vai para
+/// `ExecContext::agent_mode`, o mesmo campo que o gateway preenche, e o
+/// `ToolGate` do runtime faz o resto — o CLI nao tem politica propria. `None`
+/// e "sem politica", o comportamento de antes do `/mode` existir.
+fn exec_do_turno(cwd: &str, session_id: &str, modo: Option<AgentMode>) -> ExecContext {
     let mut exec = ExecContext::with_working_dir(Some(cwd.to_string()));
     exec.approval_scope = garraia_agents::ApprovalScope::new(CANAL_CLI, session_id, REMETENTE_CLI);
+    exec.agent_mode = modo.map(|m| m.as_str().to_string());
     exec
+}
+
+/// Os nomes que desligam o modo e voltam ao "sem politica".
+const MODO_DESLIGADO: &[&str] = &["off", "nenhum", "none"];
+
+/// Interpreta o nome de `--mode` / `/mode` (#1858).
+///
+/// `Ok(None)` desliga; `Ok(Some(_))` e um modo nativo. Nome desconhecido e
+/// **erro**, e nao portao aberto: o `ToolGate::for_mode_name` trata nome
+/// desconhecido como "sem politica" (pensado para valor vindo de banco), e
+/// quem digitou `/mode serch` querendo restringir as ferramentas sairia sem
+/// restricao nenhuma, achando que tinha.
+fn escolher_modo(nome: &str) -> std::result::Result<Option<AgentMode>, String> {
+    let nome = nome.trim();
+    if MODO_DESLIGADO.iter().any(|d| d.eq_ignore_ascii_case(nome)) {
+        return Ok(None);
+    }
+    AgentMode::from_str(nome).map(Some).ok_or_else(|| {
+        format!(
+            "Modo desconhecido: {nome:?}. Validos: {}, ou `off` para desligar.",
+            nomes_dos_modos()
+        )
+    })
+}
+
+fn rotulo_do_modo(modo: Option<AgentMode>) -> String {
+    match modo {
+        // `auto` resolve o modo pela mensagem; quando a heuristica nao decide,
+        // o turno roda sem politica (`ToolGate::para_o_turno`). Dizer isso
+        // aqui, para `auto` nao parecer uma restricao que nem sempre e.
+        Some(AgentMode::Auto) => {
+            "auto (modo pela mensagem; sem politica quando a heuristica nao decide)".to_string()
+        }
+        Some(m) => m.as_str().to_string(),
+        None => "nenhum (sem politica de ferramentas)".to_string(),
+    }
+}
+
+fn nomes_dos_modos() -> String {
+    AgentMode::all_modes()
+        .iter()
+        .map(|m| m.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// O prompt do sistema do turno quando ha modo escolhido (#1858).
+///
+/// O runtime poe o prompt do modo **no lugar** do prompt configurado, e o do
+/// CLI carrega o diretorio de trabalho e a lista de ferramentas — trocar um
+/// pelo outro deixaria o agente sem saber onde esta. Aqui os dois vao juntos:
+/// o do CLI primeiro, o do modo depois. Sem modo, ou com modo sem prompt
+/// proprio, `None` — o runtime usa o prompt configurado, como antes.
+fn prompt_do_turno(base: &str, exec: &ExecContext, input: &str) -> Option<String> {
+    exec.agent_mode.as_deref()?;
+    let portao = garraia_agents::modes::ToolGate::para_o_turno(exec, input);
+    let do_modo = portao.system_prompt()?;
+    // O modo EFETIVO do turno: com `auto`, o que a heuristica escolheu.
+    let nome = portao
+        .nome_do_modo()
+        .or(exec.agent_mode.as_deref())
+        .unwrap_or_default();
+    Some(format!(
+        "{base}\n\n## Modo de execucao: {nome}\n\
+         Neste modo algumas ferramentas listadas acima podem estar indisponiveis; \
+         use so as que recebeu.\n{do_modo}"
+    ))
 }
 
 /// Grava um turno (pergunta + resposta) no store.
@@ -1650,7 +1728,14 @@ pub async fn run_chat(
     assume_yes: bool,
     persist: bool,
     resume: Option<String>,
+    modo_inicial: Option<String>,
 ) -> Result<i32> {
+    // #1858: `--mode` invalido para antes de qualquer conexao, com a lista
+    // dos validos — o mesmo texto do `/mode`.
+    let mut modo_do_agente = match modo_inicial.as_deref() {
+        Some(nome) => escolher_modo(nome).map_err(|e| anyhow::anyhow!(e))?,
+        None => None,
+    };
     // An explicit `--provider` short-circuits detection entirely; otherwise
     // `detect_provider` owns both the provider *and* the model, so the two can
     // no longer disagree (previously `--model` without `--provider` swapped
@@ -1758,7 +1843,7 @@ pub async fn run_chat(
             format!("Tipo de projeto detectado: {dir_context}\n")
         }
     );
-    runtime.set_system_prompt(system_prompt);
+    runtime.set_system_prompt(system_prompt.clone());
     runtime.set_max_tokens(4096);
 
     // Acesso somente leitura ao runtime vivo, sem ciclo de Arc: a tool guarda
@@ -2058,6 +2143,7 @@ pub async fn run_chat(
                     panel::linha("Provider", provider_name.clone()),
                     panel::linha("Modelo", model_name.clone()),
                     panel::linha("Ferramentas", ferramentas.len().to_string()),
+                    panel::linha("Modo", rotulo_do_modo(modo_do_agente)),
                     panel::linha("Sessao", session_id.clone()),
                     panel::linha("Turnos", turn_index.to_string()),
                 ];
@@ -2428,6 +2514,39 @@ pub async fn run_chat(
                 }
                 continue;
             }
+            // #1858: o modo de execucao, pelo mesmo portao dos outros canais.
+            // So restringe ferramentas — nao mexe no tier de confirmacao do
+            // bash nem no hard-deny.
+            "/mode" | "/modo" => {
+                let linhas = vec![
+                    panel::linha("Atual", rotulo_do_modo(modo_do_agente)),
+                    panel::linha("Validos", nomes_dos_modos()),
+                    panel::linha("Trocar", "/mode <nome>  (ou /mode off)"),
+                ];
+                renderer.handle(
+                    UiEvent::Panel {
+                        titulo: "Modo",
+                        linhas: &linhas,
+                    },
+                    &mut io::stdout(),
+                );
+                continue;
+            }
+            _ if input.starts_with("/mode ") || input.starts_with("/modo ") => {
+                let nome = input.split_once(' ').map(|(_, n)| n).unwrap_or_default();
+                match escolher_modo(nome) {
+                    Ok(novo) => {
+                        modo_do_agente = novo;
+                        let aviso = match novo {
+                            Some(m) => format!("Modo: {}.", rotulo_do_modo(Some(m))),
+                            None => "Modo desligado: sem politica de ferramentas.".to_string(),
+                        };
+                        renderer.handle(UiEvent::Hint(&aviso), &mut io::stdout());
+                    }
+                    Err(e) => renderer.handle(UiEvent::Warning(&e), &mut io::stdout()),
+                }
+                continue;
+            }
             _ if input.starts_with("/model ") => {
                 let new_model = input[7..].trim();
                 if new_model.is_empty() {
@@ -2676,7 +2795,8 @@ pub async fn run_chat(
         // de texto e nao pagam nada por isto.
         // Ligado a uma variavel porque o `call` e um future que vive alem
         // desta expressao — um temporario seria descartado antes do `await`.
-        let exec = exec_do_turno(&cwd, &session_clone);
+        let exec = exec_do_turno(&cwd, &session_clone, modo_do_agente);
+        let prompt_do_modo = prompt_do_turno(&system_prompt, &exec, &input);
         let call = runtime.process_message_streaming_with_events(
             &session_clone,
             &input,
@@ -2686,12 +2806,12 @@ pub async fn run_chat(
             None,
             None,
             Some(&model_clone),
-            None,
+            prompt_do_modo.as_deref(),
             None,
             // #980: o diretorio do projeto resolve caminho relativo das
             // ferramentas de arquivo. **Nao e sandbox** — ver o docblock do
-            // `ExecContext::working_dir`. O CLI nao tem `/mode`, entao o modo
-            // fica `None`, que quer dizer "sem politica".
+            // `ExecContext::working_dir`. #1858: o modo vem de `--mode` /
+            // `/mode`; `None` quer dizer "sem politica".
             &exec,
         );
         let mut stdout = io::stdout();
@@ -3008,6 +3128,7 @@ mod tests {
         "/saida",
         "/ferramentas",
         "/log",
+        "/modo",
     ];
 
     /// O `/help` nao pode divergir do `match` — e ele ja tinha divergido.
@@ -5532,7 +5653,7 @@ mod aprovacao_tests {
     ) -> String {
         let (tx, mut rx) = mpsc::channel::<TurnEvent>(64);
         let dreno = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-        let exec = exec_do_turno("/tmp", sessao);
+        let exec = exec_do_turno("/tmp", sessao, None);
         let r = rt
             .process_message_streaming_with_events(
                 sessao, texto, historico, tx, None, None, None, None, None, None, &exec,
@@ -5553,7 +5674,7 @@ mod aprovacao_tests {
 
     #[test]
     fn exec_do_turno_escopa_canal_sessao_e_o_terminal() {
-        let exec = exec_do_turno("/tmp", "sess-1");
+        let exec = exec_do_turno("/tmp", "sess-1", None);
         let escopo = exec.approval_scope.expect("o CLI opta pelo escopo");
         assert_eq!(escopo.channel(), CANAL_CLI);
         assert_eq!(escopo.session_id(), "sess-1");
@@ -5609,6 +5730,98 @@ mod aprovacao_tests {
 
 #[cfg(test)]
 mod historico_de_ferramentas_tests;
+
+/// #1858: `--mode` / `/mode` no `garra chat`.
+#[cfg(test)]
+mod modo_do_chat_tests {
+    use super::*;
+    use garraia_agents::modes::ToolGate;
+
+    #[test]
+    fn nome_nativo_vira_modo_e_off_desliga() {
+        assert_eq!(escolher_modo("search"), Ok(Some(AgentMode::Search)));
+        assert_eq!(escolher_modo("  Code "), Ok(Some(AgentMode::Code)));
+        for desliga in ["off", "OFF", "nenhum", "none"] {
+            assert_eq!(escolher_modo(desliga), Ok(None), "{desliga}");
+        }
+    }
+
+    /// Nome errado nao pode virar "sem politica" em silencio: quem digitou
+    /// `/mode serch` queria restringir.
+    #[test]
+    fn nome_desconhecido_e_erro_com_a_lista() {
+        let erro = escolher_modo("serch").expect_err("nome desconhecido");
+        assert!(erro.contains("serch"), "{erro}");
+        for m in AgentMode::all_modes() {
+            assert!(erro.contains(m.as_str()), "{erro} sem {}", m.as_str());
+        }
+        assert!(escolher_modo("").is_err());
+    }
+
+    /// Sem modo, o contexto do turno e o de antes: portao aberto.
+    #[test]
+    fn sem_modo_o_turno_continua_sem_politica() {
+        let exec = exec_do_turno("/tmp", "s", None);
+        assert_eq!(exec.agent_mode, None);
+        let portao = ToolGate::para_o_turno(&exec, "crie um arquivo");
+        assert!(portao.permite("file_write"));
+        assert!(portao.permite("bash"));
+        assert_eq!(prompt_do_turno("BASE", &exec, "oi"), None);
+    }
+
+    /// Com modo, o portao e o do runtime: `search` le e nao escreve.
+    #[test]
+    fn modo_search_le_e_nao_escreve() {
+        let exec = exec_do_turno("/tmp", "s", Some(AgentMode::Search));
+        assert_eq!(exec.agent_mode.as_deref(), Some("search"));
+        let portao = ToolGate::para_o_turno(&exec, "procure o main");
+        assert!(portao.permite("file_read"));
+        assert!(!portao.permite("file_write"));
+        assert!(!portao.permite("bash"));
+        // A escolha de modo nao mexe no escopo de aprovacao do CLI.
+        assert!(
+            exec.approval_scope
+                == garraia_agents::ApprovalScope::new(CANAL_CLI, "s", REMETENTE_CLI)
+        );
+    }
+
+    /// `auto` mostra a ressalva, e o prompt nomeia o modo efetivo do turno.
+    #[test]
+    fn auto_diz_a_ressalva_e_o_prompt_nomeia_o_modo_efetivo() {
+        assert!(rotulo_do_modo(Some(AgentMode::Auto)).contains("sem politica"));
+        let exec = exec_do_turno("/tmp", "s", Some(AgentMode::Auto));
+        let portao = ToolGate::para_o_turno(&exec, "procure onde fica o main");
+        if let (Some(efetivo), Some(p)) = (
+            portao.nome_do_modo(),
+            prompt_do_turno("BASE", &exec, "procure onde fica o main"),
+        ) {
+            assert!(p.contains(&format!("Modo de execucao: {efetivo}")), "{p}");
+        }
+    }
+
+    /// `/model <nome>` nao pode cair no braco do `/mode `.
+    #[test]
+    fn model_nao_e_capturado_pelo_braco_do_mode() {
+        for cmd in ["/model gpt", "/models"] {
+            assert!(!cmd.starts_with("/mode ") && !cmd.starts_with("/modo ") && cmd != "/mode");
+        }
+    }
+
+    /// O prompt do modo nao pode apagar o do CLI, que carrega o diretorio.
+    #[test]
+    fn prompt_do_modo_vem_depois_do_prompt_do_cli() {
+        let exec = exec_do_turno("/tmp", "s", Some(AgentMode::Search));
+        let prompt =
+            prompt_do_turno("BASE com /proj", &exec, "procure").expect("search tem prompt");
+        assert!(prompt.starts_with("BASE com /proj"), "{prompt}");
+        assert!(prompt.contains("Modo de execucao: search"), "{prompt}");
+        let do_modo = ToolGate::para_o_turno(&exec, "procure")
+            .system_prompt()
+            .expect("prompt do modo")
+            .to_string();
+        assert!(prompt.ends_with(&do_modo), "{prompt}");
+    }
+}
 
 #[cfg(test)]
 mod testes_evidencia_por_resultado_do_turno {

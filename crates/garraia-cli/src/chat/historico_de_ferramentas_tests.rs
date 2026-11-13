@@ -268,8 +268,12 @@ async fn turno_com(
     s.trilha.iniciar_turno();
     let (tx, rx) = mpsc::channel::<TurnEvent>(100);
     let dir = s.dir.path().to_string_lossy().to_string();
-    let mut exec = exec_do_turno(&dir, "cli-1708-e2e");
-    exec.agent_mode = modo_do_agente.map(str::to_string);
+    let modo_do_agente = modo_do_agente.map(|n| {
+        escolher_modo(n)
+            .expect("modo valido no teste")
+            .expect("o teste pede um modo, nao `off`")
+    });
+    let exec = exec_do_turno(&dir, "cli-1708-e2e", modo_do_agente);
     let historico = s.historico.clone();
     let call = s.rt.process_message_streaming_with_events(
         "cli-1708-e2e",
@@ -491,9 +495,9 @@ async fn modos_text_e_off_nao_mandam_blocos_estruturados() {
 }
 
 /// Criterio 5, recusa de permissao: com o modo `ask` no `ExecContext` o portao
-/// de politica do runtime nega `file_write`. O REPL do `garra chat` nao tem
-/// `/mode` (roda sem politica); o modo aqui e posto a mao para exercitar o
-/// mesmo portao que os outros canais usam. A chamada nao roda, e o turno seguinte recebe o pedido e a
+/// de politica do runtime nega `file_write`. O modo entra pelo mesmo
+/// `escolher_modo` + `exec_do_turno` que o `--mode` e o `/mode` do REPL usam
+/// (#1858), e o portao e o dos outros canais. A chamada nao roda, e o turno seguinte recebe o pedido e a
 /// recusa pareados pelo id — o modelo sabe que pediu e que foi barrado, em
 /// vez de achar que escreveu ou que nunca pediu.
 #[tokio::test]
