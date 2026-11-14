@@ -125,6 +125,9 @@ pub fn documento_de(s: &LinkedSettings, perfil: ExecutionProfile, revelar: bool)
             },
             "declared": s.access.groups.por_grupo.len(),
         },
+        // #1822 (item 3): o opt-in da conversa "Voce", visivel ao operador.
+        // `null` = chave ausente (comportamento de sempre, D16 = opcao 1).
+        "self_chat": s.access.self_chat,
         "counts": { "authorized": s.autorizados(), "owners": s.donos(), "blocked": bloqueados },
         "warnings": s.access.avisos,
         "principals": principals,

@@ -1364,15 +1364,25 @@ fn avisar_escolha_do_operador(
 ///
 /// - `from_me` fora da conversa "Voce": e o dono escrevendo a terceiros pelo
 ///   proprio celular. O Garra nunca responde no lugar dele.
-/// - `from_me` na conversa "Voce" (`self_chat`, #1813) **vira** turno: e como o
-///   dono fala com o Garra no modo "meu proprio numero". O eco da resposta do
-///   proprio Garra nesse chat nunca chega aqui — a ponte e o runner descartam
-///   os ids que eles mesmos enviaram (anti-eco em duas camadas); sem isso o
-///   canal responderia a si mesmo para sempre, no primeiro "oi".
+/// - `from_me` na conversa "Voce" (`self_chat`, #1813) **vira** turno: e como
+///   o dono fala com o Garra no modo "meu proprio numero". O eco da resposta
+///   do proprio Garra nesse chat nunca chega aqui — a ponte e o runner
+///   descartam os ids que eles mesmos enviaram (anti-eco em duas camadas);
+///   sem isso o canal responderia a si mesmo para sempre, no primeiro "oi".
+///   Com `access.self_chat: false` (#1822, item 3) ela NAO vira turno: quem
+///   usa a conversa "Voce" como bloco de notas nao manda as notas ao modelo.
+///   Sem a chave (ou com `true`) vale o comportamento de sempre: o portao de
+///   remetente decide (o proprio numero precisa ser admitido).
 /// - `is_group` sem opt-in: ver [`LinkedSettings::reply_in_groups`].
 /// - sem `text`: midia nao vai ao modelo nesta fatia.
 pub fn deve_responder(msg: &InboundMessage, settings: &LinkedSettings) -> bool {
-    merece_turno(msg) && !(msg.is_group && !settings.responde_em_grupo())
+    merece_turno(msg)
+        && !(msg.is_group && !settings.responde_em_grupo())
+        // #1822 (item 3): so o `false` explicito desliga a conversa "Voce" —
+        // a chave ausente preserva o comportamento atual (D16 = opcao 1).
+        // Mesma classe do filtro de grupo: politica que muda a quente (a
+        // config viva), por isso decidida no turno e nao no `deliver`.
+        && !(msg.self_chat && settings.access.self_chat == Some(false))
 }
 
 /// A parte de [`deve_responder`] que NAO depende da politica: nao e da

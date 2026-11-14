@@ -87,6 +87,9 @@ pub enum ComandoDeAcesso {
     Desbloquear { numero: String, dry_run: bool },
     /// `access groups on|off [--dry-run]` (#1423).
     Grupos { ligados: bool, dry_run: bool },
+    /// `access self-chat on|off [--dry-run]` (#1822, item 3): a conversa
+    /// "Voce" vira turno do agente (ou nao).
+    SelfChat { ligado: bool, dry_run: bool },
     /// `access groups default <chat|read|full> [--write] [--dry-run]`, ou
     /// `--preset <nome>` no lugar do nivel (#1434).
     GrupoDefault {
@@ -379,6 +382,32 @@ pub fn linhas_da_politica(
         ),
         (Lang::En, false) => "Groups:              off".to_string(),
     });
+    out.push(match (lang, s.access.self_chat) {
+        (Lang::Pt, Some(true)) => {
+            "Conversa propria (Voce): ligada (declarada) — o que o dono escreve ali vira turno"
+                .to_string()
+        }
+        (Lang::Pt, Some(false)) => {
+            "Conversa propria (Voce): desligada — o que o dono escreve ali nao vai ao modelo"
+                .to_string()
+        }
+        (Lang::Pt, None) => {
+            "Conversa propria (Voce): segue a admissao — vira turno quando o portao admite o proprio numero"
+                .to_string()
+        }
+        (Lang::En, Some(true)) => {
+            "Self chat (You):     on (declared) — what the owner writes there becomes a turn"
+                .to_string()
+        }
+        (Lang::En, Some(false)) => {
+            "Self chat (You):     off — what the owner writes there never reaches the model"
+                .to_string()
+        }
+        (Lang::En, None) => {
+            "Self chat (You):     follows admission — a turn when the gate admits the own number"
+                .to_string()
+        }
+    });
     let bloqueados = s.access.users.values().filter(|u| u.bloqueado).count();
     out.push(match lang {
         Lang::Pt => format!(
@@ -579,6 +608,12 @@ fn opcoes_de_admissao(lang: Lang) -> [&'static str; 2] {
 ///   e mexido por um `link`.
 /// - `default_do_desconhecido`: o alcance que um desconhecido receberia em
 ///   `open` nesta config, mostrado antes de perguntar se abre.
+/// - `instalacao_nova`: o portao estava VAZIO antes deste `link` (primeiro
+///   provisionamento). So nesse gesto o wizard grava a escolha explicita do
+///   `self_chat` (#1822, item 3, D16 = opcao 1): instalacoes novas nascem
+///   com ela declarada (`false` no restricted, `true` no open). Em
+///   instalacao existente (re-vinculo, upgrade) o wizard NAO toca no
+///   `self_chat` — quem ja usa a conversa "Voce" nada perde.
 ///
 /// Escrita nao e perguntada em `chat` (nao ha onde escrever) e so vira
 /// mutacao quando ligada — `off` ja e o estado de quem acabou de entrar.
@@ -587,6 +622,7 @@ pub(crate) fn perguntar_politica(
     prompter: &dyn Prompter,
     recem_autorizado: Option<&str>,
     default_do_desconhecido: Alcance,
+    instalacao_nova: bool,
 ) -> Vec<Mutacao> {
     let lang = ctx.lang;
     let mut out = Vec::new();
@@ -648,11 +684,23 @@ pub(crate) fn perguntar_politica(
             .unwrap_or(false)
         {
             out.push(Mutacao::Admissao(Admission::Open));
+            // #1822 (item 3): o modo "meu proprio numero" fala na
+            // conversa "Voce" — ligar o opt-in faz parte do gesto (o
+            // `true` e comportamento neutro, o portao continua decidindo).
+            out.push(Mutacao::SelfChat(true));
         }
     } else {
         // O que foi respondido e o que vai para o disco — inclusive quando
         // ja era assim (o motor nao grava nem audita o que nao mudou).
         out.push(Mutacao::Admissao(Admission::Restricted));
+        // #1822 (item 3, D16 = opcao 1): a instalacao NOVA nasce com a
+        // escolha EXPLICITA (`self_chat: false`) — quem usa a conversa
+        // "Voce" como bloco de notas nao manda as notas ao modelo. Em
+        // instalacao existente o wizard nao toca na chave: a ausente segue
+        // o comportamento de sempre (compat).
+        if instalacao_nova && recem_autorizado.is_some() {
+            out.push(Mutacao::SelfChat(false));
+        }
     }
     out
 }
@@ -660,16 +708,16 @@ pub(crate) fn perguntar_politica(
 fn pergunta_de_abrir(lang: Lang) -> &'static str {
     t(
         lang,
-        "Com `admission: open`, QUALQUER pessoa que mandar mensagem para o seu numero passa a falar com o GarraIA (com o default do desconhecido, `chat` salvo configurado). Abrir mesmo assim?",
-        "With `admission: open`, ANYONE who messages your number gets to talk to GarraIA (with the unknown-sender default, `chat` unless configured). Open anyway?",
+        "Com `admission: open`, QUALQUER pessoa que mandar mensagem para o seu numero passa a falar com o GarraIA (com o default do desconhecido, `chat` salvo configurado). A conversa \"Voce\" tambem passa a virar turno (#1822). Abrir mesmo assim?",
+        "With `admission: open`, ANYONE who messages your number gets to talk to GarraIA (with the unknown-sender default, `chat` unless configured). The \"You\" chat also starts becoming a turn (#1822). Open anyway?",
     )
 }
 
 fn pergunta_de_reset(lang: Lang) -> &'static str {
     t(
         lang,
-        "Isto volta a politica ao seguro: admissao `restricted`, default `chat`, grupos desligados e sem politica, e todo nivel/write declarado removido. Donos e bloqueios ficam. Continuar?",
-        "This resets the policy to safe defaults: `restricted` admission, `chat` default, groups off and without policy, and every declared level/write removed. Owners and blocks stay. Continue?",
+        "Isto volta a politica ao seguro: admissao `restricted`, default `chat`, grupos desligados e sem politica, conversa \"Voce\" desligada, e todo nivel/write declarado removido. Donos e bloqueios ficam. Continuar?",
+        "This resets the policy to safe defaults: `restricted` admission, `chat` default, groups off and without policy, the \"You\" chat off, and every declared level/write removed. Owners and blocks stay. Continue?",
     )
 }
 
@@ -1175,6 +1223,7 @@ fn executar(ctx: &Context, prompter: &dyn Prompter, comando: &ComandoDeAcesso) -
             dry_run,
         } => (Mutacao::Desbloquear(numero(ctx, raw)?), *dry_run),
         ComandoDeAcesso::Grupos { ligados, dry_run } => (Mutacao::Grupos(*ligados), *dry_run),
+        ComandoDeAcesso::SelfChat { ligado, dry_run } => (Mutacao::SelfChat(*ligado), *dry_run),
         ComandoDeAcesso::GrupoDefault {
             nivel,
             write,
@@ -1209,9 +1258,29 @@ fn executar(ctx: &Context, prompter: &dyn Prompter, comando: &ComandoDeAcesso) -
             (Mutacao::Reset, *dry_run)
         }
     };
-    let aplicacao = aplicar(ctx, &mutacao, dry_run)?;
+    // #1822 (item 3): `open` e o modo "meu proprio numero" do assistente de
+    // primeiro uso — a conversa "Voce" virar turno faz parte do MESMO gesto
+    // (era o comportamento unico antes do opt-in), e o `true` declarado fica
+    // auditavel. `restricted` mexe SO na admissao: o `self_chat` declarado
+    // permanece (D16 = opcao 1 — nada muda em silencio para quem ja usa a
+    // conversa "Voce" com o proprio numero admitido). Cada mutacao sai
+    // sozinha no audit.
+    let mutacoes: Vec<Mutacao> = match comando {
+        ComandoDeAcesso::Abrir { .. } => {
+            vec![Mutacao::Admissao(Admission::Open), Mutacao::SelfChat(true)]
+        }
+        ComandoDeAcesso::Restringir { .. } => vec![Mutacao::Admissao(Admission::Restricted)],
+        _ => vec![mutacao],
+    };
+    let mut aplicacao = aplicar(ctx, &mutacoes[0], dry_run)?;
     for linha in linhas_de_impacto(ctx.lang, &aplicacao) {
         println!("{linha}");
+    }
+    for mutacao in &mutacoes[1..] {
+        aplicacao = aplicar(ctx, mutacao, dry_run)?;
+        for linha in linhas_de_impacto(ctx.lang, &aplicacao) {
+            println!("{linha}");
+        }
     }
     if aplicacao.gravou {
         if aplicacao.canal_ligado {

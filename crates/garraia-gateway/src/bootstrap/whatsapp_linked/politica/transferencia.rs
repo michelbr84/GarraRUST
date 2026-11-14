@@ -73,6 +73,10 @@ pub struct UsuarioExportado {
 pub struct PoliticaImportada {
     pub admission: Admission,
     pub default: Alcance,
+    /// #1822 (item 3): o opt-in da conversa "Voce". `None` = export antigo
+    /// sem a chave (ou `null`) — importa sem declarar, o comportamento de
+    /// sempre (D16 = opcao 1).
+    pub self_chat: Option<bool>,
     pub groups_enabled: bool,
     pub groups_default: Alcance,
     /// `(jid, alcance)`, na ordem do documento.
@@ -208,6 +212,9 @@ pub fn exportar(settings: &LinkedSettings, redigir_pii: bool) -> Value {
         "policy": {
             "admission": settings.access.admission.as_str(),
             "default": alcance_json(settings.access.default),
+            // #1822 (item 3): o opt-in da conversa "Voce" acompanha o export
+            // (tri-estado: `null` quando a chave nao e declarada).
+            "self_chat": settings.access.self_chat,
             "groups": {
                 "enabled": settings.responde_em_grupo(),
                 "default": alcance_json(settings.access.groups.default),
@@ -327,6 +334,19 @@ pub fn parse_importacao(doc: &Value) -> Result<PoliticaImportada, ErroDeImportac
         Some(v) => alcance_de(v, "policy.default")?,
     };
 
+    // #1822 (item 3): tri-estado (D16 = opcao 1). Ausente ou `null` = `None`
+    // (nao declara — vale o comportamento de sempre); booleano = escolha
+    // explicita. Nao-booleano recusa o documento, como os demais campos.
+    let self_chat = match policy.get("self_chat") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(b)) => Some(*b),
+        Some(_) => {
+            return Err(ErroDeImportacao::Valor(
+                "`policy.self_chat` nao e booleano".to_string(),
+            ));
+        }
+    };
+
     let (groups_enabled, groups_default, groups) = match policy.get("groups") {
         None => (false, Alcance::COMPLETO, Vec::new()),
         Some(Value::Object(g)) => {
@@ -421,6 +441,7 @@ pub fn parse_importacao(doc: &Value) -> Result<PoliticaImportada, ErroDeImportac
     Ok(PoliticaImportada {
         admission,
         default,
+        self_chat,
         groups_enabled,
         groups_default,
         groups,
@@ -454,6 +475,11 @@ pub fn aplicar_importada(
     let mut access = Map::new();
     access.insert("admission".to_string(), json!(imp.admission.as_str()));
     access.insert("default".to_string(), alcance_json(imp.default));
+    // #1822 (item 3): o opt-in da conversa "Voce" vem do import; `None` nao
+    // grava a chave (vale o comportamento de sempre, D16 = opcao 1).
+    if let Some(self_chat) = imp.self_chat {
+        access.insert("self_chat".to_string(), json!(self_chat));
+    }
 
     let mut groups = Map::new();
     groups.insert("enabled".to_string(), json!(imp.groups_enabled));

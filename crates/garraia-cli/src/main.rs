@@ -855,6 +855,18 @@ enum AccessCommands {
         #[command(subcommand)]
         cmd: GroupsCommands,
     },
+    /// A conversa "Voce" vira turno? on | off (#1822).
+    ///
+    /// Sem a chave, vale o comportamento de sempre: a conversa "Voce" vira
+    /// turno quando o portao admite o proprio numero. `off` e para quem a usa
+    /// como bloco de notas (as notas nao vao ao modelo); `on` declara o
+    /// opt-in (o portao continua valendo). O assistente de primeiro uso grava
+    /// `on` no modo "meu proprio numero" e `off` no restante — instalacoes
+    /// novas nascem com a escolha explicita (D16 = opcao 1).
+    SelfChat {
+        #[command(subcommand)]
+        cmd: SelfChatCommands,
+    },
     /// Politica de um grupo pelo JID (`<digitos>@g.us`).
     ///
     /// Ou, no lugar do nivel, `--preset <nome>` (#1434): os quatro valem, como
@@ -936,6 +948,21 @@ enum GroupsCommands {
         /// Preset nomeado no lugar do nivel: ja traz o `write` canonico.
         #[arg(long, value_name = "PRESET", value_parser = PRESETS, group = "alcance_do_default_de_grupo")]
         preset: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+/// `garraia whatsapp access self-chat <subcomando>` (#1822, item 3).
+#[derive(Subcommand)]
+enum SelfChatCommands {
+    /// A conversa "Voce" vira turno (opt-in declarado).
+    On {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// A conversa "Voce" nao vira turno (o bloco de notas fica so notas).
+    Off {
         #[arg(long)]
         dry_run: bool,
     },
@@ -1874,6 +1901,10 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
                     | GroupsCommands::Off { .. }
                     | GroupsCommands::Default { .. } => false,
                 },
+                // `self-chat on|off` grava a politica.
+                Some(AccessCommands::SelfChat { cmd }) => match cmd {
+                    SelfChatCommands::On { .. } | SelfChatCommands::Off { .. } => false,
+                },
             },
             // Sem subcomando e o menu interativo.
             None
@@ -2325,6 +2356,16 @@ fn main() -> Result<()> {
                             nivel: nivel.as_deref().map(nivel_de),
                             write: *write,
                             preset: preset.as_deref().map(preset_de),
+                            dry_run: *dry_run,
+                        },
+                    },
+                    Some(AccessCommands::SelfChat { cmd }) => match cmd {
+                        SelfChatCommands::On { dry_run } => C::SelfChat {
+                            ligado: true,
+                            dry_run: *dry_run,
+                        },
+                        SelfChatCommands::Off { dry_run } => C::SelfChat {
+                            ligado: false,
                             dry_run: *dry_run,
                         },
                     },

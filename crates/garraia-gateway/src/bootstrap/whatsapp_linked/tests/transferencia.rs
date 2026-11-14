@@ -361,3 +361,60 @@ fn import_default_full_do_desconhecido_cai_para_read_na_leitura() {
     );
     assert_eq!(s.access.admission, Admission::Open);
 }
+
+// ---------------------------------------------------------------------------
+// #1822 (item 3): o `self_chat` tri-estado no export/import
+// ---------------------------------------------------------------------------
+
+/// O opt-in da conversa "Voce" sobrevive ao export/import: declarado
+/// (`true`/`false`) volta declarado; ausente volta ausente (`None`, D16 =
+/// opcao 1) — e export antigo sem a chave importa SEM declarar.
+#[test]
+fn self_chat_sobrevive_ao_export_import_e_o_ausente_fica_ausente() {
+    for (declarado, esperado) in [(json!(true), Some(true)), (json!(false), Some(false))] {
+        let origem = secao(json!({
+            "owners": [DONO],
+            "access": { "admission": "restricted", "self_chat": declarado },
+        }));
+        let doc = transferencia::exportar(&settings_de(&origem), false);
+        assert_eq!(doc["policy"]["self_chat"], declarado);
+        let importada = transferencia::parse_importacao(&doc).unwrap();
+        assert_eq!(importada.self_chat, esperado);
+        let mut destino = secao(json!({}));
+        transferencia::aplicar_importada(&mut destino, &importada).unwrap();
+        assert_eq!(settings_de(&destino).access.self_chat, esperado);
+        assert_eq!(destino.settings["access"]["self_chat"], declarado);
+    }
+
+    // Export antigo (sem a chave): importa sem declarar e o destino fica sem
+    // a chave — o comportamento de sempre.
+    let origem = secao(json!({
+        "owners": [DONO],
+        "access": { "admission": "restricted" }
+    }));
+    let mut doc = transferencia::exportar(&settings_de(&origem), false);
+    doc["policy"].as_object_mut().unwrap().remove("self_chat");
+    let importada = transferencia::parse_importacao(&doc).unwrap();
+    assert_eq!(importada.self_chat, None);
+    let mut destino = secao(json!({}));
+    transferencia::aplicar_importada(&mut destino, &importada).unwrap();
+    assert_eq!(settings_de(&destino).access.self_chat, None);
+    assert!(
+        !destino.settings["access"]
+            .as_object()
+            .unwrap()
+            .contains_key("self_chat"),
+        "`None` nao grava a chave"
+    );
+}
+
+/// `self_chat` nao-booleano recusa o documento inteiro, como os demais
+/// campos do `policy`.
+#[test]
+fn import_recusa_self_chat_nao_booleano() {
+    let mut doc = transferencia::exportar(&settings_de(&politica_rica()), false);
+    doc["policy"]["self_chat"] = json!("sim");
+    let erro = transferencia::parse_importacao(&doc).unwrap_err();
+    assert!(matches!(erro, ErroDeImportacao::Valor(_)));
+    assert_eq!(erro.codigo(), "import_value_invalid");
+}
