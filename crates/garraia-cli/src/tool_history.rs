@@ -389,10 +389,9 @@ pub fn do_metadata(meta: &Value) -> Vec<ToolRecord> {
 /// #1709 fatia 3 (segurança da superfície de resposta): o `texto` da `Claim`
 /// deriva de `detail`/`name` da ferramenta — dado que o executor registrou, mas
 /// que pode ecoar conteúdo de terceiros. Antes de projetar, o texto passa por
-/// [`redigir_texto_livre`] (credencial → `[REDACTED]`) e por
-/// [`sanear_injecao`] (remove caracteres invisíveis e marca injeção de prompt),
-/// para a superfície de resposta nunca divulgar credencial nem amplificar
-/// instrução embutida em saída de ferramenta.
+/// [`sanear_superficie`] (redação de credencial + saneamento de injeção de
+/// prompt), para a superfície de resposta nunca divulgar credencial nem
+/// amplificar instrução embutida em saída de ferramenta.
 pub fn resumo_de_claims(registros: &[ToolRecord]) -> garraia_agents::SurfaceSummary {
     use garraia_agents::{Claim, EvidenceRef};
     let claims: Vec<Claim> = registros
