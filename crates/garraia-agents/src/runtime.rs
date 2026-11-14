@@ -402,6 +402,15 @@ pub struct AgentRuntime {
     /// aqui. Mora no runtime porque ele e o unico ponto que gateway e CLI
     /// compartilham — um mapa por processo cobre todo caminho.
     pending_approvals: crate::tools::pending_approval::PendingApprovals,
+    /// #1858 fatia 4: o nivel de aprovacao (`agent.approval` / `--yolo`) que
+    /// o runtime aplica ao montar a aprovacao do turno. So o `Session` muda
+    /// algo AQUI; o `NeverConfirm` e decidido em cada ferramenta, e o
+    /// `Always` (default) e o comportamento de antes.
+    approval_level: garraia_common::ApprovalLevel,
+    /// #1858 fatia 4: sob `session`, o que o humano ja aprovou em cada
+    /// `(canal, sessao, remetente)`. Mora ao lado das pendentes pela mesma
+    /// razao: o runtime e o unico ponto que gateway e CLI compartilham.
+    session_approvals: crate::tools::session_approval::SessionApprovals,
     /// #1449: o workspace padrao das file tools, **escopado por sessao**.
     ///
     /// `Some` so quando quem montou o runtime decidiu que a fonte das raizes e
@@ -1215,6 +1224,8 @@ impl AgentRuntime {
             auto_extract: true,
             max_facts: None,
             pending_approvals: crate::tools::pending_approval::PendingApprovals::new(),
+            approval_level: garraia_common::ApprovalLevel::default(),
+            session_approvals: crate::tools::session_approval::SessionApprovals::new(),
             workspace_padrao: None,
             breakers: crate::tools::breaker::Breakers::new(),
             observabilidade: Arc::new(crate::observabilidade::Observabilidade::new()),
@@ -1228,6 +1239,22 @@ impl AgentRuntime {
     /// declaracao vence sozinha e este campo fica `None`.
     pub fn set_workspace_padrao(&mut self, workspace: Option<crate::tools::SessionWorkspace>) {
         self.workspace_padrao = workspace;
+    }
+
+    /// #1858 fatia 4: o nivel de aprovacao do tier arriscado que este runtime
+    /// aplica — o mesmo `agent.approval`/`--yolo` que as ferramentas recebem.
+    ///
+    /// Aqui so o `session` tem efeito: o "sim" dado a um pedido passa a
+    /// cobrir o MESMO pedido no resto da sessao (ver
+    /// [`crate::tools::session_approval`]). Nao chamar = `always`, o
+    /// comportamento de antes.
+    pub fn set_approval_level(&mut self, level: garraia_common::ApprovalLevel) {
+        self.approval_level = level;
+    }
+
+    /// O nivel de aprovacao em vigor neste runtime.
+    pub fn approval_level(&self) -> garraia_common::ApprovalLevel {
+        self.approval_level
     }
 
     /// O workspace padrao em vigor, se ha um.
@@ -3487,6 +3514,12 @@ impl AgentRuntime {
     ///
     /// Um escopo cuja sessao nao e a do turno e erro de quem chama: nada e
     /// aprovado (fail-closed), e o registro da sessao do escopo nao e tocado.
+    ///
+    /// #1858 fatia 4: sob `agent.approval: session` (e so com escopo — e o
+    /// escopo que identifica quem aprovou), o "sim" de agora e lembrado e a
+    /// aprovacao do turno passa a cobrir tambem o que esta
+    /// `(canal, sessao, remetente)` ja aprovou. Sem escopo, ou com escopo de
+    /// outra sessao, nada e lembrado nem consultado.
     fn aprovacao_do_turno(
         &self,
         exec: &ExecContext,
@@ -3504,8 +3537,13 @@ impl AgentRuntime {
                 ToolApproval::None
             }
             Some(scope) => {
-                self.pending_approvals
-                    .resolve(scope, user_text, std::time::Instant::now())
+                let agora = std::time::Instant::now();
+                let deste_turno = self.pending_approvals.resolve(scope, user_text, agora);
+                if self.approval_level.lembra_aprovacao_na_sessao() {
+                    self.session_approvals.compor(scope, deste_turno, agora)
+                } else {
+                    deste_turno
+                }
             }
         }
     }

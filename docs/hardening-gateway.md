@@ -148,7 +148,26 @@ operador — nunca um default de fábrica:
 | Nível | Config / flag | O que muda |
 |---|---|---|
 | `always` (default) | nada, ou `agent.approval: always` | comportamento atual: comando arriscado pausa e pede "sim" |
+| `session` | `agent.approval: session` no config | o **primeiro** pedido de cada comando continua pausando e pedindo "sim"; aprovado, o **mesmo** pedido não pergunta de novo até o fim da sessão |
 | `never-confirm` | `agent.approval: never-confirm` no config, **ou** `--yolo` / `--dangerously-skip-permissions` no `garra chat` | o **pedido** de confirmação é dispensado onde existe canal; o comando roda |
+
+O que `session` lembra, e o que não lembra:
+
+- **Só o pedido idêntico.** A regra é a igualdade da impressão digital
+  `(ferramenta, assunto)` do GAR-187 — aprovar `cargo test -p a` não aprova
+  `cargo test -p b` nem `cargo test -p a && curl …`; no `device_execute` o
+  assunto inclui os `args`, no `run_tests` o diretório da suite.
+- **Só para quem aprovou.** A lembrança é do trio `(canal, sessão,
+  remetente)` que o servidor deriva (o mesmo escopo das aprovações
+  pendentes): outra sessão, outro canal ou outra pessoa do mesmo grupo
+  pergunta de novo. Caminho sem escopo (sem remetente provado) não lembra
+  nada.
+- **Não persiste.** Fica na memória do processo, como HMAC com chave por
+  processo — nunca o comando cru; reiniciar o gateway ou a CLI faz o humano
+  confirmar de novo. Sessão sem turno por 1 h esquece; o teto é de 64
+  pedidos por sessão (o mais antigo sai e volta a perguntar).
+- **Nada acima do tier muda.** Hard-deny, modo, teto da superfície e o
+  fail-closed sem canal rodam antes de a ferramenta olhar a aprovação.
 
 O que `never-confirm` **nunca** faz:
 

@@ -2036,6 +2036,99 @@ mod tests {
         );
     }
 
+    // ==== #1858 fatia 4: nível `session` (o runtime lembra o "sim"). ====
+
+    fn ctx_com_aprovacao_da_sessao(comandos: &[&str]) -> ToolContext {
+        ToolContext {
+            approval: ToolApproval::GrantedMany(
+                comandos
+                    .iter()
+                    .map(|c| {
+                        crate::tools::approval::ApprovalFingerprint::of("bash", c)
+                            .as_str()
+                            .to_string()
+                    })
+                    .collect(),
+            ),
+            ..ctx(false)
+        }
+    }
+
+    /// `session` nunca dispensa o PRIMEIRO pedido: sem nada lembrado, a tool
+    /// pergunta como no `always`. Quem lembra é o runtime, não a tool.
+    #[tokio::test]
+    async fn nivel_session_ainda_pede_o_primeiro_sim() {
+        let mut tool = BashTool::new_with_confirmation(None);
+        tool.set_approval_level(garraia_common::ApprovalLevel::Session);
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "printenv PATH"}))
+            .await
+            .unwrap();
+        assert!(output.requires_confirmation, "{}", output.content);
+    }
+
+    /// Uma impressão digital lembrada pela sessão NUNCA desarma o hard-deny:
+    /// a denylist roda antes de a tool olhar a aprovação — mesmo que o
+    /// `rm -rf /` estivesse (por absurdo) na lista da sessão.
+    #[tokio::test]
+    async fn aprovacao_da_sessao_nao_desarma_o_hard_deny() {
+        let mut tool = BashTool::new_with_confirmation(None);
+        tool.set_approval_level(garraia_common::ApprovalLevel::Session);
+        let output = tool
+            .execute(
+                &ctx_com_aprovacao_da_sessao(&["rm -rf /", "printenv PATH"]),
+                serde_json::json!({"command": "rm -rf /"}),
+            )
+            .await
+            .unwrap();
+        assert!(output.is_error, "{}", output.content);
+        assert!(!output.requires_confirmation, "{}", output.content);
+        assert!(output.content.contains("bloqueado"), "{}", output.content);
+    }
+
+    /// Sem canal de confirmação, a aprovação da sessão não vale — o
+    /// fail-closed de antes, intacto (o mesmo do `Granted` do #1075).
+    #[tokio::test]
+    async fn aprovacao_da_sessao_sem_canal_continua_fail_closed() {
+        let mut tool = BashTool::new(None); // confirmation_enabled = false
+        tool.set_approval_level(garraia_common::ApprovalLevel::Session);
+        let output = tool
+            .execute(
+                &ctx_com_aprovacao_da_sessao(&["printenv PATH"]),
+                serde_json::json!({"command": "printenv PATH"}),
+            )
+            .await
+            .unwrap();
+        assert!(output.is_error, "{}", output.content);
+        assert!(output.content.contains("fail-closed"), "{}", output.content);
+    }
+
+    /// Com canal, o comando lembrado roda sem perguntar — e um comando
+    /// diferente, mesmo parecido, pergunta.
+    #[tokio::test]
+    async fn aprovacao_da_sessao_cobre_so_o_comando_lembrado() {
+        let mut tool = BashTool::new_with_confirmation(None);
+        tool.set_approval_level(garraia_common::ApprovalLevel::Session);
+        let lembrado = tool
+            .execute(
+                &ctx_com_aprovacao_da_sessao(&["printenv PATH"]),
+                serde_json::json!({"command": "printenv PATH"}),
+            )
+            .await
+            .unwrap();
+        assert!(!lembrado.requires_confirmation, "{}", lembrado.content);
+        assert!(!lembrado.is_error, "{}", lembrado.content);
+
+        let outro = tool
+            .execute(
+                &ctx_com_aprovacao_da_sessao(&["printenv PATH"]),
+                serde_json::json!({"command": "printenv HOME"}),
+            )
+            .await
+            .unwrap();
+        assert!(outro.requires_confirmation, "{}", outro.content);
+    }
+
     /// Critério da #1858: sob `never-confirm` cada comando executado vira
     /// linha no arquivo de auditoria (comando redigido, timestamp) — e fora
     /// da flag nada é gravado nem o arquivo criado.

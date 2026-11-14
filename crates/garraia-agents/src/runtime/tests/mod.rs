@@ -33,6 +33,9 @@ use crate::tools::{ToolContext, ToolOutput};
 use async_trait::async_trait;
 use garraia_common::Error;
 
+/// #1858 fatia 4: `agent.approval: session` — o "sim" vale para o mesmo
+/// pedido no resto da sessao, e so para ele.
+mod aprovacao_da_sessao;
 mod aprovacao_entre_turnos;
 /// Continuacao de [`aprovacao_entre_turnos`] (dividido pelo teto de 700 linhas do ratchet):
 /// a aprovacao retomada e o pedido do `bash` sem marcador.

@@ -1837,6 +1837,10 @@ pub async fn run_chat(
     let review = (Arc::clone(&provider), model_name.clone());
     let mut runtime = AgentRuntime::new();
     runtime.register_provider(provider);
+    // #1858 fatia 4: o nivel da sessao tambem chega ao runtime — e ele quem
+    // monta a aprovacao do turno, e sob `session` e ele quem lembra o "sim".
+    // As ferramentas recebem o mesmo nivel logo abaixo.
+    runtime.set_approval_level(nivel_aprovacao);
     register_cli_tools(
         &runtime,
         &config,
@@ -1908,6 +1912,18 @@ pub async fn run_chat(
                     .join("never-confirm.jsonl")
                     .display()
             )),
+            &mut io::stdout(),
+        );
+    }
+    // #1858 fatia 4: `session` nao dispensa pedido nenhum — so avisa a regra,
+    // para o "sim" dado agora nao surpreender depois.
+    if nivel_aprovacao.lembra_aprovacao_na_sessao() {
+        renderer.handle(
+            UiEvent::Hint(
+                "Aprovacao por sessao (agent.approval: session): o \"sim\" dado a um comando vale \
+                 para o MESMO comando ate o fim desta sessao. Comando diferente pergunta de novo; \
+                 o hard-deny continua valendo.",
+            ),
             &mut io::stdout(),
         );
     }
@@ -5644,6 +5660,22 @@ mod aprovacao_tests {
 
     const TOOL: &str = "apaga_arquivo";
     const ALVO: &str = "/tmp/garraia-1343-cli";
+
+    /// #1858 fatia 4 (guarda de fiacao): o nivel de aprovacao da sessao do
+    /// `garra chat` chega ao RUNTIME — nao so as ferramentas. Sob `session` e
+    /// o runtime quem lembra o "sim"; sem esta linha o knob seria aceito pelo
+    /// config, apareceria no `/status` e nao faria nada. So a metade de
+    /// producao do fonte conta: o literal abaixo, no proprio teste, nao pode
+    /// satisfazer a varredura.
+    #[test]
+    fn nivel_de_aprovacao_da_sessao_chega_ao_runtime() {
+        const FONTE: &str = include_str!("chat.rs");
+        let producao = FONTE.split("#[cfg(test)]").next().unwrap_or(FONTE);
+        assert!(
+            producao.contains("runtime.set_approval_level(nivel_aprovacao);"),
+            "run_chat deixou de passar o nivel de aprovacao ao AgentRuntime"
+        );
+    }
 
     struct ApagaArquivo(Arc<AtomicUsize>);
 
