@@ -8,8 +8,9 @@
 #   * `deny.toml` controls advisories flagged by `cargo deny check
 #     advisories`. Now invoked in CI via `cargo-deny-action` default
 #     `command: check` (since GAR-458 enabled the advisories category).
-#   * **Mandatory sync (remaining mirrored IDs): nenhum ID de vulnerabilidade; os
-#     4 unmaintained do #1667 (zbus x3, webpki-roots) sao espelhados. rsa
+#   * **Mandatory sync (remaining mirrored IDs): RUSTSEC-2026-0459 (#1850,
+#     libsqlite3-sys via sqlx-sqlite, EXPIRA 2026-12-31) e os 4 unmaintained do
+#     #1667 (zbus x3, webpki-roots) sao espelhados. rsa
 #     RUSTSEC-2023-0071 (GAR-456) REMOVIDO 2026-10-30 (fora do Cargo.lock). Closed history: wasmtime-wasi ×1 (GAR-685 / PR #472),
 #     wasmtime ×15 (GAR-454), webpki ×4
 #     (GAR-455 / PR #295), lru ×1 (GAR-593 / health/202605121530),
@@ -169,6 +170,23 @@ ignore = [
     # exige testcontainers ^0.27, entao nao ha upgrade que resolva. Remover quando o
     # testcontainers trocar de crate de tar. Acompanhamento: #1667.
     { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar unmaintained (Astral ended maintenance 2026-11-03); no vulnerability. Dev-only chain: testcontainers -> astral-tokio-tar (tests only, not in release binary). EXPIRA 2026-12-31 (sem upstream: testcontainers 0.28.0 ainda depende de ^0.6.1). Acompanhamento: #1667." },
+
+    # --- libsqlite3-sys 0.37.0 (RUSTSEC-2026-0459): SQLite C < 3.54 (CVE-2026-119375) ---
+    # Vulnerabilidade REAL (memory-exposure LOCAL): SQLite < 3.54.0 pode devolver
+    # memoria de page-cache nao inicializada quando o processo abre um .db cujo
+    # -wal irmao tem page size diferente e foi escrito por terceiro menos
+    # confiavel (CVSS 4.0: AV:L, VC:H, sem VI/VA). Afetadas: libsqlite3-sys
+    # 0.6.0-0.38.2 (SQLite bundled 3.13.0-3.53.2); corrigida em 0.39.0 (SQLite
+    # 3.54.0). Lock: libsqlite3-sys 0.37.0, PRESO por sqlx-sqlite 0.9.0 (teto
+    # <0.38; 0.9.0 e a ultima versao do crates.io — a correcao existe upstream,
+    # mas ainda nao ha release do sqlx que a consuma). Exposicao do gateway exige
+    # abrir .db com -wal escrito por terceiro; os bancos locais (sessions,
+    # memory, admin) sao criados e escritos pelo proprio processo — risco local
+    # limitado. Excecao TEMPORARIA autorizada pelo dono (2026-11-13, opcao 1,
+    # decisao registrada na issue). Remover (nao renovar) quando o sqlx-sqlite
+    # subir o teto para >= 0.39 — checar a cada release do sqlx. Espelhado em
+    # .cargo/audit.toml. Acompanhamento: #1850.
+    { id = "RUSTSEC-2026-0459", reason = "libsqlite3-sys 0.37.0 bundles SQLite < 3.54 (CVE-2026-119375, local memory-exposure via crafted -wal sibling; CVSS 4.0 AV:L). Pinned by sqlx-sqlite 0.9.0 (<0.38 ceiling; latest crates.io release — no sqlx release consuming 0.39+ yet). Gateway DBs are created and written by the process itself, so the less-trusted -wal path does not apply locally. EXPIRA 2026-12-31 (dono aprovou excecao com prazo em 2026-11-13; remover quando sqlx-sqlite liberar >= 0.39). Acompanhamento: #1850." },
 ]
 
 [licenses]
