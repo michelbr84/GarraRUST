@@ -12,6 +12,7 @@ pub mod context_policy;
 #[cfg(feature = "dev-echo-provider")]
 pub mod echo;
 pub mod embeddings;
+pub mod evidence;
 pub mod exec_context;
 pub mod execution_budget;
 /// #1272 S3: argv e env endurecidos do `git` das tools de leitura.
@@ -51,6 +52,7 @@ pub use embeddings::{
     CohereEmbeddingProvider, EmbeddingProvider, OllamaEmbeddingProvider, OpenAiEmbeddingProvider,
     ResilientEmbeddingProvider,
 };
+pub use evidence::{Claim, ClaimError, EvidenceRef, VerificationStatus, evidence_from_event};
 pub use execution_budget::ExecutionBudget;
 pub use llama_cpp::{KvCacheType, LlamaCppConfig, LlamaCppProvider};
 pub use memory_noise::{DEFAULT_MIN_CHARS, DEFAULT_NOISE_PHRASES, MIN_CHARS_MAX, NoisePolicy};
