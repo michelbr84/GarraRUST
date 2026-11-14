@@ -56,12 +56,18 @@ pub enum AgentMode {
 
 impl AgentMode {
     /// Parse string para AgentMode (case-insensitive)
+    ///
+    /// #1858: `plan` e apelido de `architect`, o modo de desenho e
+    /// planejamento, somente leitura (o "plan mode" da escada de modos do
+    /// dono). Nao e politica nova: resolve para a MESMA variante, e o rotulo
+    /// continua `architect`. Antes, `plan` era nome desconhecido: erro no
+    /// `garra chat`, e portao ABERTO no `ToolGate::for_mode_name` do gateway.
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "auto" => Some(Self::Auto),
             "search" => Some(Self::Search),
-            "architect" => Some(Self::Architect),
+            "architect" | "plan" => Some(Self::Architect),
             "code" => Some(Self::Code),
             "ask" => Some(Self::Ask),
             "debug" => Some(Self::Debug),
@@ -2621,6 +2627,66 @@ mod tests {
         assert_eq!(AgentMode::from_str("CODE"), Some(AgentMode::Code));
         assert_eq!(AgentMode::from_str("ask"), Some(AgentMode::Ask));
         assert_eq!(AgentMode::from_str("invalid"), None);
+    }
+
+    /// #1858: `plan` e apelido do `architect` — a mesma variante, e portanto
+    /// a mesma politica para CADA ferramenta nativa, avaliada pelo metodo
+    /// que o runtime chama (nome + classes nativas).
+    #[test]
+    fn plan_e_apelido_do_architect() {
+        assert_eq!(AgentMode::from_str("plan"), Some(AgentMode::Architect));
+        assert_eq!(AgentMode::from_str("PLAN"), Some(AgentMode::Architect));
+        // O apelido nao vira variante nem rotulo novo.
+        assert!(!AgentMode::all_modes().iter().any(|m| m.as_str() == "plan"));
+        let plan = ToolGate::for_mode_name("plan");
+        let architect = ToolGate::for_mode_name("architect");
+        assert_eq!(plan.nome_do_modo(), Some("architect"));
+        for (nome, classes) in crate::capacidades::NATIVAS {
+            assert_eq!(
+                plan.permite_com_capacidades(nome, classes),
+                architect.permite_com_capacidades(nome, classes),
+                "`plan` divergiu do `architect` em `{nome}`"
+            );
+        }
+    }
+
+    /// #1858, criterio do dono: o modo `plan` nega toda mutacao e permite
+    /// ler e pesquisar — ferramenta por ferramenta da tabela nativa, com as
+    /// classes de cada uma (o mesmo `permite_com_capacidades` do runtime; a
+    /// forma curta `permite(nome)` provaria pela razao errada).
+    #[test]
+    fn plan_nega_toda_mutacao_e_permite_ler_e_pesquisar() {
+        let plan = ToolGate::for_mode_name("plan");
+        assert!(
+            plan.restringe_por_whitelist(),
+            "`plan` nao pode resolver para portao aberto"
+        );
+        let mut mutantes = Vec::new();
+        for (nome, classes) in crate::capacidades::NATIVAS {
+            if classes.iter().any(|c| c.e_mutante()) {
+                assert!(
+                    !plan.permite_com_capacidades(nome, classes),
+                    "`plan` deixou passar `{nome}`, que muta"
+                );
+                mutantes.push(*nome);
+            }
+        }
+        // A varredura nao e vazia: as quatro que mais importam estao nela.
+        for essencial in ["file_write", "bash", "run_tests", "device_execute"] {
+            assert!(mutantes.contains(&essencial), "{essencial} fora da tabela");
+        }
+        for nome in [
+            "file_read",
+            "list_dir",
+            "repo_search",
+            "web_search",
+            "web_fetch",
+        ] {
+            assert!(
+                plan.permite_com_capacidades(nome, crate::capacidades::capacidades_nativas(nome)),
+                "`plan` barrou `{nome}`, que so le ou pesquisa"
+            );
+        }
     }
 
     #[test]
