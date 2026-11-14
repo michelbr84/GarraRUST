@@ -374,38 +374,7 @@ impl BashTool {
             "cwd": context.working_dir,
             "command": comando_para_log(comando),
         });
-        if let Some(pai) = caminho.parent()
-            && let Err(e) = tokio::fs::create_dir_all(pai).await
-        {
-            tracing::warn!(
-                path = ?caminho,
-                erro = %e,
-                "auditoria_yolo: nao consegui criar o diretorio do arquivo de auditoria"
-            );
-            return;
-        }
-        match tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(caminho)
-            .await
-        {
-            Ok(mut arquivo) => {
-                if let Err(e) = tokio::io::AsyncWriteExt::write_all(
-                    &mut arquivo,
-                    format!("{registro}\n").as_bytes(),
-                )
-                .await
-                {
-                    tracing::warn!(path = ?caminho, erro = %e, "auditoria_yolo: falha ao escrever o registro");
-                }
-            }
-            Err(e) => tracing::warn!(
-                path = ?caminho,
-                erro = %e,
-                "auditoria_yolo: falha ao abrir o arquivo de auditoria"
-            ),
-        }
+        crate::tools::auditoria_yolo::anexar(caminho, &registro).await;
     }
 }
 
