@@ -1135,6 +1135,10 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         .join("never-confirm.jsonl");
     bash_tool.set_approval_level(config.agent.approval);
     bash_tool = bash_tool.com_auditoria_yolo(auditoria_yolo.clone());
+    // #1858 fatia 4: o mesmo nivel chega ao runtime, que monta a aprovacao
+    // do turno — sob `session` e ele quem lembra o "sim" de cada
+    // `(canal, sessao, remetente)`. `always` (default) nao muda nada.
+    runtime.set_approval_level(config.agent.approval);
     // #1225: `agent.sandbox` finalmente chega ao tool. Aplicado DEPOIS da
     // allowlist de proposito — ordem de construcao inalterada, e a policy e
     // camada adicional, nao substituta do safety gate. Secao ausente =>
@@ -2767,6 +2771,25 @@ mod tests {
             working_dir: working_dir.map(str::to_string),
             project_id: None,
         }
+    }
+
+    /// #1858 fatia 4 (guarda de fiacao, no mesmo espirito do #1244): o
+    /// `agent.approval` do config chega ao RUNTIME que `build_agent_runtime`
+    /// monta — nao so as ferramentas. Sob `session` e o runtime quem lembra o
+    /// "sim"; sem a linha de fiacao o knob seria aceito e nao faria nada.
+    /// Default segue `always`.
+    #[tokio::test]
+    async fn nivel_de_aprovacao_do_config_chega_ao_runtime() {
+        assert_eq!(
+            build_agent_runtime(&AppConfig::default()).approval_level(),
+            garraia_common::ApprovalLevel::Always
+        );
+        let mut config = AppConfig::default();
+        config.agent.approval = garraia_common::ApprovalLevel::Session;
+        assert_eq!(
+            build_agent_runtime(&config).approval_level(),
+            garraia_common::ApprovalLevel::Session
+        );
     }
 
     /// Um prompt que chegou pelo Telegram pede um caminho absoluto de

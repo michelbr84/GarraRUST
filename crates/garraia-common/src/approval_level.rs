@@ -9,6 +9,11 @@
 //!
 //! - `Always` (default): o comportamento de sempre. Toda ação arriscada pede
 //!   confirmação — é o que preserva quem nunca pediu nada.
+//! - `Session` (#1858 fatia 4): o primeiro pedido de cada ação continua
+//!   pedindo o "sim"; aprovado, o MESMO pedido (mesma ferramenta e mesmo
+//!   assunto, pela impressão digital do GAR-187) não pergunta de novo até o
+//!   fim da sessão. Quem guarda a lembrança é o runtime
+//!   (`garraia_agents::tools::session_approval`), nunca a ferramenta.
 //! - `NeverConfirm`: pula o **pedido** de confirmação quando existe canal de
 //!   confirmação. É a `--yolo`/`--dangerously-skip-permissions` da #1858.
 //!
@@ -39,6 +44,12 @@ pub enum ApprovalLevel {
     /// idêntico ao de antes da #1858.
     #[default]
     Always,
+    /// #1858 fatia 4: pede confirmação na primeira vez de cada pedido; o
+    /// "sim" do humano passa a cobrir o MESMO pedido (igualdade da impressão
+    /// digital, nunca padrão) no resto da sessão — só na sessão, no canal e
+    /// para o remetente que aprovou. Nunca dispensa o primeiro pedido, nunca
+    /// persiste (a impressão digital é um HMAC com chave por processo).
+    Session,
     /// Pula o pedido de confirmação (quando há canal). O hard-deny e o
     /// fail-closed de canal ausente continuam valendo.
     NeverConfirm,
@@ -49,15 +60,26 @@ impl ApprovalLevel {
     ///
     /// O chamador ainda precisa provar que existe canal
     /// (`confirmation_enabled`) — `true` aqui nunca autoriza executar num
-    /// runtime fail-closed.
+    /// runtime fail-closed. `Session` responde `false`: o primeiro pedido de
+    /// cada ação continua pedindo o "sim".
     pub fn dispensa_confirmacao(self) -> bool {
         matches!(self, Self::NeverConfirm)
+    }
+
+    /// Este nível lembra, no resto da sessão, o pedido que o humano aprovou?
+    ///
+    /// Só `Session`. Quem consulta é o runtime, no ponto único em que monta a
+    /// aprovação do turno; as ferramentas continuam vendo só uma aprovação
+    /// por impressão digital (`ToolApproval::covers`).
+    pub fn lembra_aprovacao_na_sessao(self) -> bool {
+        matches!(self, Self::Session)
     }
 
     /// Rótulo estável para `/status`, logs e o arquivo de auditoria.
     pub fn rotulo(self) -> &'static str {
         match self {
             Self::Always => "always",
+            Self::Session => "session",
             Self::NeverConfirm => "never-confirm",
         }
     }
@@ -81,6 +103,17 @@ mod tests {
         assert!(!ApprovalLevel::Always.dispensa_confirmacao());
     }
 
+    /// #1858 fatia 4: `session` NUNCA dispensa o primeiro pedido — só lembra
+    /// o que o humano aprovou. E só ele lembra: `always` pergunta sempre, e o
+    /// `never-confirm` nem chega a pedir (não há o que lembrar).
+    #[test]
+    fn session_lembra_mas_nao_dispensa_o_pedido() {
+        assert!(!ApprovalLevel::Session.dispensa_confirmacao());
+        assert!(ApprovalLevel::Session.lembra_aprovacao_na_sessao());
+        assert!(!ApprovalLevel::Always.lembra_aprovacao_na_sessao());
+        assert!(!ApprovalLevel::NeverConfirm.lembra_aprovacao_na_sessao());
+    }
+
     /// Serde: kebab-case nos dois sentidos, e seção ausente => default.
     #[test]
     fn serde_kebab_case_e_default() {
@@ -96,13 +129,21 @@ mod tests {
             serde_json::to_string(&ApprovalLevel::Always).expect("serializa"),
             "\"always\""
         );
+        assert_eq!(
+            serde_json::from_str::<ApprovalLevel>("\"session\"").expect("parse"),
+            ApprovalLevel::Session
+        );
     }
 
     /// Rótulo bate com a forma serializada — `/status` e o arquivo de
     /// auditoria não podem divergir do que o config aceita.
     #[test]
     fn rotulo_bate_com_a_forma_serializada() {
-        for nivel in [ApprovalLevel::Always, ApprovalLevel::NeverConfirm] {
+        for nivel in [
+            ApprovalLevel::Always,
+            ApprovalLevel::Session,
+            ApprovalLevel::NeverConfirm,
+        ] {
             let serializado = serde_json::to_string(&nivel).expect("serializa");
             assert_eq!(serializado, format!("\"{}\"", nivel.rotulo()));
         }

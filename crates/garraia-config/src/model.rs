@@ -1299,6 +1299,10 @@ pub struct AgentConfig {
     /// (o que pede confirmação humana hoje). Default `always` = comportamento
     /// atual, preservado para quem nunca configurou nada.
     ///
+    /// `session` mantém o primeiro pedido de cada ação; o "sim" do humano
+    /// passa a cobrir o MESMO pedido (igualdade da impressão digital) no
+    /// resto da sessão, só no `(canal, sessão, remetente)` que aprovou.
+    ///
     /// `never-confirm` pula o **pedido** de confirmação onde existe canal de
     /// confirmação — é o que a flag `--yolo`/`--dangerously-skip-permissions`
     /// do `garra chat` liga por sessão. Ele NUNCA desarma o hard-deny
@@ -1788,6 +1792,11 @@ mod tests {
         let config: AppConfig =
             serde_norway::from_str("agent:\n  approval: always\n").expect("yaml should parse");
         assert_eq!(config.agent.approval, ApprovalLevel::Always);
+
+        // #1858 fatia 4: o nível intermediário.
+        let config: AppConfig =
+            serde_norway::from_str("agent:\n  approval: session\n").expect("yaml should parse");
+        assert_eq!(config.agent.approval, ApprovalLevel::Session);
 
         // Seção ausente => default (não panic, não inverta o default).
         let config: AppConfig = serde_norway::from_str("agent: {}\n").expect("yaml should parse");
