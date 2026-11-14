@@ -1,0 +1,1 @@
+- `bind_fail_closed_cli` nao flakeia mais em `Test (ubuntu-latest)` quando a janela de TIME_WAIT do gateway real de outro teste segura a porta: a prova da recusa passa a ser a saida (exit 78 + stderr), com bind com retry para confirmar que ninguem esta escutando, sem confundir TIME_WAIT com listener vivo.
