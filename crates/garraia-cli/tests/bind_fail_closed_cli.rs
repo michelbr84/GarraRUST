@@ -110,8 +110,19 @@ fn assert_recusou(out: &Output, porta: u16, contexto: &str) {
             "{contexto}: falta `{trecho}` no stderr:\n{stderr}"
         );
     }
-    TcpListener::bind(("0.0.0.0", porta))
-        .unwrap_or_else(|e| panic!("{contexto}: ninguem podia ter escutado na porta {porta}: {e}"));
+    // A prova da recusa e a saida (exit 78 + stderr). A porta pode estar em
+    // TIME_WAIT pelo gateway REAL que `start_com_credencial_de_env_passa_da_recusa`
+    // sobe e mata no mesmo arquivo (fenomeno OS, nao bug do binario): o bind
+    // direto falharia com "Address already in use" mesmo com a recusa certa.
+    // O bind com retry prova que NENHUM processo esta escutando AGORA; a janela
+    // de TIME_WAIT nao e um listener vivo.
+    for _ in 0..20 {
+        match TcpListener::bind(("0.0.0.0", porta)) {
+            Ok(_) => return,
+            Err(_) => std::thread::sleep(Duration::from_millis(250)),
+        }
+    }
+    panic!("{contexto}: alguem esta escutando na porta {porta} depois de 5s de espera");
 }
 
 #[test]
