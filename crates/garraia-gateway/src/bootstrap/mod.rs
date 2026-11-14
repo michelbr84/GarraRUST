@@ -1127,13 +1127,14 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // o pedido de confirmacao onde ha canal. Com auditoria: sob
     // `never-confirm`, cada comando executado vira linha JSONL em
     // `<data_dir>/audit/never-confirm.jsonl`.
+    // Um so caminho para as tres tools que o nivel dispensa (bash,
+    // run_tests, device_execute).
+    let auditoria_yolo = config
+        .resolved_data_dir()
+        .join("audit")
+        .join("never-confirm.jsonl");
     bash_tool.set_approval_level(config.agent.approval);
-    bash_tool = bash_tool.com_auditoria_yolo(
-        config
-            .resolved_data_dir()
-            .join("audit")
-            .join("never-confirm.jsonl"),
-    );
+    bash_tool = bash_tool.com_auditoria_yolo(auditoria_yolo.clone());
     // #1225: `agent.sandbox` finalmente chega ao tool. Aplicado DEPOIS da
     // allowlist de proposito — ordem de construcao inalterada, e a policy e
     // camada adicional, nao substituta do safety gate. Secao ausente =>
@@ -1264,7 +1265,8 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         } else {
             RunTestsTool::new(None)
         }
-        .com_sandbox(politica_das_tools.clone());
+        .com_sandbox(politica_das_tools.clone())
+        .com_auditoria_yolo(auditoria_yolo.clone());
         // #1858 fatia 2: mesmo nivel de aprovacao do bash (`agent.approval`).
         run_tests.set_approval_level(config.agent.approval);
         runtime.register_tool(Box::new(
@@ -1305,7 +1307,8 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         DeviceExecuteTool::new(device_config)
     } else {
         DeviceExecuteTool::new_without_confirmation(device_config)
-    };
+    }
+    .com_auditoria_yolo(auditoria_yolo);
     // #1858 fatia 2: mesmo nivel de aprovacao do bash/run_tests
     // (`agent.approval`); sem canal, o fail-closed da tabela fica intocado.
     device_execute.set_approval_level(config.agent.approval);

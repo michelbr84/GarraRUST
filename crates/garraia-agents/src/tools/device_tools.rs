@@ -357,6 +357,11 @@ pub struct DeviceExecuteTool {
     /// `NeverConfirm` dispensa o pedido de confirmação de hardware onde há
     /// canal; sem canal, o fail-closed da tabela continua intocado.
     approval_level: garraia_common::ApprovalLevel,
+    /// #1858: arquivo JSONL de auditoria das ações executadas sob
+    /// `never-confirm` (mesmo arquivo do `bash`). `None` = só o WARN do log.
+    /// Os `args` da capability NÃO vão ao arquivo — só device, capability e
+    /// risco, os mesmos campos da linha WARN.
+    auditoria_yolo: Option<std::path::PathBuf>,
 }
 
 impl DeviceExecuteTool {
@@ -367,6 +372,7 @@ impl DeviceExecuteTool {
             gate: HardwareGate::new(),
             confirmation_enabled: true,
             approval_level: garraia_common::ApprovalLevel::default(),
+            auditoria_yolo: None,
         }
     }
 
@@ -379,6 +385,7 @@ impl DeviceExecuteTool {
             gate: HardwareGate::sem_canal_confirmacao(),
             confirmation_enabled: false,
             approval_level: garraia_common::ApprovalLevel::default(),
+            auditoria_yolo: None,
         }
     }
 
@@ -386,6 +393,15 @@ impl DeviceExecuteTool {
     /// o pedido; `NeverConfirm` o dispensa onde há canal.
     pub fn set_approval_level(&mut self, level: garraia_common::ApprovalLevel) {
         self.approval_level = level;
+    }
+
+    /// #1858: caminho do JSONL de auditoria das ações executadas sob
+    /// `never-confirm` — o mesmo `<data_dir>/audit/never-confirm.jsonl` do
+    /// `bash`. Append best-effort, diretórios criados na primeira escrita.
+    #[must_use = "devolve a tool com a auditoria; o receptor e consumido"]
+    pub fn com_auditoria_yolo(mut self, caminho: std::path::PathBuf) -> Self {
+        self.auditoria_yolo = Some(caminho);
+        self
     }
 
     /// #1858 fatia 2: o `never-confirm` está efetivamente ativo? Só com
@@ -545,6 +561,19 @@ impl Tool for DeviceExecuteTool {
                             session = %context.session_id,
                             "hardware: ação executada sob never-confirm (--yolo); registro de auditoria"
                         );
+                        if let Some(caminho) = self.auditoria_yolo.as_ref() {
+                            let registro = serde_json::json!({
+                                "ts": chrono::Utc::now().to_rfc3339(),
+                                "level": "never-confirm",
+                                "tool": self.name(),
+                                "session_id": context.session_id,
+                                "user_id": context.user_id,
+                                "device": device_id,
+                                "capability": capability,
+                                "risk": cap.risk.to_string(),
+                            });
+                            crate::tools::auditoria_yolo::anexar(caminho, &registro).await;
+                        }
                     }
                     tracing::info!(
                         device = %device_id, capability = %capability, risk = %cap.risk,
@@ -1341,6 +1370,62 @@ mod tests {
             !output.requires_confirmation,
             "fail-closed é erro, não pausa: {}",
             output.content
+        );
+    }
+
+    /// #1858: sob `never-confirm` a ação R3 executada vira linha JSONL no
+    /// arquivo de auditoria — device, capability e risco, nunca os `args`.
+    /// Sem canal (fail-closed) nada roda e nada é gravado.
+    #[tokio::test]
+    async fn yolo_grava_a_acao_no_jsonl_de_auditoria_sem_args() {
+        let audit = tempfile::tempdir().expect("tempdir audit");
+        let arquivo = audit.path().join("audit").join("never-confirm.jsonl");
+        let arquivo_sem_canal = audit.path().join("sem-canal").join("never-confirm.jsonl");
+        let reg = registry();
+
+        let mut tool = DeviceExecuteTool::new(config(&reg)).com_auditoria_yolo(arquivo.clone());
+        tool.set_approval_level(garraia_common::ApprovalLevel::NeverConfirm);
+        let output = tool
+            .execute(
+                &ctx(ToolApproval::None),
+                json!({
+                    "device": "risco-completo",
+                    "capability": "door_unlock",
+                    "args": { "pin": "segredo-canario" }
+                }),
+            )
+            .await
+            .expect("executa");
+        assert!(!output.requires_confirmation, "{}", output.content);
+        let conteudo = std::fs::read_to_string(&arquivo).expect("jsonl criado");
+        assert!(
+            !conteudo.contains("segredo-canario"),
+            "args vazaram: {conteudo}"
+        );
+        let linhas: Vec<serde_json::Value> = conteudo
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("linha JSON"))
+            .collect();
+        assert_eq!(linhas.len(), 1, "{conteudo}");
+        assert_eq!(linhas[0]["tool"], "device_execute");
+        assert_eq!(linhas[0]["device"], "risco-completo");
+        assert_eq!(linhas[0]["capability"], "door_unlock");
+        assert_eq!(linhas[0]["level"], "never-confirm");
+
+        let mut sem_canal = DeviceExecuteTool::new_without_confirmation(config(&reg))
+            .com_auditoria_yolo(arquivo_sem_canal.clone());
+        sem_canal.set_approval_level(garraia_common::ApprovalLevel::NeverConfirm);
+        let output = sem_canal
+            .execute(
+                &ctx(ToolApproval::None),
+                json!({ "device": "risco-completo", "capability": "door_unlock", "args": {} }),
+            )
+            .await
+            .expect("executa");
+        assert!(output.is_error, "{}", output.content);
+        assert!(
+            !arquivo_sem_canal.exists(),
+            "fail-closed não grava auditoria"
         );
     }
 }

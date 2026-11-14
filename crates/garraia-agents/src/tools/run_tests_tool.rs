@@ -48,6 +48,9 @@ pub struct RunTestsTool {
     /// `NeverConfirm` dispensa o pedido de confirmação desta suite onde há
     /// canal; o gate textual fail-closed abaixo (canal ausente) fica intocado.
     approval_level: garraia_common::ApprovalLevel,
+    /// #1858: arquivo JSONL de auditoria das suites executadas sob
+    /// `never-confirm` (mesmo arquivo do `bash`). `None` = só o WARN do log.
+    auditoria_yolo: Option<std::path::PathBuf>,
 }
 
 impl RunTestsTool {
@@ -59,6 +62,7 @@ impl RunTestsTool {
             sandbox: crate::sandbox::SandboxPolicy::default(),
             jail: None,
             approval_level: garraia_common::ApprovalLevel::default(),
+            auditoria_yolo: None,
         }
     }
 
@@ -87,6 +91,15 @@ impl RunTestsTool {
     /// o pedido; `NeverConfirm` o dispensa onde há canal.
     pub fn set_approval_level(&mut self, level: garraia_common::ApprovalLevel) {
         self.approval_level = level;
+    }
+
+    /// #1858: caminho do JSONL de auditoria das suites executadas sob
+    /// `never-confirm` — o mesmo `<data_dir>/audit/never-confirm.jsonl` do
+    /// `bash`. Append best-effort, diretórios criados na primeira escrita.
+    #[must_use = "devolve a tool com a auditoria; o receptor e consumido"]
+    pub fn com_auditoria_yolo(mut self, caminho: std::path::PathBuf) -> Self {
+        self.auditoria_yolo = Some(caminho);
+        self
     }
 
     /// #1858 fatia 2: o `never-confirm` está efetivamente ativo? Só com
@@ -400,6 +413,17 @@ impl Tool for RunTestsTool {
                 session = %context.session_id,
                 "run_tests: suite executada sob never-confirm (--yolo); registro de auditoria"
             );
+            if let Some(caminho) = self.auditoria_yolo.as_ref() {
+                let registro = serde_json::json!({
+                    "ts": chrono::Utc::now().to_rfc3339(),
+                    "level": "never-confirm",
+                    "tool": self.name(),
+                    "session_id": context.session_id,
+                    "user_id": context.user_id,
+                    "dir": assunto,
+                });
+                crate::tools::auditoria_yolo::anexar(caminho, &registro).await;
+            }
         }
 
         // Detect or use specified framework
@@ -864,5 +888,47 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
             "default sempre pede confirmação: {}",
             out.content
         );
+    }
+
+    /// #1858: sob `never-confirm` a suite executada vira linha JSONL no
+    /// arquivo de auditoria; com `always` (pedido de confirmação) nada é
+    /// gravado — só o que rodou sem perguntar entra na trilha.
+    #[tokio::test]
+    async fn yolo_grava_a_suite_no_jsonl_de_auditoria() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let audit = tempfile::tempdir().expect("tempdir audit");
+        let arquivo_yolo = audit.path().join("a").join("never-confirm.jsonl");
+        let arquivo_always = audit.path().join("b").join("never-confirm.jsonl");
+
+        let mut tool =
+            RunTestsTool::new_with_confirmation(Some(1)).com_auditoria_yolo(arquivo_yolo.clone());
+        tool.set_approval_level(garraia_common::ApprovalLevel::NeverConfirm);
+        tool.execute(
+            &ctx(Some(dir.path().to_str().expect("utf8")), false),
+            serde_json::json!({ "framework": "cargo" }),
+        )
+        .await
+        .expect("executa");
+        let conteudo = std::fs::read_to_string(&arquivo_yolo).expect("jsonl criado");
+        let linhas: Vec<serde_json::Value> = conteudo
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("linha JSON"))
+            .collect();
+        assert_eq!(linhas.len(), 1, "{conteudo}");
+        assert_eq!(linhas[0]["tool"], "run_tests");
+        assert_eq!(linhas[0]["level"], "never-confirm");
+        assert!(linhas[0]["dir"].is_string(), "{conteudo}");
+
+        let mut tool_always =
+            RunTestsTool::new_with_confirmation(Some(1)).com_auditoria_yolo(arquivo_always.clone());
+        tool_always.set_approval_level(garraia_common::ApprovalLevel::Always);
+        tool_always
+            .execute(
+                &ctx(Some(dir.path().to_str().expect("utf8")), false),
+                serde_json::json!({ "framework": "cargo" }),
+            )
+            .await
+            .expect("executa");
+        assert!(!arquivo_always.exists(), "always não grava auditoria yolo");
     }
 }

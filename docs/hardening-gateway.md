@@ -164,11 +164,12 @@ O que `never-confirm` **nunca** faz:
   nome válido no config (o valor lá é `never-confirm`).
 
 Auditoria: todo comando executado sob `never-confirm` é registrado antes de
-rodar — linha `WARN` de auditoria no log (todas as tools do tier: `bash`,
-`run_tests`, `device_execute`) e, para o `bash`, uma linha JSONL em
-`<data_dir>/audit/never-confirm.jsonl` (comando, origem, timestamp). O
-comando sai pelo mesmo redator dos eventos de log — segredo digitado num
-comando não vira linha de auditoria. O `garra chat` anuncia o modo no início
+rodar — linha `WARN` de auditoria no log e uma linha JSONL em
+`<data_dir>/audit/never-confirm.jsonl`, nas três tools do tier: `bash`
+(comando, origem, timestamp), `run_tests` (diretório da suite) e
+`device_execute` (dispositivo, capability e risco — os `args` da ação não
+vão ao arquivo). O comando do `bash` sai pelo mesmo redator dos eventos de
+log — segredo digitado num comando não vira linha de auditoria. O `garra chat` anuncia o modo no início
 da sessão e mostra `Aprovacao: never-confirm` no painel de `/status`.
 
 Quando usar: sessão interativa sua, na sua máquina, para uma tarefa que

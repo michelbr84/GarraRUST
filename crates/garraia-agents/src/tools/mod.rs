@@ -1,4 +1,5 @@
 pub mod approval;
+pub(crate) mod auditoria_yolo;
 pub mod bash_tool;
 pub mod breaker;
 pub mod code_review_tool;

@@ -342,13 +342,14 @@ fn register_cli_tools(
     // #1858 fatia 2: o nivel de aprovacao da sessao chega a tool aqui, junto
     // do caminho de auditoria — sob `never-confirm` cada comando executado
     // vira linha JSONL em `<data_dir>/audit/never-confirm.jsonl`.
+    // Um so caminho para as tres tools que o nivel dispensa (bash, run_tests,
+    // device_execute): a trilha da sessao fica num arquivo so.
+    let auditoria_yolo = config
+        .resolved_data_dir()
+        .join("audit")
+        .join("never-confirm.jsonl");
     bash_tool.set_approval_level(nivel_aprovacao);
-    bash_tool = bash_tool.com_auditoria_yolo(
-        config
-            .resolved_data_dir()
-            .join("audit")
-            .join("never-confirm.jsonl"),
-    );
+    bash_tool = bash_tool.com_auditoria_yolo(auditoria_yolo.clone());
     // #1225 S2: a mesma policy vale para as tools que spawnam programa.
     let politica = sandbox_policy_from(&config.agent.sandbox);
     bash_tool.set_sandbox_policy(politica.clone());
@@ -369,7 +370,8 @@ fn register_cli_tools(
     let mut run_tests = RunTestsTool::new_with_confirmation(None)
         .com_sandbox(politica.clone())
         // #1858 fatia 2: mesmo nivel de aprovacao do bash da sessao.
-        .com_jail(file_jail);
+        .com_jail(file_jail)
+        .com_auditoria_yolo(auditoria_yolo.clone());
     run_tests.set_approval_level(nivel_aprovacao);
     runtime.register_tool(Box::new(run_tests));
     runtime.register_tool(Box::new(WebFetchTool::new(None)));
@@ -396,7 +398,8 @@ fn register_cli_tools(
     runtime.register_tool(Box::new(DeviceListTool::new(device_config.clone())));
     runtime.register_tool(Box::new(DeviceReadTool::new(device_config.clone())));
     // #1858 fatia 2: mesmo nivel de aprovacao do bash/run_tests da sessao.
-    let mut device_execute = DeviceExecuteTool::new(device_config);
+    let mut device_execute =
+        DeviceExecuteTool::new(device_config).com_auditoria_yolo(auditoria_yolo);
     device_execute.set_approval_level(nivel_aprovacao);
     runtime.register_tool(Box::new(device_execute));
     if let Some((provider, model)) = review {
