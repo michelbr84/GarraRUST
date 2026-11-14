@@ -262,6 +262,7 @@ class Bridge:
                     "is_group": False,
                     "from_me": True,
                     "self_chat": True,
+                    "backlog": False,
                     "push_name": PUSHNAME,
                 }
             )
@@ -281,6 +282,7 @@ class Bridge:
                 "is_group": False,
                 "from_me": bool(self.args.push_from_me),
                 "self_chat": False,
+                "backlog": False,
                 "push_name": PUSHNAME,
             }
         )

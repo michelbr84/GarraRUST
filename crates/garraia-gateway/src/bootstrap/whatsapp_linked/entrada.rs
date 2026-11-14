@@ -18,9 +18,15 @@
 //! mesmo chat nao rodam mais ao mesmo tempo na mesma sessao; chats diferentes
 //! seguem em paralelo, ate o teto global.
 //!
-//! Fica para a fatia seguinte o que pede desenho: juntar varios `append` do
-//! mesmo chat num turno so (responder a ultima, ou concatenar). Ate la cada
-//! mensagem ainda vira o proprio turno e a propria resposta, so que em ordem.
+//! A ultima fatia junta o que se acumula: [`FilasPorChat::entrar_juntando`]
+//! funde a mensagem nova ao ultimo lote da fila quando os dois se juntam, e
+//! [`FilasPorChat::juntar_prefixo_em`] e a janela de juncao do trabalhador —
+//! antes de comecar o turno, ele funde ao item na mao o prefixo da fila que se
+//! junta a ele. O backlog da reconexao (o `append` de ate 10 min, marcado
+//! `backlog` na ponte) vira 1 turno e 1 resposta por chat; mensagem ao vivo
+//! nunca se junta. QUEM se junta e decisao de quem chama (aqui so ha a
+//! mecanica); no canal WhatsApp e backlog do mesmo remetente + texto + sem
+//! comando de barra, concatenado na ordem de chegada.
 //!
 //! Modulo puro: sem relogio, sem I/O, sem identidade alem do `chat_jid` e do
 //! `id` opaco da mensagem. Estado em memoria; um restart zera, de proposito.
@@ -149,6 +155,61 @@ impl<T> FilasPorChat<T> {
         seguinte
     }
 
+    /// Como [`entrar`](Self::entrar), mas o que se junta vira um item so.
+    ///
+    /// Com o chat ocupado, a mensagem nova se junta ao ULTIMO item da fila
+    /// quando `junta` aprova o par (`junta(ultimo, &nova)`); aprovado,
+    /// `fundir(ultimo, nova)` absorve a mensagem e a fila nao cresce. Nao
+    /// aprovado (ou fila vazia), a mensagem entra como item a mais, na ordem
+    /// de chegada. Com o chat livre, devolve o item — quem chamou vira o
+    /// trabalhador, e a juncao com o que chegar nas proximas fracoes de
+    /// segundo e papel de [`juntar_prefixo_em`](Self::juntar_prefixo_em),
+    /// chamado por ele antes de comecar.
+    pub fn entrar_juntando(
+        &mut self,
+        chat: &str,
+        item: T,
+        junta: impl FnOnce(&T, &T) -> bool,
+        fundir: impl FnOnce(&mut T, T),
+    ) -> Option<T> {
+        match self.filas.get_mut(chat) {
+            Some(fila) => {
+                if let Some(ultimo) = fila.back_mut()
+                    && junta(ultimo, &item)
+                {
+                    fundir(ultimo, item);
+                    return None;
+                }
+                fila.push_back(item);
+                None
+            }
+            // Chat livre: o [`entrar`] de sempre — quem chamou vira trabalhador.
+            None => self.entrar(chat, item),
+        }
+    }
+
+    /// Junca ao `alvo` o maior prefixo da fila que `junta` aprova com ele.
+    ///
+    /// E a janela de juncao do trabalhador: antes de rodar o primeiro turno,
+    /// o que chegou enquanto ele acordava entra no MESMO lote (via `fundir`,
+    /// na ordem de chegada). A juncao PARA no primeiro item que `junta` recusa
+    /// — a ordem dos turnos continua a de chegada, item a item.
+    pub fn juntar_prefixo_em(
+        &mut self,
+        chat: &str,
+        alvo: &mut T,
+        junta: impl Fn(&T, &T) -> bool,
+        fundir: impl Fn(&mut T, T),
+    ) {
+        let Some(fila) = self.filas.get_mut(chat) else {
+            return;
+        };
+        while fila.front().is_some_and(|proximo| junta(alvo, proximo)) {
+            let proximo = fila.pop_front().expect("front verificado acima");
+            fundir(alvo, proximo);
+        }
+    }
+
     /// Quantos chats tem turno rodando ou esperando.
     #[cfg(test)]
     pub fn chats_ocupados(&self) -> usize {
@@ -200,6 +261,103 @@ mod tests {
         let mut f: FilasPorChat<u8> = FilasPorChat::default();
         assert_eq!(f.proximo("ninguem"), None);
         assert_eq!(f.chats_ocupados(), 0);
+    }
+
+    /// Juncao de teste: tudo se junta, menos o item marcado com `!`. Serve
+    /// como `junta` para `FilasPorChat<String>`.
+    /// `#[allow(clippy::ptr_arg)]`: o bound `Fn(&T, &T)` e higher-ranked, e so
+    /// um item de funcao de assinatura concreta satisfaz ele — o `impl
+    /// AsRef<str>` genérico monomorfiza numa vida unica e o rustc rejeita com
+    /// "implementation of `FnOnce` is not general enough".
+    #[allow(clippy::ptr_arg)]
+    fn junta_menos_bang(a: &String, b: &String) -> bool {
+        !a.starts_with('!') && !b.starts_with('!')
+    }
+
+    fn fundir_linha(a: &mut String, b: String) {
+        a.push('\n');
+        a.push_str(&b);
+    }
+
+    #[test]
+    fn entrar_juntando_funde_ao_ultimo_item_do_chat_ocupado() {
+        let mut f = FilasPorChat::default();
+        assert_eq!(
+            f.entrar_juntando("chat-a", "1".to_string(), junta_menos_bang, fundir_linha),
+            Some("1".to_string()),
+            "chat livre: o primeiro vira trabalhador"
+        );
+        assert_eq!(
+            f.entrar_juntando("chat-a", "2".to_string(), junta_menos_bang, fundir_linha),
+            None,
+            "chat ocupado: espera"
+        );
+        assert_eq!(
+            f.entrar_juntando("chat-a", "3".to_string(), junta_menos_bang, fundir_linha),
+            None,
+            "e o que ja espera e lote: a terceira funde nele"
+        );
+        assert_eq!(
+            f.proximo("chat-a"),
+            Some("2\n3".to_string()),
+            "duas mensagens esperando viram um lote so"
+        );
+        assert_eq!(f.proximo("chat-a"), None);
+    }
+
+    #[test]
+    fn entrar_juntando_empurra_separado_quando_nao_se_junta() {
+        let mut f = FilasPorChat::default();
+        assert_eq!(
+            f.entrar_juntando("a", "!x".to_string(), junta_menos_bang, fundir_linha),
+            Some("!x".to_string())
+        );
+        assert_eq!(
+            f.entrar_juntando("a", "1".to_string(), junta_menos_bang, fundir_linha),
+            None
+        );
+        assert_eq!(
+            f.entrar_juntando("a", "2".to_string(), junta_menos_bang, fundir_linha),
+            None,
+            "o lote que espera junta entre si"
+        );
+        assert_eq!(
+            f.entrar_juntando("a", "!y".to_string(), junta_menos_bang, fundir_linha),
+            None,
+            "o que nao se junta vira item proprio"
+        );
+        assert_eq!(f.proximo("a"), Some("1\n2".to_string()));
+        assert_eq!(
+            f.proximo("a"),
+            Some("!y".to_string()),
+            "na ordem de chegada, sem furar o item anterior"
+        );
+        assert_eq!(f.proximo("a"), None);
+    }
+
+    #[test]
+    fn juntar_prefixo_em_para_no_primeiro_item_que_nao_se_junta() {
+        let mut f = FilasPorChat::default();
+        assert_eq!(
+            f.entrar_juntando("a", "0".to_string(), junta_menos_bang, fundir_linha),
+            Some("0".to_string())
+        );
+        for item in ["1", "!x", "2"] {
+            assert_eq!(
+                f.entrar_juntando("a", item.to_string(), junta_menos_bang, fundir_linha),
+                None
+            );
+        }
+        let mut alvo = "0".to_string();
+        f.juntar_prefixo_em("a", &mut alvo, junta_menos_bang, fundir_linha);
+        assert_eq!(alvo, "0\n1", "so o prefixo juntable entra no lote");
+        assert_eq!(f.proximo("a"), Some("!x".to_string()));
+        assert_eq!(
+            f.proximo("a"),
+            Some("2".to_string()),
+            "o atrasado do item que nao junta segue separado"
+        );
+        assert_eq!(f.proximo("a"), None);
     }
 
     #[test]

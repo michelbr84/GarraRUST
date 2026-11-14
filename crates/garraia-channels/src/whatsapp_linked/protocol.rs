@@ -187,6 +187,12 @@ pub struct InboundMessage {
     /// `None` e so `media_kind` diz o que chegou.
     #[serde(default)]
     pub media_kind: Option<String>,
+    /// Veio do acumulado offline reentregue na reconexao (`append` do
+    /// Baileys; #1819) — nao e mensagem ao vivo. So estas se juntam num lote
+    /// so (#1822): quem escreve ao vivo continua com um turno por mensagem.
+    /// `false` quando a ponte e de antes do campo.
+    #[serde(default)]
+    pub backlog: bool,
 }
 
 impl fmt::Debug for InboundMessage {
@@ -199,6 +205,7 @@ impl fmt::Debug for InboundMessage {
             .field("self_chat", &self.self_chat)
             .field("has_text", &self.text.is_some())
             .field("media_kind", &self.media_kind)
+            .field("backlog", &self.backlog)
             .finish_non_exhaustive()
     }
 }
@@ -687,6 +694,7 @@ mod tests {
             self_chat: false,
             push_name: Some("Ana".into()),
             media_kind: None,
+            backlog: false,
         };
         let shown = format!("{msg:?}");
         for forbidden in ["senha do banco", "+5511777776666", "5511999998888", "Ana"] {

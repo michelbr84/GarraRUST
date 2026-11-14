@@ -519,6 +519,10 @@ export function triageUpsert(
   }
 
   const ev = toMessageEvent(waMessage, ownJid, ownLid);
+  // O que e `append` (Baileys) nasceu do acumulado offline reentregue na
+  // reconexao — o Rust so junta estas num lote so (#1822). O campo sai em
+  // toda `message` porque o protocol-lint e de campos obrigatorios.
+  if (ev) ev.backlog = type === 'append';
   if (type === 'append' && fromMe) {
     // `append` da propria conta e, quase sempre, o eco local do que a ponte
     // acabou de enviar (o Baileys o emite ANTES de o `sendMessage` resolver,

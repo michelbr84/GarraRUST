@@ -38,6 +38,11 @@ Eventos bridge -> Rust: `started`, `qr`, `status`, `authenticated`, `connected`,
   da propria conta so vira `message` na conversa "Voce" e com mais de
   `ECO_LOCAL_MAX_SECS` (5 s) de idade: o eco local de um envio tem o carimbo
   de agora.
+- `message` traz `backlog` (#1822): `true` quando o evento nasceu de um
+  `append` — o acumulado offline reentregue na reconexao — e `false` no
+  `notify` ao vivo. So as mensagens de backlog se juntam num lote no Rust
+  (uma resposta so por rajada); a mensagem ao vivo continua um turno por
+  mensagem.
 - `messages.upsert` com `type: append` e o eco local de um envio **ou** o que
   ficou na fila do servidor com a ponte fora. Da propria conta, nunca vira
   `message`; de terceiro, vira `message` se tiver ate
