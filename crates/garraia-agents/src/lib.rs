@@ -52,7 +52,10 @@ pub use embeddings::{
     CohereEmbeddingProvider, EmbeddingProvider, OllamaEmbeddingProvider, OpenAiEmbeddingProvider,
     ResilientEmbeddingProvider,
 };
-pub use evidence::{Claim, ClaimError, EvidenceRef, VerificationStatus, evidence_from_event};
+pub use evidence::{
+    Claim, ClaimError, Divergencia, EvidenceRef, LinhaSuperficie, SurfaceSummary,
+    VerificationStatus, detect_divergencia, evidence_from_event,
+};
 pub use execution_budget::ExecutionBudget;
 pub use llama_cpp::{KvCacheType, LlamaCppConfig, LlamaCppProvider};
 pub use memory_noise::{DEFAULT_MIN_CHARS, DEFAULT_NOISE_PHRASES, MIN_CHARS_MAX, NoisePolicy};

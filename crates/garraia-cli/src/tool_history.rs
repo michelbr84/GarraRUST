@@ -349,6 +349,43 @@ pub fn do_metadata(meta: &Value) -> Vec<ToolRecord> {
         .unwrap_or_default()
 }
 
+/// Projeta a trilha de ferramentas num sumário curto com proveniência
+/// (#1709 fatia 2), pronto para a camada de resposta (CLI/canais).
+///
+/// Cada [`ToolRecord`] vira uma [`Claim`] com a classe de evidência adequada:
+/// `Ok` → [`VerificationStatus::Observado`], `Error` → `Falhou`,
+/// `Interrupted` → `NaoVerificado` (nunca sucesso), `Running` → `NaoVerificado`
+/// (sem resultado registrado). A [`EvidenceRef`] aponta para o `call_id` real
+/// do executor — nunca para o texto do modelo.
+pub fn resumo_de_claims(registros: &[ToolRecord]) -> garraia_agents::SurfaceSummary {
+    use garraia_agents::{Claim, EvidenceRef};
+    let claims: Vec<Claim> = registros
+        .iter()
+        .map(|r| {
+            let evidencia = EvidenceRef {
+                tool_call_id: r.call_id.clone(),
+                tool_name: r.name.clone(),
+                success: r.status == Status::Ok,
+                turno: r.turno,
+                ordem: r.ordem,
+            };
+            let texto = if r.detail.trim().is_empty() {
+                r.name.clone()
+            } else {
+                format!("{}: {}", r.name, r.detail)
+            };
+            match r.status {
+                Status::Ok => Claim::observada(texto, evidencia),
+                Status::Error => Claim::falhou(texto, evidencia),
+                // Interrupted e Running: sem resultado comprovado — nunca
+                // sucesso nem "não aconteceu".
+                Status::Interrupted | Status::Running => Claim::nao_verificada(texto),
+            }
+        })
+        .collect();
+    garraia_agents::SurfaceSummary::de_claims(&claims)
+}
+
 #[cfg(test)]
 mod testes {
     use super::*;
@@ -502,6 +539,44 @@ mod testes {
     fn metadados_antigos_nao_quebram() {
         assert!(do_metadata(&serde_json::json!({})).is_empty());
         assert!(do_metadata(&serde_json::json!({ "tool_trail": "lixo" })).is_empty());
+    }
+
+    #[test]
+    fn resumo_de_claims_projeta_classe_por_status() {
+        let registros = vec![
+            registro("call-1", "file_write", Status::Ok),
+            registro("call-2", "file_write", Status::Error),
+            registro("call-3", "bash", Status::Interrupted),
+            registro("call-4", "bash", Status::Running),
+        ];
+        let s = resumo_de_claims(&registros);
+        assert_eq!(s.len(), 4);
+        let linhas = s.para_exibicao();
+        assert!(
+            linhas[0].contains("[observado]"),
+            "Ok → Observado: {linhas:?}"
+        );
+        assert!(linhas[1].contains("[falhou]"), "Error → Falhou: {linhas:?}");
+        assert!(
+            linhas[2].contains("[nao_verificado]"),
+            "Interrupted → NaoVerificado: {linhas:?}"
+        );
+        assert!(
+            linhas[3].contains("[nao_verificado]"),
+            "Running → NaoVerificado: {linhas:?}"
+        );
+        // A referência aponta para o call_id do executor.
+        assert!(linhas[0].contains("#call-1"));
+    }
+
+    #[test]
+    fn resumo_de_claims_interrupted_nunca_vira_sucesso() {
+        let registros = vec![registro("call-9", "file_write", Status::Interrupted)];
+        let s = resumo_de_claims(&registros);
+        let linha = &s.para_exibicao()[0];
+        assert!(!linha.contains("[observado]"));
+        assert!(linha.contains("[nao_verificado]"));
+        assert!(linha.contains("sem execucao comprovada"));
     }
 
     #[test]
