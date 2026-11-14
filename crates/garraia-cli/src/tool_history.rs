@@ -284,9 +284,10 @@ fn redigir_texto_livre(s: &str, max_bytes: usize) -> String {
 /// Combina as duas defesas numa ordem fixa e testável:
 /// 1. [`redigir_texto_livre`] — credencial/marca de segredo vira `[REDACTED]`
 ///    (o `redact_secrets` ainda apanha formatos de terceiro que sobram);
-/// 2. [`sanear_injecao`] — remove caracteres invisíveis/caracteres de controle
-///    (o único saneamento seguro a aplicar às cegas) e, se o texto carregar
-///    padrão de injeção de prompt, prefixa o marcador de dado não confiável.
+/// 2. [`garraia_security::sanitize_indirect`] — remove caracteres invisíveis
+///    (o único saneamento seguro a aplicar às cegas) e sinaliza padrão de
+///    injeção de prompt; sinalizado, o texto sai com o marcador de dado
+///    não confiável.
 ///
 /// O texto da `Claim` pode ecoar o que uma ferramenta de terceiro devolveu;
 /// a superfície de resposta não o repete como se fosse instrução nem deixa
