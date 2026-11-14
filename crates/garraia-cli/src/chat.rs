@@ -322,6 +322,7 @@ fn register_cli_tools(
     review: Option<(Arc<dyn LlmProvider>, String)>,
     brave_key: Option<String>,
     bash_allowlist: Vec<String>,
+    nivel_aprovacao: garraia_common::ApprovalLevel,
 ) {
     // #1244: na CLI quem roda o binario e o dono da maquina, e o diretorio
     // corrente e a escolha explicita dele — dai o CWD ser raiz aqui e nao no
@@ -338,6 +339,16 @@ fn register_cli_tools(
     // arquivo pode estar, a policy decide ONDE o comando roda. O `bash`
     // continua fora do jail de proposito — ver #1272.
     let mut bash_tool = BashTool::new_with_confirmation(Some(30)).with_allowlist(bash_allowlist);
+    // #1858 fatia 2: o nivel de aprovacao da sessao chega a tool aqui, junto
+    // do caminho de auditoria — sob `never-confirm` cada comando executado
+    // vira linha JSONL em `<data_dir>/audit/never-confirm.jsonl`.
+    bash_tool.set_approval_level(nivel_aprovacao);
+    bash_tool = bash_tool.com_auditoria_yolo(
+        config
+            .resolved_data_dir()
+            .join("audit")
+            .join("never-confirm.jsonl"),
+    );
     // #1225 S2: a mesma policy vale para as tools que spawnam programa.
     let politica = sandbox_policy_from(&config.agent.sandbox);
     bash_tool.set_sandbox_policy(politica.clone());
@@ -355,11 +366,12 @@ fn register_cli_tools(
     ));
     // Runs whatever the project's test script says; confirmed like `bash`.
     // O `working_dir` do modelo fica no mesmo jail das file tools.
-    runtime.register_tool(Box::new(
-        RunTestsTool::new_with_confirmation(None)
-            .com_sandbox(politica.clone())
-            .com_jail(file_jail),
-    ));
+    let mut run_tests = RunTestsTool::new_with_confirmation(None)
+        .com_sandbox(politica.clone())
+        // #1858 fatia 2: mesmo nivel de aprovacao do bash da sessao.
+        .com_jail(file_jail);
+    run_tests.set_approval_level(nivel_aprovacao);
+    runtime.register_tool(Box::new(run_tests));
     runtime.register_tool(Box::new(WebFetchTool::new(None)));
     // ADR 0020 / epic #1124: tools de hardware. O CLI é interativo — sempre
     // com canal de confirmação (R3/R4 pedem "sim" na própria conversa). O
@@ -383,7 +395,10 @@ fn register_cli_tools(
     });
     runtime.register_tool(Box::new(DeviceListTool::new(device_config.clone())));
     runtime.register_tool(Box::new(DeviceReadTool::new(device_config.clone())));
-    runtime.register_tool(Box::new(DeviceExecuteTool::new(device_config)));
+    // #1858 fatia 2: mesmo nivel de aprovacao do bash/run_tests da sessao.
+    let mut device_execute = DeviceExecuteTool::new(device_config);
+    device_execute.set_approval_level(nivel_aprovacao);
+    runtime.register_tool(Box::new(device_execute));
     if let Some((provider, model)) = review {
         runtime.register_tool(Box::new(
             CodeReviewTool::new(provider, model, None).com_sandbox(politica),
@@ -1729,12 +1744,22 @@ pub async fn run_chat(
     persist: bool,
     resume: Option<String>,
     modo_inicial: Option<String>,
+    // #1858 fatia 2: `--yolo` / `--dangerously-skip-permissions`. Escopo de
+    // sessão: vence `agent.approval` do config nesta sessão, nunca persiste.
+    yolo: bool,
 ) -> Result<i32> {
     // #1858: `--mode` invalido para antes de qualquer conexao, com a lista
     // dos validos — o mesmo texto do `/mode`.
     let mut modo_do_agente = match modo_inicial.as_deref() {
         Some(nome) => escolher_modo(nome).map_err(|e| anyhow::anyhow!(e))?,
         None => None,
+    };
+    // #1858 fatia 2: o nivel de aprovacao da sessao — a flag vence o config
+    // (que defaulta a `always`). Nada grava: e da sessao, nao do disco.
+    let nivel_aprovacao = if yolo {
+        garraia_common::ApprovalLevel::NeverConfirm
+    } else {
+        config.agent.approval
     };
     // An explicit `--provider` short-circuits detection entirely; otherwise
     // `detect_provider` owns both the provider *and* the model, so the two can
@@ -1815,6 +1840,7 @@ pub async fn run_chat(
         Some(review),
         get_api_key(&config, "brave", "BRAVE_API_KEY"),
         config.agent.bash_allowlist.clone(),
+        nivel_aprovacao,
     );
     // A tool de inspecao sera registrada apos configurar o prompt; a lista
     // visivel ao modelo ja inclui o nome que o registro efetivo recebera.
@@ -1864,6 +1890,24 @@ pub async fn run_chat(
     // daquele turno (#942). O rotulo `Garra` e a ordem de escrita passam a ser
     // responsabilidade dele — ver ADR 0017.
     let mut renderer = TerminalRenderer::new(caps, None);
+    // #1858 fatia 2: o aviso claro do modo de aprovacao — opt-in explícito
+    // exige que quem o ligou veja, no início da sessão, que ele está de pé
+    // e o que ele faz (e o que ele NÃO faz).
+    if nivel_aprovacao.dispensa_confirmacao() {
+        renderer.handle(
+            UiEvent::Warning(&format!(
+                "MODO NEVER-CONFIRM (--yolo) ATIVO nesta sessao: comandos arriscados executam SEM pedir \
+                 confirmacao. O hard-deny continua valendo (mkfs, fork bomb, exfiltracao) e os caminhos \
+                 sem canal de confirmacao seguem bloqueados. Auditoria: {}",
+                config
+                    .resolved_data_dir()
+                    .join("audit")
+                    .join("never-confirm.jsonl")
+                    .display()
+            )),
+            &mut io::stdout(),
+        );
+    }
     // Retomar e adotar o id que veio da linha de comando; comecar do zero e
     // sortear um. Nos dois casos o id aparece na tela (abaixo) justamente
     // para poder ser digitado de volta no `--resume`.
@@ -2144,6 +2188,8 @@ pub async fn run_chat(
                     panel::linha("Modelo", model_name.clone()),
                     panel::linha("Ferramentas", ferramentas.len().to_string()),
                     panel::linha("Modo", rotulo_do_modo(modo_do_agente)),
+                    // #1858 fatia 2: o nivel de aprovacao vivo da sessao.
+                    panel::linha("Aprovacao", nivel_aprovacao.rotulo().to_string()),
                     panel::linha("Sessao", session_id.clone()),
                     panel::linha("Turnos", turn_index.to_string()),
                 ];
@@ -3036,7 +3082,14 @@ mod testes_1225_s2 {
         let mut config = AppConfig::default();
         config.agent.sandbox.mode = garraia_config::SandboxMode::All;
         let runtime = AgentRuntime::new();
-        register_cli_tools(&runtime, &config, None, None, Vec::new());
+        register_cli_tools(
+            &runtime,
+            &config,
+            None,
+            None,
+            Vec::new(),
+            garraia_common::ApprovalLevel::Always,
+        );
         for (nome, input) in [
             ("repo_search", serde_json::json!({"query": "x"})),
             ("git_diff", serde_json::json!({"operation": "status"})),
@@ -5015,7 +5068,14 @@ mod cli_tools_tests {
     #[test]
     fn registers_the_gateway_tool_set_plus_git_diff() {
         let runtime = AgentRuntime::new();
-        register_cli_tools(&runtime, &AppConfig::default(), None, None, vec![]);
+        register_cli_tools(
+            &runtime,
+            &AppConfig::default(),
+            None,
+            None,
+            vec![],
+            garraia_common::ApprovalLevel::Always,
+        );
         let names = runtime.tool_names();
         for expected in [
             "file_read",
@@ -5051,6 +5111,7 @@ mod cli_tools_tests {
             None,
             Some("k".into()),
             vec![],
+            garraia_common::ApprovalLevel::Always,
         );
         assert!(runtime.tool_names().iter().any(|n| n == "web_search"));
     }
@@ -5060,7 +5121,14 @@ mod cli_tools_tests {
     #[test]
     fn prompt_lists_every_registered_tool_and_nothing_else() {
         let runtime = AgentRuntime::new();
-        register_cli_tools(&runtime, &AppConfig::default(), None, None, vec![]);
+        register_cli_tools(
+            &runtime,
+            &AppConfig::default(),
+            None,
+            None,
+            vec![],
+            garraia_common::ApprovalLevel::Always,
+        );
         let names = runtime.tool_names();
         let doc = tool_docs(&names);
         for n in &names {

@@ -141,6 +141,44 @@ outro agente, ou nao ha remetente que o servidor possa provar. Qualquer mensagem
 reiniciar o gateway cancela todos. Detalhes em
 [`security/threat-model.md`](security/threat-model.md) §5.16.
 
+**Nível de aprovação: `agent.approval` e `--yolo` (#1858).** O que acontece
+com o tier arriscado (a segunda linha da tabela) é um knob declarado pelo
+operador — nunca um default de fábrica:
+
+| Nível | Config / flag | O que muda |
+|---|---|---|
+| `always` (default) | nada, ou `agent.approval: always` | comportamento atual: comando arriscado pausa e pede "sim" |
+| `never-confirm` | `agent.approval: never-confirm` no config, **ou** `--yolo` / `--dangerously-skip-permissions` no `garra chat` | o **pedido** de confirmação é dispensado onde existe canal; o comando roda |
+
+O que `never-confirm` **nunca** faz:
+
+- **Nunca desarma o `DENY_LIST`** — `rm -rf /`, fork bomb, `mkfs` e
+  exfiltração continuam bloqueados com a flag ativa (a denylist roda acima
+  do tier; o nível não chega perto dela).
+- **Nunca cria canal onde não há** — nos caminhos fail-closed (MCP
+  stateless, `tool_confirmation_enabled: false`), comando arriscado segue
+  bloqueado. O nível converte "ia perguntar" em "roda"; nunca converte
+  "bloqueado" em "roda".
+- **Nunca é default, nunca persiste por si** — a flag vale só na sessão em
+  que foi digitada (o config é o ato explícito do operador); `yolo` não é
+  nome válido no config (o valor lá é `never-confirm`).
+
+Auditoria: todo comando executado sob `never-confirm` é registrado antes de
+rodar — linha `WARN` de auditoria no log (todas as tools do tier: `bash`,
+`run_tests`, `device_execute`) e, para o `bash`, uma linha JSONL em
+`<data_dir>/audit/never-confirm.jsonl` (comando, origem, timestamp). O
+comando sai pelo mesmo redator dos eventos de log — segredo digitado num
+comando não vira linha de auditoria. O `garra chat` anuncia o modo no início
+da sessão e mostra `Aprovacao: never-confirm` no painel de `/status`.
+
+Quando usar: sessão interativa sua, na sua máquina, para uma tarefa que
+você acompanha e aprova de antemão — o objetivo é tirar a fadiga de "sim"
+mecânico, que piora a segurança real. Quando **nunca** usar: em qualquer
+superfície sem operador (canais remotos, MCP, automação não assistida),
+numa máquina compartilhada, ou com credenciais sensíveis no escopo do
+agente — para isso existe `agent.bash_allowlist`, que libera padrões
+declarados e mantém o resto perguntando.
+
 ## 3. Restringir tools por contexto: modos (ToolPolicy)
 
 Cada modo de execução carrega uma allow/deny-list de tools
