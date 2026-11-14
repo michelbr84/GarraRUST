@@ -53,6 +53,10 @@ pub enum Mutacao {
     DefaultDeGrupo(Alcance),
     /// `access.groups.<jid>`.
     Grupo { jid: String, alcance: Alcance },
+    /// `access.self_chat` (#1822, item 3): a conversa "Voce" vira turno. A
+    /// escrita e sempre explicita (`true`/`false`) — o `None` da chave
+    /// ausente so existe em config que nunca declarou a escolha.
+    SelfChat(bool),
     /// Volta ao seguro (#1401): `restricted`, default `chat`, grupos
     /// desligados e sem politica, overrides de nivel/write removidos.
     /// Preserva donos e bloqueios.
@@ -80,6 +84,7 @@ impl Mutacao {
             Self::Grupos(_) => "groups",
             Self::DefaultDeGrupo(_) => "group-default",
             Self::Grupo { .. } => "group",
+            Self::SelfChat(_) => "self-chat",
             Self::Reset => "reset",
             Self::Papel { dono: true, .. } => "owner",
             Self::Papel { dono: false, .. } => "unowner",
@@ -327,6 +332,13 @@ pub fn aplicar(secao: &mut ChannelConfig, mutacao: &Mutacao) -> Result<Aplicada,
             Mutacao::Grupo { jid, alcance } => {
                 groups_mut(access)?.insert(jid.trim().to_string(), alcance_json(*alcance));
             }
+            Mutacao::SelfChat(ligado) => {
+                // #1822 (item 3): a chave fica gravada mesmo em `false` — a
+                // escolha explicita do operador e auditavel, e o reset volta
+                // o default seguro. A chave ausente (nenhuma mutacao a toca)
+                // continua valendo o comportamento de sempre (D16 = opcao 1).
+                access.insert("self_chat".to_string(), json!(*ligado));
+            }
             Mutacao::Papel { dono: true, .. } => {
                 entrada_mut(users_mut(access)?, id)?.insert("role".to_string(), json!("owner"));
             }
@@ -362,6 +374,8 @@ pub fn aplicar(secao: &mut ChannelConfig, mutacao: &Mutacao) -> Result<Aplicada,
                     json!(Admission::Restricted.as_str()),
                 );
                 access.insert("default".to_string(), alcance_json(Alcance::CHAT));
+                // #1822 (item 3): o seguro e a conversa "Voce" desligada.
+                access.insert("self_chat".to_string(), json!(false));
                 let groups = groups_mut(access)?;
                 groups.retain(|k, _| k == "enabled");
                 groups.insert("enabled".to_string(), json!(false));
@@ -551,6 +565,16 @@ fn descrever(antes: &LinkedSettings, depois: &LinkedSettings) -> Vec<String> {
                 "ligados"
             } else {
                 "desligados"
+            }
+        ));
+    }
+    if antes.access.self_chat != depois.access.self_chat {
+        linhas.push(format!(
+            "conversa \"Voce\": {}",
+            match depois.access.self_chat {
+                Some(true) => "ligada (declarada)",
+                Some(false) => "desligada",
+                None => "segue a admissao do proprio numero",
             }
         ));
     }

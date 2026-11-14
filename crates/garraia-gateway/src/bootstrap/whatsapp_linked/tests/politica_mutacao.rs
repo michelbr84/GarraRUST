@@ -1101,3 +1101,54 @@ fn a_matriz_cobre_web_e_memoria() {
         assert!(nomes.contains(&esperado), "{nomes:?}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Mutacao::SelfChat (#1822, item 3)
+// ---------------------------------------------------------------------------
+
+/// A mutacao grava a escolha EXPLICITA (`true`/`false`) e descreve a mudanca;
+/// gravar o mesmo valor e idempotente. A chave ausente continua `None` — a
+/// escrita e a unica forma de declarar (D16 = opcao 1).
+#[test]
+fn self_chat_grava_a_escolha_explicita_e_e_idempotente() {
+    let mut s = legado();
+    assert_eq!(settings_de(&s).access.self_chat, None);
+
+    let a = mutacao::aplicar(&mut s, &Mutacao::SelfChat(false)).expect("aplica");
+    assert!(a.mudou);
+    assert_eq!(settings_de(&s).access.self_chat, Some(false));
+    assert_eq!(s.settings["access"]["self_chat"], json!(false));
+    assert!(
+        a.mudancas.iter().any(|m| m.contains("conversa \"Voce\"")),
+        "{:?}",
+        a.mudancas
+    );
+
+    let a = mutacao::aplicar(&mut s, &Mutacao::SelfChat(true)).expect("aplica");
+    assert!(a.mudou);
+    assert_eq!(settings_de(&s).access.self_chat, Some(true));
+    assert_eq!(s.settings["access"]["self_chat"], json!(true));
+
+    // Idempotente: gravar o mesmo valor nao muda nada nem audita.
+    let a = mutacao::aplicar(&mut s, &Mutacao::SelfChat(true)).expect("aplica");
+    assert!(!a.mudou);
+    assert!(a.mudancas.is_empty(), "{:?}", a.mudancas);
+}
+
+/// O `Reset` volta ao seguro com a conversa "Voce" desligada **declarada** —
+/// o `pergunta_de_reset` anuncia exatamente isso antes do gesto.
+#[test]
+fn reset_grava_o_self_chat_desligado_declarado() {
+    let mut s = secao(json!({
+        "allow": [USUARIO], "owners": [DONO],
+        "access": { "admission": "open", "self_chat": true }
+    }));
+    assert_eq!(settings_de(&s).access.self_chat, Some(true));
+    let a = mutacao::aplicar(&mut s, &Mutacao::Reset).expect("aplica");
+    assert!(a.mudou);
+    assert_eq!(
+        settings_de(&s).access.self_chat,
+        Some(false),
+        "o seguro e a conversa \"Voce\" desligada, com a escolha declarada"
+    );
+}

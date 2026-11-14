@@ -525,12 +525,23 @@ fn open_exige_yes_sem_terminal_confirmacao_no_terminal_e_avisa() {
         Principal::Usuario(Alcance::COMPLETO),
         "explicitos preservados"
     );
-    assert_eq!(audit(&ctx)[0].acao, "open");
+    assert_eq!(audit(&ctx)[0].acao, "self-chat");
+    assert_eq!(audit(&ctx)[1].acao, "open");
+    assert_eq!(
+        settings_de(&ctx).access.self_chat,
+        Some(true),
+        "o gesto `open` declara o opt-in da conversa \"Voce\" (#1822, item 3)"
+    );
 
     let code = acesso_v2::access(&ctx, &p, &ComandoDeAcesso::Restringir { dry_run: false });
     assert_eq!(code, 0);
     assert_eq!(settings_de(&ctx).access.admission, Admission::Restricted);
     assert_eq!(audit(&ctx)[0].acao, "restricted");
+    assert_eq!(
+        settings_de(&ctx).access.self_chat,
+        Some(true),
+        "`restricted` mexe so na admissao: o self_chat declarado permanece (compat)"
+    );
 }
 
 #[test]
@@ -1124,8 +1135,11 @@ fn wizard_com_defaults_grava_read_sem_escrita_e_restricted() {
         "default seguro: read, sem escrita"
     );
     assert_eq!(settings_de(&ctx).access.admission, Admission::Restricted);
-    // `write off` e `restricted` nao mudam nada: nao viram evento.
-    assert_eq!(acoes(&ctx), vec!["level", "allow"]);
+    // `write off` e `restricted` nao mudam nada: nao viram evento. A
+    // instalacao NOVA nasce com `self_chat: false` declarado (#1822, item 3,
+    // D16 = opcao 1) — e so esse gesto cria evento alem do level/allow.
+    assert_eq!(acoes(&ctx), vec!["self-chat", "level", "allow"]);
+    assert_eq!(settings_de(&ctx).access.self_chat, Some(false));
     assert!(!arquivo_de_audit(&ctx).contains(NUMERO));
     let texto = pos.resumo.join("\n");
     assert!(texto.contains("restricted"), "{texto}");
@@ -1161,7 +1175,13 @@ fn wizard_com_full_write_e_open_grava_os_tres_e_avisa() {
         Principal::Desconhecido(Alcance::CHAT),
         "o desconhecido entra com o default"
     );
-    assert_eq!(acoes(&ctx), vec!["open", "write", "level", "allow"]);
+    // Os tres gravados, na ordem, mais o opt-in da conversa "Voce" que o
+    // gesto `open` declara (#1822, item 3).
+    assert_eq!(
+        acoes(&ctx),
+        vec!["self-chat", "open", "write", "level", "allow"]
+    );
+    assert_eq!(settings_de(&ctx).access.self_chat, Some(true));
     let texto = pos.resumo.join("\n");
     assert!(texto.contains("open"), "{texto}");
     assert!(!texto.contains(NUMERO), "{texto}");
@@ -1200,7 +1220,10 @@ fn wizard_em_chat_nao_pergunta_escrita() {
         p.seen_prompts.borrow()
     );
     assert_eq!(principal(&ctx, NUMERO), Principal::Usuario(Alcance::CHAT));
-    assert_eq!(acoes(&ctx), vec!["level", "allow"]);
+    // So `level`/`allow` + a declaracao do self_chat da instalacao nova
+    // (#1822, item 3): em `chat` nao ha pergunta de escrita e o `restricted`
+    // ja valia.
+    assert_eq!(acoes(&ctx), vec!["self-chat", "level", "allow"]);
 }
 
 /// `link --allow <numero>` continua scriptavel: nenhuma pergunta, o numero
@@ -1273,9 +1296,11 @@ fn perguntar_politica_devolve_as_mutacoes_na_ordem_sem_tocar_no_disco() {
         .map(|d| d.count())
         .unwrap_or(0);
 
-    // Tudo no default: read (sem write, que nem e mutacao) e restricted.
+    // Tudo no default: read (sem write, que nem e mutacao) e restricted. Na
+    // instalacao NOVA, o restricted ainda declara o `self_chat: false` da
+    // conversa "Voce" (#1822, item 3, D16 = opcao 1).
     let p = ScriptedPrompter::default();
-    let mutacoes = acesso_v2::perguntar_politica(&ctx, &p, Some(NUMERO), Alcance::CHAT);
+    let mutacoes = acesso_v2::perguntar_politica(&ctx, &p, Some(NUMERO), Alcance::CHAT, true);
     assert_eq!(
         mutacoes,
         vec![
@@ -1284,6 +1309,7 @@ fn perguntar_politica_devolve_as_mutacoes_na_ordem_sem_tocar_no_disco() {
                 nivel: Nivel::Read
             },
             Mutacao::Admissao(Admission::Restricted),
+            Mutacao::SelfChat(false),
         ]
     );
     let prompts = p.seen_prompts.borrow().join("\n");
@@ -1293,11 +1319,11 @@ fn perguntar_politica_devolve_as_mutacoes_na_ordem_sem_tocar_no_disco() {
         "nunca a identidade inteira: {prompts}"
     );
 
-    // full + write + open confirmado.
+    // full + write + open confirmado: o `open` declara o opt-in junto.
     let p = ScriptedPrompter::default()
         .with_selects(&[2, 1])
         .and_confirms(&[true, true]);
-    let mutacoes = acesso_v2::perguntar_politica(&ctx, &p, Some(NUMERO), Alcance::LEITURA);
+    let mutacoes = acesso_v2::perguntar_politica(&ctx, &p, Some(NUMERO), Alcance::LEITURA, true);
     assert_eq!(
         mutacoes,
         vec![
@@ -1310,18 +1336,35 @@ fn perguntar_politica_devolve_as_mutacoes_na_ordem_sem_tocar_no_disco() {
                 on: true
             },
             Mutacao::Admissao(Admission::Open),
+            Mutacao::SelfChat(true),
         ]
     );
 
-    // Sem recem-autorizado: so a admissao. Em ingles tambem.
+    // Sem recem-autorizado: so a admissao (o self_chat da instalacao nova
+    // so e declarado junto do gesto que autoriza alguem). Em ingles tambem.
     let mut en = ctx_in(&dir, true);
     en.lang = Lang::En;
     let p = ScriptedPrompter::default();
     assert_eq!(
-        acesso_v2::perguntar_politica(&en, &p, None, Alcance::CHAT),
+        acesso_v2::perguntar_politica(&en, &p, None, Alcance::CHAT, true),
         vec![Mutacao::Admissao(Admission::Restricted)]
     );
     assert!(p.asked("Admission"), "{:?}", p.seen_prompts.borrow());
+
+    // Instalacao EXISTENTE (portao ja tinha gente): o wizard nao toca no
+    // `self_chat` — a chave ausente segue o comportamento de sempre (compat).
+    let p = ScriptedPrompter::default();
+    assert_eq!(
+        acesso_v2::perguntar_politica(&ctx, &p, Some(NUMERO), Alcance::CHAT, false),
+        vec![
+            Mutacao::Nivel {
+                identidade: NUMERO.to_string(),
+                nivel: Nivel::Read
+            },
+            Mutacao::Admissao(Admission::Restricted),
+        ],
+        "re-vinculo/upgrade nao muda a conversa \"Voce\" de quem ja usa"
+    );
 
     assert_eq!(
         std::fs::read_dir(dir.path())

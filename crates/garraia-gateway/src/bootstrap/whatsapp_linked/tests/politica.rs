@@ -539,3 +539,60 @@ fn groups_enabled_declarado_vence_o_reply_in_groups_legado_nos_dois_sentidos() {
     assert!(!legado.access.groups.declarado);
     assert!(legado.responde_em_grupo());
 }
+
+// ---------------------------------------------------------------------------
+// #1822 (item 3): o knob `access.self_chat` (D16 = opcao 1)
+// ---------------------------------------------------------------------------
+
+/// Chave ausente NAO declara (`None`): o comportamento de sempre, em que a
+/// conversa "Voce" vira turno quando o portao admite o proprio numero. Quem
+/// ja usa o modo "meu proprio numero" nada perde no update.
+#[test]
+fn self_chat_ausente_nao_declara() {
+    let s = legado();
+    assert_eq!(
+        s.access.self_chat, None,
+        "sem a chave, vale o comportamento atual (compat, D16 = opcao 1)"
+    );
+    assert!(s.access.avisos.is_empty(), "{:?}", s.access.avisos);
+}
+
+/// Booleano declarado e lido como `Some`, sem aviso.
+#[test]
+fn self_chat_declarado_le_o_booleano() {
+    for (valor, esperado) in [(json!(true), Some(true)), (json!(false), Some(false))] {
+        let s = settings_from_config(&config_com(json!({
+            "allow": ["5511999998888"],
+            "access": { "self_chat": valor },
+        })));
+        assert_eq!(s.access.self_chat, esperado);
+        assert!(s.access.avisos.is_empty(), "{:?}", s.access.avisos);
+    }
+}
+
+/// Nao-booleano e ignorado com aviso e NAO declara (a chave nunca muda o
+/// comportamento sozinha); `null` e ausente declarado, sem aviso.
+#[test]
+fn self_chat_nao_booleano_e_ignorado_com_aviso_e_null_nao_avisa() {
+    let s = settings_from_config(&config_com(json!({
+        "allow": ["5511999998888"],
+        "access": { "self_chat": "sim" },
+    })));
+    assert_eq!(s.access.self_chat, None, "valor invalido nao declara");
+    assert!(
+        s.access.avisos.iter().any(|a| a.contains("self_chat")),
+        "{:?}",
+        s.access.avisos
+    );
+
+    let s = settings_from_config(&config_com(json!({
+        "allow": ["5511999998888"],
+        "access": { "self_chat": null },
+    })));
+    assert_eq!(s.access.self_chat, None);
+    assert!(
+        s.access.avisos.is_empty(),
+        "`null` e ausente declarado, nao aviso: {:?}",
+        s.access.avisos
+    );
+}

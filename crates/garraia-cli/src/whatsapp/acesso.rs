@@ -1579,9 +1579,15 @@ pub fn pos_link(
         let default = garraia_gateway::bootstrap::whatsapp_linked_settings(&config)
             .access
             .default;
-        for mutacao in
-            super::politica::perguntar_politica(ctx, prompter, recem_autorizado.as_deref(), default)
-        {
+        for mutacao in super::politica::perguntar_politica(
+            ctx,
+            prompter,
+            recem_autorizado.as_deref(),
+            default,
+            // #1822 (item 3): portao vazio antes deste `link` = instalacao
+            // nova, que nasce com a escolha explicita do `self_chat`.
+            antes.autorizados == 0,
+        ) {
             // O mesmo `aplicar` do `access`: valida, grava atomico, audita.
             // `Err` ja saiu impresso.
             let aplicacao = super::politica::aplicar(ctx, &mutacao, false)?;

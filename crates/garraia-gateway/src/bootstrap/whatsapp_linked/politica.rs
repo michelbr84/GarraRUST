@@ -173,6 +173,24 @@ pub struct PoliticaDeAcesso {
     /// mais `access.users`, este vencendo.
     pub users: BTreeMap<String, EntradaDeUsuario>,
     pub groups: PoliticaDeGrupos,
+    /// `access.self_chat` (#1822, item 3): a conversa "Voce" (`from_me` +
+    /// `self_chat`) e o opt-in do dono para falar com o Garra por ela. Tres
+    /// estados (decisao do dono, D16 = opcao 1):
+    ///
+    /// - `None` (chave ausente): o comportamento de sempre — a conversa
+    ///   "Voce" vira turno quando o portao admite o proprio numero (compat:
+    ///   quem ja usa o modo "meu proprio numero" nada perde no update).
+    /// - `Some(false)`: nunca vira turno — quem usa a conversa "Voce" como
+    ///   bloco de notas nao manda as notas ao modelo.
+    /// - `Some(true)`: opt-in declarado; o portao de remetente continua
+    ///   valendo (o proprio numero precisa ser admitido — fail-closed).
+    ///
+    /// O assistente de primeiro uso grava a escolha explicita (`true` no modo
+    /// "meu proprio numero", `false` no restante): instalacoes novas nascem
+    /// com o valor declarado. Sem legado para reconciliar, nao ha flag
+    /// `declarado` como em [`PoliticaDeGrupos`] — o `Option` ja distingue
+    /// ausente de `false`.
+    pub self_chat: Option<bool>,
     /// O que foi normalizado por estar invalido. Texto sem identidade.
     pub avisos: Vec<String>,
 }
@@ -362,6 +380,7 @@ impl PoliticaDeAcesso {
                 enabled: reply_in_groups,
                 ..PoliticaDeGrupos::default()
             },
+            self_chat: None,
             avisos: Vec::new(),
         };
 
@@ -376,7 +395,10 @@ impl PoliticaDeAcesso {
         };
 
         for chave in obj.keys() {
-            if !matches!(chave.as_str(), "admission" | "default" | "users" | "groups") {
+            if !matches!(
+                chave.as_str(),
+                "admission" | "default" | "users" | "groups" | "self_chat"
+            ) {
                 avisos.push(format!(
                     "`access.{chave}` nao e uma chave conhecida; ignorada"
                 ));
@@ -466,6 +488,20 @@ impl PoliticaDeAcesso {
                 }
             }
             Some(_) => avisos.push("`access.groups` nao e um mapa; ignorado".to_string()),
+        }
+
+        // #1822 (item 3): opt-in da conversa "Voce" (D16 = opcao 1). Tres
+        // estados: ausente (ou `null`) = `None`, o comportamento de sempre
+        // (o portao decide); booleano = escolha explicita. Nao-booleano e
+        // ignorado com aviso e `None` vale — a chave nunca muda o
+        // comportamento sozinha.
+        match obj.get("self_chat") {
+            None | Some(Value::Null) => {}
+            Some(Value::Bool(b)) => politica.self_chat = Some(*b),
+            Some(_) => avisos.push(
+                "`access.self_chat` nao e booleano; ignorado (a conversa \"Voce\" segue a admissao do proprio numero)"
+                    .to_string(),
+            ),
         }
 
         politica.avisos = avisos;

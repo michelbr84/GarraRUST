@@ -44,7 +44,8 @@ pub use transferencia_http::{
 /// O corpo de `POST /admin/api/whatsapp/access`.
 ///
 /// `action`: `open` | `restricted` | `default` | `level` | `write` | `preset`
-/// | `block` | `unblock` | `groups` | `group-default` | `group` | `reset` —
+/// | `block` | `unblock` | `groups` | `group-default` | `group` | `self-chat`
+/// | `reset` —
 /// os mesmos nomes do audit e da CLI. Os outros campos sao os que a acao usa.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccessMutationRequest {
@@ -75,7 +76,7 @@ pub struct AccessMutationRequest {
     /// `level`/`write`, o preset vence (ele ja traz os dois).
     #[serde(default)]
     pub preset: Option<String>,
-    /// `groups`: ligar ou desligar.
+    /// `groups` e `self-chat` (#1822, item 3): ligar ou desligar.
     #[serde(default)]
     pub enabled: Option<bool>,
     /// So calcula: nada e gravado nem auditado (#1413).
@@ -99,7 +100,7 @@ pub struct AuditQuery {
     pub limit: Option<usize>,
 }
 
-const ACOES: &str = "open | restricted | default | level | write | preset | block | unblock | groups | group-default | group | reset";
+const ACOES: &str = "open | restricted | default | level | write | preset | block | unblock | groups | group-default | group | self-chat | reset";
 
 /// Resolve `identity_last4` entre as identidades **declaradas** na politica
 /// (`allow`, `owners`, `access.users`): exatamente uma, ou erro (400 para
@@ -286,6 +287,8 @@ pub fn mutacao_do_pedido(
             jid: jid()?,
             alcance: alcance()?,
         }),
+        // #1822 (item 3): o opt-in da conversa "Voce", pelo Web Console.
+        "self-chat" => Ok(Mutacao::SelfChat(obrigatorio("enabled", req.enabled)?)),
         "reset" => Ok(Mutacao::Reset),
         outra => Err(format!("`action` desconhecida: `{outra}` (vale {ACOES})").into()),
     }

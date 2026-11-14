@@ -953,6 +953,45 @@ fn conversa_voce_gera_turno_e_o_resto_da_propria_conta_nao() {
     assert!(!merece_turno(&a_terceiro));
 }
 
+/// #1822 (item 3): o opt-in da conversa "Voce" e um knob de TRES estados
+/// (D16 = opcao 1). Chave ausente preserva o comportamento atual (o portao
+/// decide — compat com quem ja usa o modo "meu proprio numero"); `false`
+/// desliga (o bloco de notas fica so notas); `true` declara o opt-in e o
+/// portao de remetente continua valendo.
+#[test]
+fn self_chat_so_nao_vira_turno_com_o_false_explicito() {
+    let mut voce = msg(Some("nota para mim"));
+    voce.from_me = true;
+    voce.self_chat = true;
+
+    // Chave ausente: o comportamento de sempre (#1813).
+    let sem_chave = LinkedSettings::default();
+    assert_eq!(sem_chave.access.self_chat, None);
+    assert!(
+        deve_responder(&voce, &sem_chave),
+        "sem a chave, a conversa \"Voce\" vira turno como sempre (o portao decide)"
+    );
+
+    // `true` declarado: opt-in explicito, mesmo comportamento.
+    let mut opt_in = LinkedSettings::default();
+    opt_in.access.self_chat = Some(true);
+    assert!(deve_responder(&voce, &opt_in));
+
+    // `false` declarado: a nota nunca vira turno.
+    let mut notas = LinkedSettings::default();
+    notas.access.self_chat = Some(false);
+    assert!(!deve_responder(&voce, &notas));
+
+    // O `false` so alcanca a conversa "Voce": terceiro continua virando turno.
+    let de_terceiro = msg(Some("oi"));
+    assert!(deve_responder(&de_terceiro, &notas));
+
+    // E `from_me` fora da conversa "Voce" continua fora, com ou sem a chave.
+    let mut a_terceiro = msg(Some("oi"));
+    a_terceiro.from_me = true;
+    assert!(!deve_responder(&a_terceiro, &opt_in));
+}
+
 /// #1813 (revisao): a resposta de OUTRO Garra na mesma conta chega na
 /// conversa "Voce" com a marca invisivel e nunca vira turno; sem a marca, o
 /// dono digitando, vira.
