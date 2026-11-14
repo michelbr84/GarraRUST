@@ -528,11 +528,14 @@ fn rotulo_do_modo(modo: Option<AgentMode>) -> String {
 }
 
 fn nomes_dos_modos() -> String {
-    AgentMode::all_modes()
+    let nativos = AgentMode::all_modes()
         .iter()
         .map(|m| m.as_str())
         .collect::<Vec<_>>()
-        .join(", ")
+        .join(", ");
+    // #1858: `plan` e apelido (`AgentMode::from_str`), nao variante — sem
+    // esta nota ele nao apareceria na lista de quem errou o nome.
+    format!("{nativos} (`plan` = architect, somente leitura)")
 }
 
 /// O prompt do sistema do turno quando ha modo escolhido (#1858).
@@ -5886,6 +5889,34 @@ mod modo_do_chat_tests {
             exec.approval_scope
                 == garraia_agents::ApprovalScope::new(CANAL_CLI, "s", REMETENTE_CLI)
         );
+    }
+
+    /// #1858 (escada de modos do dono): `--mode plan` / `/mode plan` e o modo
+    /// de planejamento somente leitura — apelido do `architect`, pelo mesmo
+    /// portao do runtime, e ferramenta por ferramenta com as classes nativas.
+    #[test]
+    fn modo_plan_e_o_architect_somente_leitura() {
+        use garraia_agents::capacidades::capacidades_nativas;
+        assert_eq!(escolher_modo("plan"), Ok(Some(AgentMode::Architect)));
+        assert_eq!(escolher_modo(" Plan "), Ok(Some(AgentMode::Architect)));
+        let exec = exec_do_turno("/tmp", "s", escolher_modo("plan").expect("plan"));
+        assert_eq!(exec.agent_mode.as_deref(), Some("architect"));
+        let portao = ToolGate::para_o_turno(&exec, "planeje a refatoracao do modulo");
+        for le in ["file_read", "list_dir", "repo_search"] {
+            assert!(
+                portao.permite_com_capacidades(le, capacidades_nativas(le)),
+                "plan barrou {le}"
+            );
+        }
+        for muta in ["file_write", "bash", "run_tests", "device_execute"] {
+            assert!(
+                !portao.permite_com_capacidades(muta, capacidades_nativas(muta)),
+                "plan deixou passar {muta}"
+            );
+        }
+        // A lista de quem errou o nome mostra o apelido.
+        let erro = escolher_modo("plna").expect_err("nome desconhecido");
+        assert!(erro.contains("`plan` = architect"), "{erro}");
     }
 
     /// `auto` mostra a ressalva, e o prompt nomeia o modo efetivo do turno.

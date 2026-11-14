@@ -30,6 +30,7 @@ O modo é resolvido nesta ordem de prioridade:
 | `auto` | Decide automaticamente via heurísticas | todas (limitado) |
 | `search` | Busca e inspeção sem modificar | read-only |
 | `architect` | Design e planejamento | limitadas |
+| `plan` | Apelido de `architect` (#1858): planejamento somente leitura — nega toda ferramenta que muta (`file_write`, `bash`, `run_tests`, `device_execute`…), permite ler e pesquisar | read-only |
 | `code` | Implementação ativa | todas |
 | `ask` | Apenas perguntas (padrão Telegram) | opcional |
 | `debug` | Análise de erros e logs | read-only + bash |
