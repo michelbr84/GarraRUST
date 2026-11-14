@@ -5837,6 +5837,9 @@ mod aprovacao_tests {
 #[cfg(test)]
 mod historico_de_ferramentas_tests;
 
+#[cfg(test)]
+mod e2e_provedores_reais_tests;
+
 /// #1858: `--mode` / `/mode` no `garra chat`.
 #[cfg(test)]
 mod modo_do_chat_tests {
