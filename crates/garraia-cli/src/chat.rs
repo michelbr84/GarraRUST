@@ -2377,17 +2377,34 @@ pub async fn run_chat(
                     );
                     continue;
                 }
-                let itens: Vec<String> = tool_log
+                // #1709 fatia 2: sumário com proveniência. Uma linha por
+                // chamada, com a classe de evidência e o id da execução — o
+                // detalhe (saída completa) continua sob demanda via /tool <n>.
+                let registros: Vec<ToolRecord> = tool_log
                     .listar()
-                    .map(|e| {
-                        let marca = if e.sucesso { " " } else { "!" };
-                        let detalhe: String = e.detalhe.chars().take(52).collect();
-                        format!("  {marca}#{:<3} {:<12} {}", e.indice, e.ferramenta, detalhe)
+                    .map(|e| ToolRecord {
+                        call_id: format!("#{}", e.indice),
+                        name: e.ferramenta.clone(),
+                        input: serde_json::Value::Null,
+                        detail: e.detalhe.clone(),
+                        status: if e.sucesso {
+                            tool_history::Status::Ok
+                        } else {
+                            tool_history::Status::Error
+                        },
+                        summary: String::new(),
+                        output: String::new(),
+                        turno: 0,
+                        ordem: e.indice as u32,
                     })
                     .collect();
+                let resumo = tool_history::resumo_de_claims(&registros);
+                let mut itens: Vec<String> = resumo.para_exibicao();
+                itens.push(String::new());
+                itens.push("(use /tool <n> para ver a saida inteira)".to_string());
                 renderer.handle(
                     UiEvent::List {
-                        titulo: "Saidas guardadas (use /tool <n> para ver inteira)",
+                        titulo: "Saidas guardadas (com proveniencia)",
                         itens: &itens,
                     },
                     &mut io::stdout(),

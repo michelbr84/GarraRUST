@@ -20,6 +20,18 @@
 //! sumário curto com proveniência; o detalhe fica sob demanda. Nada aqui executa
 //! comando, muta estado ou decide permissão — só descreve **o que se sabe** sobre
 //! uma ação, e de onde veio o saber.
+//!
+//! # Fatia 2 (esta): projeção de superfície + detecção de divergência
+//!
+//! [`SurfaceSummary`] projeta uma lista de [`Claim`] num sumário curto com
+//! proveniência para a camada de resposta (CLI/canais): uma linha por afirmação,
+//! com a classe de evidência e a referência verificável quando existe. O detalhe
+//! (saída completa, input) fica sob demanda — nunca no sumário.
+//!
+//! [`detect_divergencia`] compara uma afirmação do modelo contra o ledger do
+//! runtime ([`EvidenceRef`] conhecido) e sinaliza quando o modelo afirma algo que
+//! a evidência não sustenta. É o primeiro passo da "exigir reformulação
+//! corretiva" da #1709: o chamador decide o que fazer com o resultado.
 
 use crate::turn_events::TurnEvent;
 
@@ -192,6 +204,131 @@ pub fn evidence_from_event(event: &TurnEvent, turno: u32, ordem: u32) -> Option<
     }
 }
 
+/// Uma linha do sumário de superfície: uma [`Claim`] projetada para consumo
+/// humano/multimodal, sem expor payload de ferramenta.
+///
+/// O `texto` é a afirmação; `classe` é o nome estável da [`VerificationStatus`];
+/// `ferramenta` e `execucao` vêm do [`EvidenceRef`] quando existe — sem eles a
+/// afirmação não tem execução comprovada e isso fica explícito na linha.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinhaSuperficie {
+    pub texto: String,
+    pub classe: &'static str,
+    pub ferramenta: Option<String>,
+    pub execucao: Option<String>,
+}
+
+impl LinhaSuperficie {
+    /// A linha pronta para impressão: `texto [classe] (ferramenta #id)` ou,
+    /// sem evidência, `texto [classe] (sem execucao comprovada)`.
+    pub fn para_exibicao(&self) -> String {
+        match (&self.ferramenta, &self.execucao) {
+            (Some(f), Some(id)) => format!("{} [{}] ({} #{})", self.texto, self.classe, f, id),
+            _ => format!("{} [{}] (sem execucao comprovada)", self.texto, self.classe),
+        }
+    }
+}
+
+/// Projeção de superfície: sumário curto com proveniência para a camada de
+/// resposta (CLI/canais), com acesso controlado ao detalhe sob demanda.
+///
+/// Uma linha por [`Claim`]; nunca inclui saída de ferramenta, input nem caminho
+/// absoluto. A ordem é a ordem das afirmações recebidas — a mesma do ledger.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SurfaceSummary {
+    linhas: Vec<LinhaSuperficie>,
+}
+
+impl SurfaceSummary {
+    /// Constrói a projeção a partir de uma lista de afirmações já validadas.
+    ///
+    /// Cada [`Claim`] vira uma [`LinhaSuperficie`]; a semântica não é re-avaliada
+    /// aqui (quem construiu a `Claim` já passou por [`Claim::validar`]).
+    pub fn de_claims(claims: &[Claim]) -> Self {
+        let linhas = claims
+            .iter()
+            .map(|c| LinhaSuperficie {
+                texto: c.texto.clone(),
+                classe: c.status.as_str(),
+                ferramenta: c.evidencia.as_ref().map(|e| e.tool_name.clone()),
+                execucao: c.evidencia.as_ref().map(|e| e.tool_call_id.clone()),
+            })
+            .collect();
+        Self { linhas }
+    }
+
+    /// As linhas do sumário, na ordem em que foram projetadas.
+    pub fn linhas(&self) -> &[LinhaSuperficie] {
+        &self.linhas
+    }
+
+    /// O sumário pronto para exibição, uma linha por afirmação.
+    pub fn para_exibicao(&self) -> Vec<String> {
+        self.linhas
+            .iter()
+            .map(LinhaSuperficie::para_exibicao)
+            .collect()
+    }
+
+    /// Quantas afirmações estão nesta projeção.
+    pub fn len(&self) -> usize {
+        self.linhas.len()
+    }
+
+    /// `true` quando não há afirmação nenhuma a projetar.
+    pub fn is_empty(&self) -> bool {
+        self.linhas.is_empty()
+    }
+}
+
+/// O resultado de comparar uma afirmação do modelo contra o ledger do runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Divergencia {
+    /// A afirmação é sustentada por uma [`EvidenceRef`] que o ledger conhece.
+    Sustentada,
+    /// O modelo afirma sucesso, mas o ledger registra falha/bloqueio para a
+    /// mesma execução. A correção é reformular com o dado observável.
+    AfirmaSucessoMasLedgerFalhou {
+        tool_call_id: String,
+        tool_name: String,
+    },
+    /// O modelo afirma que algo foi executado, mas não há [`EvidenceRef`]
+    /// correspondente no ledger. **Não** é "não aconteceu" — é "não consigo
+    /// confirmar"; a classe correta é [`VerificationStatus::NaoVerificado`].
+    SemEvidenciaNoLedger,
+}
+
+/// Detecta incompatibilidades entre uma afirmação do modelo e o histórico
+/// confiável do runtime.
+///
+/// `claim` é o que o modelo afirma; `ledger` é o conjunto de [`EvidenceRef`]
+/// que o executor registrou (a fonte da verdade). A comparação é pelo
+/// `tool_call_id` da evidência da afirmação — sem ele, não há como casar.
+///
+/// Retorna [`Divergencia::Sustentada`] quando a afirmação bate com o ledger;
+/// [`Divergencia::AfirmaSucessoMasLedgerFalhou`] quando o modelo diz sucesso
+/// para uma execução que o ledger marca como falha; e
+/// [`Divergencia::SemEvidenciaNoLedger`] quando não há registro correspondente.
+pub fn detect_divergencia(claim: &Claim, ledger: &[EvidenceRef]) -> Divergencia {
+    let Some(ev) = claim.evidencia.as_ref() else {
+        return Divergencia::SemEvidenciaNoLedger;
+    };
+    match ledger
+        .iter()
+        .find(|e| e.tool_call_id == ev.tool_call_id && e.tool_name == ev.tool_name)
+    {
+        Some(entrada) if entrada.success == ev.success => Divergencia::Sustentada,
+        Some(entrada) if !entrada.success && claim.status == VerificationStatus::Observado => {
+            Divergencia::AfirmaSucessoMasLedgerFalhou {
+                tool_call_id: entrada.tool_call_id.clone(),
+                tool_name: entrada.tool_name.clone(),
+            }
+        }
+        Some(_) => Divergencia::Sustentada,
+        None => Divergencia::SemEvidenciaNoLedger,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +427,106 @@ mod tests {
         for (status, nome) in esperado {
             assert_eq!(status.as_str(), nome);
         }
+    }
+
+    // ─── Fatia 2: projeção de superfície ─────────────────────────────────
+
+    #[test]
+    fn surface_summary_projeta_classe_e_referencia() {
+        let claims = vec![
+            Claim::observada("escrevi pagina.html", ev("c1", "file_write", true)),
+            Claim::nao_verificada("não sei se editei TESTE.md"),
+            Claim::falhou("file_write bloqueado", ev("c2", "file_write", false)),
+        ];
+        let s = SurfaceSummary::de_claims(&claims);
+        assert_eq!(s.len(), 3);
+        let linhas = s.para_exibicao();
+        // Observado: classe + ferramenta + id da execução.
+        assert!(linhas[0].contains("[observado]"));
+        assert!(linhas[0].contains("file_write"));
+        assert!(linhas[0].contains("#c1"));
+        // NaoVerificado: sem execução comprovada — nunca "não aconteceu".
+        assert!(linhas[1].contains("[nao_verificado]"));
+        assert!(linhas[1].contains("sem execucao comprovada"));
+        // Falhou: classe + ferramenta + id, para o mecanismo ser rastreável.
+        assert!(linhas[2].contains("[falhou]"));
+        assert!(linhas[2].contains("#c2"));
+    }
+
+    #[test]
+    fn surface_summary_nao_expoem_payload_nem_caminho() {
+        // O texto da afirmação é o que o modelo disse; o sumário não deve
+        // acrescentar nada que não esteja na Claim.
+        let c = Claim::observada("escrevi pagina.html", ev("c1", "file_write", true));
+        let s = SurfaceSummary::de_claims(&[c]);
+        let linha = &s.para_exibicao()[0];
+        assert!(!linha.contains("/home/"));
+        assert!(!linha.contains("output"));
+        assert!(!linha.contains("input"));
+    }
+
+    #[test]
+    fn surface_summary_vazia_e_is_empty() {
+        let s = SurfaceSummary::de_claims(&[]);
+        assert!(s.is_empty());
+        assert_eq!(s.len(), 0);
+        assert!(s.para_exibicao().is_empty());
+    }
+
+    // ─── Fatia 2: detecção de divergência ────────────────────────────────
+
+    #[test]
+    fn divergencia_sustentada_quando_ledger_confirma() {
+        let c = Claim::observada("escrevi pagina.html", ev("c1", "file_write", true));
+        let ledger = vec![ev("c1", "file_write", true)];
+        assert_eq!(detect_divergencia(&c, &ledger), Divergencia::Sustentada);
+    }
+
+    #[test]
+    fn divergencia_quando_modelo_afirma_sucesso_mas_ledger_falhou() {
+        // O modelo diz que escreveu; o executor registrou falha.
+        let c = Claim::observada("escrevi pagina.html", ev("c1", "file_write", true));
+        let ledger = vec![ev("c1", "file_write", false)];
+        match detect_divergencia(&c, &ledger) {
+            Divergencia::AfirmaSucessoMasLedgerFalhou {
+                tool_call_id,
+                tool_name,
+            } => {
+                assert_eq!(tool_call_id, "c1");
+                assert_eq!(tool_name, "file_write");
+            }
+            outro => panic!("esperava AfirmaSucessoMasLedgerFalhou, veio {outro:?}"),
+        }
+    }
+
+    #[test]
+    fn divergencia_sem_evidencia_no_ledger_nao_e_ausencia() {
+        // Modelo afirma algo sem referência verificável: não é "não aconteceu".
+        let c = Claim::observada("escrevi pagina.html", ev("c9", "file_write", true));
+        let ledger = vec![ev("c1", "file_write", true)];
+        assert_eq!(
+            detect_divergencia(&c, &ledger),
+            Divergencia::SemEvidenciaNoLedger
+        );
+    }
+
+    #[test]
+    fn divergencia_claim_sem_evidencia_e_sem_evidencia_no_ledger() {
+        // Claim sem EvidenceRef (inferido/relatado/nao_verificado) não pode
+        // ser comparada por id — cai direto em SemEvidenciaNoLedger.
+        let c = Claim::nao_verificada("não consigo confirmar");
+        let ledger = vec![ev("c1", "file_write", true)];
+        assert_eq!(
+            detect_divergencia(&c, &ledger),
+            Divergencia::SemEvidenciaNoLedger
+        );
+    }
+
+    #[test]
+    fn divergencia_falha_do_modelo_bate_com_falha_do_ledger() {
+        // Modelo diz que falhou, ledger registra falha: consistente.
+        let c = Claim::falhou("file_write bloqueado", ev("c1", "file_write", false));
+        let ledger = vec![ev("c1", "file_write", false)];
+        assert_eq!(detect_divergencia(&c, &ledger), Divergencia::Sustentada);
     }
 }
