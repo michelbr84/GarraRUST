@@ -163,3 +163,25 @@ test('dropped nunca carrega numero inteiro', () => {
 test('tipo desconhecido de upsert nao entrega nada', () => {
   assert.equal(triageUpsert(msg({ remoteJid: PEER }), 'last', opts()), null);
 });
+
+// #1822: o Rust so junta em lote o que nasceu do acumulado offline. A ponte
+// marca `backlog` em toda `message` — `true` so no `append` (a reentrega da
+// reconexao); o `notify` ao vivo nunca e backlog.
+test('backlog marca o append da reconexao, e so ele', () => {
+  const aoVivo = triageUpsert(msg({ remoteJid: PEER }), 'notify', opts());
+  assert.equal(aoVivo.backlog, false, 'notify (ao vivo) nunca e backlog');
+
+  const acumulado = triageUpsert(
+    msg({ remoteJid: PEER }, { conversation: 'oi' }, { messageTimestamp: NOW - 60 }),
+    'append',
+    opts(),
+  );
+  assert.equal(acumulado.backlog, true, 'append recente vira turno marcado backlog');
+
+  const doDono = triageUpsert(
+    msg({ remoteJid: SELF, fromMe: true }, { conversation: 'oi' }, { messageTimestamp: NOW - 60 }),
+    'append',
+    opts(),
+  );
+  assert.equal(doDono.backlog, true, 'o "oi" offline do dono na conversa "Voce" tambem e backlog');
+});

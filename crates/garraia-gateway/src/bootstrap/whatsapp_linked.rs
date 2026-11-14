@@ -1048,6 +1048,55 @@ pub fn preparar_entrada(cru: &str) -> Entrada {
     Entrada::Entregar { texto }
 }
 
+/// #1822 (item 1, ultima fatia): quando duas mensagens viram um lote so.
+///
+/// O escopo e o da proposta da issue: **os `append`** — o acumulado offline
+/// reentregue na reconexao (`backlog: true` na ponte). Mensagem ao vivo nunca
+/// se junta: quem escreve e espera resposta continua com um turno por
+/// mensagem. Alem do backlog, so se junta o que viraria dois turnos do MESMO
+/// remetente com o mesmo tratamento: as duas com texto que passaria em
+/// [`preparar_entrada`] (a injecao e avaliada por MENSAGEM — parte recusada
+/// nunca entra no lote; ela vira turno proprio e e recusada ali, como sempre)
+/// e nenhuma das duas comando de barra (o comando roteia antes do modelo e so
+/// pode ser ele mesmo — o teste aqui e o do texto, sem o registro, de
+/// proposito: `/qualquer` nao junta).
+pub fn junta_no_lote(antes: &InboundMessage, nova: &InboundMessage) -> bool {
+    let juntable = |m: &InboundMessage| {
+        m.backlog
+            && m.text.as_deref().is_some_and(|t| {
+                !e_comando(t) && matches!(preparar_entrada(t), Entrada::Entregar { .. })
+            })
+    };
+    antes.sender_jid == nova.sender_jid && juntable(antes) && juntable(nova)
+}
+
+/// O comeco de comando de barra, como [`crate::projetos_da_sessao::decidir_comando`]
+/// enxerga: so espaco em branco antes do `/`.
+fn e_comando(texto: &str) -> bool {
+    texto.trim_start().starts_with('/')
+}
+
+/// Junta `nova` ao lote `antes`: os textos concatenam NA ORDEM DE CHEGADA, um
+/// por linha. Os demais campos ficam os do primeiro (mesmo remetente, mesmo
+/// chat); o `id` do lote e o da primeira — as reentregas das demais ja foram
+/// barradas pelo [`entrada::IdsVistos`] no `deliver`.
+pub fn fundir_no_lote(antes: &mut InboundMessage, nova: InboundMessage) {
+    let juntado = match (antes.text.take(), nova.text) {
+        (Some(a), Some(b)) => format!("{a}\n{b}"),
+        (a, b) => a.or(b).unwrap_or_default(),
+    };
+    antes.text = Some(juntado);
+}
+
+/// #1822 (item 1, ultima fatia): a janela de juncao do backlog.
+///
+/// O backlog da reconexao chega em rajada (o `append` de ate 10 min e
+/// reentregue em milissegundos); sem esta espera, a primeira mensagem ja teria
+/// saido como turno proprio antes de as seguintes existirem, e o lote seria de
+/// N-1. So o backlog espera: a mensagem ao vivo comeca o turno na hora. 500 ms
+/// cobre a rajada inteira e nao atrasa quem ja esta conversando.
+pub const JUNTAR_JANELA: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// O modo que `channels.whatsapp_linked.default_mode` pode nomear.
 ///
 /// So modo **nativo**, e nao `auto`. Os dois limites existem porque o nome vai
@@ -1516,6 +1565,9 @@ pub struct GatewaySink {
     /// #1822: um turno por chat de cada vez, em ordem de chegada. Duas
     /// mensagens do mesmo chat nao correm mais pelo mesmo historico.
     filas: Arc<std::sync::Mutex<entrada::FilasPorChat<InboundMessage>>>,
+    /// #1822 (ultima fatia): a janela de juncao — o que chega do mesmo
+    /// remetente enquanto o turno comeca (ou roda) vira um lote so.
+    janela_juntacao: std::time::Duration,
 }
 
 impl GatewaySink {
@@ -1541,6 +1593,18 @@ impl GatewaySink {
             vistos: Arc::new(std::sync::Mutex::new(entrada::IdsVistos::default())),
             turnos: Arc::new(tokio::sync::Semaphore::new(entrada::MAX_TURNOS_SIMULTANEOS)),
             filas: Arc::new(std::sync::Mutex::new(entrada::FilasPorChat::default())),
+            janela_juntacao: JUNTAR_JANELA,
+        }
+    }
+
+    /// Troca a janela de juncao de lote (#1822). So os testes `ponta_a_ponta`
+    /// (`cfg(unix)`) usam; sem o `unix` o clippy do Windows acusa metodo morto
+    /// (#1762).
+    #[cfg(all(test, unix))]
+    pub(crate) fn com_janela_de_juntacao(self, janela: std::time::Duration) -> Self {
+        Self {
+            janela_juntacao: janela,
+            ..self
         }
     }
 
@@ -1983,8 +2047,13 @@ impl InboundSink for GatewaySink {
         // antigo (turno avulso): perder a ordem e melhor que perder a mensagem.
         let chat = message.chat_jid.as_str().to_string();
         let filas = Arc::clone(&self.filas);
+        let janela = self.janela_juntacao;
+        // #1822 (ultima fatia): o que se junta vira lote. Com o chat ocupado, a
+        // mensagem nova funde ao ultimo lote da fila ([`junta_no_lote`] decide);
+        // com o chat livre, quem chega primeiro vira trabalhador e junta o
+        // resto na janela de juncao (ver o loop abaixo).
         let (primeira, na_fila) = match filas.lock() {
-            Ok(mut f) => match f.entrar(&chat, message) {
+            Ok(mut f) => match f.entrar_juntando(&chat, message, junta_no_lote, fundir_no_lote) {
                 Some(m) => (m, true),
                 None => return,
             },
@@ -1996,7 +2065,19 @@ impl InboundSink for GatewaySink {
         };
         tokio::spawn(async move {
             let mut atual = Some(primeira);
-            while let Some(mensagem) = atual.take() {
+            while let Some(mut mensagem) = atual.take() {
+                // #1822 (ultima fatia): a janela de juncao do backlog. O
+                // acumulado da reconexao chega em rajada; sem esta espera a
+                // primeira mensagem ja teria saido como turno proprio antes de
+                // as seguintes existirem. So o backlog espera e junta (um lote
+                // concatenado, na ordem de chegada, 1 turno e 1 resposta);
+                // mensagem ao vivo comeca o turno na hora, como sempre.
+                if mensagem.backlog && !janela.is_zero() {
+                    tokio::time::sleep(janela).await;
+                    if let Ok(mut f) = filas.lock() {
+                        f.juntar_prefixo_em(&chat, &mut mensagem, junta_no_lote, fundir_no_lote);
+                    }
+                }
                 // O semaforo nunca e fechado; `Err` so viria de um `close()`
                 // que nao existe, e nesse caso o turno roda sem a vaga.
                 let vaga = Arc::clone(&turnos).acquire_owned().await.ok();

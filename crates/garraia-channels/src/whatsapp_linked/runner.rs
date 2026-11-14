@@ -1791,6 +1791,7 @@ mod tests {
             self_chat: true,
             push_name: None,
             media_kind: None,
+            backlog: false,
         }
     }
 

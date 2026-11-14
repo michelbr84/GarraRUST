@@ -56,6 +56,7 @@ const SCHEMA = {
     is_group: bool,
     from_me: bool,
     self_chat: bool,
+    backlog: bool,
     push_name: optStr,
   },
   dropped: {
