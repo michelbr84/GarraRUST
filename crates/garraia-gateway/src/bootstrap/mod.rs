@@ -1122,6 +1122,18 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         BashTool::new(None)
     }
     .with_allowlist(config.agent.bash_allowlist.clone());
+    // #1858 fatia 2: o nivel de aprovacao (`agent.approval`) chega a tool na
+    // construcao — `always` (default) nao muda nada; `never-confirm` dispensa
+    // o pedido de confirmacao onde ha canal. Com auditoria: sob
+    // `never-confirm`, cada comando executado vira linha JSONL em
+    // `<data_dir>/audit/never-confirm.jsonl`.
+    bash_tool.set_approval_level(config.agent.approval);
+    bash_tool = bash_tool.com_auditoria_yolo(
+        config
+            .resolved_data_dir()
+            .join("audit")
+            .join("never-confirm.jsonl"),
+    );
     // #1225: `agent.sandbox` finalmente chega ao tool. Aplicado DEPOIS da
     // allowlist de proposito — ordem de construcao inalterada, e a policy e
     // camada adicional, nao substituta do safety gate. Secao ausente =>
@@ -1247,15 +1259,19 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         exposicao_de(RUN_TESTS, config.execution.perfil(), &politica_das_tools);
     anuncia_exposicao_de("gateway", RUN_TESTS, &exposicao_run_tests);
     if exposicao_run_tests.registra() {
-        let run_tests = if config.agent.tool_confirmation_enabled {
+        let mut run_tests = if config.agent.tool_confirmation_enabled {
             RunTestsTool::new_with_confirmation(None)
         } else {
             RunTestsTool::new(None)
         }
-        .com_sandbox(politica_das_tools.clone())
-        // O `working_dir` do modelo nao sai do jail das file tools.
-        .com_jail(file_jail);
-        runtime.register_tool(Box::new(run_tests));
+        .com_sandbox(politica_das_tools.clone());
+        // #1858 fatia 2: mesmo nivel de aprovacao do bash (`agent.approval`).
+        run_tests.set_approval_level(config.agent.approval);
+        runtime.register_tool(Box::new(
+            run_tests
+                // O `working_dir` do modelo nao sai do jail das file tools.
+                .com_jail(file_jail),
+        ));
     }
 
     // ADR 0020 / epic #1124: as tools de hardware (device_list/read/execute).
@@ -1285,11 +1301,14 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     });
     runtime.register_tool(Box::new(DeviceListTool::new(device_config.clone())));
     runtime.register_tool(Box::new(DeviceReadTool::new(device_config.clone())));
-    let device_execute = if config.agent.tool_confirmation_enabled {
+    let mut device_execute = if config.agent.tool_confirmation_enabled {
         DeviceExecuteTool::new(device_config)
     } else {
         DeviceExecuteTool::new_without_confirmation(device_config)
     };
+    // #1858 fatia 2: mesmo nivel de aprovacao do bash/run_tests
+    // (`agent.approval`); sem canal, o fail-closed da tabela fica intocado.
+    device_execute.set_approval_level(config.agent.approval);
     runtime.register_tool(Box::new(device_execute));
 
     // `code_review` roda um segundo LLM por dentro, entao precisa de um

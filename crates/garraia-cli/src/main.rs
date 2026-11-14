@@ -351,6 +351,16 @@ enum Commands {
         /// each message and runs without policy when the heuristic can't tell.
         #[arg(long, value_name = "MODE")]
         mode: Option<String>,
+
+        /// #1858 fatia 2: run WITHOUT the per-command confirmation tier —
+        /// risky commands execute instead of asking. The hard-deny still
+        /// blocks (`mkfs`, fork bomb, exfiltration patterns) and the
+        /// fail-closed paths without a confirmation channel stay closed.
+        /// Every command executed under it is recorded (WARN log + JSONL in
+        /// `<data_dir>/audit/never-confirm.jsonl`). Opt-in only: session
+        /// scope, never the default, never persisted, never suggested.
+        #[arg(long, visible_alias = "dangerously-skip-permissions")]
+        yolo: bool,
     },
 
     /// Non-interactive AI query — single message in, single answer out
@@ -3325,6 +3335,7 @@ async fn async_main(
             persist,
             resume,
             mode,
+            yolo,
         } => {
             // Without a tracing subscriber, --debug/RUST_LOG silently produce
             // nothing in chat mode. Since #933 the file gets everything while
@@ -3349,6 +3360,7 @@ async fn async_main(
                 persist,
                 resume,
                 mode,
+                yolo,
             )
             .await?;
             if code != 0 {
@@ -4164,6 +4176,29 @@ mod tests {
             Cli::try_parse_from(["garra", "chat", "--timeout-secs", "0"]).is_err(),
             "0 esta fora da faixa [1, 600]"
         );
+    }
+
+    /// #1858 fatia 2: `--yolo` e o alias longo `--dangerously-skip-permissions`
+    /// ligam o nivel `never-confirm` da sessao — opt-in explicito, nunca o
+    /// default (`garra chat` nu segue com `yolo: false`).
+    #[test]
+    fn chat_yolo_e_dangerously_skip_permissions_ativam_a_flag() {
+        let sem_flag = Cli::try_parse_from(["garra", "chat"]).expect("chat nu parses");
+        match sem_flag.command {
+            Commands::Chat { yolo, .. } => {
+                assert!(!yolo, "sem a flag o modo de aprovacao nao muda");
+            }
+            _ => panic!("expected the Chat subcommand"),
+        }
+        for flag in ["--yolo", "--dangerously-skip-permissions"] {
+            let cli = Cli::try_parse_from(["garra", "chat", flag]).expect("a flag tem de parsear");
+            match cli.command {
+                Commands::Chat { yolo, .. } => {
+                    assert!(yolo, "{flag} deve ativar o never-confirm");
+                }
+                _ => panic!("expected the Chat subcommand"),
+            }
+        }
     }
 
     /// The `garra desktop` surface is a script contract (#1181, M1), so pin

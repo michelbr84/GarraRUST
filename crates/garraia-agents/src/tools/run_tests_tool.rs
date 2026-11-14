@@ -44,6 +44,10 @@ pub struct RunTestsTool {
     /// passa pelo MESMO jail das file tools antes de virar `current_dir` ou
     /// fonte do mount do sandbox. `None` = sem jail (comportamento antigo).
     jail: Option<crate::tools::file_jail::FileJail>,
+    /// #1858 fatia 2: nível de aprovação (`agent.approval` / `--yolo`).
+    /// `NeverConfirm` dispensa o pedido de confirmação desta suite onde há
+    /// canal; o gate textual fail-closed abaixo (canal ausente) fica intocado.
+    approval_level: garraia_common::ApprovalLevel,
 }
 
 impl RunTestsTool {
@@ -54,6 +58,7 @@ impl RunTestsTool {
             confirmation_enabled: false,
             sandbox: crate::sandbox::SandboxPolicy::default(),
             jail: None,
+            approval_level: garraia_common::ApprovalLevel::default(),
         }
     }
 
@@ -76,6 +81,18 @@ impl RunTestsTool {
     pub fn com_sandbox(mut self, policy: crate::sandbox::SandboxPolicy) -> Self {
         self.sandbox = policy;
         self
+    }
+
+    /// #1858 fatia 2: nível de aprovação em vigor. `Always` (default) mantém
+    /// o pedido; `NeverConfirm` o dispensa onde há canal.
+    pub fn set_approval_level(&mut self, level: garraia_common::ApprovalLevel) {
+        self.approval_level = level;
+    }
+
+    /// #1858 fatia 2: o `never-confirm` está efetivamente ativo? Só com
+    /// canal de confirmação — sem ele o fail-closed domina.
+    fn yolo_ativo(&self) -> bool {
+        self.confirmation_enabled && self.approval_level.dispensa_confirmacao()
     }
 
     /// Como [`Self::new`], mas exige confirmacao humana antes de executar.
@@ -355,7 +372,13 @@ impl Tool for RunTestsTool {
         // rodar. Um "ok" dado para rodar os testes de um projeto nao
         // autoriza rodar os de outro, nem um `bash` qualquer.
         let assunto = working_dir.display().to_string();
-        if self.confirmation_enabled && !context.approval.covers(self.name(), &assunto) {
+        // #1858 fatia 2: `never-confirm` dispensa o pedido desta suite onde
+        // há canal — mesmo plano da aprovação por impressão digital, nunca
+        // do gate fail-closed de canal ausente (abaixo).
+        if self.confirmation_enabled
+            && !context.approval.covers(self.name(), &assunto)
+            && !self.yolo_ativo()
+        {
             tracing::warn!(
                 dir = %working_dir.display(),
                 session = %context.session_id,
@@ -367,6 +390,16 @@ impl Tool for RunTestsTool {
                  ```\n{assunto}\n```\n\
                  Responda **sim** para executar ou **nao** para cancelar."
             )));
+        }
+        // #1858 fatia 2: rastreabilidade do que rodou sob a flag.
+        if self.yolo_ativo() {
+            tracing::warn!(
+                target: "auditoria_yolo",
+                level = "never-confirm",
+                dir = %working_dir.display(),
+                session = %context.session_id,
+                "run_tests: suite executada sob never-confirm (--yolo); registro de auditoria"
+            );
         }
 
         // Detect or use specified framework
@@ -785,5 +818,51 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
         );
         assert!(!out.content.contains("leak-canary"), "{}", out.content);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── #1858 fatia 2: nível de aprovação (`never-confirm` / --yolo) ──────
+
+    /// Sob `never-confirm` (com canal de confirmação) a suite deixa de pedir
+    /// confirmação e roda — o erro abaixo é de EXECUÇÃO (diretório vazio sem
+    /// projeto), não um pedido de confirmação. É a prova de que o gate foi
+    /// dispensado sem dar poder ao caminho fail-closed.
+    #[tokio::test]
+    async fn yolo_dispensa_a_confirmacao_da_suite() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut tool = RunTestsTool::new_with_confirmation(Some(1));
+        tool.set_approval_level(garraia_common::ApprovalLevel::NeverConfirm);
+        let out = tool
+            .execute(
+                &ctx(Some(dir.path().to_str().expect("utf8")), false),
+                serde_json::json!({ "framework": "cargo" }),
+            )
+            .await
+            .expect("executa");
+        assert!(
+            !out.requires_confirmation,
+            "yolo não pode pedir confirmação: {}",
+            out.content
+        );
+    }
+
+    /// Regressão do default: com o nível `always` o pedido continua — quem
+    /// nunca pediu nada não muda.
+    #[tokio::test]
+    async fn nivel_always_mantem_o_pedido_da_suite() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut tool = RunTestsTool::new_with_confirmation(Some(1));
+        tool.set_approval_level(garraia_common::ApprovalLevel::Always);
+        let out = tool
+            .execute(
+                &ctx(Some(dir.path().to_str().expect("utf8")), false),
+                serde_json::json!({ "framework": "cargo" }),
+            )
+            .await
+            .expect("executa");
+        assert!(
+            out.requires_confirmation,
+            "default sempre pede confirmação: {}",
+            out.content
+        );
     }
 }

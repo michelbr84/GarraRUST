@@ -1,3 +1,4 @@
+pub mod approval_level;
 pub mod contexto_restrito;
 pub mod error;
 pub mod executavel;
@@ -12,6 +13,7 @@ pub mod safety_gate;
 pub mod ssrf;
 pub mod types;
 
+pub use approval_level::ApprovalLevel;
 pub use error::{Error, Result};
 pub use fs_perms::{create_secret_dir, harden_secret_dir, harden_secret_file};
 pub use handoff::{

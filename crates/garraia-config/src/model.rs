@@ -1295,6 +1295,21 @@ pub struct AgentConfig {
     /// command, which is the risky tier switched off — not a pattern.
     #[serde(default)]
     pub bash_allowlist: Vec<String>,
+    /// #1858 fatia 2: o que o runtime faz com o **tier arriscado** de comando
+    /// (o que pede confirmação humana hoje). Default `always` = comportamento
+    /// atual, preservado para quem nunca configurou nada.
+    ///
+    /// `never-confirm` pula o **pedido** de confirmação onde existe canal de
+    /// confirmação — é o que a flag `--yolo`/`--dangerously-skip-permissions`
+    /// do `garra chat` liga por sessão. Ele NUNCA desarma o hard-deny
+    /// (`safety_gate`) e NUNCA cria canal onde não há: o caminho sem humano
+    /// verificável continua fail-closed. Ver `garraia_common::ApprovalLevel`.
+    ///
+    /// A flag vence o config na sessão em que foi passada; o config vale para
+    /// os runtimes que o gateway e a CLI constroem dela — é o ato explícito
+    /// do operador, não um default de fábrica.
+    #[serde(default)]
+    pub approval: garraia_common::ApprovalLevel,
     /// #1244: raizes adicionais que as file tools (`file_read`, `file_write`,
     /// `list_dir`) podem tocar, alem do `working_dir` da sessao.
     ///
@@ -1755,6 +1770,32 @@ impl McpServerConfig {
 #[cfg(test)]
 mod tests {
     use super::AppConfig;
+
+    /// #1858 fatia 2: o knob `agent.approval` nasce `always` (comportamento
+    /// atual), aceita `never-confirm` e não reage à seção `agent` ausente.
+    #[test]
+    fn agent_approval_default_always_e_parse_kebab_case() {
+        use garraia_common::ApprovalLevel;
+
+        // Default do struct.
+        assert_eq!(AppConfig::default().agent.approval, ApprovalLevel::Always);
+
+        // Com a chave, nos dois valores.
+        let config: AppConfig = serde_norway::from_str("agent:\n  approval: never-confirm\n")
+            .expect("yaml should parse");
+        assert_eq!(config.agent.approval, ApprovalLevel::NeverConfirm);
+
+        let config: AppConfig =
+            serde_norway::from_str("agent:\n  approval: always\n").expect("yaml should parse");
+        assert_eq!(config.agent.approval, ApprovalLevel::Always);
+
+        // Seção ausente => default (não panic, não inverta o default).
+        let config: AppConfig = serde_norway::from_str("agent: {}\n").expect("yaml should parse");
+        assert_eq!(config.agent.approval, ApprovalLevel::Always);
+
+        // Nome desconhecido é erro, nunca portão aberto.
+        assert!(serde_norway::from_str::<AppConfig>("agent:\n  approval: yolo\n").is_err());
+    }
 
     /// TODO 2026-09-02: knobs do auto-learning. O default preserva o
     /// comportamento histórico (extração ligada, sem teto) e o YAML aceita

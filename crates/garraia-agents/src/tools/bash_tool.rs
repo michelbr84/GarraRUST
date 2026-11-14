@@ -36,6 +36,18 @@ pub struct BashTool {
     /// o operador declarou os padroes, entao so eles rodam.
     allowlist_only: bool,
     sandbox: crate::sandbox::SandboxPolicy,
+    /// #1858 fatia 2: nível de aprovação em vigor nesta tool — o que fazer
+    /// com o tier arriscado. Default `Always`: nada muda para quem nunca
+    /// pediu. `NeverConfirm` (a `--yolo`) dispensa o **pedido** de
+    /// confirmação; o hard-deny acima e o fail-closed de canal ausente
+    /// continuam intocados. Config na construção do gateway/CLI
+    /// (`agent.approval`), flag `--yolo` na CLI.
+    approval_level: garraia_common::ApprovalLevel,
+    /// #1858 fatia 2: onde o log de auditoria persiste os comandos
+    /// executados sob `NeverConfirm` (comando, origem, timestamp). `None` =
+    /// só a linha WARN no log. A CLI e o gateway passam
+    /// `<data_dir>/audit/never-confirm.jsonl`; o arquivo acumula linhas JSON.
+    auditoria_yolo: Option<std::path::PathBuf>,
 }
 
 impl BashTool {
@@ -46,6 +58,8 @@ impl BashTool {
             allowlist: Vec::new(),
             allowlist_only: false,
             sandbox: crate::sandbox::SandboxPolicy::default(),
+            approval_level: garraia_common::ApprovalLevel::default(),
+            auditoria_yolo: None,
         }
     }
 
@@ -57,6 +71,8 @@ impl BashTool {
             allowlist: Vec::new(),
             allowlist_only: false,
             sandbox: crate::sandbox::SandboxPolicy::default(),
+            approval_level: garraia_common::ApprovalLevel::default(),
+            auditoria_yolo: None,
         }
     }
 
@@ -297,6 +313,100 @@ impl BashTool {
     pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
         self.sandbox = policy;
     }
+
+    /// #1858 fatia 2: nível de aprovação em vigor. `Always` (default) mantém
+    /// o pedido de confirmação; `NeverConfirm` o dispensa onde há canal.
+    /// Camada declarada pelo operador, como a policy de sandbox — nunca
+    /// desarma o hard-deny nem o fail-closed.
+    pub fn set_approval_level(&mut self, level: garraia_common::ApprovalLevel) {
+        self.approval_level = level;
+    }
+
+    /// #1858 fatia 2: caminho do arquivo de auditoria dos comandos
+    /// executados sob `NeverConfirm`. Diretórios são criados na primeira
+    /// escrita; a append é best-effort (falha de disco avisa e não derruba o
+    /// comando — o WARN do log é a segunda camada).
+    #[must_use = "devolve um BashTool novo; o receptor nao e alterado"]
+    pub fn com_auditoria_yolo(mut self, caminho: std::path::PathBuf) -> Self {
+        self.auditoria_yolo = Some(caminho);
+        self
+    }
+
+    /// O nível de aprovação em vigor (para `/status` e testes).
+    pub fn approval_level(&self) -> garraia_common::ApprovalLevel {
+        self.approval_level
+    }
+
+    /// #1858 fatia 2: a `--yolo` está efetivamente ativa nesta tool?
+    ///
+    /// Efetiva = nível `NeverConfirm` **e** existe canal de confirmação. Sem
+    /// canal o fail-closed domina e nenhum nível o derruba: o nível converte
+    /// "ia perguntar" em "roda", nunca "bloqueado" em "roda".
+    fn yolo_ativo(&self) -> bool {
+        self.confirmation_enabled && self.approval_level.dispensa_confirmacao()
+    }
+
+    /// #1858 fatia 2: registra a execução sob `NeverConfirm` — linha WARN
+    /// sempre, e append JSONL no arquivo de auditoria quando configurado.
+    /// O comando passa pelo mesmo redator dos eventos de log
+    /// (`comando_para_log`): segredo digitado num comando não vira linha de
+    /// arquivo.
+    async fn auditar_execucao(&self, context: &ToolContext, comando: &str, arriscado: bool) {
+        tracing::warn!(
+            target: "auditoria_yolo",
+            level = "never-confirm",
+            command = %comando_para_log(comando),
+            risky = arriscado,
+            session = %context.session_id,
+            cwd = ?context.working_dir,
+            "bash: executado sob never-confirm (--yolo); registro de auditoria"
+        );
+        let Some(caminho) = self.auditoria_yolo.as_ref() else {
+            return;
+        };
+        let registro = serde_json::json!({
+            "ts": chrono::Utc::now().to_rfc3339(),
+            "level": "never-confirm",
+            "tool": "bash",
+            "session_id": context.session_id,
+            "user_id": context.user_id,
+            "risky": arriscado,
+            "cwd": context.working_dir,
+            "command": comando_para_log(comando),
+        });
+        if let Some(pai) = caminho.parent()
+            && let Err(e) = tokio::fs::create_dir_all(pai).await
+        {
+            tracing::warn!(
+                path = ?caminho,
+                erro = %e,
+                "auditoria_yolo: nao consegui criar o diretorio do arquivo de auditoria"
+            );
+            return;
+        }
+        match tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(caminho)
+            .await
+        {
+            Ok(mut arquivo) => {
+                if let Err(e) = tokio::io::AsyncWriteExt::write_all(
+                    &mut arquivo,
+                    format!("{registro}\n").as_bytes(),
+                )
+                .await
+                {
+                    tracing::warn!(path = ?caminho, erro = %e, "auditoria_yolo: falha ao escrever o registro");
+                }
+            }
+            Err(e) => tracing::warn!(
+                path = ?caminho,
+                erro = %e,
+                "auditoria_yolo: falha ao abrir o arquivo de auditoria"
+            ),
+        }
+    }
 }
 
 /// O padrão estático da denylist que o comando casou, se casou (GAR-236).
@@ -479,7 +589,14 @@ impl Tool for BashTool {
         // perigoso já saiu bloqueado ali em cima, então `rm -rf /` na allowlist
         // continua sendo `rm -rf /` — a lista não perdoa nada, ela não é lida
         // para esse caso.
+        // #1858 fatia 2: `never-confirm` (--yolo) entra aqui como terceira
+        // dispensa, DEPOIS da denylist (que já bloqueou o perigoso acima) e
+        // no mesmo plano da allowlist: só elimina o pedido de confirmação.
+        // Sem canal (`confirmation_enabled = false`) ele não se aplica — o
+        // branch fail-closed abaixo continua intocado.
+        let yolo = self.yolo_ativo();
         let aprovado = self.confirmation_enabled && context.approval.covers(self.name(), comando)
+            || yolo
             || self.matches_allowlist(comando);
         let arriscado = padrao_arriscado(comando);
         if let Some(pattern) = arriscado.filter(|_| !aprovado) {
@@ -515,6 +632,15 @@ impl Tool for BashTool {
         // construtor que ligue; #1781 removeu o `new_readonly` morto), então
         // `is_allowed` devolvia `true` incondicional. O gate real de comando
         // é o `safety_gate` (deny + risky + allowlist do operador, acima).
+
+        // #1858 fatia 2: sob `never-confirm` TODO comando que chega aqui é
+        // auditado antes de rodar (comando, origem, timestamp) — o critério
+        // da #1858 pede rastreabilidade do que a flag executou, não só dos
+        // comandos que casariam no tier arriscado.
+        if yolo {
+            self.auditar_execucao(context, comando, arriscado.is_some())
+                .await;
+        }
 
         let (shell, arg) = if cfg!(target_os = "windows") {
             ("powershell", "-Command")
@@ -1852,5 +1978,147 @@ mod tests {
             .await
             .unwrap();
         assert!(output.is_error, "{}", output.content);
+    }
+
+    // ==== #1858 fatia 2: nível de aprovação (`never-confirm` / --yolo). ====
+
+    /// Sob `never-confirm` (com canal de confirmação) o comando arriscado
+    /// deixa de pedir confirmação e roda — é o que a `--yolo` declara.
+    #[tokio::test]
+    async fn yolo_dispensa_a_confirmacao_do_tier_arriscado() {
+        let mut tool = BashTool::new_with_confirmation(None);
+        tool.set_approval_level(garraia_common::ApprovalLevel::NeverConfirm);
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "printenv PATH"}))
+            .await
+            .unwrap();
+        assert!(
+            !output.requires_confirmation,
+            "yolo não pode pedir confirmação: {}",
+            output.content
+        );
+        assert!(!output.is_error, "{}", output.content);
+        assert!(
+            !output.content.contains("CONFIRM_REQUIRED"),
+            "{}",
+            output.content
+        );
+    }
+
+    /// A flag NUNCA desarma o hard-deny: `rm -rf /` continua bloqueado com
+    /// `never-confirm` ativo — a denylist roda acima do tier e nem chega ao
+    /// nível de aprovação.
+    #[tokio::test]
+    async fn yolo_nao_desarma_o_hard_deny() {
+        let mut tool = BashTool::new_with_confirmation(None);
+        tool.set_approval_level(garraia_common::ApprovalLevel::NeverConfirm);
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "rm -rf /"}))
+            .await
+            .unwrap();
+        assert!(
+            output.is_error,
+            "denylist continua bloqueando sob yolo: {}",
+            output.content
+        );
+        assert!(
+            !output.requires_confirmation,
+            "bloqueio da denylist não é pedido de confirmação: {}",
+            output.content
+        );
+        assert!(output.content.contains("bloqueado"), "{}", output.content);
+    }
+
+    /// Sem canal de confirmação o `never-confirm` não derruba o fail-closed:
+    /// comando arriscado segue BLOCKED — o nível converte "ia perguntar" em
+    /// "roda", nunca "bloqueado" em "roda".
+    #[tokio::test]
+    async fn yolo_sem_canal_continua_fail_closed() {
+        let mut tool = BashTool::new(None); // confirmation_enabled = false
+        tool.set_approval_level(garraia_common::ApprovalLevel::NeverConfirm);
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "printenv PATH"}))
+            .await
+            .unwrap();
+        assert!(output.is_error, "{}", output.content);
+        assert!(
+            !output.requires_confirmation,
+            "fail-closed é erro, não pausa: {}",
+            output.content
+        );
+        assert!(output.content.contains("fail-closed"), "{}", output.content);
+    }
+
+    /// Regressão do default: com o nível `always` (default do config) o tier
+    /// arriscado continua pedindo confirmação — quem nunca pediu nada não
+    /// muda.
+    #[tokio::test]
+    async fn nivel_always_mantem_o_pedido_de_confirmacao() {
+        let mut tool = BashTool::new_with_confirmation(None);
+        tool.set_approval_level(garraia_common::ApprovalLevel::Always);
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "printenv PATH"}))
+            .await
+            .unwrap();
+        assert!(
+            output.requires_confirmation,
+            "default sempre pede confirmação: {}",
+            output.content
+        );
+    }
+
+    /// Critério da #1858: sob `never-confirm` cada comando executado vira
+    /// linha no arquivo de auditoria (comando redigido, timestamp) — e fora
+    /// da flag nada é gravado nem o arquivo criado.
+    #[tokio::test]
+    async fn yolo_grava_linha_de_auditoria_e_always_nao_grava() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let arquivo_yolo = dir.path().join("audit").join("never-confirm.jsonl");
+        let arquivo_always = dir.path().join("audit2").join("never-confirm.jsonl");
+
+        let mut tool =
+            BashTool::new_with_confirmation(None).com_auditoria_yolo(arquivo_yolo.clone());
+        tool.set_approval_level(garraia_common::ApprovalLevel::NeverConfirm);
+        let _ = tool
+            .execute(
+                &ctx(false),
+                serde_json::json!({"command": "echo canario-audit-1858"}),
+            )
+            .await
+            .expect("executa");
+
+        let conteudo = std::fs::read_to_string(&arquivo_yolo).expect("arquivo de auditoria existe");
+        let linha: serde_json::Value = serde_json::from_str(
+            conteudo
+                .lines()
+                .last()
+                .expect("ao menos uma linha de auditoria"),
+        )
+        .expect("linha de auditoria é JSON válido");
+        assert_eq!(linha["level"], "never-confirm");
+        assert_eq!(linha["tool"], "bash");
+        assert_eq!(linha["command"], "echo canario-audit-1858");
+        assert!(
+            linha["ts"].as_str().is_some(),
+            "timestamp presente: {linha}"
+        );
+        assert!(linha["session_id"].is_string(), "origem presente: {linha}");
+
+        // Default (`always`): o comando roda, mas NADA é gravado — o arquivo
+        // de auditoria nem chega a existir.
+        let mut tool_always =
+            BashTool::new_with_confirmation(None).com_auditoria_yolo(arquivo_always.clone());
+        tool_always.set_approval_level(garraia_common::ApprovalLevel::Always);
+        let _ = tool_always
+            .execute(
+                &ctx(false),
+                serde_json::json!({"command": "echo canario-always"}),
+            )
+            .await
+            .expect("executa");
+        assert!(
+            !arquivo_always.exists(),
+            "auditoria só vale sob never-confirm"
+        );
     }
 }

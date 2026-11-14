@@ -353,6 +353,10 @@ pub struct DeviceExecuteTool {
     /// GAR-187: o runtime tem canal real de confirmação humana? Sem ele,
     /// R3/R4/R5 são fail-closed BLOCKED (o mesmo do bash sem canal, #1075).
     confirmation_enabled: bool,
+    /// #1858 fatia 2: nível de aprovação (`agent.approval` / `--yolo`).
+    /// `NeverConfirm` dispensa o pedido de confirmação de hardware onde há
+    /// canal; sem canal, o fail-closed da tabela continua intocado.
+    approval_level: garraia_common::ApprovalLevel,
 }
 
 impl DeviceExecuteTool {
@@ -362,6 +366,7 @@ impl DeviceExecuteTool {
             config,
             gate: HardwareGate::new(),
             confirmation_enabled: true,
+            approval_level: garraia_common::ApprovalLevel::default(),
         }
     }
 
@@ -373,7 +378,20 @@ impl DeviceExecuteTool {
             config,
             gate: HardwareGate::sem_canal_confirmacao(),
             confirmation_enabled: false,
+            approval_level: garraia_common::ApprovalLevel::default(),
         }
+    }
+
+    /// #1858 fatia 2: nível de aprovação em vigor. `Always` (default) mantém
+    /// o pedido; `NeverConfirm` o dispensa onde há canal.
+    pub fn set_approval_level(&mut self, level: garraia_common::ApprovalLevel) {
+        self.approval_level = level;
+    }
+
+    /// #1858 fatia 2: o `never-confirm` está efetivamente ativo? Só com
+    /// canal — sem ele o fail-closed da tabela domina e nenhum nível o derruba.
+    fn yolo_ativo(&self) -> bool {
+        self.confirmation_enabled && self.approval_level.dispensa_confirmacao()
     }
 
     /// Allowlist R5 do operador (capabilities que o dono declarou
@@ -511,9 +529,23 @@ impl Tool for DeviceExecuteTool {
             // `{device}/{capability}: {args}`. Fail-closed sem canal.
             ExecutionDecision::HumanConfirmation | ExecutionDecision::ExplicitApproval => {
                 let assunto = Self::subject(device_id, capability, &args);
-                let aprovado =
-                    self.confirmation_enabled && context.approval.covers(self.name(), &assunto);
+                // #1858 fatia 2: `never-confirm` dispensa o pedido onde há
+                // canal — o mesmo plano da aprovação por impressão digital.
+                // Sem canal a tabela fail-closed não muda: nada roda só
+                // porque ninguém podia ser perguntado.
+                let aprovado = self.confirmation_enabled
+                    && context.approval.covers(self.name(), &assunto)
+                    || self.yolo_ativo();
                 if aprovado {
+                    if self.yolo_ativo() {
+                        tracing::warn!(
+                            target: "auditoria_yolo",
+                            level = "never-confirm",
+                            device = %device_id, capability = %capability, risk = %cap.risk,
+                            session = %context.session_id,
+                            "hardware: ação executada sob never-confirm (--yolo); registro de auditoria"
+                        );
+                    }
                     tracing::info!(
                         device = %device_id, capability = %capability, risk = %cap.risk,
                         session = %context.session_id, "hardware: ação aprovada pelo usuário"
@@ -1261,5 +1293,54 @@ mod tests {
             output.content
         );
         assert!(output.content.contains("23.0"), "{}", output.content);
+    }
+
+    // ── #1858 fatia 2: nível de aprovação (`never-confirm` / --yolo) ──────
+
+    /// Sob `never-confirm` (com canal) o R3 deixa de pedir confirmação e roda
+    /// no dispositivo mock — é o que a flag declara, no mesmo plano da
+    /// aprovação por impressão digital.
+    #[tokio::test]
+    async fn yolo_dispensa_a_confirmacao_r3_com_canal() {
+        let reg = registry();
+        let mut tool = DeviceExecuteTool::new(config(&reg));
+        tool.set_approval_level(garraia_common::ApprovalLevel::NeverConfirm);
+        let args = json!({});
+        let output = tool
+            .execute(
+                &ctx(ToolApproval::None),
+                json!({ "device": "risco-completo", "capability": "door_unlock", "args": args }),
+            )
+            .await
+            .expect("executa");
+        assert!(
+            !output.requires_confirmation,
+            "yolo não pode pedir confirmação: {}",
+            output.content
+        );
+        assert!(!output.is_error, "{}", output.content);
+    }
+
+    /// Sem canal de confirmação o `never-confirm` NÃO derruba o fail-closed:
+    /// o R3 segue bloqueado — o nível nunca cria canal onde não há.
+    #[tokio::test]
+    async fn yolo_sem_canal_mantem_o_fail_closed() {
+        let reg = registry();
+        let mut tool = DeviceExecuteTool::new_without_confirmation(config(&reg));
+        tool.set_approval_level(garraia_common::ApprovalLevel::NeverConfirm);
+        let args = json!({});
+        let output = tool
+            .execute(
+                &ctx(ToolApproval::None),
+                json!({ "device": "risco-completo", "capability": "door_unlock", "args": args }),
+            )
+            .await
+            .expect("executa");
+        assert!(output.is_error, "{}", output.content);
+        assert!(
+            !output.requires_confirmation,
+            "fail-closed é erro, não pausa: {}",
+            output.content
+        );
     }
 }
