@@ -1,0 +1,1 @@
+- **CLI inspection reports effective permissions (#1712).** `cli_inspect` now uses the current turn's runtime gate, labels the tools it can actually call, and omits blocked tools. If the turn snapshot is unavailable, the tool list fails closed instead of exposing unverified capabilities.
