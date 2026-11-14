@@ -102,8 +102,12 @@ it would leave an orphan daemon on the port while the unit restart-loops
 ### Windows
 
 ```powershell
-irm https://garraia.org/install.ps1 | iex
+irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
 ```
+
+Piping into `iex` requires a `text/plain` source. The raw mirror (and jsDelivr)
+serve it as text; `garraia.org` and the GitHub release CDN serve it as
+`application/octet-stream`, which breaks the one-liner (#1873).
 
 `install.ps1` is the Windows sibling of `install.sh` and behaves the same way:
 it detects the platform, resolves the latest release, downloads the binary,
@@ -128,7 +132,8 @@ irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1
 > **Release-CDN caveat.** `install.ps1` landed after the `v0.3.3` tag, so
 > `releases/latest/download/install.ps1` returns 404 until the next release is
 > cut. `release.yml` already uploads it, so this resolves itself from `v0.3.4`
-> onward. Until then, use `garraia.org`, raw, or jsDelivr on Windows. The
+> onward. Until then, use raw or jsDelivr on Windows (the sources that serve
+> `text/plain`; see the note above). The
 > shell installer is unaffected -- `install.sh` has shipped as a release asset
 > for several versions.
 >
@@ -140,14 +145,14 @@ is no PowerShell equivalent of `sh -s --`. To pass flags, turn the downloaded
 text into a scriptblock and invoke that:
 
 ```powershell
-& ([scriptblock]::Create((irm https://garraia.org/install.ps1))) -SkipSetup
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1))) -SkipSetup
 ```
 
 Environment variables work in both forms and are usually simpler in automation:
 
 ```powershell
 $env:GARRAIA_SKIP_INIT=1; $env:GARRAIA_SKIP_START=1
-irm https://garraia.org/install.ps1 | iex
+irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
 ```
 
 | Flag | Environment variable | Effect |

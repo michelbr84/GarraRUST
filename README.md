@@ -187,7 +187,7 @@ app: it embeds no GUI and takes no Tauri dependency, so headless installs
 <summary>Install via script (Windows) — <code>irm | iex</code></summary>
 
 ```powershell
-irm https://garraia.org/install.ps1 | iex
+irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
 ```
 
 The Windows sibling of `install.sh`, at behavioral parity with it: detects the
@@ -199,8 +199,12 @@ needed. Upgrading over a running gateway works here too: the running
 `garraia.exe` is renamed aside and the new one renamed in, and the installer
 prints the restart command instead of re-running the wizard.
 
-Mirrors (same script, auto-synced): `raw.githubusercontent.com`, jsDelivr, and
-the GitHub release CDN
+The one-liners above use the `raw.githubusercontent.com` mirror because piping
+into `iex` requires a `text/plain` source: `garraia.org` and the GitHub release
+CDN serve `install.ps1` as `application/octet-stream`, which breaks `irm | iex`
+(#1873). Mirrors (same script, auto-synced): `raw.githubusercontent.com`,
+jsDelivr (`https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1`),
+`garraia.org`, and the GitHub release CDN
 `https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1`
 — the release CDN mirror only resolves from `v0.3.4` onward, since `install.ps1`
 landed after the `v0.3.3` tag. See [`docs/installation.md`](docs/installation.md).
@@ -209,7 +213,7 @@ landed after the `v0.3.3` tag. See [`docs/installation.md`](docs/installation.md
 `sh -s --`. To pass flags, invoke the downloaded text as a scriptblock:
 
 ```powershell
-& ([scriptblock]::Create((irm https://garraia.org/install.ps1))) -SkipSetup
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1))) -SkipSetup
 ```
 
 Flags mirror the shell installer (`-SkipSetup`, `-SkipInit`, `-SkipStart`,
