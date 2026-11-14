@@ -279,6 +279,34 @@ fn redigir_texto_livre(s: &str, max_bytes: usize) -> String {
     }
 }
 
+/// Redação do texto que vai para a SUPERFÍCIE de resposta (#1709 fatia 3).
+///
+/// Combina as duas defesas numa ordem fixa e testável:
+/// 1. [`redigir_texto_livre`] — credencial/marca de segredo vira `[REDACTED]`
+///    (o `redact_secrets` ainda apanha formatos de terceiro que sobram);
+/// 2. [`garraia_security::sanitize_indirect`] — remove caracteres invisíveis
+///    (o único saneamento seguro a aplicar às cegas) e sinaliza padrão de
+///    injeção de prompt; sinalizado, o texto sai com o marcador de dado
+///    não confiável.
+///
+/// O texto da `Claim` pode ecoar o que uma ferramenta de terceiro devolveu;
+/// a superfície de resposta não o repete como se fosse instrução nem deixa
+/// credencial escapar.
+fn sanear_superficie(s: &str) -> String {
+    let sem_credencial = redigir_texto_livre(s, SUPERFICIE_MAX_BYTES);
+    let (limpo, report) = garraia_security::sanitize_indirect(&sem_credencial);
+    if report.is_suspicious() {
+        format!("{} [dado nao confiavel]", limpo)
+    } else {
+        limpo
+    }
+}
+
+/// Teto de bytes do texto projetado na superfície de resposta. Curto de
+/// propósito: o sumário é curto por definição (uma linha por afirmação), e um
+/// teto pequeno limita o que um texto hostil consegue empurrar para a tela.
+const SUPERFICIE_MAX_BYTES: usize = 512;
+
 fn truncar_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
@@ -357,6 +385,13 @@ pub fn do_metadata(meta: &Value) -> Vec<ToolRecord> {
 /// `Interrupted` → `NaoVerificado` (nunca sucesso), `Running` → `NaoVerificado`
 /// (sem resultado registrado). A [`EvidenceRef`] aponta para o `call_id` real
 /// do executor — nunca para o texto do modelo.
+///
+/// #1709 fatia 3 (segurança da superfície de resposta): o `texto` da `Claim`
+/// deriva de `detail`/`name` da ferramenta — dado que o executor registrou, mas
+/// que pode ecoar conteúdo de terceiros. Antes de projetar, o texto passa por
+/// [`sanear_superficie`] (redação de credencial + saneamento de injeção de
+/// prompt), para a superfície de resposta nunca divulgar credencial nem
+/// amplificar instrução embutida em saída de ferramenta.
 pub fn resumo_de_claims(registros: &[ToolRecord]) -> garraia_agents::SurfaceSummary {
     use garraia_agents::{Claim, EvidenceRef};
     let claims: Vec<Claim> = registros
@@ -369,11 +404,12 @@ pub fn resumo_de_claims(registros: &[ToolRecord]) -> garraia_agents::SurfaceSumm
                 turno: r.turno,
                 ordem: r.ordem,
             };
-            let texto = if r.detail.trim().is_empty() {
+            let cru = if r.detail.trim().is_empty() {
                 r.name.clone()
             } else {
                 format!("{}: {}", r.name, r.detail)
             };
+            let texto = sanear_superficie(&cru);
             match r.status {
                 Status::Ok => Claim::observada(texto, evidencia),
                 Status::Error => Claim::falhou(texto, evidencia),
@@ -387,202 +423,4 @@ pub fn resumo_de_claims(registros: &[ToolRecord]) -> garraia_agents::SurfaceSumm
 }
 
 #[cfg(test)]
-mod testes {
-    use super::*;
-
-    fn registro(id: &str, nome: &str, status: Status) -> ToolRecord {
-        ToolRecord {
-            call_id: id.to_string(),
-            name: nome.to_string(),
-            input: serde_json::json!({ "path": "pagina.html" }),
-            detail: "pagina.html".to_string(),
-            status,
-            summary: "ok".to_string(),
-            output: "conteudo".to_string(),
-            turno: 1,
-            ordem: 1,
-        }
-    }
-
-    #[test]
-    fn pareamento_usa_o_mesmo_id_no_use_e_no_result() {
-        let msgs = mensagens_de_ferramentas(&[registro("call-1", "file_write", Status::Ok)]);
-        assert_eq!(msgs.len(), 2);
-        let MessagePart::Parts(usos) = &msgs[0].content else {
-            panic!("esperava Parts");
-        };
-        let MessagePart::Parts(resultados) = &msgs[1].content else {
-            panic!("esperava Parts");
-        };
-        let ContentBlock::ToolUse { id, .. } = &usos[0] else {
-            panic!("esperava ToolUse");
-        };
-        let ContentBlock::ToolResult { tool_use_id, .. } = &resultados[0] else {
-            panic!("esperava ToolResult");
-        };
-        assert_eq!(id, "call-1");
-        assert_eq!(tool_use_id, id);
-        assert_eq!(msgs[0].role, ChatRole::Assistant);
-        assert_eq!(msgs[1].role, ChatRole::User);
-    }
-
-    #[test]
-    fn chamada_interrompida_nunca_vira_sucesso() {
-        let mut trail = ToolTrail::default();
-        trail.iniciar_turno();
-        trail.observar(&garraia_agents::TurnEvent::ToolStarted {
-            id: "call-9".into(),
-            name: "bash".into(),
-            detail: "cargo test".into(),
-            input: serde_json::json!({ "command": "cargo test" }),
-        });
-        let registros = trail.fim_do_turno();
-        assert_eq!(registros[0].status, Status::Interrupted);
-        assert_eq!(registros[0].summary, "[interrompido]");
-        let msgs = mensagens_de_ferramentas(&registros);
-        let MessagePart::Parts(resultados) = &msgs[1].content else {
-            panic!("esperava Parts");
-        };
-        let ContentBlock::ToolResult { content, .. } = &resultados[0] else {
-            panic!("esperava ToolResult");
-        };
-        assert!(content.contains("interrompido"));
-    }
-
-    #[test]
-    fn fim_sem_inicio_nao_inventa_chamada() {
-        let mut trail = ToolTrail::default();
-        trail.iniciar_turno();
-        trail.observar(&garraia_agents::TurnEvent::ToolFinished {
-            id: "orfao".into(),
-            name: "bash".into(),
-            duration: std::time::Duration::ZERO,
-            success: true,
-            summary: "ok".into(),
-            output: "x".into(),
-        });
-        assert!(trail.fim_do_turno().is_empty());
-    }
-
-    #[test]
-    fn ordem_de_ciclos_sequenciais_e_preservada() {
-        let mut a = registro("call-a", "file_write", Status::Ok);
-        a.ordem = 1;
-        a.output = "a ok".to_string();
-        let mut b = registro("call-b", "file_read", Status::Ok);
-        b.ordem = 2;
-        b.output = "b ok".to_string();
-
-        // Entra fora de ordem de proposito: a saida tem de sair ordenada.
-        let msgs = mensagens_de_ferramentas(&[b, a]);
-        assert_eq!(msgs.len(), 4, "um par por chamada, nunca um bloco unico");
-        assert_eq!(
-            msgs.iter().map(|m| m.role.clone()).collect::<Vec<_>>(),
-            vec![
-                ChatRole::Assistant,
-                ChatRole::User,
-                ChatRole::Assistant,
-                ChatRole::User
-            ]
-        );
-        let ids: Vec<String> = msgs
-            .iter()
-            .map(|m| match &m.content {
-                MessagePart::Parts(b) => match &b[0] {
-                    ContentBlock::ToolUse { id, .. } => format!("use:{id}"),
-                    ContentBlock::ToolResult { tool_use_id, .. } => format!("res:{tool_use_id}"),
-                    _ => "outro".to_string(),
-                },
-                MessagePart::Text(t) => format!("txt:{t}"),
-            })
-            .collect();
-        assert_eq!(
-            ids,
-            vec![
-                "use:call-a".to_string(),
-                "res:call-a".to_string(),
-                "use:call-b".to_string(),
-                "res:call-b".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn persistencia_redige_saida_e_resumo_com_credencial() {
-        let segredo = format!("Bearer {}", concat!("tok", "en-987"));
-        let mut r = registro("call-3", "bash", Status::Ok);
-        r.output = format!("HTTP/1.1 200\nAuthorization: {segredo}\nok");
-        r.summary = format!("enviou Authorization: {segredo}");
-        let p = para_persistencia(&[r]);
-        assert_eq!(p[0].output, "[REDACTED]");
-        assert_eq!(p[0].summary, "[REDACTED]");
-        assert!(!p[0].output.contains(&segredo));
-    }
-
-    #[test]
-    fn persistencia_redige_segredo_e_mantem_estrutura() {
-        // O valor e montado em runtime para o proprio teste nao carregar um
-        // token literal no fonte.
-        let segredo = format!("Bearer {}", concat!("abc", "123"));
-        let mut r = registro("call-2", "bash", Status::Ok);
-        r.input = serde_json::json!({
-            "command": format!("curl -H 'Authorization: {segredo}'"),
-            "token": "segredo"
-        });
-        let p = para_persistencia(&[r]);
-        assert_eq!(p[0].input["token"], "[REDACTED]");
-        let cmd = p[0].input["command"].as_str().unwrap();
-        assert!(!cmd.contains(&segredo), "segredo vazou: {cmd}");
-    }
-
-    #[test]
-    fn metadados_antigos_nao_quebram() {
-        assert!(do_metadata(&serde_json::json!({})).is_empty());
-        assert!(do_metadata(&serde_json::json!({ "tool_trail": "lixo" })).is_empty());
-    }
-
-    #[test]
-    fn resumo_de_claims_projeta_classe_por_status() {
-        let registros = vec![
-            registro("call-1", "file_write", Status::Ok),
-            registro("call-2", "file_write", Status::Error),
-            registro("call-3", "bash", Status::Interrupted),
-            registro("call-4", "bash", Status::Running),
-        ];
-        let s = resumo_de_claims(&registros);
-        assert_eq!(s.len(), 4);
-        let linhas = s.para_exibicao();
-        assert!(
-            linhas[0].contains("[observado]"),
-            "Ok → Observado: {linhas:?}"
-        );
-        assert!(linhas[1].contains("[falhou]"), "Error → Falhou: {linhas:?}");
-        assert!(
-            linhas[2].contains("[nao_verificado]"),
-            "Interrupted → NaoVerificado: {linhas:?}"
-        );
-        assert!(
-            linhas[3].contains("[nao_verificado]"),
-            "Running → NaoVerificado: {linhas:?}"
-        );
-        // A referência aponta para o call_id do executor.
-        assert!(linhas[0].contains("#call-1"));
-    }
-
-    #[test]
-    fn resumo_de_claims_interrupted_nunca_vira_sucesso() {
-        let registros = vec![registro("call-9", "file_write", Status::Interrupted)];
-        let s = resumo_de_claims(&registros);
-        let linha = &s.para_exibicao()[0];
-        assert!(!linha.contains("[observado]"));
-        assert!(linha.contains("[nao_verificado]"));
-        assert!(linha.contains("sem execucao comprovada"));
-    }
-
-    #[test]
-    fn status_serializa_em_minusculas() {
-        let j = serde_json::to_string(&Status::Interrupted).unwrap();
-        assert_eq!(j, "\"interrupted\"");
-        assert_eq!(Status::Ok.as_str(), "ok");
-    }
-}
+mod testes;

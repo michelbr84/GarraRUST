@@ -387,3 +387,213 @@ async fn e2e_denegacao_operacao_registrada_aparece_no_payload() {
         "a operacao registrada tem de aparecer com o resultado real no payload: {msgs:#?}"
     );
 }
+
+// ── #1709: E2E de divergência entre alegação e o ledger do runtime ────────
+
+/// Uma ferramenta que SEMPRE falha: o executor registra `success=false`, que e
+/// o oposto do que o modelo costuma alegar. Usada para provar que a divergencia
+/// entre "eu escrevi" e o registro real e detectada pelo `detect_divergencia`.
+struct FalhaSempre;
+
+#[async_trait::async_trait]
+impl Tool for FalhaSempre {
+    fn name(&self) -> &str {
+        "file_write"
+    }
+    fn description(&self) -> &str {
+        "tenta escrever e falha"
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    async fn execute(&self, _c: &ToolContext, _i: Value) -> garraia_common::Result<ToolOutput> {
+        Ok(ToolOutput::error("permissao negada".to_string()))
+    }
+}
+
+/// Criterio "E2E de divergencia": o executor roda uma ferramenta que FALHA e o
+/// registro (`TurnEvent` -> `ToolTrail` -> `EvidenceRef`) guarda `success=false`.
+/// Se o modelo, no turno seguinte, afirma que a operacao foi um sucesso, o
+/// `detect_divergencia` tem de sinalizar `AfirmaSucessoMasLedgerFalhou` — a
+/// correcao e reformular com o dado observavel, nunca aceitar a alegacao.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_divergencia_modelo_afirma_sucesso_mas_ledger_registrou_falha() {
+    use garraia_agents::{Divergencia, detect_divergencia};
+
+    // Sessao com uma ferramenta que falha; o provedor pede a ferramenta e
+    // depois responde texto (mesmo Roteiro do restante do arquivo).
+    let s = servidor().await;
+    let anthropic = Arc::new(
+        AnthropicProvider::new("chave-anth", Some("modelo-anth".to_string()), Some(s.uri()))
+            .with_name("anthropic"),
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rt = AgentRuntime::new();
+    rt.register_tool(Box::new(FalhaSempre));
+    rt.register_provider(anthropic as Arc<dyn LlmProvider>);
+
+    let mut trilha = ToolTrail::default();
+    trilha.iniciar_turno();
+    let (tx, mut rx) = mpsc::channel::<TurnEvent>(64);
+    let exec = exec_do_turno(
+        &dir.path().to_string_lossy(),
+        "sessao-1709-divergencia",
+        None,
+    );
+    let call = rt.process_message_streaming_with_events(
+        "sessao-1709-divergencia",
+        "CRIE_AGORA",
+        &[],
+        tx,
+        None,
+        None,
+        Some("anthropic"),
+        None,
+        None,
+        None,
+        &exec,
+    );
+    let dreno = {
+        let trilha = &mut trilha;
+        async move {
+            while let Some(ev) = rx.recv().await {
+                trilha.observar(&ev);
+            }
+        }
+    };
+    {
+        tokio::pin!(dreno);
+        tokio::select! {
+            r = call => { r.expect("turno nao pode falhar"); },
+            _ = &mut dreno => unreachable!("o dreno nunca termina antes do turno"),
+        }
+    } // dreno cai aqui, soltando o &mut trilha
+    let registros = trilha.fim_do_turno();
+    assert_eq!(registros.len(), 1, "uma chamada registrada: {registros:?}");
+    assert_eq!(
+        registros[0].status,
+        tool_history::Status::Error,
+        "o executor registrou a falha: {registros:?}"
+    );
+
+    // O LEDGER do runtime e o que a `ToolTrail` guardou. O `resumo_de_claims`
+    // projeta cada registro em `Claim`; a `EvidenceRef` de uma falha carrega
+    // `success=false`. Aqui montamos o ledger como a CLI o ve.
+    let ledger: Vec<garraia_agents::EvidenceRef> = registros
+        .iter()
+        .map(|r| garraia_agents::EvidenceRef {
+            tool_call_id: r.call_id.clone(),
+            tool_name: r.name.clone(),
+            success: r.status == tool_history::Status::Ok,
+            turno: r.turno,
+            ordem: r.ordem,
+        })
+        .collect();
+
+    // A ALEGACAO do modelo no turno seguinte: "escrevi TESTE.md" = sucesso,
+    // apontando para a MESMA execucao que o ledger marcou como falha.
+    let alegacao = garraia_agents::Claim::observada(
+        "escrevi TESTE.md",
+        garraia_agents::EvidenceRef {
+            tool_call_id: registros[0].call_id.clone(),
+            tool_name: registros[0].name.clone(),
+            success: true,
+            turno: registros[0].turno,
+            ordem: registros[0].ordem,
+        },
+    );
+
+    match detect_divergencia(&alegacao, &ledger) {
+        Divergencia::AfirmaSucessoMasLedgerFalhou {
+            tool_call_id,
+            tool_name,
+        } => {
+            assert_eq!(tool_call_id, registros[0].call_id);
+            assert_eq!(tool_name, registros[0].name);
+        }
+        outro => panic!("a divergencia nao foi detectada: {outro:?}"),
+    }
+}
+
+/// O inverso do caso acima: a alegacao bate com o ledger (falha com falha) e o
+/// `detect_divergencia` reconhece como `Sustentada` — o detector nao gera falso
+/// positivo so porque ha registro.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_divergencia_sem_contradicao_e_sustentada() {
+    use garraia_agents::{Divergencia, detect_divergencia};
+
+    let s = servidor().await;
+    let anthropic = Arc::new(
+        AnthropicProvider::new("chave-anth", Some("modelo-anth".to_string()), Some(s.uri()))
+            .with_name("anthropic"),
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rt = AgentRuntime::new();
+    rt.register_tool(Box::new(FalhaSempre));
+    rt.register_provider(anthropic as Arc<dyn LlmProvider>);
+
+    let mut trilha = ToolTrail::default();
+    trilha.iniciar_turno();
+    let (tx, mut rx) = mpsc::channel::<TurnEvent>(64);
+    let exec = exec_do_turno(
+        &dir.path().to_string_lossy(),
+        "sessao-1709-divergencia-2",
+        None,
+    );
+    let call = rt.process_message_streaming_with_events(
+        "sessao-1709-divergencia-2",
+        "CRIE_AGORA",
+        &[],
+        tx,
+        None,
+        None,
+        Some("anthropic"),
+        None,
+        None,
+        None,
+        &exec,
+    );
+    let dreno = {
+        let trilha = &mut trilha;
+        async move {
+            while let Some(ev) = rx.recv().await {
+                trilha.observar(&ev);
+            }
+        }
+    };
+    {
+        tokio::pin!(dreno);
+        tokio::select! {
+            r = call => { r.expect("turno nao pode falhar"); },
+            _ = &mut dreno => unreachable!("o dreno nunca termina antes do turno"),
+        }
+    } // dreno cai aqui, soltando o &mut trilha
+    let registros = trilha.fim_do_turno();
+
+    let ledger: Vec<garraia_agents::EvidenceRef> = registros
+        .iter()
+        .map(|r| garraia_agents::EvidenceRef {
+            tool_call_id: r.call_id.clone(),
+            tool_name: r.name.clone(),
+            success: r.status == tool_history::Status::Ok,
+            turno: r.turno,
+            ordem: r.ordem,
+        })
+        .collect();
+
+    // Alegacao coerente: "a escrita falhou" para uma execucao que falhou.
+    let alegacao = garraia_agents::Claim::falhou(
+        "file_write bloqueado",
+        garraia_agents::EvidenceRef {
+            tool_call_id: registros[0].call_id.clone(),
+            tool_name: registros[0].name.clone(),
+            success: false,
+            turno: registros[0].turno,
+            ordem: registros[0].ordem,
+        },
+    );
+    assert_eq!(
+        detect_divergencia(&alegacao, &ledger),
+        Divergencia::Sustentada
+    );
+}
