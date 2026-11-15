@@ -1,0 +1,1 @@
+- A detecção de divergência entre alegação e ledger agora sinaliza as duas polaridades incompatíveis e mantém os casos sem evidência como desconhecidos; corpus determinístico e baseline documentados em `docs/agent-evidence-evaluation-1709.md`.

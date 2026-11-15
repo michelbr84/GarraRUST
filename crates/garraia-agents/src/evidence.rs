@@ -292,6 +292,11 @@ pub enum Divergencia {
         tool_call_id: String,
         tool_name: String,
     },
+    /// O modelo afirma falha, mas o ledger registra sucesso para a mesma execução.
+    AfirmaFalhaMasLedgerSucesso {
+        tool_call_id: String,
+        tool_name: String,
+    },
     /// O modelo afirma que algo foi executado, mas não há [`EvidenceRef`]
     /// correspondente no ledger. **Não** é "não aconteceu" — é "não consigo
     /// confirmar"; a classe correta é [`VerificationStatus::NaoVerificado`].
@@ -306,9 +311,9 @@ pub enum Divergencia {
 /// `tool_call_id` da evidência da afirmação — sem ele, não há como casar.
 ///
 /// Retorna [`Divergencia::Sustentada`] quando a afirmação bate com o ledger;
-/// [`Divergencia::AfirmaSucessoMasLedgerFalhou`] quando o modelo diz sucesso
-/// para uma execução que o ledger marca como falha; e
-/// [`Divergencia::SemEvidenciaNoLedger`] quando não há registro correspondente.
+/// `AfirmaSucessoMasLedgerFalhou` ou `AfirmaFalhaMasLedgerSucesso` quando a
+/// polaridade diverge; e [`Divergencia::SemEvidenciaNoLedger`] quando não há
+/// registro correspondente.
 pub fn detect_divergencia(claim: &Claim, ledger: &[EvidenceRef]) -> Divergencia {
     let Some(ev) = claim.evidencia.as_ref() else {
         return Divergencia::SemEvidenciaNoLedger;
@@ -318,13 +323,14 @@ pub fn detect_divergencia(claim: &Claim, ledger: &[EvidenceRef]) -> Divergencia 
         .find(|e| e.tool_call_id == ev.tool_call_id && e.tool_name == ev.tool_name)
     {
         Some(entrada) if entrada.success == ev.success => Divergencia::Sustentada,
-        Some(entrada) if !entrada.success && claim.status == VerificationStatus::Observado => {
-            Divergencia::AfirmaSucessoMasLedgerFalhou {
-                tool_call_id: entrada.tool_call_id.clone(),
-                tool_name: entrada.tool_name.clone(),
-            }
-        }
-        Some(_) => Divergencia::Sustentada,
+        Some(entrada) if ev.success => Divergencia::AfirmaSucessoMasLedgerFalhou {
+            tool_call_id: entrada.tool_call_id.clone(),
+            tool_name: entrada.tool_name.clone(),
+        },
+        Some(entrada) => Divergencia::AfirmaFalhaMasLedgerSucesso {
+            tool_call_id: entrada.tool_call_id.clone(),
+            tool_name: entrada.tool_name.clone(),
+        },
         None => Divergencia::SemEvidenciaNoLedger,
     }
 }
@@ -529,4 +535,21 @@ mod tests {
         let ledger = vec![ev("c1", "file_write", false)];
         assert_eq!(detect_divergencia(&c, &ledger), Divergencia::Sustentada);
     }
+
+    #[test]
+    fn divergencia_quando_modelo_afirma_falha_mas_ledger_confirma_sucesso() {
+        let c = Claim::falhou("file_write falhou", ev("c1", "file_write", false));
+        let ledger = vec![ev("c1", "file_write", true)];
+        assert_eq!(
+            detect_divergencia(&c, &ledger),
+            Divergencia::AfirmaFalhaMasLedgerSucesso {
+                tool_call_id: "c1".into(),
+                tool_name: "file_write".into(),
+            }
+        );
+    }
 }
+
+#[cfg(test)]
+#[path = "evidence/evaluation_tests.rs"]
+mod evaluation_tests;
