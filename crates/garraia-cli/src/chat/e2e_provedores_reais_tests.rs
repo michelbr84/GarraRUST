@@ -266,23 +266,13 @@ impl Sessao {
         );
         let resposta = {
             // Drena os eventos enquanto o turno roda — o mesmo papel do
-            // `stream_turn` do REPL; quem alimenta a trilha e o dreno. O bloco
-            // encerra o `dreno` (e solta o `&mut self.trilha`) antes do
+            // `stream_turn` do REPL, com a mesma drenagem pos-`drop` (ver
+            // `turno_com_trilha`): o bloco solta o `&mut self.trilha` antes do
             // `fim_do_turno` abaixo.
-            let dreno = {
-                let trilha = &mut self.trilha;
-                let mut rx = rx;
-                async move {
-                    while let Some(ev) = rx.recv().await {
-                        trilha.observar(&ev);
-                    }
-                }
-            };
-            tokio::pin!(dreno);
-            tokio::select! {
-                r = call => r.expect("turno nao pode falhar"),
-                _ = &mut dreno => unreachable!("o dreno nunca termina antes do turno"),
-            }
+            let trilha = &mut self.trilha;
+            turno_com_trilha(call, rx, trilha)
+                .await
+                .expect("turno nao pode falhar")
         };
         let registros = self.trilha.fim_do_turno();
         anexar_turno(
@@ -436,6 +426,105 @@ async fn e2e_denegacao_operacao_registrada_aparece_no_payload() {
     );
 }
 
+// ── Drenagem do turno: o mesmo invariante do `stream_turn` do REPL ────────
+//
+// Um `select!` que escolhe apenas o `call` e **dropa o dreno** perde os eventos
+// que ainda estavam no buffer do canal quando o turno terminou. E exatamente o
+// que acontece quando a tool que falha encerra o turno sem nova chamada ao
+// modelo: `ToolStarted`/`ToolFinished` sao enviados e o `call` fica pronto no
+// mesmo poll, sem nenhum `await` Pendente no meio. Foi o flake que deixou
+// `Test (ubuntu-latest)` vermelho na main (`registros` vazio → "index out of
+// bounds: the len is 0"), reprovado 1 em 30 sob carga local.
+//
+// A producao nao tem essa janela: `stream_turn` (chat.rs) dropa o future
+// **depois** do `select!` — o sender dono dele morre junto, o canal fecha — e
+// so entao drena o restante ate `None`. Este helper e a copia desse gesto para
+// os testes que afirmam sobre a trilha.
+async fn turno_com_trilha<F, T, E>(
+    call: F,
+    mut rx: mpsc::Receiver<TurnEvent>,
+    trilha: &mut ToolTrail,
+) -> std::result::Result<T, E>
+where
+    F: std::future::Future<Output = std::result::Result<T, E>>,
+{
+    // `Box::pin`: o future dono do sender precisa poder ser dropado ANTES da
+    // drenagem final (mesmo comentario do `stream_turn`).
+    let mut call = Box::pin(call);
+    let mut rx_aberto = true;
+    let resultado = loop {
+        tokio::select! {
+            r = &mut call => break r,
+            talvez = rx.recv(), if rx_aberto => match talvez {
+                Some(evento) => trilha.observar(&evento),
+                None => rx_aberto = false,
+            },
+        }
+    };
+    // Aqui o sender morre com o future: o canal fecha e o laco abaixo consome
+    // o que ficou no buffer sem esperar produtor nenhum.
+    drop(call);
+    if rx_aberto {
+        while let Some(evento) = rx.recv().await {
+            trilha.observar(&evento);
+        }
+    }
+    resultado
+}
+
+/// Regressao do flake que deixou `Test (ubuntu-latest)` vermelho na main
+/// (2026-11-15, `0b6fbb39`): um turno que termina no MESMO poll em que emite o
+/// par `ToolStarted`/`ToolFinished` — tool que falha e encerra o turno, sem
+/// nova chamada ao modelo — precisa ter os dois eventos na trilha.
+///
+/// O `select!` antigo dropava o dreno nesse instante: `fim_do_turno` voltava
+/// vazio e o teste de divergencia estourava em `registros[0]`. Reprovava ~1 em
+/// 30 sob carga; com a drenagem pos-`drop` (o gesto do `stream_turn`), o
+/// resultado passa a ser deterministico.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_drenagem_guarda_os_eventos_que_terminam_no_mesmo_poll_do_turno() {
+    let (tx, rx) = mpsc::channel::<TurnEvent>(8);
+    let produtor = async move {
+        // `try_send`: preenche o buffer SEM ceder o controle, entao o turno
+        // fica pronto no mesmo poll em que os eventos foram emitidos.
+        tx.try_send(TurnEvent::ToolStarted {
+            id: "call-flake".to_string(),
+            name: "file_write".to_string(),
+            detail: String::new(),
+            input: json!({}),
+        })
+        .expect("buffer do canal");
+        tx.try_send(TurnEvent::ToolFinished {
+            id: "call-flake".to_string(),
+            name: "file_write".to_string(),
+            duration: std::time::Duration::from_millis(1),
+            success: false,
+            summary: "permissao negada".to_string(),
+            output: String::new(),
+        })
+        .expect("buffer do canal");
+        Ok::<_, String>(())
+    };
+
+    let mut trilha = ToolTrail::default();
+    trilha.iniciar_turno();
+    turno_com_trilha(produtor, rx, &mut trilha)
+        .await
+        .expect("produtor");
+
+    let registros = trilha.fim_do_turno();
+    assert_eq!(
+        registros.len(),
+        1,
+        "o par de eventos ficou no buffer do canal: {registros:?}"
+    );
+    assert_eq!(
+        registros[0].status,
+        tool_history::Status::Error,
+        "o `ToolFinished` de falha tem de fechar o registro: {registros:?}"
+    );
+}
+
 // ── #1709: E2E de divergência entre alegação e o ledger do runtime ────────
 
 /// Uma ferramenta que SEMPRE falha: o executor registra `success=false`, que e
@@ -482,7 +571,7 @@ async fn e2e_divergencia_modelo_afirma_sucesso_mas_ledger_registrou_falha() {
 
     let mut trilha = ToolTrail::default();
     trilha.iniciar_turno();
-    let (tx, mut rx) = mpsc::channel::<TurnEvent>(64);
+    let (tx, rx) = mpsc::channel::<TurnEvent>(64);
     let exec = exec_do_turno(
         &dir.path().to_string_lossy(),
         "sessao-1709-divergencia",
@@ -501,21 +590,11 @@ async fn e2e_divergencia_modelo_afirma_sucesso_mas_ledger_registrou_falha() {
         None,
         &exec,
     );
-    let dreno = {
-        let trilha = &mut trilha;
-        async move {
-            while let Some(ev) = rx.recv().await {
-                trilha.observar(&ev);
-            }
-        }
-    };
-    {
-        tokio::pin!(dreno);
-        tokio::select! {
-            r = call => { r.expect("turno nao pode falhar"); },
-            _ = &mut dreno => unreachable!("o dreno nunca termina antes do turno"),
-        }
-    } // dreno cai aqui, soltando o &mut trilha
+    // A trilha so vale se a drenagem cobrir os eventos do fim do turno — o
+    // mesmo invariante do `stream_turn` do REPL (ver `turno_com_trilha`).
+    turno_com_trilha(call, rx, &mut trilha)
+        .await
+        .expect("turno nao pode falhar");
     let registros = trilha.fim_do_turno();
     assert_eq!(registros.len(), 1, "uma chamada registrada: {registros:?}");
     assert_eq!(
@@ -575,7 +654,7 @@ async fn e2e_divergencia_sem_contradicao_e_sustentada() {
 
     let mut trilha = ToolTrail::default();
     trilha.iniciar_turno();
-    let (tx, mut rx) = mpsc::channel::<TurnEvent>(64);
+    let (tx, rx) = mpsc::channel::<TurnEvent>(64);
     let exec = exec_do_turno(
         &dir.path().to_string_lossy(),
         "sessao-1709-divergencia-2",
@@ -594,22 +673,16 @@ async fn e2e_divergencia_sem_contradicao_e_sustentada() {
         None,
         &exec,
     );
-    let dreno = {
-        let trilha = &mut trilha;
-        async move {
-            while let Some(ev) = rx.recv().await {
-                trilha.observar(&ev);
-            }
-        }
-    };
-    {
-        tokio::pin!(dreno);
-        tokio::select! {
-            r = call => { r.expect("turno nao pode falhar"); },
-            _ = &mut dreno => unreachable!("o dreno nunca termina antes do turno"),
-        }
-    } // dreno cai aqui, soltando o &mut trilha
+    // Mesmo invariante do teste anterior: sem a drenagem pos-`drop` os eventos
+    // do fim do turno podem ficar no buffer e a trilha volta vazia.
+    turno_com_trilha(call, rx, &mut trilha)
+        .await
+        .expect("turno nao pode falhar");
     let registros = trilha.fim_do_turno();
+    assert!(
+        !registros.is_empty(),
+        "o turno nao executou `file_write`: a trilha ficou vazia"
+    );
 
     let ledger: Vec<garraia_agents::EvidenceRef> = registros
         .iter()
