@@ -28,10 +28,9 @@
 //! com a classe de evidência e a referência verificável quando existe. O detalhe
 //! (saída completa, input) fica sob demanda — nunca no sumário.
 //!
-//! [`detect_divergencia`] compara uma afirmação do modelo contra o ledger do
-//! runtime ([`EvidenceRef`] conhecido) e sinaliza quando o modelo afirma algo que
-//! a evidência não sustenta. É o primeiro passo da "exigir reformulação
-//! corretiva" da #1709: o chamador decide o que fazer com o resultado.
+//! [`detect_divergencia`] compara uma polaridade estruturada da alegação do modelo
+//! contra o ledger do runtime. A alegação e a evidência são tipos distintos: a
+//! primeira não prova o resultado, e somente o ledger é a fonte do resultado real.
 
 use crate::turn_events::TurnEvent;
 
@@ -182,6 +181,65 @@ impl Claim {
     }
 }
 
+/// Polaridade estruturada de uma alegação operacional, separada do resultado real.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolaridadeAlegada {
+    /// A alegação diz que a execução teve sucesso.
+    Sucesso,
+    /// A alegação diz que a execução falhou ou foi negada.
+    Falha,
+}
+
+impl PolaridadeAlegada {
+    fn sucesso(self) -> bool {
+        matches!(self, Self::Sucesso)
+    }
+}
+
+/// Alegação estruturada a comparar com o ledger; não é evidência do executor.
+///
+/// O chamador classifica a polaridade da afirmação do modelo e fornece o id/nome
+/// referenciados. Somente o ledger determina o resultado real. `None` representa
+/// uma alegação cuja polaridade não pôde ser classificada com segurança.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlegacaoOperacional {
+    /// Id da chamada a que a alegação se refere.
+    pub tool_call_id: String,
+    /// Nome registrado da ferramenta.
+    pub tool_name: String,
+    /// Polaridade estruturada, ou `None` se não puder ser classificada.
+    pub polaridade: Option<PolaridadeAlegada>,
+}
+
+impl AlegacaoOperacional {
+    /// Cria alegação de sucesso para uma chamada específica.
+    pub fn sucesso(tool_call_id: impl Into<String>, tool_name: impl Into<String>) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            polaridade: Some(PolaridadeAlegada::Sucesso),
+        }
+    }
+
+    /// Cria alegação de falha/negação para uma chamada específica.
+    pub fn falha(tool_call_id: impl Into<String>, tool_name: impl Into<String>) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            polaridade: Some(PolaridadeAlegada::Falha),
+        }
+    }
+
+    /// Cria alegação sem polaridade classificável; o detector retorna desconhecido.
+    pub fn sem_polaridade(tool_call_id: impl Into<String>, tool_name: impl Into<String>) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            polaridade: None,
+        }
+    }
+}
+
 /// Uma linha de [`EvidenceRef`] derivada de um [`TurnEvent`] do executor.
 ///
 /// Só eventos de ferramenta produzem evidência. [`TurnEvent::TextDelta`] não
@@ -281,51 +339,55 @@ impl SurfaceSummary {
     }
 }
 
-/// O resultado de comparar uma afirmação do modelo contra o ledger do runtime.
+/// O resultado de comparar uma alegação estruturada contra o ledger do runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Divergencia {
-    /// A afirmação é sustentada por uma [`EvidenceRef`] que o ledger conhece.
+    /// A polaridade alegada coincide com o resultado registrado pelo executor.
     Sustentada,
-    /// O modelo afirma sucesso, mas o ledger registra falha/bloqueio para a
-    /// mesma execução. A correção é reformular com o dado observável.
+    /// A alegação diz sucesso, mas o ledger registra falha/negação.
     AfirmaSucessoMasLedgerFalhou {
         tool_call_id: String,
         tool_name: String,
     },
-    /// O modelo afirma que algo foi executado, mas não há [`EvidenceRef`]
-    /// correspondente no ledger. **Não** é "não aconteceu" — é "não consigo
-    /// confirmar"; a classe correta é [`VerificationStatus::NaoVerificado`].
+    /// A alegação diz falha, mas o ledger registra sucesso.
+    AfirmaFalhaMasLedgerSucesso {
+        tool_call_id: String,
+        tool_name: String,
+    },
+    /// Não há polaridade classificável ou registro correspondente no ledger.
+    /// Não significa "não aconteceu"; o resultado permanece desconhecido.
     SemEvidenciaNoLedger,
 }
 
-/// Detecta incompatibilidades entre uma afirmação do modelo e o histórico
-/// confiável do runtime.
+/// Detecta incompatibilidades entre uma alegação estruturada e o ledger confiável.
 ///
-/// `claim` é o que o modelo afirma; `ledger` é o conjunto de [`EvidenceRef`]
-/// que o executor registrou (a fonte da verdade). A comparação é pelo
-/// `tool_call_id` da evidência da afirmação — sem ele, não há como casar.
-///
-/// Retorna [`Divergencia::Sustentada`] quando a afirmação bate com o ledger;
-/// [`Divergencia::AfirmaSucessoMasLedgerFalhou`] quando o modelo diz sucesso
-/// para uma execução que o ledger marca como falha; e
-/// [`Divergencia::SemEvidenciaNoLedger`] quando não há registro correspondente.
-pub fn detect_divergencia(claim: &Claim, ledger: &[EvidenceRef]) -> Divergencia {
-    let Some(ev) = claim.evidencia.as_ref() else {
+/// A polaridade vem de [`AlegacaoOperacional`] e não é prova. O resultado do
+/// executor vem exclusivamente do `ledger`; sem correspondência por id e nome,
+/// ou sem polaridade classificada, o resultado permanece desconhecido.
+pub fn detect_divergencia(alegacao: &AlegacaoOperacional, ledger: &[EvidenceRef]) -> Divergencia {
+    let Some(polaridade) = alegacao.polaridade else {
         return Divergencia::SemEvidenciaNoLedger;
     };
-    match ledger
+    let Some(entrada) = ledger
         .iter()
-        .find(|e| e.tool_call_id == ev.tool_call_id && e.tool_name == ev.tool_name)
-    {
-        Some(entrada) if entrada.success == ev.success => Divergencia::Sustentada,
-        Some(entrada) if !entrada.success && claim.status == VerificationStatus::Observado => {
-            Divergencia::AfirmaSucessoMasLedgerFalhou {
-                tool_call_id: entrada.tool_call_id.clone(),
-                tool_name: entrada.tool_name.clone(),
-            }
-        }
-        Some(_) => Divergencia::Sustentada,
-        None => Divergencia::SemEvidenciaNoLedger,
+        .find(|e| e.tool_call_id == alegacao.tool_call_id && e.tool_name == alegacao.tool_name)
+    else {
+        return Divergencia::SemEvidenciaNoLedger;
+    };
+
+    if entrada.success == polaridade.sucesso() {
+        return Divergencia::Sustentada;
+    }
+
+    match polaridade {
+        PolaridadeAlegada::Sucesso => Divergencia::AfirmaSucessoMasLedgerFalhou {
+            tool_call_id: entrada.tool_call_id.clone(),
+            tool_name: entrada.tool_name.clone(),
+        },
+        PolaridadeAlegada::Falha => Divergencia::AfirmaFalhaMasLedgerSucesso {
+            tool_call_id: entrada.tool_call_id.clone(),
+            tool_name: entrada.tool_name.clone(),
+        },
     }
 }
 
@@ -477,56 +539,71 @@ mod tests {
 
     #[test]
     fn divergencia_sustentada_quando_ledger_confirma() {
-        let c = Claim::observada("escrevi pagina.html", ev("c1", "file_write", true));
+        let alegacao = AlegacaoOperacional::sucesso("c1", "file_write");
         let ledger = vec![ev("c1", "file_write", true)];
-        assert_eq!(detect_divergencia(&c, &ledger), Divergencia::Sustentada);
+        assert_eq!(
+            detect_divergencia(&alegacao, &ledger),
+            Divergencia::Sustentada
+        );
     }
 
     #[test]
     fn divergencia_quando_modelo_afirma_sucesso_mas_ledger_falhou() {
-        // O modelo diz que escreveu; o executor registrou falha.
-        let c = Claim::observada("escrevi pagina.html", ev("c1", "file_write", true));
+        let alegacao = AlegacaoOperacional::sucesso("c1", "file_write");
         let ledger = vec![ev("c1", "file_write", false)];
-        match detect_divergencia(&c, &ledger) {
+        assert_eq!(
+            detect_divergencia(&alegacao, &ledger),
             Divergencia::AfirmaSucessoMasLedgerFalhou {
-                tool_call_id,
-                tool_name,
-            } => {
-                assert_eq!(tool_call_id, "c1");
-                assert_eq!(tool_name, "file_write");
+                tool_call_id: "c1".into(),
+                tool_name: "file_write".into(),
             }
-            outro => panic!("esperava AfirmaSucessoMasLedgerFalhou, veio {outro:?}"),
-        }
+        );
     }
 
     #[test]
-    fn divergencia_sem_evidencia_no_ledger_nao_e_ausencia() {
-        // Modelo afirma algo sem referência verificável: não é "não aconteceu".
-        let c = Claim::observada("escrevi pagina.html", ev("c9", "file_write", true));
+    fn divergencia_sem_correspondencia_no_ledger_permanece_desconhecida() {
+        let alegacao = AlegacaoOperacional::sucesso("c9", "file_write");
         let ledger = vec![ev("c1", "file_write", true)];
         assert_eq!(
-            detect_divergencia(&c, &ledger),
+            detect_divergencia(&alegacao, &ledger),
             Divergencia::SemEvidenciaNoLedger
         );
     }
 
     #[test]
-    fn divergencia_claim_sem_evidencia_e_sem_evidencia_no_ledger() {
-        // Claim sem EvidenceRef (inferido/relatado/nao_verificado) não pode
-        // ser comparada por id — cai direto em SemEvidenciaNoLedger.
-        let c = Claim::nao_verificada("não consigo confirmar");
+    fn polaridade_nao_classificada_permanece_desconhecida() {
+        let alegacao = AlegacaoOperacional::sem_polaridade("c1", "file_write");
         let ledger = vec![ev("c1", "file_write", true)];
         assert_eq!(
-            detect_divergencia(&c, &ledger),
+            detect_divergencia(&alegacao, &ledger),
             Divergencia::SemEvidenciaNoLedger
         );
     }
 
     #[test]
-    fn divergencia_falha_do_modelo_bate_com_falha_do_ledger() {
-        // Modelo diz que falhou, ledger registra falha: consistente.
-        let c = Claim::falhou("file_write bloqueado", ev("c1", "file_write", false));
+    fn alegacao_de_falha_bate_com_falha_do_ledger() {
+        let alegacao = AlegacaoOperacional::falha("c1", "file_write");
         let ledger = vec![ev("c1", "file_write", false)];
-        assert_eq!(detect_divergencia(&c, &ledger), Divergencia::Sustentada);
+        assert_eq!(
+            detect_divergencia(&alegacao, &ledger),
+            Divergencia::Sustentada
+        );
+    }
+
+    #[test]
+    fn divergencia_quando_modelo_afirma_falha_mas_ledger_confirma_sucesso() {
+        let alegacao = AlegacaoOperacional::falha("c1", "file_write");
+        let ledger = vec![ev("c1", "file_write", true)];
+        assert_eq!(
+            detect_divergencia(&alegacao, &ledger),
+            Divergencia::AfirmaFalhaMasLedgerSucesso {
+                tool_call_id: "c1".into(),
+                tool_name: "file_write".into(),
+            }
+        );
     }
 }
+
+#[cfg(test)]
+#[path = "evidence/evaluation_tests.rs"]
+mod evaluation_tests;

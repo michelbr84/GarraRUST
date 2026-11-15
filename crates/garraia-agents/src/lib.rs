@@ -53,8 +53,8 @@ pub use embeddings::{
     ResilientEmbeddingProvider,
 };
 pub use evidence::{
-    Claim, ClaimError, Divergencia, EvidenceRef, LinhaSuperficie, SurfaceSummary,
-    VerificationStatus, detect_divergencia, evidence_from_event,
+    AlegacaoOperacional, Claim, ClaimError, Divergencia, EvidenceRef, LinhaSuperficie,
+    PolaridadeAlegada, SurfaceSummary, VerificationStatus, detect_divergencia, evidence_from_event,
 };
 pub use execution_budget::ExecutionBudget;
 pub use llama_cpp::{KvCacheType, LlamaCppConfig, LlamaCppProvider};
