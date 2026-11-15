@@ -175,11 +175,13 @@ ignore = [
     # as cinco crates unic-* sairam do Cargo.lock e os ignores viravam
     # advisory-not-detected. Removido de AMBOS os arquivos no mesmo commit (SYNC NOTE).
 
-    # --- Excecao TEMPORARIA — #1667 (autorizada 19/10/2026), espelho do deny.toml ---
+    # --- Excecao TEMPORARIA — #1667 (zbus 5 no desktop), espelho do deny.toml ---
     # zvariant / zbus_names / zvariant_derive: SOMENTE `unmaintained` (incorporadas
-    # ao zbus 6.0.0). Via tauri-plugin-notification -> notify-rust -> zbus 5
-    # (desktop apenas). EXPIRA 2026-12-31 (renovado 2026-10-30, espelho do
-    # deny.toml: notify-rust 4.18.2 segue em zbus 5; sem upstream). Acompanhamento: #1667.
+    # ao zbus 6.0.0). zbus 5 no grafo por dois caminhos, ambos do desktop:
+    # tauri-plugin-notification declara `zbus ^5` direto e, via notify-rust 4.18.2,
+    # tambem. EXPIRA 2026-12-31 (reavaliado 2026-11-15: notify-rust 4.19.0 ja usa
+    # zbus ^6 — quem prende o zbus 5 e o tauri-plugin-notification, em 2.8.0, 2.8.1
+    # e 3.0.0-alpha.3). Acompanhamento: #1667.
     "RUSTSEC-2026-0370",
     "RUSTSEC-2026-0371",
     "RUSTSEC-2026-0372",
