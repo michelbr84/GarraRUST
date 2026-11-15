@@ -179,6 +179,9 @@ struct Sessao {
     trilha: ToolTrail,
     historico: Vec<ChatMessage>,
     dir: tempfile::TempDir,
+    /// #1712 — o mesmo `Arc` que o REPL compartilha com o `/model`: trocar o
+    /// modelo selecionado muda o que o `cli_inspect` projeta em `model_requested`.
+    modelo_pedido: Option<Arc<std::sync::RwLock<String>>>,
 }
 
 impl Sessao {
@@ -192,6 +195,7 @@ impl Sessao {
             trilha: ToolTrail::default(),
             historico: Vec::new(),
             dir,
+            modelo_pedido: None,
         }
     }
 
@@ -208,11 +212,12 @@ impl Sessao {
     ) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let rt = Arc::new(AgentRuntime::new());
+        let modelo_pedido = Arc::new(std::sync::RwLock::new(modelo.to_string()));
         rt.register_provider(provedor);
         rt.register_tool(Box::new(crate::cli_inspect_tool::CliInspectTool::new(
             Arc::downgrade(&rt),
             provedor_nome.to_string(),
-            Arc::new(std::sync::RwLock::new(modelo.to_string())),
+            Arc::clone(&modelo_pedido),
             crate::estado_declarado::coletar(
                 config,
                 &garraia_config::ConfigLoader::with_dir(dir_config),
@@ -226,7 +231,16 @@ impl Sessao {
             trilha: ToolTrail::default(),
             historico: Vec::new(),
             dir,
+            modelo_pedido: Some(modelo_pedido),
         }
+    }
+
+    /// O mesmo gesto do `/model`: a seleção corrente da CLI muda. O runtime e o
+    /// provider não são tocados — é o que torna o "pedido × confirmado"
+    /// observável no relatório do turno seguinte.
+    fn trocar_modelo(&self, novo: &str) {
+        let handle = self.modelo_pedido.as_ref().expect("sessao com com_inspect");
+        *handle.write().expect("lock do modelo pedido") = novo.to_string();
     }
 
     /// Um turno pelo mesmo caminho do REPL: o `process_message_streaming_with_events`
@@ -808,6 +822,31 @@ fn assert_relatorio_declarado(relatorio: &Value, provedor: &str, modelo: &str, l
     );
     assert_eq!(relatorio["identity"]["model_requested"]["value"], modelo);
     assert_eq!(relatorio["identity"]["last_turn"]["state"], "observed");
+    // #1712 — "diferencia modelo pedido, provider ativo, confirmação pelo
+    // provider e fallback": este caminho é o STREAMING (o REPL usa
+    // `stream_complete`), que só recebe deltas de texto — não há modelo na
+    // resposta para confirmar. O relatório tem de DIZER isso, em vez de
+    // apresentar o modelo pedido como confirmado.
+    assert_eq!(relatorio["identity"]["last_turn"]["provider"], provedor);
+    assert_eq!(relatorio["identity"]["last_turn"]["model"], modelo);
+    assert_eq!(
+        relatorio["identity"]["last_turn"]["model_confirmed_by_provider"], false,
+        "streaming nao confirma modelo; afirmar o contrario seria mentir: {}",
+        relatorio["identity"]["last_turn"]
+    );
+    assert_eq!(
+        relatorio["identity"]["last_turn"]["source"],
+        "runtime_requested_model"
+    );
+    assert_eq!(relatorio["identity"]["last_turn"]["fallback_used"], false);
+    assert!(
+        relatorio["identity"]["last_turn"]["tool_calls"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1,
+        "o turno anterior executou o cli_inspect: {}",
+        relatorio["identity"]["last_turn"]
+    );
 
     assert_eq!(relatorio["gateway"]["state"], "declared");
     assert_eq!(
@@ -969,4 +1008,66 @@ async fn e2e_cli_inspect_openai_declara_estado_e_nao_vaza_credencial() {
     );
     assert_sem_vazamento(&ultimo, &ambiente);
     assert_nenhuma_sonda(&server, "/v1/chat/completions").await;
+}
+
+/// #1712 — critério "acompanha alteração via `/model`" junto do "diferencia
+/// modelo pedido de modelo confirmado": depois da troca da seleção, o relatório
+/// mostra o modelo NOVO em `model_requested` e mantém em `last_turn.model` o
+/// modelo do turno que de fato rodou — os dois campos não podem ser o mesmo
+/// número com etiqueta diferente.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_cli_inspect_acompanha_troca_de_modelo_sem_fundir_pedido_e_confirmado() {
+    let server = servidor_inspecao().await;
+    let porta = server.address().port();
+    let ambiente = ambiente_inspecao(&server.uri(), porta, "anthropic", "claude-matrix");
+    let provedor = Arc::new(
+        AnthropicProvider::new(
+            "chave-anth",
+            Some("claude-matrix".to_string()),
+            Some(server.uri()),
+        )
+        .with_name("anthropic"),
+    );
+    let mut sessao = Sessao::com_inspect(
+        provedor as Arc<dyn LlmProvider>,
+        "anthropic",
+        "claude-matrix",
+        &ambiente.config,
+        ambiente.dir.path(),
+    );
+
+    sessao.turno(INSPECIONE_AGORA, "anthropic").await;
+    sessao.turno(APOS_INSPECAO, "anthropic").await;
+    // O gesto do `/model` entre turnos: só a seleção corrente muda.
+    sessao.trocar_modelo("claude-matrix-sombra");
+    sessao.turno(INSPECIONE_AGORA, "anthropic").await;
+
+    let ultimo = corpos(&server).await.last().cloned().expect("pedidos");
+    let relatorio = relatorio_anthropic(&ultimo);
+
+    assert_eq!(
+        relatorio["identity"]["model_requested"]["value"], "claude-matrix-sombra",
+        "a selecao corrente da CLI tem de aparecer no relatorio"
+    );
+    assert_eq!(
+        relatorio["identity"]["model_requested"]["source"],
+        "current_cli_selection"
+    );
+    assert_eq!(
+        relatorio["identity"]["last_turn"]["model"], "claude-matrix",
+        "o ultimo turno rodou com o modelo anterior; nao pode ser reescrito pela troca"
+    );
+    assert_eq!(
+        relatorio["identity"]["last_turn"]["model_confirmed_by_provider"],
+        false
+    );
+    assert_eq!(
+        relatorio["identity"]["last_turn"]["source"],
+        "runtime_requested_model"
+    );
+    assert_eq!(
+        relatorio["identity"]["provider_selected"]["value"],
+        "anthropic"
+    );
+    assert_sem_vazamento(&ultimo, &ambiente);
 }
