@@ -1,0 +1,4 @@
+- Respostas do gateway passam a carregar `Strict-Transport-Security: max-age=31536000` quando o transporte efetivo é https — por TLS nativo (`gateway.tls_cert_path` / `gateway.tls_key_path` com a feature `tls`) ou por proxy TLS declarando `X-Forwarded-Proto: https`.
+- O header vale também para respostas de erro (401/403/404/429): não há caminho de resposta servida em claro sem a instrução ao navegador.
+- Sem `includeSubDomains` e sem `preload`: instalação self-hosted não controla o domínio inteiro e o preload é irreversível na prática.
+- Instalação default em http puro (`127.0.0.1:3888`) não muda — nenhum header novo.
