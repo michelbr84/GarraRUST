@@ -647,7 +647,9 @@ fn nome_do_dia(dia: chrono::Weekday, lang: crate::persona::Lang) -> &'static str
 /// O nome da tool de autoinspecao do gateway (#1347). Ela e registrada pelo
 /// `garraia-gateway`; o runtime so precisa do nome para saber se ela esta
 /// entre as oferecidas no turno.
-const GARRA_STATUS_TOOL: &str = "garra_status";
+pub const GARRA_STATUS_TOOL_NAME: &str = "garra_status";
+/// Ferramenta de diagnostico administrativo registrada pelo gateway.
+pub const GARRA_DIAGNOSTICS_TOOL_NAME: &str = "garra_diagnostics";
 /// Ferramenta de autoinspecao registrada somente pela CLI.
 pub const CLI_INSPECT_TOOL_NAME: &str = "cli_inspect";
 
@@ -655,7 +657,9 @@ pub const CLI_INSPECT_TOOL_NAME: &str = "cli_inspect";
 /// nativas de introspeccao; nomes MCP nunca autorizam a si mesmos.
 fn pode_receber_snapshot_de_ferramentas(name: &str, source: &ToolSource) -> bool {
     matches!(source, ToolSource::Native)
-        && (name == GARRA_STATUS_TOOL || name == CLI_INSPECT_TOOL_NAME)
+        && (name == GARRA_STATUS_TOOL_NAME
+            || name == GARRA_DIAGNOSTICS_TOOL_NAME
+            || name == CLI_INSPECT_TOOL_NAME)
 }
 
 /// A instrucao que manda consultar `garra_status` antes de negar uma
@@ -732,7 +736,7 @@ fn com_nota_de_capacidades(
     tool_defs: &[ToolDefinition],
     lang: crate::persona::Lang,
 ) -> Option<String> {
-    if !tool_defs.iter().any(|d| d.name == GARRA_STATUS_TOOL) {
+    if !tool_defs.iter().any(|d| d.name == GARRA_STATUS_TOOL_NAME) {
         return system;
     }
     let nota = match lang {
@@ -1978,7 +1982,7 @@ impl AgentRuntime {
     fn find_tool_com_origem(&self, name: &str) -> Option<(Arc<dyn Tool>, ToolSource)> {
         self.tools
             .read()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .iter()
             .find(|r| r.tool.name() == name)
             .map(|r| (Arc::clone(&r.tool), r.source.clone()))
@@ -3852,15 +3856,14 @@ impl AgentRuntime {
                     let execucao = async {
                         if publica_ferramentas {
                             let nomes_registrados = self.tool_names();
-                            let tem_ferramentas = !nomes_registrados.is_empty();
                             let mut liberadas: Vec<String> = nomes_registrados
                                 .into_iter()
                                 .filter(|n| self.portao_permite(portao, n))
                                 .collect();
-                            // tool_program nao esta registrado em self.tools,
-                            // mas e incluido nas definicoes quando existe ao
-                            // menos uma ferramenta real e o mesmo gate permite.
-                            if tem_ferramentas && self.portao_permite(portao, TOOL_PROGRAM_NAME) {
+                            // Este despacho ja encontrou uma tool registrada; o
+                            // tool_program sintetico aparece nas definicoes sob
+                            // a mesma condicao, desde que o mesmo gate permita.
+                            if self.portao_permite(portao, TOOL_PROGRAM_NAME) {
                                 liberadas.push(TOOL_PROGRAM_NAME.to_string());
                             }
                             crate::tools::turn_tools::com_ferramentas_do_turno(

@@ -5,7 +5,7 @@ The interactive `garra chat` registers a native **read-only** `cli_inspect` tool
 ## Tool contract
 
 - `{"scope":"identity"}` (default): binary version from the running binary, currently selected provider/model, and the previous completed turn's model as known by the runtime, with a separate boolean for provider-confirmed model names.
-- `{"scope":"tools","offset":0}`: a paginated inventory of registered runtime tools with their reported availability **before** the per-turn policy gate. Tool registration never proves permission to invoke it. Each page contains at most 16 items.
+- `{"scope":"tools","offset":0}`: a paginated snapshot of registered runtime tools permitted by the current turn gate. Blocked tools are omitted; each entry reports operational availability separately from permission. The synthetic `tool_program` entry is included only when the runtime gate permits it. Each page contains at most 16 items. Without a dispatch snapshot, permission is `unknown` and the tool list is empty (fail-closed).
 - `{"scope":"all"}`: both datasets (page-limited).
 - `gateway` and `mcp_servers`: **unknown / not inspected**. This tool does not claim the gateway is reachable, and it never queries a remotely exposed admin endpoint.
 
@@ -13,6 +13,6 @@ Each response includes `origin=cli_runtime`, `read_only=true` and the current ch
 
 ## Known limitations / follow-up
 
-This is an initial implementation, **not** resolution of the full issue. Per-turn permission policy is not exposed as a reliable structured value yet; the tool returns `not_verified` for permission. Gateway and MCP health must only be added through a deliberately authorized interface, with role-based filtering and verified observation time. Future work should share one status snapshot between slash commands and agent inspection, broaden permission coverage, and add provider-backed E2E verification.
+This remains an initial implementation, **not** resolution of the full issue. The `tools` scope reports only names admitted by the current turn gate, and it marks the snapshot `unknown` and returns no tool entries if invoked outside the guarded runtime dispatch. Blocked tool names are not disclosed. Gateway and MCP health remain unknown until a deliberately authorized, current source exists. Follow-up still includes provider-backed E2E verification and broader agreement with the user-facing status surfaces.
 
-The tool reads `AgentRuntime::tool_inventory`, `AgentRuntime::disponibilidade_de`, and `AgentRuntime::last_turn_stats` so available fields are grounded in the running process rather than the source repository or prompts.
+The tool reads the runtime's guarded current-turn tool snapshot, `AgentRuntime::tool_inventory`, `AgentRuntime::disponibilidade_de`, and `AgentRuntime::last_turn_stats` so permission, availability, and identity fields are grounded in the running process rather than the source repository or prompts.

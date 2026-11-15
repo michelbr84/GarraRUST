@@ -350,7 +350,8 @@ mod tests {
 
     #[test]
     fn cli_inspect_is_wired_to_the_runtime_dispatch_snapshot() {
-        let tool_source = include_str!("cli_inspect_tool.rs")
+        let normalized_tool_source = include_str!("cli_inspect_tool.rs").replace("\r\n", "\n");
+        let tool_source = normalized_tool_source
             .split("#[cfg(test)]")
             .next()
             .expect("CLI inspection tool has a production section");
@@ -361,7 +362,15 @@ mod tests {
         );
         assert!(runtime_source.contains("pode_receber_snapshot_de_ferramentas(name, &source)"));
         assert!(runtime_source.contains("name == CLI_INSPECT_TOOL_NAME"));
+        assert!(runtime_source.contains("name == GARRA_DIAGNOSTICS_TOOL_NAME"));
         assert!(runtime_source.contains("ToolSource::Native"));
+        assert!(
+            runtime_source.contains("pub const GARRA_STATUS_TOOL_NAME: &str = \"garra_status\";")
+        );
+        assert!(
+            runtime_source
+                .contains("pub const GARRA_DIAGNOSTICS_TOOL_NAME: &str = \"garra_diagnostics\";")
+        );
         assert!(
             runtime_source.contains("pub const CLI_INSPECT_TOOL_NAME: &str = \"cli_inspect\";")
         );
