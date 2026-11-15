@@ -649,12 +649,13 @@ fn nome_do_dia(dia: chrono::Weekday, lang: crate::persona::Lang) -> &'static str
 /// entre as oferecidas no turno.
 const GARRA_STATUS_TOOL: &str = "garra_status";
 /// Ferramenta de autoinspecao registrada somente pela CLI.
-const CLI_INSPECT_TOOL: &str = "cli_inspect";
+pub const CLI_INSPECT_TOOL_NAME: &str = "cli_inspect";
 
 /// Snapshot de permissoes do turno so pode ser entregue a ferramentas
 /// nativas de introspeccao; nomes MCP nunca autorizam a si mesmos.
 fn pode_receber_snapshot_de_ferramentas(name: &str, source: &ToolSource) -> bool {
-    matches!(source, ToolSource::Native) && (name == GARRA_STATUS_TOOL || name == CLI_INSPECT_TOOL)
+    matches!(source, ToolSource::Native)
+        && (name == GARRA_STATUS_TOOL || name == CLI_INSPECT_TOOL_NAME)
 }
 
 /// A instrucao que manda consultar `garra_status` antes de negar uma
@@ -855,7 +856,7 @@ enum DispatchOutcome {
 /// antes de `find_tool`, e `AgentRuntime::executar_tool_program` e quem
 /// resolve cada passo, sempre pelo `find_tool` real e pelo mesmo
 /// `dispatch_tool_call`.
-const TOOL_PROGRAM_NAME: &str = "tool_program";
+pub const TOOL_PROGRAM_NAME: &str = "tool_program";
 
 /// Troca todo `[CONFIRM_REQUIRED:` de um texto por uma grafia que
 /// `ApprovalFingerprint::from_marker` nao reconhece (#1226, revisao do

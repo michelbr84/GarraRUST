@@ -7,13 +7,13 @@
 use std::sync::{Arc, RwLock, Weak};
 
 use async_trait::async_trait;
+use garraia_agents::runtime::{CLI_INSPECT_TOOL_NAME, TOOL_PROGRAM_NAME};
 use garraia_agents::tools::Disponibilidade;
 use garraia_agents::{AgentRuntime, Tool, ToolContext, ToolOutput};
 use garraia_common::Result;
 use serde_json::{Value, json};
 
 const PAGE_SIZE: usize = 16;
-const TOOL_PROGRAM_NAME: &str = "tool_program";
 
 pub struct CliInspectTool {
     runtime: Weak<AgentRuntime>,
@@ -60,10 +60,20 @@ fn safe_tool_name(value: &str) -> String {
     }
 }
 
+fn availability_json(runtime: &AgentRuntime, tool_name: &str) -> Value {
+    match runtime.disponibilidade_de(tool_name) {
+        Disponibilidade::Disponivel => json!({ "state": "available" }),
+        Disponibilidade::Indisponivel { codigo, .. } => json!({
+            "state": "unavailable",
+            "reason_code": codigo
+        }),
+    }
+}
+
 #[async_trait]
 impl Tool for CliInspectTool {
     fn name(&self) -> &str {
-        "cli_inspect"
+        CLI_INSPECT_TOOL_NAME
     }
 
     fn description(&self) -> &str {
@@ -164,35 +174,21 @@ impl Tool for CliInspectTool {
                     entry.name != TOOL_PROGRAM_NAME && allowed_tools.contains(&entry.name)
                 })
                 .map(|entry| {
-                    let available = match runtime.disponibilidade_de(&entry.name) {
-                        Disponibilidade::Disponivel => json!({ "state": "available" }),
-                        Disponibilidade::Indisponivel { codigo, .. } => json!({
-                            "state": "unavailable",
-                            "reason_code": codigo
-                        }),
-                    };
                     json!({
                         "name": safe_tool_name(&entry.name),
                         "origin": entry.source,
                         "registration": "registered",
-                        "runtime_availability": available,
+                        "runtime_availability": availability_json(&runtime, &entry.name),
                         "turn_permission": "allowed_this_turn"
                     })
                 })
                 .collect();
             if allowed_tools.iter().any(|name| name == TOOL_PROGRAM_NAME) {
-                let available = match runtime.disponibilidade_de(TOOL_PROGRAM_NAME) {
-                    Disponibilidade::Disponivel => json!({ "state": "available" }),
-                    Disponibilidade::Indisponivel { codigo, .. } => json!({
-                        "state": "unavailable",
-                        "reason_code": codigo
-                    }),
-                };
                 entries.push(json!({
                     "name": TOOL_PROGRAM_NAME,
                     "origin": "native_runtime",
                     "registration": "synthetic",
-                    "runtime_availability": available,
+                    "runtime_availability": availability_json(&runtime, TOOL_PROGRAM_NAME),
                     "turn_permission": "allowed_this_turn"
                 }));
             }
@@ -354,15 +350,24 @@ mod tests {
 
     #[test]
     fn cli_inspect_is_wired_to_the_runtime_dispatch_snapshot() {
-        let tool_source = include_str!("cli_inspect_tool.rs");
+        let tool_source = include_str!("cli_inspect_tool.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("CLI inspection tool has a production section");
         let runtime_source = include_str!("../../garraia-agents/src/runtime.rs");
         assert!(tool_source.contains("turn_tools::ferramentas_do_turno()"));
+        assert!(
+            tool_source.contains("fn name(&self) -> &str {\n        CLI_INSPECT_TOOL_NAME\n    }")
+        );
         assert!(runtime_source.contains("pode_receber_snapshot_de_ferramentas(name, &source)"));
-        assert!(runtime_source.contains("name == CLI_INSPECT_TOOL"));
+        assert!(runtime_source.contains("name == CLI_INSPECT_TOOL_NAME"));
         assert!(runtime_source.contains("ToolSource::Native"));
-        assert!(runtime_source.contains("const TOOL_PROGRAM_NAME: &str = \"tool_program\";"));
+        assert!(
+            runtime_source.contains("pub const CLI_INSPECT_TOOL_NAME: &str = \"cli_inspect\";")
+        );
+        assert!(runtime_source.contains("pub const TOOL_PROGRAM_NAME: &str = \"tool_program\";"));
         assert!(runtime_source.contains("liberadas.push(TOOL_PROGRAM_NAME.to_string())"));
-        assert!(tool_source.contains("name == TOOL_PROGRAM_NAME"));
+        assert!(tool_source.contains("allowed_tools.iter().any(|name| name == TOOL_PROGRAM_NAME)"));
         let dispatch = runtime_source
             .find("match self.find_tool_com_origem(name)")
             .expect("production tool dispatch retains registration source");
