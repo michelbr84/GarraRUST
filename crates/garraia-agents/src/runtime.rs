@@ -3237,7 +3237,17 @@ impl AgentRuntime {
                         // tokens. Os dois campos ficam marcados como nao
                         // confirmados; o `/stats` diz isso em vez de fingir.
                         turno.provider = provider.provider_id().to_string();
-                        turno.model = effective_model.clone();
+                        // #1712: sem override, `effective_model` e vazio e o
+                        // `/stats`/`cli_inspect` mostravam "Ultimo modelo:  "
+                        // (string vazia). O modelo configurado do provider e o
+                        // melhor nome conhecido do turno — continua NAO
+                        // confirmado, porque streaming nao traz o modelo na
+                        // resposta; a fonte e o que foi pedido.
+                        turno.model = if effective_model.is_empty() {
+                            provider.configured_model().unwrap_or_default().to_string()
+                        } else {
+                            effective_model.clone()
+                        };
                         turno.tool_calls = budget.chamadas_na_tarefa();
                         turno.latency_ms = inicio_do_turno.elapsed().as_millis() as u64;
                         self.record_turn_stats(session_id, turno);
