@@ -26,7 +26,7 @@
 //! |---|---|---|---|
 //! | [`protocol`] | tipos serde do NDJSON v1 | nao | nao |
 //! | [`state`] | maquina de estados pura | nao (injetado) | nao |
-//! | [`qr`] | desenho do QR | nao | nao |
+//! | [`qr`] | desenho do QR (terminal) e PNG para a janela | nao | nao |
 //! | [`session`] | blob cifrado, modos de arquivo | nao | disco |
 //! | [`permissions`] | confere e aperta os modos do diretorio da conta (#1431) | nao | disco |
 //! | [`bridge`] | assets, npm, spawn, enquadramento | timeout | processo |
@@ -79,7 +79,10 @@ pub use protocol::{
     BridgeCommand, BridgeEvent, DisconnectReason, DropReason, InboundMessage, Jid,
     PROTOCOL_VERSION, StartMode, UNAUTHORIZED_REASON_CODES, session_is_dead,
 };
-pub use qr::{Style as QrStyle, render as render_qr};
+pub use qr::{
+    PNG_SCALE_DEFAULT, PNG_SCALE_MAX, QUIET_ZONE_PNG, Style as QrStyle, png as qr_png,
+    render as render_qr,
+};
 pub use runner::{
     DroppedInbound, InboundSink, PairOptions, PairOutcome, PairUi, RunError, pair, pair_with, serve,
 };
