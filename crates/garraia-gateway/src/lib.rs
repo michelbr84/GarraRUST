@@ -28,6 +28,8 @@ pub mod erro_http;
 pub mod externalization;
 pub mod gateway_auth;
 pub mod health;
+/// HSTS (`Strict-Transport-Security`) nas respostas do router (#1895).
+pub mod hsts;
 pub mod learning_auth;
 pub mod learning_handler;
 pub mod logs_handler;

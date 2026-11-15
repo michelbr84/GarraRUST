@@ -166,6 +166,10 @@ pub fn build_router(
     let push_para_o_status = push.clone();
     // Per-IP rate limit from config (default: 1 req/sec, burst 60).
     let rl = &state.config.gateway.rate_limit;
+    // #1895: o transporte do processo é decidido UMA vez, aqui, pela mesma
+    // régua do `origin_guard` (`cfg!(feature = "tls")` + cert e chave
+    // configurados). O middleware de HSTS no fim da cadeia só consome o bool.
+    let servindo_tls = crate::origin_guard::esquema_efetivo(&state.config.gateway) == "https";
     let governor_conf = GovernorConfigBuilder::default()
         .per_second(rl.per_second)
         .burst_size(rl.burst_size)
@@ -700,7 +704,16 @@ pub fn build_router(
                     }
                 },
             )
-        });
+        })
+        // #1895: HSTS por fora de tudo — inclusive das respostas de erro do
+        // rate limiter e dos gates, que também não podem ser servidas em claro
+        // sem instruir o navegador. O estado vem do transporte do boot
+        // (`esquema_efetivo`, a mesma régua do `origin_guard`); instalação
+        // default em http puro não recebe header nenhum.
+        .layer(axum::middleware::from_fn_with_state(
+            crate::hsts::Hsts::novo(servindo_tls),
+            crate::hsts::hsts,
+        ));
 
     apply_telemetry_layers(router)
 }

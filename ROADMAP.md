@@ -1101,7 +1101,7 @@ estático proibido (quebra DNS).
 - [x] **Argon2id** para senhas de usuários — `garraia-auth` (RFC 9106, argon2 0.6) + lazy upgrade PBKDF2→Argon2id dos `mobile_users` legados (plan 0036) ✅
 - [x] **Rate limiting** por IP + por user_id + por API key via `governor`/`tower-governor` (`rate_limiter.rs`, GAR-426) + limite de SSE por usuário (GAR-679) ✅
 - [ ] **CSRF + CORS** hardening no Gateway. *(Parcial: CSRF no admin via `require_csrf` ✅; `CorsLayer` ainda não.)*
-- [ ] **Headers de segurança**: CSP, X-Content-Type-Options e Referrer-Policy aplicados globalmente (`admin/middleware.rs`) ✅; HSTS pendente.
+- [ ] **Headers de segurança**: CSP, X-Content-Type-Options e Referrer-Policy aplicados globalmente (`admin/middleware.rs`) ✅; **HSTS entregue no router inteiro** (#1895: `Strict-Transport-Security: max-age=31536000` quando o transporte efetivo é https — TLS nativo ou `X-Forwarded-Proto: https`; testes em `tests/hsts.rs`) — falta só decidir `includeSubDomains`/`preload`, que dependem de o dono controlar o domínio inteiro (não é o caso de instalação self-hosted).
 - [x] **Secrets scanning** no CI via `gitleaks` — job `Secret Scan (gitleaks)` no `ci.yml` + hook pre-commit + `garra verify` ✅
 - [x] **Threat model** documentado em [`docs/security/threat-model.md`](docs/security/threat-model.md) (STRIDE por componente; Draft v1 2026-04-21, revisão trimestral) ✅
 - [ ] **Pentest interno** com checklist OWASP ASVS L2.
