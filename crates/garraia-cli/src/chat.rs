@@ -4,7 +4,7 @@
 //! that streams responses from Ollama (offline) or cloud providers (online).
 
 use garraia_agents::exec_context::ExecContext;
-use garraia_agents::modes::{AgentMode, ToolGate};
+use garraia_agents::modes::AgentMode;
 use std::future::Future;
 use std::io::{self, Write as _};
 use std::sync::Arc;
@@ -489,19 +489,6 @@ fn exec_do_turno(cwd: &str, session_id: &str, modo: Option<AgentMode>) -> ExecCo
     exec.approval_scope = garraia_agents::ApprovalScope::new(CANAL_CLI, session_id, REMETENTE_CLI);
     exec.agent_mode = modo.map(|m| m.as_str().to_string());
     exec
-}
-
-/// Guarda a mesma decisão de `ToolGate::para_o_turno` que o runtime usará
-/// ao despachar ferramentas, para `cli_inspect` responder apenas sobre este turno.
-fn atualizar_portao_cli_inspect(
-    inspect_gate: &Arc<std::sync::RwLock<Option<ToolGate>>>,
-    exec: &ExecContext,
-    user_text: &str,
-) {
-    let gate = ToolGate::para_o_turno(exec, user_text);
-    *inspect_gate
-        .write()
-        .unwrap_or_else(|error| error.into_inner()) = Some(gate);
 }
 
 /// Os nomes que desligam o modo e voltam ao "sem politica".
@@ -1899,12 +1886,10 @@ pub async fn run_chat(
     // um Weak e consulta somente a sessao que a invocou (#1712).
     let runtime = Arc::new(runtime);
     let inspect_model = Arc::new(std::sync::RwLock::new(model_name.clone()));
-    let inspect_gate = Arc::new(std::sync::RwLock::new(None));
     runtime.register_tool(Box::new(crate::cli_inspect_tool::CliInspectTool::new(
         Arc::downgrade(&runtime),
         provider_name.clone(),
         Arc::clone(&inspect_model),
-        Arc::clone(&inspect_gate),
     )));
 
     // #1088: o store so existe quando a pessoa pediu. Sem `--persist` nem
@@ -2896,7 +2881,6 @@ pub async fn run_chat(
         // Ligado a uma variavel porque o `call` e um future que vive alem
         // desta expressao — um temporario seria descartado antes do `await`.
         let exec = exec_do_turno(&cwd, &session_clone, modo_do_agente);
-        atualizar_portao_cli_inspect(&inspect_gate, &exec, &input);
         let prompt_do_modo = prompt_do_turno(&system_prompt, &exec, &input);
         let call = runtime.process_message_streaming_with_events(
             &session_clone,

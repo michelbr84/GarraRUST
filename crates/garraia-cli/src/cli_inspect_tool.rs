@@ -7,19 +7,18 @@
 use std::sync::{Arc, RwLock, Weak};
 
 use async_trait::async_trait;
-use garraia_agents::modes::ToolGate;
 use garraia_agents::tools::Disponibilidade;
 use garraia_agents::{AgentRuntime, Tool, ToolContext, ToolOutput};
 use garraia_common::Result;
 use serde_json::{Value, json};
 
 const PAGE_SIZE: usize = 16;
+const TOOL_PROGRAM_NAME: &str = "tool_program";
 
 pub struct CliInspectTool {
     runtime: Weak<AgentRuntime>,
     provider: String,
     requested_model: Arc<RwLock<String>>,
-    turn_gate: Arc<RwLock<Option<ToolGate>>>,
 }
 
 impl CliInspectTool {
@@ -27,13 +26,11 @@ impl CliInspectTool {
         runtime: Weak<AgentRuntime>,
         provider: String,
         requested_model: Arc<RwLock<String>>,
-        turn_gate: Arc<RwLock<Option<ToolGate>>>,
     ) -> Self {
         Self {
             runtime,
             provider,
             requested_model,
-            turn_gate,
         }
     }
 }
@@ -106,22 +103,18 @@ impl Tool for CliInspectTool {
         let Some(runtime) = self.runtime.upgrade() else {
             return Ok(ToolOutput::error("CLI runtime is no longer available"));
         };
-        let turn_gate = self
-            .turn_gate
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let permissions = if turn_gate.is_some() {
+        let turn_tools = garraia_agents::tools::turn_tools::ferramentas_do_turno();
+        let permissions = if turn_tools.is_some() {
             json!({
                 "state": "verified",
-                "source": "runtime_turn_gate",
+                "source": "runtime_dispatch_turn_tools_snapshot",
                 "scope": "current_turn",
                 "blocked_tools_omitted": true
             })
         } else {
             json!({
                 "state": "unknown",
-                "reason": "no current-turn gate snapshot; tool entries are omitted"
+                "reason": "no current-turn tool snapshot; tool entries are omitted"
             })
         };
         let mut report = json!({
@@ -163,22 +156,13 @@ impl Tool for CliInspectTool {
         }
 
         if matches!(scope, "tools" | "all") {
-            let mut inventory = runtime.tool_inventory();
-            inventory.sort_by(|a, b| a.name.cmp(&b.name));
-            let inventory: Vec<_> = match turn_gate.as_ref() {
-                Some(gate) => inventory
-                    .into_iter()
-                    .filter(|entry| runtime.portao_permite(gate, &entry.name))
-                    .collect(),
-                // Fail closed: without a snapshot from the live CLI turn, do
-                // not reveal tools whose effective permission is unknown.
-                None => Vec::new(),
-            };
-            let total = inventory.len();
-            let entries: Vec<Value> = inventory
+            let allowed_tools = turn_tools.as_deref().unwrap_or_default();
+            let mut entries: Vec<Value> = runtime
+                .tool_inventory()
                 .into_iter()
-                .skip(offset)
-                .take(PAGE_SIZE)
+                .filter(|entry| {
+                    entry.name != TOOL_PROGRAM_NAME && allowed_tools.contains(&entry.name)
+                })
                 .map(|entry| {
                     let available = match runtime.disponibilidade_de(&entry.name) {
                         Disponibilidade::Disponivel => json!({ "state": "available" }),
@@ -196,9 +180,28 @@ impl Tool for CliInspectTool {
                     })
                 })
                 .collect();
+            if allowed_tools.iter().any(|name| name == TOOL_PROGRAM_NAME) {
+                let available = match runtime.disponibilidade_de(TOOL_PROGRAM_NAME) {
+                    Disponibilidade::Disponivel => json!({ "state": "available" }),
+                    Disponibilidade::Indisponivel { codigo, .. } => json!({
+                        "state": "unavailable",
+                        "reason_code": codigo
+                    }),
+                };
+                entries.push(json!({
+                    "name": TOOL_PROGRAM_NAME,
+                    "origin": "native_runtime",
+                    "registration": "synthetic",
+                    "runtime_availability": available,
+                    "turn_permission": "allowed_this_turn"
+                }));
+            }
+            entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+            let total = entries.len();
+            let entries: Vec<Value> = entries.into_iter().skip(offset).take(PAGE_SIZE).collect();
             report["tools"] = json!({
-                "source": "AgentRuntime.tool_inventory filtered by current-turn gate",
-                "permission_state": if turn_gate.is_some() { "verified" } else { "unknown" },
+                "source": "runtime_dispatch_turn_tools_snapshot",
+                "permission_state": if turn_tools.is_some() { "verified" } else { "unknown" },
                 "count": total,
                 "offset": offset,
                 "page_size": PAGE_SIZE,
@@ -250,12 +253,7 @@ mod tests {
     async fn identity_reads_binary_and_live_model_without_gateway() {
         let runtime = Arc::new(AgentRuntime::new());
         let model = Arc::new(RwLock::new("original-model".into()));
-        let tool = CliInspectTool::new(
-            Arc::downgrade(&runtime),
-            "anthropic".into(),
-            model.clone(),
-            Arc::new(RwLock::new(None)),
-        );
+        let tool = CliInspectTool::new(Arc::downgrade(&runtime), "anthropic".into(), model.clone());
         let first = tool.execute(&context(), json!({})).await.unwrap();
         let first: Value = serde_json::from_str(&first.content).unwrap();
         assert_eq!(
@@ -281,47 +279,45 @@ mod tests {
     async fn tool_list_is_current_bounded_and_reports_effective_permission() {
         let runtime = Arc::new(AgentRuntime::new());
         let model = Arc::new(RwLock::new("model".into()));
-        let turn_gate = Arc::new(RwLock::new(Some(ToolGate::for_mode_name("search"))));
         runtime.register_tool(Box::new(CliInspectTool::new(
             Arc::downgrade(&runtime),
             "test".into(),
             model.clone(),
-            Arc::clone(&turn_gate),
         )));
-        let tool = CliInspectTool::new(Arc::downgrade(&runtime), "test".into(), model, turn_gate);
-        let output = tool
-            .execute(&context(), json!({"scope":"tools"}))
-            .await
-            .unwrap();
+        runtime.register_tool(Box::new(FileWriteFake));
+        let tool = CliInspectTool::new(Arc::downgrade(&runtime), "test".into(), model);
+        let output = garraia_agents::tools::turn_tools::com_ferramentas_do_turno(
+            vec!["cli_inspect".into(), TOOL_PROGRAM_NAME.into()],
+            true,
+            tool.execute(&context(), json!({"scope":"tools"})),
+        )
+        .await
+        .unwrap();
         let report: Value = serde_json::from_str(&output.content).unwrap();
-        assert_eq!(report["tools"]["count"], 1);
+        assert_eq!(report["tools"]["count"], 2);
         assert_eq!(report["tools"]["entries"][0]["name"], "cli_inspect");
+        assert_eq!(report["tools"]["entries"][1]["name"], TOOL_PROGRAM_NAME);
+        assert_eq!(report["tools"]["entries"][1]["registration"], "synthetic");
         assert_eq!(report["permissions"]["state"], "verified");
         assert_eq!(
             report["tools"]["entries"][0]["turn_permission"],
             "allowed_this_turn"
         );
         assert_eq!(report["gateway"]["state"], "unknown");
+        assert_eq!(report["tools"]["permission_state"], "verified");
     }
 
     #[tokio::test]
     async fn blocked_tools_are_not_disclosed_and_missing_gate_fails_closed() {
         let runtime = Arc::new(AgentRuntime::new());
         let model = Arc::new(RwLock::new("model".into()));
-        let turn_gate = Arc::new(RwLock::new(None));
         runtime.register_tool(Box::new(CliInspectTool::new(
             Arc::downgrade(&runtime),
             "test".into(),
             model.clone(),
-            Arc::clone(&turn_gate),
         )));
         runtime.register_tool(Box::new(FileWriteFake));
-        let tool = CliInspectTool::new(
-            Arc::downgrade(&runtime),
-            "test".into(),
-            model,
-            Arc::clone(&turn_gate),
-        );
+        let tool = CliInspectTool::new(Arc::downgrade(&runtime), "test".into(), model);
 
         let unknown: Value = serde_json::from_str(
             &tool
@@ -334,13 +330,15 @@ mod tests {
         assert_eq!(unknown["permissions"]["state"], "unknown");
         assert_eq!(unknown["tools"]["count"], 0);
 
-        *turn_gate.write().unwrap() = Some(ToolGate::for_mode_name("search"));
         let verified: Value = serde_json::from_str(
-            &tool
-                .execute(&context(), json!({"scope":"tools"}))
-                .await
-                .unwrap()
-                .content,
+            &garraia_agents::tools::turn_tools::com_ferramentas_do_turno(
+                vec!["cli_inspect".into()],
+                true,
+                tool.execute(&context(), json!({"scope":"tools"})),
+            )
+            .await
+            .unwrap()
+            .content,
         )
         .unwrap();
         assert_eq!(verified["permissions"]["state"], "verified");
@@ -355,19 +353,27 @@ mod tests {
     }
 
     #[test]
-    fn chat_wires_the_same_turn_gate_into_cli_inspect_before_dispatch() {
-        let source = include_str!("chat.rs");
-        let registration = source
-            .find("Arc::clone(&inspect_gate)")
-            .expect("the registered tool must share the live gate snapshot");
-        let update = source
-            .find("atualizar_portao_cli_inspect(&inspect_gate, &exec, &input)")
-            .expect("the live CLI turn must publish its effective gate");
-        let dispatch = source
-            .find("runtime.process_message_streaming_with_events(")
-            .expect("the live CLI turn dispatches through the runtime");
-        assert!(registration < update && update < dispatch);
-        assert!(source.contains("ToolGate::para_o_turno(exec, user_text)"));
+    fn cli_inspect_is_wired_to_the_runtime_dispatch_snapshot() {
+        let tool_source = include_str!("cli_inspect_tool.rs");
+        let runtime_source = include_str!("../../garraia-agents/src/runtime.rs");
+        assert!(tool_source.contains("turn_tools::ferramentas_do_turno()"));
+        assert!(runtime_source.contains("pode_receber_snapshot_de_ferramentas(name, &source)"));
+        assert!(runtime_source.contains("name == CLI_INSPECT_TOOL"));
+        assert!(runtime_source.contains("ToolSource::Native"));
+        assert!(runtime_source.contains("const TOOL_PROGRAM_NAME: &str = \"tool_program\";"));
+        assert!(runtime_source.contains("liberadas.push(TOOL_PROGRAM_NAME.to_string())"));
+        assert!(tool_source.contains("name == TOOL_PROGRAM_NAME"));
+        let dispatch = runtime_source
+            .find("match self.find_tool_com_origem(name)")
+            .expect("production tool dispatch retains registration source");
+        let dispatch_source = &runtime_source[dispatch..];
+        let trust_check = dispatch_source
+            .find("pode_receber_snapshot_de_ferramentas(name, &source)")
+            .expect("the runtime checks the trusted native-tool allowlist");
+        let scope_open = dispatch_source
+            .find("crate::tools::turn_tools::com_ferramentas_do_turno(")
+            .expect("the checked dispatch opens the task-local snapshot");
+        assert!(trust_check < scope_open);
     }
 
     #[tokio::test]
@@ -377,7 +383,6 @@ mod tests {
             Arc::downgrade(&runtime),
             "test".into(),
             Arc::new(RwLock::new("model".into())),
-            Arc::new(RwLock::new(None)),
         );
         assert!(
             tool.execute(&context(), json!({"scope":"admin"}))

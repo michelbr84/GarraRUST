@@ -10,9 +10,10 @@
 //! tool nao enxerga: o modo gravado na sessao nao e o piso do canal.
 //!
 //! Em vez de mais um campo no `ToolContext` (montado em dezenas de lugares),
-//! o runtime publica a lista num `task_local` em volta do `execute` da tool
-//! que precisa dela, e a tool le com [`ferramentas_do_turno`]. Fora desse
-//! escopo (teste, chamador que nao e o runtime) a leitura devolve `None`.
+//! o runtime publica a lista num `task_local` apenas em volta do `execute` de
+//! tools nativas de introspeccao confiaveis; elas leem com
+//! [`ferramentas_do_turno`]. As demais tools (incluindo MCP), testes e
+//! chamadores fora do runtime leem `None`.
 //!
 //! Junto com a lista vai um bit: se o portao do turno restringe por
 //! whitelist (o piso `search` do WhatsApp e os demais modos somente
@@ -23,7 +24,8 @@
 use std::future::Future;
 use std::sync::Arc;
 
-/// O que o runtime publica em volta do `execute` de `garra_status`.
+/// O que o runtime publica em volta do `execute` de tools nativas confiaveis
+/// de introspeccao.
 #[derive(Clone)]
 struct Turno {
     ferramentas: Arc<[String]>,
@@ -34,9 +36,10 @@ tokio::task_local! {
     static TURNO: Turno;
     /// So o bit do portao, publicado em volta do `execute` de QUALQUER tool.
     ///
-    /// Revisao da onda C: o [`TURNO`] acima existe so em volta de
-    /// `garra_status`, porque montar a lista de ferramentas liberadas a cada
-    /// chamada seria custo sem leitor. Quando o `repo_search` passou a
+    /// Revisao da onda C: o [`TURNO`] acima existe so em volta das tools
+    /// nativas de introspeccao allowlisted, porque montar a lista de
+    /// ferramentas liberadas a cada chamada seria custo sem leitor. Quando o
+    /// `repo_search` passou a
     /// consultar [`turno_restrito`] (#1380), ele lia de um escopo que nunca
     /// e aberto para ele — a resposta era `None` SEMPRE, e o ramo do
     /// operador local virou codigo morto sem que nenhum teste percebesse (o
