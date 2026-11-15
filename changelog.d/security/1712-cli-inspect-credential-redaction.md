@@ -1,0 +1,1 @@
+- **`cli_inspect` omite valores com marcador explícito de credencial (#1712).** Campos livres de provider/model que contenham cabeçalho de autorização com esquema Bearer/Basic ou atribuição rotulada de chave/token/segredo são substituídos por `[REDACTED]` por inteiro, em vez de expor texto parcial ao modelo.
