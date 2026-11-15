@@ -35,14 +35,117 @@ impl CliInspectTool {
     }
 }
 
+/// Explicitly labelled credentials in free-form configuration values are not
+/// covered by token-shape redaction. Since these fields may be reflected to an
+/// LLM, discard the whole value rather than preserving a partial header or key.
+fn contains_explicit_credential(value: &str) -> bool {
+    static AUTH_HEADER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r#"(?ix)
+                (?:[\x22']\s*)?\b(?:proxy[-_ ]*)?authorization[\x22']?\s*:\s*[\x22']?[a-z][a-z0-9_-]*\s+\S+
+                | \bbearer\s+\S+
+                "#,
+        )
+        .expect("credential header regex should compile")
+    });
+    AUTH_HEADER.is_match(value) || contains_credential_assignment(value)
+}
+
+fn contains_credential_assignment(value: &str) -> bool {
+    value.char_indices().any(|(delimiter_index, delimiter)| {
+        if !matches!(delimiter, ':' | '=') {
+            return false;
+        }
+        let prefix = value[..delimiter_index]
+            .trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '\"' | '\''));
+        let label_start = prefix
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| !ch.is_ascii_alphanumeric() && !matches!(*ch, '_' | '-' | '.' | ' '))
+            .map_or(0, |(index, ch)| index + ch.len_utf8());
+        credential_label_contains_marker(&prefix[label_start..])
+    })
+}
+
+fn credential_label_contains_marker(label: &str) -> bool {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut previous = None;
+    let mut characters = label.chars().peekable();
+    while let Some(character) = characters.next() {
+        if !character.is_ascii_alphanumeric() {
+            if !current.is_empty() {
+                parts.push(std::mem::take(&mut current));
+            }
+            previous = None;
+            continue;
+        }
+        let next = characters.peek().copied();
+        let camel_case_boundary = character.is_ascii_uppercase()
+            && previous.is_some_and(|previous: char| {
+                previous.is_ascii_lowercase()
+                    || previous.is_ascii_digit()
+                    || (previous.is_ascii_uppercase()
+                        && next.is_some_and(|next| next.is_ascii_lowercase()))
+            });
+        if camel_case_boundary && !current.is_empty() {
+            parts.push(std::mem::take(&mut current));
+        }
+        current.push(character.to_ascii_lowercase());
+        previous = Some(character);
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    if parts.last().is_some_and(|part| {
+        matches!(
+            part.as_str(),
+            "key"
+                | "token"
+                | "secret"
+                | "password"
+                | "passwd"
+                | "pwd"
+                | "credential"
+                | "credentials"
+                | "auth"
+                | "authorization"
+                | "bearer"
+        )
+    }) {
+        return true;
+    }
+
+    matches!(
+        parts.join("").as_str(),
+        "apikey"
+            | "accesstoken"
+            | "refreshtoken"
+            | "authtoken"
+            | "clientsecret"
+            | "privatekey"
+            | "accesskey"
+            | "signingkey"
+            | "secretkey"
+            | "secretaccesskey"
+            | "awssecretaccesskey"
+            | "idtoken"
+            | "sessiontoken"
+    )
+}
+
 /// These identifiers may originate from provider configuration / MCP metadata.
 /// Keep a single line, limit token cost, and run the project's secret redactor.
 fn safe_text(value: &str) -> String {
     let single_line: String = value
         .chars()
-        .filter(|c| !c.is_control())
+        .map(|c| if c.is_control() { ' ' } else { c })
         .take(120)
         .collect();
+    if contains_explicit_credential(&single_line) {
+        return "[REDACTED]".to_owned();
+    }
     garraia_security::redact_secrets(&single_line)
 }
 
@@ -242,6 +345,56 @@ mod tests {
             approval: Default::default(),
             working_dir: None,
             project_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn hides_complete_values_with_explicit_credential_markers() {
+        let bearer_marker = ["Author", "ization", ": ", "Be", "arer\n"].concat();
+        let bearer_value = format!("{bearer_marker}{}", "test-marker-".repeat(4));
+        let assignment_marker = ["\"", "api", "Key", "\": \""].concat();
+        let assignment_value = format!("{assignment_marker}{}\"", "not-a-real-value-".repeat(3));
+        let runtime = Arc::new(AgentRuntime::new());
+        let tool = CliInspectTool::new(
+            Arc::downgrade(&runtime),
+            bearer_value,
+            Arc::new(RwLock::new(assignment_value)),
+        );
+
+        let output = tool.execute(&context(), json!({})).await.unwrap();
+        let report: Value = serde_json::from_str(&output.content).unwrap();
+        assert_eq!(
+            report["identity"]["provider_selected"]["value"],
+            "[REDACTED]"
+        );
+        assert_eq!(report["identity"]["model_requested"]["value"], "[REDACTED]");
+        assert!(!output.content.contains("test-marker"));
+        assert!(!output.content.contains("not-a-real-value"));
+
+        let credential_markers = [
+            ["aws", "_", "secret", "_", "access", "_", "key="].concat(),
+            ["api", "Key="].concat(),
+            ["api", "key="].concat(),
+            ["api", "_", "key="].concat(),
+            ["access", "Token="].concat(),
+            ["auth", "Token="].concat(),
+            ["auth", "token="].concat(),
+            ["client", "Secret="].concat(),
+            "pwd=".to_owned(),
+            "passwd=".to_owned(),
+        ];
+        for marker in credential_markers {
+            let value = format!("{marker}{}", "runtime-sentinel-".repeat(3));
+            assert_eq!(safe_text(&value), "[REDACTED]", "marker: {marker}");
+        }
+        for ordinary_value in [
+            "model: ordinary-local-model",
+            "max_tokens: 4096",
+            "tokenizer: simple",
+            "monkey:latest",
+            "oauth:v1",
+        ] {
+            assert_eq!(safe_text(ordinary_value), ordinary_value);
         }
     }
 
