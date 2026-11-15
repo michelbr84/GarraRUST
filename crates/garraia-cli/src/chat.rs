@@ -1886,6 +1886,12 @@ pub async fn run_chat(
     // um Weak e consulta somente a sessao que a invocou (#1712).
     let runtime = Arc::new(runtime);
     let inspect_model = Arc::new(std::sync::RwLock::new(model_name.clone()));
+    // #1709: a trilha do executor alimenta a evidencia que o `cli_inspect`
+    // consulta. O snapshot e atualizado no fim de cada turno, com os registros
+    // que o `ToolTrail` fechou — nunca com o texto do modelo.
+    let inspect_efeitos = Arc::new(std::sync::Mutex::new(
+        crate::efeitos_de_ferramenta::SnapshotDeEfeitos::default(),
+    ));
     // #1712 fatia 6: o estado DECLARADO (gateway/MCP) vem da configuracao que
     // este processo ja carregou — nunca de rede ou de inspecao do gateway.
     runtime.register_tool(Box::new(crate::cli_inspect_tool::CliInspectTool::new(
@@ -1893,6 +1899,7 @@ pub async fn run_chat(
         provider_name.clone(),
         Arc::clone(&inspect_model),
         crate::estado_declarado::coletar_do_processo(&config),
+        Arc::clone(&inspect_efeitos),
     )));
 
     // #1088: o store so existe quando a pessoa pediu. Sem `--persist` nem
@@ -2962,6 +2969,12 @@ pub async fn run_chat(
         // `interrupted` (nunca sucesso) e os registros seguem para o
         // histórico e para o SQLite.
         let registros = trail.fim_do_turno();
+        // #1709: o mesmo fecho do turno alimenta a evidencia do `cli_inspect`.
+        // Uma vez por turno, com os registros ja fechados (sem `Running`).
+        inspect_efeitos
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .atualizar(&registros);
 
         // A evidencia das ferramentas e lida uma vez: ela decide, junto com o
         // parcial, se o turno deixa par no history, e e o mesmo texto anexado
@@ -6476,6 +6489,30 @@ mod visao_de_ferramentas_tests {
         assert!(
             !producao.contains("runtime.tool_inventory()"),
             "a projecao do modelo voltou a montar o inventario por fora do coletor"
+        );
+    }
+
+    /// #1709 — o `cli_inspect` só tem evidência de execução se o chat alimentar
+    /// o snapshot no fecho de cada turno. Sem esta ligação a tool responde
+    /// `unverified` para sempre, e o teste da projeção continuaria verde.
+    #[test]
+    fn o_cli_inspect_recebe_a_trilha_do_fecho_de_cada_turno() {
+        let chat_producao = producao(CHAT);
+        assert_eq!(
+            chat_producao
+                .matches("crate::efeitos_de_ferramenta::SnapshotDeEfeitos::default()")
+                .count(),
+            1,
+            "o snapshot da evidencia deve nascer no run_chat"
+        );
+        assert!(
+            chat_producao.contains(".atualizar(&registros);"),
+            "o fecho do turno deixou de alimentar o snapshot do cli_inspect"
+        );
+        let inspect = producao(INSPECT);
+        assert!(
+            inspect.contains("efeitos_de_ferramenta::"),
+            "o cli_inspect deixou de consumir a projecao de efeitos"
         );
     }
 }

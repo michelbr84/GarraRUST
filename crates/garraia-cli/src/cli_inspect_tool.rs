@@ -7,7 +7,7 @@
 //! always as *declared*, with `live_verification: unavailable_from_cli`, never
 //! as observed health ([`crate::estado_declarado`]).
 
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use async_trait::async_trait;
 use garraia_agents::runtime::CLI_INSPECT_TOOL_NAME;
@@ -16,6 +16,7 @@ use garraia_agents::{AgentRuntime, Tool, ToolContext, ToolOutput};
 use garraia_common::Result;
 use serde_json::{Value, json};
 
+use crate::efeitos_de_ferramenta::{ProjecaoDeEfeitos, SnapshotDeEfeitos};
 use crate::estado_declarado::{EstadoDeclarado, MAX_SERVIDORES};
 
 const PAGE_SIZE: usize = 16;
@@ -28,6 +29,10 @@ pub struct CliInspectTool {
     /// runtime porque não é inventário de ferramentas: é estado DECLARADO de
     /// integrações que a CLI não sobe nem verifica.
     estado: EstadoDeclarado,
+    /// #1709 — efeitos de ferramenta observados nesta sessão. Alimentado pelo
+    /// fim de cada turno com os registros do executor, nunca pelo texto do
+    /// modelo; a projeção é fail-closed quando nenhum turno foi observado.
+    efeitos: Arc<Mutex<SnapshotDeEfeitos>>,
 }
 
 impl CliInspectTool {
@@ -36,12 +41,14 @@ impl CliInspectTool {
         provider: String,
         requested_model: Arc<RwLock<String>>,
         estado: EstadoDeclarado,
+        efeitos: Arc<Mutex<SnapshotDeEfeitos>>,
     ) -> Self {
         Self {
             runtime,
             provider,
             requested_model,
             estado,
+            efeitos,
         }
     }
 }
@@ -236,6 +243,51 @@ fn mcp_servers_json(estado: &EstadoDeclarado) -> Value {
     })
 }
 
+/// #1709 — efeitos de ferramenta observados nesta sessão da CLI.
+///
+/// Fonte: a trilha alimentada pelos eventos do **executor**. Cada entrada leva
+/// a classe de evidência (`observado`/`falhou`/`nao_verificado`) e o id da
+/// execução quando existe; nunca o `input`, o `output` ou o caminho envolvido.
+/// Sem turno com ferramenta, o estado é `unverified` — lista vazia que pareça
+/// "nada rodou" seria a leitura errada.
+fn efeitos_json(projecao: &ProjecaoDeEfeitos) -> Value {
+    if !projecao.disponivel {
+        return json!({
+            "state": "unverified",
+            "source": "cli_session_tool_trail",
+            "reason": projecao
+                .motivo
+                .unwrap_or("no_tool_turn_observed_in_this_session"),
+            "total_observed": 0,
+            "entries": []
+        });
+    }
+    let entries: Vec<Value> = projecao
+        .linhas
+        .iter()
+        .map(|linha| {
+            json!({
+                "tool_call_id": linha.execucao.as_deref().map(safe_tool_name),
+                "tool": linha.ferramenta.as_deref().map(safe_tool_name),
+                "class": linha.classe,
+                "turn": linha.turno,
+                "order": linha.ordem,
+                "claim": safe_text(&linha.texto)
+            })
+        })
+        .collect();
+    json!({
+        "state": "observed",
+        "source": "cli_session_tool_trail",
+        "total_observed": projecao.total,
+        "shown": projecao.exibidas,
+        "last_turn": projecao.ultimo_turno,
+        "bounded": true,
+        "note": "executor records only; an interrupted call is NOT evidence that it did not run",
+        "entries": entries
+    })
+}
+
 #[async_trait]
 impl Tool for CliInspectTool {
     fn name(&self) -> &str {
@@ -243,7 +295,7 @@ impl Tool for CliInspectTool {
     }
 
     fn description(&self) -> &str {
-        "Read-only inspection of THIS Garra CLI session: binary version, requested provider/model, last observed turn, tools allowed by the current turn gate, and the DECLARED (never verified) gateway/MCP configuration. Blocked tools are omitted. Does not access gateway runtime state or secrets; gateway and MCP health is not observable from the CLI and is reported as declared, not as running. Use when asked about this running CLI's verified state."
+        "Read-only inspection of THIS Garra CLI session: binary version, requested provider/model, last observed turn, tools allowed by the current turn gate, tool executions the executor actually recorded (with evidence class and call id, so claims like 'I wrote the file' can be checked against the runtime ledger), and the DECLARED (never verified) gateway/MCP configuration. Blocked tools are omitted. Does not access gateway runtime state or secrets; gateway and MCP health is not observable from the CLI and is reported as declared, not as running. Use when asked about this running CLI's verified state or whether a previous tool call really ran."
     }
 
     fn input_schema(&self) -> Value {
@@ -279,6 +331,11 @@ impl Tool for CliInspectTool {
         let Some(runtime) = self.runtime.upgrade() else {
             return Ok(ToolOutput::error("CLI runtime is no longer available"));
         };
+        let efeitos = self
+            .efeitos
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .projecao();
         let turn_tools = garraia_agents::tools::turn_tools::ferramentas_do_turno();
         let permissions = if turn_tools.is_some() {
             json!({
@@ -300,6 +357,7 @@ impl Tool for CliInspectTool {
             "scope": scope,
             "gateway": gateway_json(&self.estado),
             "mcp_servers": mcp_servers_json(&self.estado),
+            "tool_effects": efeitos_json(&efeitos),
             "permissions": permissions
         });
 
@@ -416,6 +474,7 @@ mod tests {
             bearer_value,
             Arc::new(RwLock::new(assignment_value)),
             EstadoDeclarado::default(),
+            Arc::new(Mutex::new(SnapshotDeEfeitos::default())),
         );
 
         let output = tool.execute(&context(), json!({})).await.unwrap();
@@ -464,6 +523,7 @@ mod tests {
             "anthropic".into(),
             model.clone(),
             EstadoDeclarado::default(),
+            Arc::new(Mutex::new(SnapshotDeEfeitos::default())),
         );
         let first = tool.execute(&context(), json!({})).await.unwrap();
         let first: Value = serde_json::from_str(&first.content).unwrap();
@@ -498,6 +558,7 @@ mod tests {
             "test".into(),
             model.clone(),
             EstadoDeclarado::default(),
+            Arc::new(Mutex::new(SnapshotDeEfeitos::default())),
         )));
         runtime.register_tool(Box::new(FileWriteFake));
         let tool = CliInspectTool::new(
@@ -505,6 +566,7 @@ mod tests {
             "test".into(),
             model,
             EstadoDeclarado::default(),
+            Arc::new(Mutex::new(SnapshotDeEfeitos::default())),
         );
         let output = garraia_agents::tools::turn_tools::com_ferramentas_do_turno(
             vec!["cli_inspect".into(), TOOL_PROGRAM_NAME.into()],
@@ -538,6 +600,7 @@ mod tests {
             "test".into(),
             model.clone(),
             EstadoDeclarado::default(),
+            Arc::new(Mutex::new(SnapshotDeEfeitos::default())),
         )));
         runtime.register_tool(Box::new(FileWriteFake));
         let tool = CliInspectTool::new(
@@ -545,6 +608,7 @@ mod tests {
             "test".into(),
             model,
             EstadoDeclarado::default(),
+            Arc::new(Mutex::new(SnapshotDeEfeitos::default())),
         );
 
         let unknown: Value = serde_json::from_str(
@@ -641,6 +705,7 @@ mod tests {
             "test".into(),
             Arc::new(RwLock::new("model".into())),
             EstadoDeclarado::default(),
+            Arc::new(Mutex::new(SnapshotDeEfeitos::default())),
         );
         assert!(
             tool.execute(&context(), json!({"scope":"admin"}))
@@ -685,6 +750,7 @@ mod tests {
             "test".into(),
             Arc::new(RwLock::new("model".into())),
             estado,
+            Arc::new(Mutex::new(SnapshotDeEfeitos::default())),
         );
 
         let output = tool
@@ -736,6 +802,7 @@ mod tests {
             "test".into(),
             Arc::new(RwLock::new("model".into())),
             estado,
+            Arc::new(Mutex::new(SnapshotDeEfeitos::default())),
         );
 
         let report: Value = serde_json::from_str(
@@ -756,5 +823,119 @@ mod tests {
             MAX_SERVIDORES
         );
         assert_eq!(report["mcp_servers"]["has_more"], true);
+    }
+
+    fn registro(
+        id: &str,
+        nome: &str,
+        status: crate::tool_history::Status,
+        turno: u32,
+        ordem: u32,
+    ) -> crate::tool_history::ToolRecord {
+        crate::tool_history::ToolRecord {
+            call_id: id.to_string(),
+            name: nome.to_string(),
+            input: json!({ "path": "/home/alguem/pagina.html" }),
+            detail: "pagina.html".to_string(),
+            status,
+            summary: "713 bytes".to_string(),
+            output: "713 bytes escritos em /home/alguem/pagina.html".to_string(),
+            turno,
+            ordem,
+        }
+    }
+
+    /// #1709 — o relatório de efeitos sai da trilha do **executor**, com classe
+    /// de evidência e id da chamada, e não carrega input/output/caminho.
+    #[tokio::test]
+    async fn tool_effects_report_executor_records_without_payload() {
+        let mut snapshot = SnapshotDeEfeitos::default();
+        snapshot.atualizar(&[
+            registro(
+                "chamada-1",
+                "file_write",
+                crate::tool_history::Status::Ok,
+                3,
+                1,
+            ),
+            registro(
+                "chamada-2",
+                "bash",
+                crate::tool_history::Status::Interrupted,
+                3,
+                2,
+            ),
+        ]);
+        let runtime = Arc::new(AgentRuntime::new());
+        let tool = CliInspectTool::new(
+            Arc::downgrade(&runtime),
+            "test".into(),
+            Arc::new(RwLock::new("model".into())),
+            EstadoDeclarado::default(),
+            Arc::new(Mutex::new(snapshot)),
+        );
+
+        let output = tool
+            .execute(&context(), json!({"scope":"all"}))
+            .await
+            .unwrap();
+        let report: Value = serde_json::from_str(&output.content).unwrap();
+
+        assert_eq!(report["tool_effects"]["state"], "observed");
+        assert_eq!(report["tool_effects"]["total_observed"], 2);
+        assert_eq!(report["tool_effects"]["last_turn"], 3);
+        assert_eq!(report["tool_effects"]["entries"][0]["class"], "observado");
+        assert_eq!(
+            report["tool_effects"]["entries"][0]["tool_call_id"],
+            "chamada-1"
+        );
+        // Chamada interrompida nunca aparece como observada nem falhou: sem
+        // resultado registrado, a classe e `nao_verificado` e nao ha id de
+        // execucao comprovando resultado.
+        assert_eq!(
+            report["tool_effects"]["entries"][1]["class"],
+            "nao_verificado"
+        );
+        assert_eq!(
+            report["tool_effects"]["entries"][1]["tool_call_id"],
+            Value::Null
+        );
+        // Nada de payload da ferramenta no relatorio.
+        assert!(
+            !output.content.contains("pagina.html"),
+            "{}",
+            output.content
+        );
+        assert!(!output.content.contains("713 bytes"), "{}", output.content);
+    }
+
+    /// Fail-closed: nenhum turno com ferramenta observado nesta sessao nao
+    /// vira lista vazia silenciosa — o relatorio diz que nao foi observado.
+    #[tokio::test]
+    async fn tool_effects_fail_closed_when_no_turn_was_observed() {
+        let runtime = Arc::new(AgentRuntime::new());
+        let tool = CliInspectTool::new(
+            Arc::downgrade(&runtime),
+            "test".into(),
+            Arc::new(RwLock::new("model".into())),
+            EstadoDeclarado::default(),
+            Arc::new(Mutex::new(SnapshotDeEfeitos::default())),
+        );
+
+        let output = tool
+            .execute(&context(), json!({"scope":"identity"}))
+            .await
+            .unwrap();
+        let report: Value = serde_json::from_str(&output.content).unwrap();
+
+        assert_eq!(report["tool_effects"]["state"], "unverified");
+        assert_eq!(
+            report["tool_effects"]["reason"],
+            "no_tool_turn_observed_in_this_session"
+        );
+        assert_eq!(
+            report["tool_effects"]["entries"].as_array().unwrap().len(),
+            0
+        );
     }
 }
