@@ -178,7 +178,7 @@ impl GarraDiagnosticsTool {
 #[async_trait]
 impl Tool for GarraDiagnosticsTool {
     fn name(&self) -> &str {
-        "garra_diagnostics"
+        garraia_agents::runtime::GARRA_DIAGNOSTICS_TOOL_NAME
     }
 
     fn description(&self) -> &str {

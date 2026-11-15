@@ -647,7 +647,20 @@ fn nome_do_dia(dia: chrono::Weekday, lang: crate::persona::Lang) -> &'static str
 /// O nome da tool de autoinspecao do gateway (#1347). Ela e registrada pelo
 /// `garraia-gateway`; o runtime so precisa do nome para saber se ela esta
 /// entre as oferecidas no turno.
-const GARRA_STATUS_TOOL: &str = "garra_status";
+pub const GARRA_STATUS_TOOL_NAME: &str = "garra_status";
+/// Ferramenta de diagnostico administrativo registrada pelo gateway.
+pub const GARRA_DIAGNOSTICS_TOOL_NAME: &str = "garra_diagnostics";
+/// Ferramenta de autoinspecao registrada somente pela CLI.
+pub const CLI_INSPECT_TOOL_NAME: &str = "cli_inspect";
+
+/// Snapshot de permissoes do turno so pode ser entregue a ferramentas
+/// nativas de introspeccao; nomes MCP nunca autorizam a si mesmos.
+fn pode_receber_snapshot_de_ferramentas(name: &str, source: &ToolSource) -> bool {
+    matches!(source, ToolSource::Native)
+        && (name == GARRA_STATUS_TOOL_NAME
+            || name == GARRA_DIAGNOSTICS_TOOL_NAME
+            || name == CLI_INSPECT_TOOL_NAME)
+}
 
 /// A instrucao que manda consultar `garra_status` antes de negar uma
 /// integracao (#1347), em PT.
@@ -723,7 +736,7 @@ fn com_nota_de_capacidades(
     tool_defs: &[ToolDefinition],
     lang: crate::persona::Lang,
 ) -> Option<String> {
-    if !tool_defs.iter().any(|d| d.name == GARRA_STATUS_TOOL) {
+    if !tool_defs.iter().any(|d| d.name == GARRA_STATUS_TOOL_NAME) {
         return system;
     }
     let nota = match lang {
@@ -847,7 +860,7 @@ enum DispatchOutcome {
 /// antes de `find_tool`, e `AgentRuntime::executar_tool_program` e quem
 /// resolve cada passo, sempre pelo `find_tool` real e pelo mesmo
 /// `dispatch_tool_call`.
-const TOOL_PROGRAM_NAME: &str = "tool_program";
+pub const TOOL_PROGRAM_NAME: &str = "tool_program";
 
 /// Troca todo `[CONFIRM_REQUIRED:` de um texto por uma grafia que
 /// `ApprovalFingerprint::from_marker` nao reconhece (#1226, revisao do
@@ -1966,13 +1979,17 @@ impl AgentRuntime {
             .collect()
     }
 
-    pub fn find_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
+    fn find_tool_com_origem(&self, name: &str) -> Option<(Arc<dyn Tool>, ToolSource)> {
         self.tools
             .read()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .iter()
             .find(|r| r.tool.name() == name)
-            .map(|r| Arc::clone(&r.tool))
+            .map(|r| (Arc::clone(&r.tool), r.source.clone()))
+    }
+
+    pub fn find_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.find_tool_com_origem(name).map(|(tool, _)| tool)
     }
 
     /// Run the full conversation loop: recall context, call LLM, execute tools, return response.
@@ -3830,20 +3847,25 @@ impl AgentRuntime {
                 }
             }
         } else {
-            match self.find_tool(name) {
-                Some(tool) => {
+            match self.find_tool_com_origem(name) {
+                Some((tool, source)) => {
                     let execucao = tool.execute(context, input.clone());
-                    // #1347 (revisao da onda A): `garra_status` relata as
-                    // ferramentas que ESTE portao libera, e nao todas as
-                    // registradas. So ela recebe a lista: montar a cada
-                    // chamada de outra tool seria custo sem leitor.
+                    // #1347 / #1712: somente tools nativas de introspeccao
+                    // recebem o snapshot; uma tool MCP nao pode opt-in.
+                    let publica_ferramentas = pode_receber_snapshot_de_ferramentas(name, &source);
                     let execucao = async {
-                        if name == GARRA_STATUS_TOOL {
-                            let liberadas: Vec<String> = self
-                                .tool_names()
+                        if publica_ferramentas {
+                            let nomes_registrados = self.tool_names();
+                            let mut liberadas: Vec<String> = nomes_registrados
                                 .into_iter()
                                 .filter(|n| self.portao_permite(portao, n))
                                 .collect();
+                            // Este despacho ja encontrou uma tool registrada; o
+                            // tool_program sintetico aparece nas definicoes sob
+                            // a mesma condicao, desde que o mesmo gate permita.
+                            if self.portao_permite(portao, TOOL_PROGRAM_NAME) {
+                                liberadas.push(TOOL_PROGRAM_NAME.to_string());
+                            }
                             crate::tools::turn_tools::com_ferramentas_do_turno(
                                 liberadas,
                                 portao.restringe_por_whitelist(),
@@ -3855,9 +3877,10 @@ impl AgentRuntime {
                         }
                     };
                     // #1380 (revisao da onda C): o BIT do portao vale para
-                    // toda tool, e nao so para `garra_status`. A lista acima
-                    // continua restrita a ela por causa do custo de monta-la;
-                    // um `bool` nao tem esse custo. Sem este escopo, quem
+                    // toda tool, e nao so para `garra_status`. A lista completa
+                    // fica restrita as tools nativas de introspeccao; MCP nao
+                    // precisa receber permissoes de outras tools. O `bool`
+                    // continua disponivel para qualquer tool. Sem este escopo, quem
                     // chamasse `turno_restrito()` de qualquer outra tool lia
                     // `None` para sempre — foi o que aconteceu com a recusa
                     // do `repo_search`, cujo ramo de operador local virou

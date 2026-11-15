@@ -227,7 +227,7 @@ fn com_secao_de_catalogo(restrito: bool, mut report: serde_json::Value) -> serde
 #[async_trait]
 impl Tool for GarraStatusTool {
     fn name(&self) -> &str {
-        "garra_status"
+        garraia_agents::runtime::GARRA_STATUS_TOOL_NAME
     }
 
     fn description(&self) -> &str {

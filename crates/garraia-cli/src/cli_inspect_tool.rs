@@ -7,6 +7,7 @@
 use std::sync::{Arc, RwLock, Weak};
 
 use async_trait::async_trait;
+use garraia_agents::runtime::{CLI_INSPECT_TOOL_NAME, TOOL_PROGRAM_NAME};
 use garraia_agents::tools::Disponibilidade;
 use garraia_agents::{AgentRuntime, Tool, ToolContext, ToolOutput};
 use garraia_common::Result;
@@ -59,14 +60,24 @@ fn safe_tool_name(value: &str) -> String {
     }
 }
 
+fn availability_json(runtime: &AgentRuntime, tool_name: &str) -> Value {
+    match runtime.disponibilidade_de(tool_name) {
+        Disponibilidade::Disponivel => json!({ "state": "available" }),
+        Disponibilidade::Indisponivel { codigo, .. } => json!({
+            "state": "unavailable",
+            "reason_code": codigo
+        }),
+    }
+}
+
 #[async_trait]
 impl Tool for CliInspectTool {
     fn name(&self) -> &str {
-        "cli_inspect"
+        CLI_INSPECT_TOOL_NAME
     }
 
     fn description(&self) -> &str {
-        "Read-only inspection of THIS Garra CLI session: installed binary version,          requested provider/model, last observed provider/model and confidence,          registered tools and runtime availability. Does not access the gateway          or secrets. For gateway/MCP health it explicitly reports unknown.          Use when asked what version/model/tools this running CLI really has."
+        "Read-only inspection of THIS Garra CLI session: binary version, requested provider/model, last observed turn, and tools allowed by the current turn gate. Blocked tools are omitted. Does not access gateway state or secrets; unavailable external state is reported as unknown. Use when asked about this running CLI's verified state."
     }
 
     fn input_schema(&self) -> Value {
@@ -102,6 +113,20 @@ impl Tool for CliInspectTool {
         let Some(runtime) = self.runtime.upgrade() else {
             return Ok(ToolOutput::error("CLI runtime is no longer available"));
         };
+        let turn_tools = garraia_agents::tools::turn_tools::ferramentas_do_turno();
+        let permissions = if turn_tools.is_some() {
+            json!({
+                "state": "verified",
+                "source": "runtime_dispatch_turn_tools_snapshot",
+                "scope": "current_turn",
+                "blocked_tools_omitted": true
+            })
+        } else {
+            json!({
+                "state": "unknown",
+                "reason": "no current-turn tool snapshot; tool entries are omitted"
+            })
+        };
         let mut report = json!({
             "origin": "cli_runtime",
             "read_only": true,
@@ -109,7 +134,7 @@ impl Tool for CliInspectTool {
             "scope": scope,
             "gateway": { "state": "unknown", "reason": "not inspected by the CLI tool" },
             "mcp_servers": { "state": "unknown", "reason": "no authorized live MCP health source in this CLI tool" },
-            "permissions": { "state": "unknown", "reason": "tool registration does not prove per-turn authorization" }
+            "permissions": permissions
         });
 
         if matches!(scope, "identity" | "all") {
@@ -141,34 +166,38 @@ impl Tool for CliInspectTool {
         }
 
         if matches!(scope, "tools" | "all") {
-            let mut inventory = runtime.tool_inventory();
-            inventory.sort_by(|a, b| a.name.cmp(&b.name));
-            let total = inventory.len();
-            let entries: Vec<Value> = inventory
+            let allowed_tools = turn_tools.as_deref().unwrap_or_default();
+            let mut entries: Vec<Value> = runtime
+                .tool_inventory()
                 .into_iter()
-                .skip(offset)
-                .take(PAGE_SIZE)
+                .filter(|entry| {
+                    entry.name != TOOL_PROGRAM_NAME && allowed_tools.contains(&entry.name)
+                })
                 .map(|entry| {
-                    let available = match runtime.disponibilidade_de(&entry.name) {
-                        Disponibilidade::Disponivel => {
-                            json!({ "state": "available_before_policy_gate" })
-                        }
-                        Disponibilidade::Indisponivel { codigo, .. } => json!({
-                            "state": "unavailable",
-                            "reason_code": codigo
-                        }),
-                    };
                     json!({
                         "name": safe_tool_name(&entry.name),
                         "origin": entry.source,
                         "registration": "registered",
-                        "runtime_availability": available,
-                        "turn_permission": "not_verified"
+                        "runtime_availability": availability_json(&runtime, &entry.name),
+                        "turn_permission": "allowed_this_turn"
                     })
                 })
                 .collect();
+            if allowed_tools.iter().any(|name| name == TOOL_PROGRAM_NAME) {
+                entries.push(json!({
+                    "name": TOOL_PROGRAM_NAME,
+                    "origin": "native_runtime",
+                    "registration": "synthetic",
+                    "runtime_availability": availability_json(&runtime, TOOL_PROGRAM_NAME),
+                    "turn_permission": "allowed_this_turn"
+                }));
+            }
+            entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+            let total = entries.len();
+            let entries: Vec<Value> = entries.into_iter().skip(offset).take(PAGE_SIZE).collect();
             report["tools"] = json!({
-                "source": "AgentRuntime.tool_inventory",
+                "source": "runtime_dispatch_turn_tools_snapshot",
+                "permission_state": if turn_tools.is_some() { "verified" } else { "unknown" },
                 "count": total,
                 "offset": offset,
                 "page_size": PAGE_SIZE,
@@ -183,6 +212,27 @@ impl Tool for CliInspectTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FileWriteFake;
+
+    #[async_trait]
+    impl Tool for FileWriteFake {
+        fn name(&self) -> &str {
+            "file_write"
+        }
+
+        fn description(&self) -> &str {
+            "test fixture"
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type":"object"})
+        }
+
+        async fn execute(&self, _ctx: &ToolContext, _input: Value) -> Result<ToolOutput> {
+            Ok(ToolOutput::success("ok"))
+        }
+    }
 
     fn context() -> ToolContext {
         ToolContext {
@@ -222,7 +272,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_list_is_current_bounded_and_does_not_claim_permissions() {
+    async fn tool_list_is_current_bounded_and_reports_effective_permission() {
         let runtime = Arc::new(AgentRuntime::new());
         let model = Arc::new(RwLock::new("model".into()));
         runtime.register_tool(Box::new(CliInspectTool::new(
@@ -230,19 +280,114 @@ mod tests {
             "test".into(),
             model.clone(),
         )));
+        runtime.register_tool(Box::new(FileWriteFake));
         let tool = CliInspectTool::new(Arc::downgrade(&runtime), "test".into(), model);
-        let output = tool
-            .execute(&context(), json!({"scope":"tools"}))
-            .await
-            .unwrap();
+        let output = garraia_agents::tools::turn_tools::com_ferramentas_do_turno(
+            vec!["cli_inspect".into(), TOOL_PROGRAM_NAME.into()],
+            true,
+            tool.execute(&context(), json!({"scope":"tools"})),
+        )
+        .await
+        .unwrap();
         let report: Value = serde_json::from_str(&output.content).unwrap();
-        assert_eq!(report["tools"]["count"], 1);
+        assert_eq!(report["tools"]["count"], 2);
         assert_eq!(report["tools"]["entries"][0]["name"], "cli_inspect");
+        assert_eq!(report["tools"]["entries"][1]["name"], TOOL_PROGRAM_NAME);
+        assert_eq!(report["tools"]["entries"][1]["registration"], "synthetic");
+        assert_eq!(report["permissions"]["state"], "verified");
         assert_eq!(
             report["tools"]["entries"][0]["turn_permission"],
-            "not_verified"
+            "allowed_this_turn"
         );
         assert_eq!(report["gateway"]["state"], "unknown");
+        assert_eq!(report["tools"]["permission_state"], "verified");
+    }
+
+    #[tokio::test]
+    async fn blocked_tools_are_not_disclosed_and_missing_gate_fails_closed() {
+        let runtime = Arc::new(AgentRuntime::new());
+        let model = Arc::new(RwLock::new("model".into()));
+        runtime.register_tool(Box::new(CliInspectTool::new(
+            Arc::downgrade(&runtime),
+            "test".into(),
+            model.clone(),
+        )));
+        runtime.register_tool(Box::new(FileWriteFake));
+        let tool = CliInspectTool::new(Arc::downgrade(&runtime), "test".into(), model);
+
+        let unknown: Value = serde_json::from_str(
+            &tool
+                .execute(&context(), json!({"scope":"tools"}))
+                .await
+                .unwrap()
+                .content,
+        )
+        .unwrap();
+        assert_eq!(unknown["permissions"]["state"], "unknown");
+        assert_eq!(unknown["tools"]["count"], 0);
+
+        let verified: Value = serde_json::from_str(
+            &garraia_agents::tools::turn_tools::com_ferramentas_do_turno(
+                vec!["cli_inspect".into()],
+                true,
+                tool.execute(&context(), json!({"scope":"tools"})),
+            )
+            .await
+            .unwrap()
+            .content,
+        )
+        .unwrap();
+        assert_eq!(verified["permissions"]["state"], "verified");
+        let names: Vec<_> = verified["tools"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["name"].as_str())
+            .collect();
+        assert!(names.contains(&"cli_inspect"));
+        assert!(!names.contains(&"file_write"));
+    }
+
+    #[test]
+    fn cli_inspect_is_wired_to_the_runtime_dispatch_snapshot() {
+        let normalized_tool_source = include_str!("cli_inspect_tool.rs").replace("\r\n", "\n");
+        let tool_source = normalized_tool_source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("CLI inspection tool has a production section");
+        let runtime_source = include_str!("../../garraia-agents/src/runtime.rs");
+        assert!(tool_source.contains("turn_tools::ferramentas_do_turno()"));
+        assert!(
+            tool_source.contains("fn name(&self) -> &str {\n        CLI_INSPECT_TOOL_NAME\n    }")
+        );
+        assert!(runtime_source.contains("pode_receber_snapshot_de_ferramentas(name, &source)"));
+        assert!(runtime_source.contains("name == CLI_INSPECT_TOOL_NAME"));
+        assert!(runtime_source.contains("name == GARRA_DIAGNOSTICS_TOOL_NAME"));
+        assert!(runtime_source.contains("ToolSource::Native"));
+        assert!(
+            runtime_source.contains("pub const GARRA_STATUS_TOOL_NAME: &str = \"garra_status\";")
+        );
+        assert!(
+            runtime_source
+                .contains("pub const GARRA_DIAGNOSTICS_TOOL_NAME: &str = \"garra_diagnostics\";")
+        );
+        assert!(
+            runtime_source.contains("pub const CLI_INSPECT_TOOL_NAME: &str = \"cli_inspect\";")
+        );
+        assert!(runtime_source.contains("pub const TOOL_PROGRAM_NAME: &str = \"tool_program\";"));
+        assert!(runtime_source.contains("liberadas.push(TOOL_PROGRAM_NAME.to_string())"));
+        assert!(tool_source.contains("allowed_tools.iter().any(|name| name == TOOL_PROGRAM_NAME)"));
+        let dispatch = runtime_source
+            .find("match self.find_tool_com_origem(name)")
+            .expect("production tool dispatch retains registration source");
+        let dispatch_source = &runtime_source[dispatch..];
+        let trust_check = dispatch_source
+            .find("pode_receber_snapshot_de_ferramentas(name, &source)")
+            .expect("the runtime checks the trusted native-tool allowlist");
+        let scope_open = dispatch_source
+            .find("crate::tools::turn_tools::com_ferramentas_do_turno(")
+            .expect("the checked dispatch opens the task-local snapshot");
+        assert!(trust_check < scope_open);
     }
 
     #[tokio::test]
