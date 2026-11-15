@@ -39,10 +39,13 @@ pub mod sandbox;
 pub(crate) mod sandbox_spawn;
 pub mod tools;
 pub use sandbox::{SandboxBackend, SandboxMode, SandboxPolicy};
+/// #1712: coletor comum do inventário + liberação de ferramentas.
+pub mod ferramentas_visiveis;
 pub mod recusa_de_credencial;
 pub mod turn_events;
 pub mod turn_stats;
 
+pub use ferramentas_visiveis::{FerramentaVisivel, OrigemDaPermissao, VisaoDeFerramentas};
 pub use recusa_de_credencial::RecusaDeCredencial;
 
 pub use anthropic::AnthropicProvider;
