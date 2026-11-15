@@ -210,6 +210,149 @@ pub const RAW_HINT_EN: &str = "This terminal cannot draw the QR (no Unicode, or 
 Paste the string above into a QR generator, or re-run in a UTF-8 terminal at \
 least 60 columns wide.";
 
+// -- PNG: a mesma matriz, para quem desenha numa janela (#1636) ---------------
+
+/// Margem clara do PNG, em modulos. **Quatro**, nao o `QUIET_ZONE` do terminal.
+///
+/// A norma (ISO/IEC 18004 §6.3.8) pede 4 modulos; o terminal usa 1 porque a
+/// borda da janela e o espaco em volta somam o resto e cada coluna custa caro
+/// numa tela de 80. Numa janela de app o QR e a unica coisa na tela: nao ha
+/// motivo para entregar menos que o minimo da norma.
+pub const QUIET_ZONE_PNG: usize = 4;
+
+/// Escala default: quantos pixels cada modulo ocupa.
+///
+/// 8 px/modulo deixa um QR de versao 6 (41 modulos) com 49*8 = 392 px de lado —
+/// legivel e nitido num canvas 2x sem reamostrar.
+pub const PNG_SCALE_DEFAULT: u32 = 8;
+
+/// Teto de escala. Sem ele, um chamador (ou um payload manipulado) pediria
+/// `scale = 4_000_000` e o processo morreria alocando a imagem.
+pub const PNG_SCALE_MAX: u32 = 32;
+
+/// Cinza do modulo escuro (0 = preto).
+const PNG_DARK: u8 = 0x00;
+/// Cinza do modulo claro e da margem (255 = branco).
+const PNG_LIGHT: u8 = 0xFF;
+
+/// Chunk PNG: `tamanho` (4 BE) + tipo (4) + dados + CRC32 de tipo+dados.
+fn png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    let mut crc_input = Vec::with_capacity(4 + data.len());
+    crc_input.extend_from_slice(kind);
+    crc_input.extend_from_slice(data);
+    out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+}
+
+/// CRC32 (polinomio IEEE 0xEDB88320), bit a bit.
+///
+/// Sem tabela de 256 entradas de proposito: isto roda uma vez por QR (4
+/// chunks), nao por pixel — trocar 40 linhas de aritmetica por uma `const` de
+/// 1 KiB nao pagaria. E sem dependencia nova: o crate `png`, `image` ou
+/// `flate2` custaria uma crate inteira no grafo (e o `qrcode` ja vem com
+/// `default-features = false` justamente para nao trazer `image`/`svg`).
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in bytes {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+/// Adler-32 do corpo descomprimido, como o zlib exige no fim do stream.
+fn adler32(bytes: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for &byte in bytes {
+        a = (a + byte as u32) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    (b << 16) | a
+}
+
+/// Stream zlib com blocos **stored** (BTYPE=00): sem compressao.
+///
+/// Um QR e ruido para o deflate — a compressao renderia poucos por cento e
+/// custaria um compressor inteiro no grafo. O PNG aceita zlib com blocos
+/// stored, entao o stream e `header + blocos de ate 65535 B + adler32`.
+fn zlib_stored(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len() + raw.len() / 65_535 * 5 + 11);
+    // CMF=0x78 (deflate, janela 32K), FLG=0x01: (0x78 << 8 | 0x01) % 31 == 0.
+    out.extend_from_slice(&[0x78, 0x01]);
+    let mut resto = raw;
+    loop {
+        let n = resto.len().min(65_535);
+        let final_ = n == resto.len();
+        out.push(if final_ { 0x01 } else { 0x00 });
+        out.extend_from_slice(&(n as u16).to_le_bytes());
+        out.extend_from_slice(&(!(n as u16)).to_le_bytes());
+        out.extend_from_slice(&resto[..n]);
+        resto = &resto[n..];
+        if final_ {
+            break;
+        }
+    }
+    out.extend_from_slice(&adler32(raw).to_be_bytes());
+    out
+}
+
+/// Rasteriza o simbolo num **PNG em tons de cinza** (8 bits, sem alfa).
+///
+/// E o motor que falta para o app desktop pintar o QR na janela sem terminal
+/// (#1636): a matriz de [`modules`] vira uma imagem pronta para `<img>`/
+/// `drawImage`, com a margem da norma de 4 modulos e cada modulo com `scale`
+/// pixels de lado. Fundo branco e modulo escuro preto — **a polaridade da
+/// norma**, nao a do terminal (que desenha o claro porque o tema do terminal e
+/// desconhecido; aqui a imagem carrega as duas cores).
+///
+/// `scale` e preso a `1..=PNG_SCALE_MAX`: escala 0 nao geraria imagem e escala
+/// absurda estouraria a memoria. Puro: mesma entrada, mesmos bytes.
+pub fn png(data: &str, scale: u32) -> Result<Vec<u8>, QrError> {
+    let grid = modules(data)?;
+    let scale = scale.clamp(1, PNG_SCALE_MAX) as usize;
+    let margem = QUIET_ZONE_PNG;
+    let modulos = grid.len() + 2 * margem;
+    let lado = modulos * scale;
+
+    // Filtro 0 (None) em toda scanline: o PNG exige o byte de filtro e nao ha
+    // ganho em filtrar uma imagem de duas cores.
+    let mut raw = Vec::with_capacity(lado * (lado + 1));
+    for y in 0..lado {
+        raw.push(0);
+        let my = y / scale;
+        for x in 0..lado {
+            let mx = x / scale;
+            // Coordenada fora do simbolo = margem = claro.
+            let escuro = my >= margem
+                && mx >= margem
+                && my < margem + grid.len()
+                && mx < margem + grid.len()
+                && grid[my - margem][mx - margem];
+            raw.push(if escuro { PNG_DARK } else { PNG_LIGHT });
+        }
+    }
+
+    let mut out = Vec::with_capacity(raw.len() / 8 + 128);
+    out.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&(lado as u32).to_be_bytes());
+    ihdr.extend_from_slice(&(lado as u32).to_be_bytes());
+    // profundidade 8, cor 0 (tons de cinza), compressao 0, filtro 0, sem
+    // entrelacamento.
+    ihdr.extend_from_slice(&[8, 0, 0, 0, 0]);
+    png_chunk(&mut out, b"IHDR", &ihdr);
+
+    png_chunk(&mut out, b"IDAT", &zlib_stored(&raw));
+    png_chunk(&mut out, b"IEND", &[]);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,5 +544,178 @@ mod tests {
     fn an_oversized_payload_is_an_error_in_modules_too() {
         let huge = "x".repeat(8_000);
         assert!(matches!(modules(&huge), Err(QrError::Encode(_))));
+    }
+
+    // -- png(): a mesma matriz rasterizada para a janela do desktop (#1636)
+
+    /// Percorre os chunks do PNG e devolve `(tipo, dados)` de cada um.
+    fn chunks(png: &[u8]) -> Vec<(String, Vec<u8>)> {
+        assert_eq!(
+            &png[..8],
+            &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
+            "assinatura PNG"
+        );
+        let mut out = Vec::new();
+        let mut i = 8;
+        while i < png.len() {
+            let len = u32::from_be_bytes([png[i], png[i + 1], png[i + 2], png[i + 3]]) as usize;
+            let kind = std::str::from_utf8(&png[i + 4..i + 8]).expect("tipo ASCII");
+            let data = png[i + 8..i + 8 + len].to_vec();
+            let crc_gravado = u32::from_be_bytes([
+                png[i + 8 + len],
+                png[i + 9 + len],
+                png[i + 10 + len],
+                png[i + 11 + len],
+            ]);
+            assert_eq!(
+                crc_gravado,
+                crc32(&png[i + 4..i + 8 + len]),
+                "CRC do chunk {kind}"
+            );
+            out.push((kind.to_string(), data));
+            i += 12 + len;
+        }
+        out
+    }
+
+    /// Descomprime o stream zlib **bloco a bloco** (BTYPE=00) e confere o
+    /// adler32 final — o caminho que o navegador/webview percorre.
+    fn inflate_stored(z: &[u8]) -> Vec<u8> {
+        assert_eq!(&z[..2], &[0x78, 0x01], "header zlib");
+        let mut out = Vec::new();
+        let mut i = 2;
+        loop {
+            let cabecalho = z[i];
+            assert_eq!((cabecalho >> 1) & 3, 0, "so blocos stored");
+            let len = u16::from_le_bytes([z[i + 1], z[i + 2]]) as usize;
+            let nlen = u16::from_le_bytes([z[i + 3], z[i + 4]]);
+            assert_eq!(!nlen, len as u16, "NLEN e o complemento de LEN");
+            out.extend_from_slice(&z[i + 5..i + 5 + len]);
+            i += 5 + len;
+            if cabecalho & 1 == 1 {
+                break;
+            }
+        }
+        let adler = u32::from_be_bytes([z[i], z[i + 1], z[i + 2], z[i + 3]]);
+        assert_eq!(adler, adler32(&out), "adler32 do corpo");
+        out
+    }
+
+    /// Geometria e cabecalho: lado = (modulos + 2*margem) * escala, cinza 8
+    /// bits, e o CRC conhecido do `IEND` (`AE 42 60 82`, o mesmo de todo PNG).
+    #[test]
+    fn png_declares_the_geometry_of_the_matrix() {
+        let grid = modules(FIXED).expect("modules");
+        for scale in [1u32, 3, PNG_SCALE_DEFAULT] {
+            let png = png(FIXED, scale).expect("png");
+            let partes = chunks(&png);
+            let tipos: Vec<&str> = partes.iter().map(|(k, _)| k.as_str()).collect();
+            assert_eq!(tipos, vec!["IHDR", "IDAT", "IEND"], "ordem dos chunks");
+
+            let ihdr = &partes[0].1;
+            let lado = ((grid.len() + 2 * QUIET_ZONE_PNG) * scale as usize) as u32;
+            assert_eq!(&ihdr[..4], &lado.to_be_bytes(), "largura");
+            assert_eq!(&ihdr[4..8], &lado.to_be_bytes(), "altura (quadrado)");
+            assert_eq!(ihdr[8], 8, "8 bits por canal");
+            assert_eq!(ihdr[9], 0, "tons de cinza");
+            assert_eq!(&ihdr[10..13], &[0, 0, 0], "compressao/filtro/entrelac");
+
+            let iend = partes.last().expect("IEND").clone();
+            assert!(iend.1.is_empty());
+            assert_eq!(
+                u32::from_be_bytes([
+                    png[png.len() - 4],
+                    png[png.len() - 3],
+                    png[png.len() - 2],
+                    png[png.len() - 1]
+                ]),
+                0xAE42_6082,
+                "CRC do IEND e o constante do formato"
+            );
+        }
+    }
+
+    /// Os pixels sao a matriz: margem de 4 modulos clara, e cada modulo pinta
+    /// a cor da matriz na polaridade da norma (escuro = preto).
+    #[test]
+    fn png_pixels_are_the_matrix_in_norm_polarity() {
+        let grid = modules(FIXED).expect("modules");
+        let scale = 4u32;
+        let png = png(FIXED, scale).expect("png");
+        let partes = chunks(&png);
+        let idat: Vec<u8> = partes
+            .iter()
+            .filter(|(k, _)| k == "IDAT")
+            .flat_map(|(_, d)| d.clone())
+            .collect();
+        let raw = inflate_stored(&idat);
+
+        let lado = (grid.len() + 2 * QUIET_ZONE_PNG) * scale as usize;
+        assert_eq!(raw.len(), lado * (lado + 1), "scanlines com filtro");
+        let pixel = |x: usize, y: usize| -> u8 {
+            let inicio = y * (lado + 1);
+            assert_eq!(raw[inicio], 0, "filtro 0 na scanline {y}");
+            raw[inicio + 1 + x]
+        };
+
+        // Margem inteira clara, nas quatro bordas.
+        for i in 0..lado {
+            for (x, y) in [
+                (i, 0),
+                (i, lado - 1),
+                (0, i),
+                (lado - 1, i),
+                (i, QUIET_ZONE_PNG * scale as usize - 1),
+            ] {
+                assert_eq!(pixel(x, y), PNG_LIGHT, "margem clara em ({x},{y})");
+            }
+        }
+
+        // Cada modulo, amostrado no centro, comanda `scale × scale` pixels.
+        let q = QUIET_ZONE_PNG;
+        for (y, row) in grid.iter().enumerate() {
+            for (x, &escuro) in row.iter().enumerate() {
+                let cx = (q + x) * scale as usize + scale as usize / 2;
+                let cy = (q + y) * scale as usize + scale as usize / 2;
+                let esperado = if escuro { PNG_DARK } else { PNG_LIGHT };
+                assert_eq!(pixel(cx, cy), esperado, "modulo ({x},{y}) escuro={escuro}");
+            }
+        }
+        // O canto superior esquerdo do simbolo e o padrao de posicionamento:
+        // sempre escuro. Prova de que a polaridade nao inverteu.
+        assert_eq!(pixel(q * scale as usize, q * scale as usize), PNG_DARK);
+    }
+
+    /// Escala 0 e escala absurda sao presas, nao panico: o lado nunca sai do
+    /// intervalo `modulos ..= modulos * PNG_SCALE_MAX`.
+    #[test]
+    fn png_scale_is_clamped_instead_of_allocating_forever() {
+        let grid = modules(FIXED).expect("modules");
+        let modulos = (grid.len() + 2 * QUIET_ZONE_PNG) as u32;
+
+        let piso = png(FIXED, 0).expect("escala 0");
+        let ihdr = &chunks(&piso)[0].1;
+        assert_eq!(&ihdr[..4], &modulos.to_be_bytes(), "escala 0 vira 1");
+
+        let teto = png(FIXED, 4_000_000).expect("escala absurda");
+        let ihdr = &chunks(&teto)[0].1;
+        assert_eq!(
+            &ihdr[..4],
+            &(modulos * PNG_SCALE_MAX).to_be_bytes(),
+            "escala absurda vira PNG_SCALE_MAX"
+        );
+    }
+
+    /// Puro e sem panico nos extremos do encode.
+    #[test]
+    fn png_is_deterministic_and_never_panics_on_bad_input() {
+        let a = png(FIXED, 2).expect("a");
+        let b = png(FIXED, 2).expect("b");
+        assert_eq!(a, b, "png precisa ser puro");
+        assert!(png("", 2).is_ok(), "payload vazio codifica");
+        assert!(matches!(
+            png(&"x".repeat(8_000), 2),
+            Err(QrError::Encode(_))
+        ));
     }
 }
