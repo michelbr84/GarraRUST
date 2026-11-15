@@ -2,7 +2,10 @@
 //!
 //! Unlike gateway diagnostics, this tool does not access gateway AppState,
 //! credentials, files, the network, or other sessions. It reuses live runtime
-//! inventory and last-turn statistics. Unknown external state stays unknown.
+//! inventory and last-turn statistics. Optional integrations (gateway, MCP
+//! servers) are reported from the configuration this process already loaded —
+//! always as *declared*, with `live_verification: unavailable_from_cli`, never
+//! as observed health ([`crate::estado_declarado`]).
 
 use std::sync::{Arc, RwLock, Weak};
 
@@ -13,12 +16,18 @@ use garraia_agents::{AgentRuntime, Tool, ToolContext, ToolOutput};
 use garraia_common::Result;
 use serde_json::{Value, json};
 
+use crate::estado_declarado::{EstadoDeclarado, MAX_SERVIDORES};
+
 const PAGE_SIZE: usize = 16;
 
 pub struct CliInspectTool {
     runtime: Weak<AgentRuntime>,
     provider: String,
     requested_model: Arc<RwLock<String>>,
+    /// #1712 — configuração efetiva deste processo, já projetada. Separada do
+    /// runtime porque não é inventário de ferramentas: é estado DECLARADO de
+    /// integrações que a CLI não sobe nem verifica.
+    estado: EstadoDeclarado,
 }
 
 impl CliInspectTool {
@@ -26,11 +35,13 @@ impl CliInspectTool {
         runtime: Weak<AgentRuntime>,
         provider: String,
         requested_model: Arc<RwLock<String>>,
+        estado: EstadoDeclarado,
     ) -> Self {
         Self {
             runtime,
             provider,
             requested_model,
+            estado,
         }
     }
 }
@@ -173,6 +184,58 @@ fn disponibilidade_json(disponibilidade: &Disponibilidade) -> Value {
     }
 }
 
+/// #1712 — o gateway é um processo SEPARADO: a CLI nunca fala com ele nem tem
+/// canal de saúde. O que dá para afirmar com fonte autorizada é o listen
+/// declarado na configuração efetiva deste processo; a saúde fica fora.
+fn gateway_json(estado: &EstadoDeclarado) -> Value {
+    if estado.gateway_listen.is_empty() {
+        return json!({
+            "state": "not_configured",
+            "source": "cli_process_config_snapshot",
+            "live_verification": "unavailable_from_cli"
+        });
+    }
+    json!({
+        "state": "declared",
+        "source": "cli_process_config_snapshot",
+        "live_verification": "unavailable_from_cli",
+        "listen": safe_text(&estado.gateway_listen),
+        "note": "declared listener only; the CLI does not connect to the gateway, so a running gateway is NOT verified here"
+    })
+}
+
+/// #1712 — servidores MCP declarados (config.yml + mcp.json), sem nenhum
+/// campo sensível: só nome, transporte e habilitado. `not_configured` quando o
+/// conjunto é vazio é o vocabulário que o resto do produto usa.
+fn mcp_servers_json(estado: &EstadoDeclarado) -> Value {
+    let total = estado.mcp_servers.len();
+    let entradas: Vec<Value> = estado
+        .mcp_servers
+        .iter()
+        .take(MAX_SERVIDORES)
+        .map(|servidor| {
+            json!({
+                "name": safe_tool_name(&servidor.nome),
+                "transport": servidor.transporte.como_str(),
+                "enabled": servidor.habilitado
+            })
+        })
+        .collect();
+    let listados = entradas.len();
+    json!({
+        "state": if total == 0 { "not_configured" } else { "declared" },
+        "source": "merged_config_snapshot",
+        "mcp_json_included": estado.mcp_json_incluido,
+        "live_verification": "unavailable_from_cli",
+        "count": total,
+        "enabled_count": estado.habilitados(),
+        "listed": listados,
+        "has_more": listados < total,
+        "servers": entradas,
+        "note": "the CLI does not start MCP servers; declared is not running"
+    })
+}
+
 #[async_trait]
 impl Tool for CliInspectTool {
     fn name(&self) -> &str {
@@ -180,7 +243,7 @@ impl Tool for CliInspectTool {
     }
 
     fn description(&self) -> &str {
-        "Read-only inspection of THIS Garra CLI session: binary version, requested provider/model, last observed turn, and tools allowed by the current turn gate. Blocked tools are omitted. Does not access gateway state or secrets; unavailable external state is reported as unknown. Use when asked about this running CLI's verified state."
+        "Read-only inspection of THIS Garra CLI session: binary version, requested provider/model, last observed turn, tools allowed by the current turn gate, and the DECLARED (never verified) gateway/MCP configuration. Blocked tools are omitted. Does not access gateway runtime state or secrets; gateway and MCP health is not observable from the CLI and is reported as declared, not as running. Use when asked about this running CLI's verified state."
     }
 
     fn input_schema(&self) -> Value {
@@ -235,8 +298,8 @@ impl Tool for CliInspectTool {
             "read_only": true,
             "channel": "cli",
             "scope": scope,
-            "gateway": { "state": "unknown", "reason": "not inspected by the CLI tool" },
-            "mcp_servers": { "state": "unknown", "reason": "no authorized live MCP health source in this CLI tool" },
+            "gateway": gateway_json(&self.estado),
+            "mcp_servers": mcp_servers_json(&self.estado),
             "permissions": permissions
         });
 
@@ -352,6 +415,7 @@ mod tests {
             Arc::downgrade(&runtime),
             bearer_value,
             Arc::new(RwLock::new(assignment_value)),
+            EstadoDeclarado::default(),
         );
 
         let output = tool.execute(&context(), json!({})).await.unwrap();
@@ -395,7 +459,12 @@ mod tests {
     async fn identity_reads_binary_and_live_model_without_gateway() {
         let runtime = Arc::new(AgentRuntime::new());
         let model = Arc::new(RwLock::new("original-model".into()));
-        let tool = CliInspectTool::new(Arc::downgrade(&runtime), "anthropic".into(), model.clone());
+        let tool = CliInspectTool::new(
+            Arc::downgrade(&runtime),
+            "anthropic".into(),
+            model.clone(),
+            EstadoDeclarado::default(),
+        );
         let first = tool.execute(&context(), json!({})).await.unwrap();
         let first: Value = serde_json::from_str(&first.content).unwrap();
         assert_eq!(
@@ -407,7 +476,10 @@ mod tests {
             "original-model"
         );
         assert_eq!(first["identity"]["last_turn"]["state"], "unknown");
-        assert_eq!(first["gateway"]["state"], "unknown");
+        // #1712: sem configuracao no snapshot, o estado e `not_configured`
+        // — nao mais o `unknown` generico que nao distinguia os dois casos.
+        assert_eq!(first["gateway"]["state"], "not_configured");
+        assert_eq!(first["mcp_servers"]["state"], "not_configured");
         *model.write().unwrap() = "switched-model".into();
         let second = tool.execute(&context(), json!({})).await.unwrap();
         let second: Value = serde_json::from_str(&second.content).unwrap();
@@ -425,9 +497,15 @@ mod tests {
             Arc::downgrade(&runtime),
             "test".into(),
             model.clone(),
+            EstadoDeclarado::default(),
         )));
         runtime.register_tool(Box::new(FileWriteFake));
-        let tool = CliInspectTool::new(Arc::downgrade(&runtime), "test".into(), model);
+        let tool = CliInspectTool::new(
+            Arc::downgrade(&runtime),
+            "test".into(),
+            model,
+            EstadoDeclarado::default(),
+        );
         let output = garraia_agents::tools::turn_tools::com_ferramentas_do_turno(
             vec!["cli_inspect".into(), TOOL_PROGRAM_NAME.into()],
             true,
@@ -446,7 +524,8 @@ mod tests {
             report["tools"]["entries"][0]["turn_permission"],
             "allowed_this_turn"
         );
-        assert_eq!(report["gateway"]["state"], "unknown");
+        assert_eq!(report["gateway"]["state"], "not_configured");
+        assert_eq!(report["mcp_servers"]["state"], "not_configured");
         assert_eq!(report["tools"]["permission_state"], "verified");
     }
 
@@ -458,9 +537,15 @@ mod tests {
             Arc::downgrade(&runtime),
             "test".into(),
             model.clone(),
+            EstadoDeclarado::default(),
         )));
         runtime.register_tool(Box::new(FileWriteFake));
-        let tool = CliInspectTool::new(Arc::downgrade(&runtime), "test".into(), model);
+        let tool = CliInspectTool::new(
+            Arc::downgrade(&runtime),
+            "test".into(),
+            model,
+            EstadoDeclarado::default(),
+        );
 
         let unknown: Value = serde_json::from_str(
             &tool
@@ -555,6 +640,7 @@ mod tests {
             Arc::downgrade(&runtime),
             "test".into(),
             Arc::new(RwLock::new("model".into())),
+            EstadoDeclarado::default(),
         );
         assert!(
             tool.execute(&context(), json!({"scope":"admin"}))
@@ -569,5 +655,106 @@ mod tests {
                 .is_error
         );
         assert_eq!(runtime.tool_names().len(), 0);
+    }
+
+    /// #1712 — estado declarado: a config do processo e a fonte, e um
+    /// `mcp.json` de teste injeta o diretório em vez do ambiente global.
+    fn estado_de_teste(mcp_json: Option<&str>) -> EstadoDeclarado {
+        let dir = tempfile::tempdir().unwrap();
+        if let Some(conteudo) = mcp_json {
+            std::fs::write(dir.path().join("mcp.json"), conteudo).unwrap();
+        }
+        crate::estado_declarado::coletar(
+            &garraia_config::AppConfig::default(),
+            &garraia_config::ConfigLoader::with_dir(dir.path()),
+        )
+    }
+
+    #[tokio::test]
+    async fn declared_gateway_and_mcp_are_labelled_declared_and_leak_no_values() {
+        let sentinela = ["sk", "-live-", "SENTINELA"].concat();
+        let estado = estado_de_teste(Some(&format!(
+            r#"{{"mcpServers": {{
+                "filesystem": {{"command": "npx", "args": ["-y", "server-fs"], "env": {{"API_KEY": "{sentinela}"}}}},
+                "remoto": {{"url": "https://mcp.example/sse?token={sentinela}"}}
+            }}}}"#
+        )));
+        let runtime = Arc::new(AgentRuntime::new());
+        let tool = CliInspectTool::new(
+            Arc::downgrade(&runtime),
+            "test".into(),
+            Arc::new(RwLock::new("model".into())),
+            estado,
+        );
+
+        let output = tool
+            .execute(&context(), json!({"scope":"all"}))
+            .await
+            .unwrap();
+        let report: Value = serde_json::from_str(&output.content).unwrap();
+
+        // Declarado, nunca verificado: o listen vem da config e a saúde e
+        // explicitamente fora do alcance da CLI.
+        assert_eq!(report["gateway"]["state"], "declared");
+        assert_eq!(report["gateway"]["listen"], "127.0.0.1:3888");
+        assert_eq!(
+            report["gateway"]["live_verification"],
+            "unavailable_from_cli"
+        );
+        assert_eq!(report["mcp_servers"]["state"], "declared");
+        assert_eq!(
+            report["mcp_servers"]["live_verification"],
+            "unavailable_from_cli"
+        );
+        assert_eq!(report["mcp_servers"]["count"], 2);
+        assert_eq!(report["mcp_servers"]["enabled_count"], 2);
+        assert_eq!(report["mcp_servers"]["servers"][0]["name"], "filesystem");
+        assert_eq!(report["mcp_servers"]["servers"][0]["transport"], "stdio");
+        assert_eq!(report["mcp_servers"]["servers"][1]["transport"], "http");
+        // Nem valor de env nem URL (que pode carregar credencial) saem no relatorio.
+        assert!(!output.content.contains(&sentinela), "{}", output.content);
+        assert!(
+            !output.content.contains("mcp.example"),
+            "{}",
+            output.content
+        );
+    }
+
+    #[tokio::test]
+    async fn declared_mcp_list_is_capped_and_says_so() {
+        let mut servidores = String::new();
+        for indice in 0..(MAX_SERVIDORES + 4) {
+            if indice > 0 {
+                servidores.push(',');
+            }
+            servidores.push_str(&format!(r#""srv{indice:02}": {{"command": "npx"}}"#));
+        }
+        let estado = estado_de_teste(Some(&format!(r#"{{"mcpServers": {{{servidores}}}}}"#)));
+        let runtime = Arc::new(AgentRuntime::new());
+        let tool = CliInspectTool::new(
+            Arc::downgrade(&runtime),
+            "test".into(),
+            Arc::new(RwLock::new("model".into())),
+            estado,
+        );
+
+        let report: Value = serde_json::from_str(
+            &tool
+                .execute(&context(), json!({"scope":"identity"}))
+                .await
+                .unwrap()
+                .content,
+        )
+        .unwrap();
+
+        // O escopo `identity` tambem carrega o estado declarado (custo fixo
+        // pequeno), e a lista e limitada como a pagina de ferramentas.
+        assert_eq!(report["mcp_servers"]["count"], MAX_SERVIDORES + 4);
+        assert_eq!(report["mcp_servers"]["listed"], MAX_SERVIDORES);
+        assert_eq!(
+            report["mcp_servers"]["servers"].as_array().unwrap().len(),
+            MAX_SERVIDORES
+        );
+        assert_eq!(report["mcp_servers"]["has_more"], true);
     }
 }

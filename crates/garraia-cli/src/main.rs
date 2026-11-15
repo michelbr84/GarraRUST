@@ -18,6 +18,7 @@ mod doctor;
 mod doctor_binario;
 mod doctor_mcp;
 mod doctor_whatsapp;
+mod estado_declarado;
 mod glob_cmd;
 mod logs_cmd;
 mod max_power;

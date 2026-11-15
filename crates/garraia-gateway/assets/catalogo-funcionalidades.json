@@ -718,7 +718,7 @@
       "prerequisites": [],
       "limitations": [
         "só existe no agente interativo da CLI (garra chat), não no gateway nem nos canais",
-        "estado de gateway/MCP/integrações opcionais fica como desconhecido (sem sondagem); nenhuma credencial ou log administrativo é exposto"
+        "estado de gateway e MCP é DECLARADO a partir da configuração que o processo já carregou (config.yml + mcp.json), nunca verificado: a CLI não sonda o gateway nem sobe servidores MCP; só nome, transporte e habilitado dos servidores saem no relatório — sem env, args, URL, credencial ou log administrativo"
       ],
       "availability": "disponivel",
       "tool": "cli_inspect"
