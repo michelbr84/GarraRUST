@@ -18,6 +18,7 @@ mod doctor;
 mod doctor_binario;
 mod doctor_mcp;
 mod doctor_whatsapp;
+mod efeitos_de_ferramenta;
 mod estado_declarado;
 mod glob_cmd;
 mod logs_cmd;
