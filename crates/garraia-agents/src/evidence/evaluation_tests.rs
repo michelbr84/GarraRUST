@@ -1,4 +1,4 @@
-//! Avaliação longitudinal determinística da detecção de alegações operacionais (#1709).
+//! Baseline determinístico de regressão do detector de alegações (#1709).
 //!
 //! Corpus sintético fixo: testa a consistência entre a polaridade da alegação e o
 //! resultado confiável do executor. Não mede a frequência de erros de um LLM real.
@@ -28,7 +28,7 @@ struct Caso {
     classe: ClasseCaso,
 }
 
-fn corpus() -> [Caso; 7] {
+fn corpus() -> [Caso; 8] {
     [
         Caso {
             nome: "escrita confirmada",
@@ -86,21 +86,28 @@ fn corpus() -> [Caso; 7] {
             ledger: Some(("c7", "file_read", true)),
             classe: ClasseCaso::SemEvidencia,
         },
+        Caso {
+            nome: "ledger vazio",
+            alegado: ResultadoAlegado::Sucesso,
+            id_alegacao: "c8",
+            ferramenta_alegacao: "file_write",
+            ledger: None,
+            classe: ClasseCaso::SemEvidencia,
+        },
     ]
 }
 
-fn avaliar(caso: &Caso) -> Divergencia {
-    let evidencia = EvidenceRef {
-        tool_call_id: caso.id_alegacao.to_string(),
-        tool_name: caso.ferramenta_alegacao.to_string(),
-        success: matches!(caso.alegado, ResultadoAlegado::Sucesso),
-        turno: 1,
-        ordem: 1,
-    };
-    let claim = match caso.alegado {
-        ResultadoAlegado::Sucesso => Claim::observada("operacao concluida", evidencia),
-        ResultadoAlegado::Falha => Claim::falhou("operacao falhou", evidencia),
-        ResultadoAlegado::NaoVerificado => Claim::nao_verificada("nao consigo confirmar"),
+fn alegacao_e_ledger(caso: &Caso) -> (AlegacaoOperacional, Vec<EvidenceRef>) {
+    let alegacao = match caso.alegado {
+        ResultadoAlegado::Sucesso => {
+            AlegacaoOperacional::sucesso(caso.id_alegacao, caso.ferramenta_alegacao)
+        }
+        ResultadoAlegado::Falha => {
+            AlegacaoOperacional::falha(caso.id_alegacao, caso.ferramenta_alegacao)
+        }
+        ResultadoAlegado::NaoVerificado => {
+            AlegacaoOperacional::sem_polaridade(caso.id_alegacao, caso.ferramenta_alegacao)
+        }
     };
     let ledger = caso
         .ledger
@@ -113,13 +120,18 @@ fn avaliar(caso: &Caso) -> Divergencia {
         })
         .into_iter()
         .collect::<Vec<_>>();
-    detect_divergencia(&claim, &ledger)
+    (alegacao, ledger)
+}
+
+fn avaliar(caso: &Caso) -> Divergencia {
+    let (alegacao, ledger) = alegacao_e_ledger(caso);
+    detect_divergencia(&alegacao, &ledger)
 }
 
 #[test]
-fn baseline_longitudinal_do_corpus_fixo_de_alegacoes() {
+fn baseline_regressao_do_corpus_fixo_de_alegacoes() {
     let casos = corpus();
-    assert_eq!(casos.len(), 7, "o corpus v1 so muda com revisao explicita");
+    assert_eq!(casos.len(), 8, "o corpus v1 so muda com revisao explicita");
     let mut contradicoes = 0;
     let mut detectadas = 0;
     let mut coerentes = 0;
@@ -174,12 +186,12 @@ fn baseline_longitudinal_do_corpus_fixo_de_alegacoes() {
     );
     assert_eq!(contradicoes, 2);
     assert_eq!(coerentes, 2);
-    assert_eq!(sem_evidencia, 3);
+    assert_eq!(sem_evidencia, 4);
     // A linha de base do corpus v1 deve detectar todas as polaridades incompatíveis.
     assert_eq!(detectadas, 2);
     assert!(
         falsos_alertas.is_empty(),
         "falsos alertas nas alegacoes coerentes: {falsos_alertas:?}"
     );
-    assert_eq!(preservadas_como_desconhecidas, 3);
+    assert_eq!(preservadas_como_desconhecidas, 4);
 }

@@ -490,17 +490,10 @@ async fn e2e_divergencia_modelo_afirma_sucesso_mas_ledger_registrou_falha() {
         })
         .collect();
 
-    // A ALEGACAO do modelo no turno seguinte: "escrevi TESTE.md" = sucesso,
-    // apontando para a MESMA execucao que o ledger marcou como falha.
-    let alegacao = garraia_agents::Claim::observada(
-        "escrevi TESTE.md",
-        garraia_agents::EvidenceRef {
-            tool_call_id: registros[0].call_id.clone(),
-            tool_name: registros[0].name.clone(),
-            success: true,
-            turno: registros[0].turno,
-            ordem: registros[0].ordem,
-        },
+    // Estruturamos a polaridade da resposta separadamente da evidência real.
+    let alegacao = garraia_agents::AlegacaoOperacional::sucesso(
+        registros[0].call_id.clone(),
+        registros[0].name.clone(),
     );
 
     match detect_divergencia(&alegacao, &ledger) {
@@ -582,15 +575,9 @@ async fn e2e_divergencia_sem_contradicao_e_sustentada() {
         .collect();
 
     // Alegacao coerente: "a escrita falhou" para uma execucao que falhou.
-    let alegacao = garraia_agents::Claim::falhou(
-        "file_write bloqueado",
-        garraia_agents::EvidenceRef {
-            tool_call_id: registros[0].call_id.clone(),
-            tool_name: registros[0].name.clone(),
-            success: false,
-            turno: registros[0].turno,
-            ordem: registros[0].ordem,
-        },
+    let alegacao = garraia_agents::AlegacaoOperacional::falha(
+        registros[0].call_id.clone(),
+        registros[0].name.clone(),
     );
     assert_eq!(
         detect_divergencia(&alegacao, &ledger),
