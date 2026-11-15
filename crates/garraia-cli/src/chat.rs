@@ -1886,10 +1886,13 @@ pub async fn run_chat(
     // um Weak e consulta somente a sessao que a invocou (#1712).
     let runtime = Arc::new(runtime);
     let inspect_model = Arc::new(std::sync::RwLock::new(model_name.clone()));
+    // #1712 fatia 6: o estado DECLARADO (gateway/MCP) vem da configuracao que
+    // este processo ja carregou — nunca de rede ou de inspecao do gateway.
     runtime.register_tool(Box::new(crate::cli_inspect_tool::CliInspectTool::new(
         Arc::downgrade(&runtime),
         provider_name.clone(),
         Arc::clone(&inspect_model),
+        crate::estado_declarado::coletar_do_processo(&config),
     )));
 
     // #1088: o store so existe quando a pessoa pediu. Sem `--persist` nem
