@@ -33,6 +33,7 @@ mod repo_workflow;
 mod runs_cmd;
 #[cfg(unix)]
 mod sigpipe;
+mod skills_cmd;
 mod sonda_de_provider;
 mod systemd_guard;
 mod team;
@@ -427,6 +428,17 @@ enum Commands {
     Runs {
         #[command(subcommand)]
         action: RunsCommands,
+    },
+
+    /// Operate the skills pipeline: mine session logs, list candidates and
+    /// installed skills (#1901).
+    ///
+    /// Same directories the gateway's learning handlers use
+    /// (`$HOME/.garra/skills`, `$HOME/.garra/sessions`), so what the CLI
+    /// reports is exactly what the server would see — no gateway required.
+    Skills {
+        #[command(subcommand)]
+        action: SkillsCommands,
     },
 
     /// Inspect, validate, and diagnose the effective configuration
@@ -1207,6 +1219,46 @@ enum MemoryCommands {
 }
 
 #[derive(Subcommand)]
+enum SkillsCommands {
+    /// Mine the session logs for repeated command patterns and write candidates.
+    ///
+    /// A pattern needs at least `--threshold` distinct sessions containing the
+    /// same normalized command pair. Candidates land in `_candidates/` as
+    /// `mined-*.md` and are never rewritten once they exist (idempotent).
+    ///
+    /// Exit codes (sysexits):
+    ///   0  — ok (including "no repeated pattern found")
+    ///   2  — invalid argument (e.g. `--threshold 0`)
+    ///   66 — EX_NOINPUT, the sessions directory does not exist
+    Mine {
+        /// Directory holding the `*.json` session logs.
+        /// Defaults to `$HOME/.garra/sessions`.
+        #[arg(long, value_name = "PATH")]
+        sessions_dir: Option<PathBuf>,
+
+        /// Minimum number of distinct sessions that must contain a pattern.
+        #[arg(long, default_value_t = 2)]
+        threshold: usize,
+
+        /// Emit machine-readable JSON instead of the human-friendly report.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List the mined candidates still waiting for promotion.
+    Candidates {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List the installed skills (global and project scopes).
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ConfigCommands {
     /// Load the effective configuration and report precedence + validation findings.
     ///
@@ -1848,6 +1900,12 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
         Commands::Runs { action } => match action {
             RunsCommands::List { .. } => true,
         },
+        Commands::Skills { action } => match action {
+            // `mine` grava candidatos: morrer no meio deixa arquivo pela metade.
+            SkillsCommands::Mine { .. } => false,
+            // So leem estado e imprimem.
+            SkillsCommands::Candidates { .. } | SkillsCommands::List { .. } => true,
+        },
         Commands::Config { action } => match action {
             ConfigCommands::Check { .. } => true,
             ConfigCommands::SetModel { .. } | ConfigCommands::SetRouting { .. } => false,
@@ -2455,6 +2513,17 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `garra skills` e manutencao do pipeline de skills: nao sobe gateway e nao
+    // depende da config carregada — roda antes do `ConfigLoader` para que uma
+    // config quebrada nao impeca inspecionar candidatos/skills (#1901).
+    if let Commands::Skills { action } = &cli.command {
+        let code = run_skills(action)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
     let config_loader = garraia_config::ConfigLoader::new()?;
     config_loader.ensure_dirs()?;
     let config = config_loader.load()?;
@@ -2617,6 +2686,23 @@ fn recusar_restart_sob_systemd(port: u16) {
 
 #[cfg(not(target_os = "linux"))]
 fn recusar_restart_sob_systemd(_port: u16) {}
+
+/// Executa o grupo `garra skills` (#1901).
+///
+/// Um so ponto de decisao, chamado antes do boot (para o comando nao depender
+/// da config carregada) e de novo no `async_main`, onde o `match` sobre
+/// `Commands` e exaustivo.
+fn run_skills(action: &SkillsCommands) -> Result<i32> {
+    match action {
+        SkillsCommands::Mine {
+            sessions_dir,
+            threshold,
+            json,
+        } => skills_cmd::run_mine(sessions_dir.as_deref(), *threshold, *json),
+        SkillsCommands::Candidates { json } => skills_cmd::run_candidates(*json),
+        SkillsCommands::List { json } => skills_cmd::run_list(*json),
+    }
+}
 
 async fn async_main(
     cli: Cli,
@@ -3333,6 +3419,15 @@ async fn async_main(
             if let Err(e) = update::run_rollback() {
                 eprintln!("rollback failed: {e:#}");
                 std::process::exit(EX_UPDATE_FAILED);
+            }
+        }
+        // #1901: o grupo roda ANTES do boot (sync, sem config). Este braco
+        // existe para o `match` sobre `Commands` ser exaustivo — e se alguem
+        // mover a chamada para ca, o comando segue funcionando.
+        Commands::Skills { action } => {
+            let code = run_skills(&action)?;
+            if code != 0 {
+                std::process::exit(code);
             }
         }
         Commands::Glob { action } => {

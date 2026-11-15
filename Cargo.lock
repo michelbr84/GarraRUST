@@ -3170,6 +3170,7 @@ dependencies = [
  "garraia-gateway",
  "garraia-glob",
  "garraia-hardware",
+ "garraia-learning",
  "garraia-plugins",
  "garraia-security",
  "garraia-skills",
