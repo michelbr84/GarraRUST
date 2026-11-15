@@ -7,7 +7,7 @@
 use std::sync::{Arc, RwLock, Weak};
 
 use async_trait::async_trait;
-use garraia_agents::runtime::{CLI_INSPECT_TOOL_NAME, TOOL_PROGRAM_NAME};
+use garraia_agents::runtime::CLI_INSPECT_TOOL_NAME;
 use garraia_agents::tools::Disponibilidade;
 use garraia_agents::{AgentRuntime, Tool, ToolContext, ToolOutput};
 use garraia_common::Result;
@@ -163,8 +163,8 @@ fn safe_tool_name(value: &str) -> String {
     }
 }
 
-fn availability_json(runtime: &AgentRuntime, tool_name: &str) -> Value {
-    match runtime.disponibilidade_de(tool_name) {
+fn disponibilidade_json(disponibilidade: &Disponibilidade) -> Value {
+    match disponibilidade {
         Disponibilidade::Disponivel => json!({ "state": "available" }),
         Disponibilidade::Indisponivel { codigo, .. } => json!({
             "state": "unavailable",
@@ -269,38 +269,30 @@ impl Tool for CliInspectTool {
         }
 
         if matches!(scope, "tools" | "all") {
-            let allowed_tools = turn_tools.as_deref().unwrap_or_default();
-            let mut entries: Vec<Value> = runtime
-                .tool_inventory()
-                .into_iter()
-                .filter(|entry| {
-                    entry.name != TOOL_PROGRAM_NAME && allowed_tools.contains(&entry.name)
-                })
-                .map(|entry| {
+            // #1712: MESMA fonte dos slash commands (`/status`, `/tools`). Esta
+            // projeção filtra fail-closed (só o que o portão liberou); a de
+            // interface mostra o registro e diz que a liberação é por turno.
+            let visao = runtime.visao_das_ferramentas(turn_tools.as_deref());
+            let entries: Vec<Value> = visao
+                .ferramentas
+                .iter()
+                .filter(|ferramenta| ferramenta.liberada == Some(true))
+                .map(|ferramenta| {
                     json!({
-                        "name": safe_tool_name(&entry.name),
-                        "origin": entry.source,
-                        "registration": "registered",
-                        "runtime_availability": availability_json(&runtime, &entry.name),
+                        "name": safe_tool_name(&ferramenta.nome),
+                        "origin": ferramenta.origem,
+                        "registration": if ferramenta.sintetica { "synthetic" } else { "registered" },
+                        "runtime_availability": disponibilidade_json(&ferramenta.disponibilidade),
                         "turn_permission": "allowed_this_turn"
                     })
                 })
                 .collect();
-            if allowed_tools.iter().any(|name| name == TOOL_PROGRAM_NAME) {
-                entries.push(json!({
-                    "name": TOOL_PROGRAM_NAME,
-                    "origin": "native_runtime",
-                    "registration": "synthetic",
-                    "runtime_availability": availability_json(&runtime, TOOL_PROGRAM_NAME),
-                    "turn_permission": "allowed_this_turn"
-                }));
-            }
-            entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
             let total = entries.len();
             let entries: Vec<Value> = entries.into_iter().skip(offset).take(PAGE_SIZE).collect();
             report["tools"] = json!({
                 "source": "runtime_dispatch_turn_tools_snapshot",
                 "permission_state": if turn_tools.is_some() { "verified" } else { "unknown" },
+                "registered_total": visao.registradas(),
                 "count": total,
                 "offset": offset,
                 "page_size": PAGE_SIZE,
@@ -315,6 +307,7 @@ impl Tool for CliInspectTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use garraia_agents::runtime::TOOL_PROGRAM_NAME;
 
     struct FileWriteFake;
 
@@ -444,6 +437,7 @@ mod tests {
         .unwrap();
         let report: Value = serde_json::from_str(&output.content).unwrap();
         assert_eq!(report["tools"]["count"], 2);
+        assert_eq!(report["tools"]["registered_total"], 2);
         assert_eq!(report["tools"]["entries"][0]["name"], "cli_inspect");
         assert_eq!(report["tools"]["entries"][1]["name"], TOOL_PROGRAM_NAME);
         assert_eq!(report["tools"]["entries"][1]["registration"], "synthetic");
@@ -529,7 +523,18 @@ mod tests {
         );
         assert!(runtime_source.contains("pub const TOOL_PROGRAM_NAME: &str = \"tool_program\";"));
         assert!(runtime_source.contains("liberadas.push(TOOL_PROGRAM_NAME.to_string())"));
-        assert!(tool_source.contains("allowed_tools.iter().any(|name| name == TOOL_PROGRAM_NAME)"));
+        // #1712: as duas projeções leem o MESMO coletor. Antes delas o
+        // `/status` contava `list_tool_info()` (tudo registrado) e esta tool
+        // contava só o liberado — dois números com a mesma etiqueta. O guarda
+        // falha se qualquer lado voltar a ler o inventário por conta própria.
+        let visualizacao_source = include_str!("../../garraia-agents/src/ferramentas_visiveis.rs");
+        assert!(visualizacao_source.contains("pub fn visao_das_ferramentas("));
+        assert!(tool_source.contains("runtime.visao_das_ferramentas(turn_tools.as_deref())"));
+        assert!(
+            tool_source.contains("ferramenta.liberada == Some(true)"),
+            "a projeção do modelo precisa filtrar fail-closed pelo coletor"
+        );
+        assert!(!tool_source.contains("runtime.tool_inventory()"));
         let dispatch = runtime_source
             .find("match self.find_tool_com_origem(name)")
             .expect("production tool dispatch retains registration source");

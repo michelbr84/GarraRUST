@@ -2204,11 +2204,19 @@ pub async fn run_chat(
             // sempre o valor **vivo** — `/model` troca o modelo no meio da
             // sessao, entao ler a config diria o que era verdade no boot.
             "/status" => {
-                let ferramentas = runtime.list_tool_info();
+                // #1712: `visao_das_ferramentas` é a MESMA fonte da tool
+                // `cli_inspect`. Aqui não há portão observado (o portão da CLI
+                // depende do texto do turno), então o número é o de
+                // REGISTRADAS — e a linha diz isso, em vez de chamar de
+                // "ferramentas" um total que o modelo vê menor.
+                let visao = runtime.visao_das_ferramentas(None);
                 let mut linhas = vec![
                     panel::linha("Provider", provider_name.clone()),
                     panel::linha("Modelo", model_name.clone()),
-                    panel::linha("Ferramentas", ferramentas.len().to_string()),
+                    panel::linha(
+                        "Ferramentas",
+                        format!("{} registradas (liberacao por turno)", visao.registradas()),
+                    ),
                     panel::linha("Modo", rotulo_do_modo(modo_do_agente)),
                     // #1858 fatia 2: o nivel de aprovacao vivo da sessao.
                     panel::linha("Aprovacao", nivel_aprovacao.rotulo().to_string()),
@@ -2296,8 +2304,13 @@ pub async fn run_chat(
                 continue;
             }
             "/tools" | "/ferramentas" => {
-                let ferramentas = runtime.list_tool_info();
-                if ferramentas.is_empty() {
+                // #1712: mesma fonte da tool `cli_inspect`. O painel mostra as
+                // REGISTRADAS com a disponibilidade operacional de cada uma; a
+                // liberação é do portão do turno (depende do modo e do texto do
+                // pedido), e a linha de aviso abaixo diz isso — antes o painel
+                // chamava o registro de "ferramentas disponiveis".
+                let visao = runtime.visao_das_ferramentas(None);
+                if visao.ferramentas.is_empty() {
                     renderer.handle(
                         UiEvent::Hint("Nenhuma ferramenta registrada nesta sessao."),
                         &mut io::stdout(),
@@ -2309,9 +2322,10 @@ pub async fn run_chat(
                 // montadas, a descricao longa do `file_write` quebrava na
                 // coluna zero e desmontava o alinhamento — visto rodando o
                 // binario.
-                let linhas: Vec<panel::Linha<'_>> = ferramentas
+                let linhas: Vec<panel::Linha<'_>> = visao
+                    .ferramentas
                     .iter()
-                    .map(|(nome, descricao)| {
+                    .map(|ferramenta| {
                         // A descricao de uma tool MCP e texto livre escrito
                         // pelo servidor. O painel tira escape, mas escape nao e
                         // o unico problema: uma descricao mal escrita pode
@@ -2320,15 +2334,37 @@ pub async fn run_chat(
                         // `capture_tool_output` ja aplica na **saida** da
                         // ferramenta — faltava na descricao. Achado na
                         // auditoria.
-                        let curta = descricao.lines().next().unwrap_or("");
-                        panel::linha(nome.as_str(), garraia_security::redact_secrets(curta))
+                        let curta = ferramenta.descricao.lines().next().unwrap_or("");
+                        let base = garraia_security::redact_secrets(curta);
+                        // Registrada nao e operacional (#1425): a indisponivel
+                        // continua na lista, com o motivo, em vez de sumir e
+                        // dar a impressao de que o agente a tem.
+                        let texto = match &ferramenta.disponibilidade {
+                            garraia_agents::tools::Disponibilidade::Indisponivel {
+                                codigo, ..
+                            } => {
+                                if base.is_empty() {
+                                    format!("indisponivel ({codigo})")
+                                } else {
+                                    format!("{base} — indisponivel ({codigo})")
+                                }
+                            }
+                            garraia_agents::tools::Disponibilidade::Disponivel => base,
+                        };
+                        panel::linha(ferramenta.nome.as_str(), texto)
                     })
                     .collect();
                 renderer.handle(
                     UiEvent::Panel {
-                        titulo: "Ferramentas disponiveis",
+                        titulo: "Ferramentas registradas",
                         linhas: &linhas,
                     },
+                    &mut io::stdout(),
+                );
+                renderer.handle(
+                    UiEvent::Hint(
+                        "A liberacao e por turno (modo + pedido), nao pelo registro: o agente ve pela tool cli_inspect.",
+                    ),
                     &mut io::stdout(),
                 );
                 continue;
@@ -2355,7 +2391,13 @@ pub async fn run_chat(
                     panel::linha("Projeto", projeto),
                     panel::linha("Provider", provider_name.clone()),
                     panel::linha("Modelo", model_name.clone()),
-                    panel::linha("Ferramentas", runtime.list_tool_info().len().to_string()),
+                    panel::linha(
+                        "Ferramentas",
+                        format!(
+                            "{} registradas",
+                            runtime.visao_das_ferramentas(None).registradas()
+                        ),
+                    ),
                 ];
                 renderer.handle(
                     UiEvent::Panel {
@@ -6388,6 +6430,49 @@ mod janela_do_atalho_model_tests {
                 .unwrap_or_default()
                 .is_empty(),
             "nenhum pedido pode chegar ao destino do redirect"
+        );
+    }
+}
+
+/// #1712 — guarda de fiação das duas superfícies de ferramentas do CLI.
+///
+/// O `/status`/`/tools` (interface do usuario) e a tool `cli_inspect`
+/// (consumida pelo modelo) tem que ler a MESMA fonte. Antes desta fatia o
+/// primeiro contava `list_tool_info()` — tudo registrado — e o segundo so o
+/// que o portao liberou; dois numeros iguais de rotulo e diferentes de valor.
+/// Um teste de comportamento nao pega a volta do segundo leitor, porque as
+/// duas projecoes continuam funcionando sozinhas: a regressao e de FIACAO.
+#[cfg(test)]
+mod visao_de_ferramentas_tests {
+    const CHAT: &str = include_str!("chat.rs");
+    const INSPECT: &str = include_str!("cli_inspect_tool.rs");
+
+    fn producao(fonte: &'static str) -> &'static str {
+        fonte.split("#[cfg(test)]").next().unwrap_or(fonte)
+    }
+
+    #[test]
+    fn status_e_tools_contam_pela_visao_compartilhada() {
+        let producao = producao(CHAT);
+        assert_eq!(
+            producao.matches("visao_das_ferramentas(None)").count(),
+            3,
+            "esperado: /status, /tools e /context; um deles voltou a ler o inventario cru"
+        );
+        assert!(
+            !producao.contains("list_tool_info()"),
+            "alguma superficie do chat voltou a contar ferramentas registradas por conta propria"
+        );
+    }
+
+    #[test]
+    fn a_tool_do_modelo_le_a_mesma_visao_e_filtra_fail_closed() {
+        let producao = producao(INSPECT);
+        assert!(producao.contains("runtime.visao_das_ferramentas(turn_tools.as_deref())"));
+        assert!(producao.contains("ferramenta.liberada == Some(true)"));
+        assert!(
+            !producao.contains("runtime.tool_inventory()"),
+            "a projecao do modelo voltou a montar o inventario por fora do coletor"
         );
     }
 }
