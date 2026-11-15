@@ -6492,6 +6492,28 @@ mod visao_de_ferramentas_tests {
         );
     }
 
+    /// #1712, critérios derivados dos benchmarks 7/9/10 — o agente só responde
+    /// "qual versão está rodando?" se souber que a fonte existe. A tool é
+    /// registrada DEPOIS do prompt ser montado, então o nome entra na lista do
+    /// prompt por uma linha explícita; sem ela o modelo perde a única fonte
+    /// local e volta a dizer que não consegue saber a própria versão.
+    #[test]
+    fn o_prompt_anuncia_o_cli_inspect_registrado_depois() {
+        let chat_producao = producao(CHAT);
+        assert!(
+            chat_producao.contains("tool_names.push(\"cli_inspect\".to_string())"),
+            "o prompt voltou a ser montado sem anunciar o cli_inspect (registrado depois dele)"
+        );
+        assert!(
+            chat_producao.contains("\"cli_inspect\" =>"),
+            "a tabela de ajuda perdeu a linha do cli_inspect: o prompt lista a tool sem descrever"
+        );
+        assert!(
+            chat_producao.contains("somente leitura"),
+            "o prompt deixou de dizer que a inspeção é somente leitura"
+        );
+    }
+
     /// #1709 — o `cli_inspect` só tem evidência de execução se o chat alimentar
     /// o snapshot no fecho de cada turno. Sem esta ligação a tool responde
     /// `unverified` para sempre, e o teste da projeção continuaria verde.
