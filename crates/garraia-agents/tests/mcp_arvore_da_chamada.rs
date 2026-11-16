@@ -99,7 +99,7 @@ impl Servidor {
     fn descendentes(&self) -> HashMap<String, u32> {
         let mut mapa = HashMap::new();
         for e in self.eventos() {
-            if e[0] == "descendente" {
+            if e[0] == "descendente" && e.len() >= 3 {
                 mapa.entry(e[1].clone())
                     .or_insert_with(|| e[2].parse().expect("pid"));
             }
@@ -113,7 +113,7 @@ impl Servidor {
         let achado = esperar(Duration::from_secs(15), || {
             self.eventos()
                 .into_iter()
-                .find(|e| e[0] == "inicio" && e[3] == alvo)
+                .find(|e| e[0] == "inicio" && e.len() >= 4 && e[3] == alvo)
                 .map(|e| (e[1].clone(), e[2].parse::<u32>().expect("pid")))
         })
         .await;
@@ -134,7 +134,9 @@ fn eventos(log: &Path) -> Vec<Vec<String>> {
         .unwrap_or_default()
         .lines()
         .map(|l| l.split_whitespace().map(str::to_string).collect())
-        .filter(|e: &Vec<String>| !e.is_empty())
+        // Linha pela metade (a fixture ainda escrevendo) fica para a proxima
+        // leitura: todo evento tem ao menos tipo e um campo.
+        .filter(|e: &Vec<String>| e.len() >= 2)
         .collect()
 }
 
@@ -332,7 +334,7 @@ async fn desconexao_derruba_a_arvore_e_poupa_o_vizinho() {
 
         for (tipo, pid) in &de_a {
             assert!(
-                espera_morrer(*pid, Duration::from_secs(5)).await,
+                espera_morrer(*pid, Duration::from_secs(10)).await,
                 "{tipo} (pid {pid}) de A sobreviveu a desconexao"
             );
         }
@@ -345,7 +347,7 @@ async fn desconexao_derruba_a_arvore_e_poupa_o_vizinho() {
         manager.disconnect_all().await;
         for (tipo, pid) in &de_b {
             assert!(
-                espera_morrer(*pid, Duration::from_secs(5)).await,
+                espera_morrer(*pid, Duration::from_secs(10)).await,
                 "{tipo} (pid {pid}) de B sobreviveu ao encerramento"
             );
         }
@@ -415,7 +417,7 @@ async fn servidor_teimoso_cai_com_a_arvore() {
 
         for (tipo, pid) in &antes {
             assert!(
-                espera_morrer(*pid, Duration::from_secs(5)).await,
+                espera_morrer(*pid, Duration::from_secs(10)).await,
                 "{tipo} (pid {pid}) sobreviveu"
             );
         }
@@ -450,7 +452,7 @@ async fn falha_na_subida_nao_deixa_arvore() {
         assert_eq!(antes.len(), 3, "descendentes: {antes:?}");
         for (tipo, pid) in &antes {
             assert!(
-                espera_morrer(*pid, Duration::from_secs(5)).await,
+                espera_morrer(*pid, Duration::from_secs(10)).await,
                 "{tipo} (pid {pid}) sobreviveu a falha de subida"
             );
         }

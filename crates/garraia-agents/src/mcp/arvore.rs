@@ -68,6 +68,8 @@ const INTERVALO_DO_VIGIA: Duration = Duration::from_millis(250);
 pub(super) enum MotivoDoFim {
     /// `disconnect` de um servidor (admin, restart manual).
     Desconexao,
+    /// Um `connect` sobre um nome ja conectado trocou a conexao.
+    Troca,
     /// `disconnect_all`: o gateway esta saindo.
     Encerramento,
     /// O transporte caiu sozinho (crash do servidor) e a conexao morta esta
@@ -81,6 +83,7 @@ impl MotivoDoFim {
     pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Desconexao => "desconexao",
+            Self::Troca => "troca",
             Self::Encerramento => "encerramento",
             Self::Queda => "queda",
             Self::FalhaNaSubida => "falha_na_subida",
@@ -100,7 +103,9 @@ pub(super) struct Relatorio {
     pub(super) mortos_por_marcador: usize,
     /// PIDs que ainda existiam quando a espera acabou. Vazio e o esperado.
     pub(super) remanescentes: Vec<u32>,
-    /// `false` quando a plataforma nao da como conferir (Windows).
+    /// `true` so quando houve conferencia de verdade (a varredura do Linux
+    /// leu `/proc` e terminou dentro do teto). Fora do Linux e sempre
+    /// `false`: o grupo foi sinalizado, mas nada confere quem sobrou.
     pub(super) verificado: bool,
 }
 
@@ -137,7 +142,7 @@ pub(super) struct Dominio {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     marcador: String,
     /// PID do lider, que no Unix e tambem o id do grupo.
-    #[cfg_attr(not(unix), allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     lider: Option<u32>,
     nascimento: Instant,
     /// Olha o lider de tempos em tempos (ver [`Dominio::novo`]).
@@ -178,27 +183,41 @@ impl Dominio {
     /// resultado, a duracao e o motivo.
     pub(super) async fn encerrar(self, servidor: &str, motivo: MotivoDoFim) -> Relatorio {
         let comeco = Instant::now();
-        let mut mortos_por_marcador = 0usize;
+        let mut mortos: Vec<u32> = Vec::new();
+        let mut vivos: Vec<u32> = Vec::new();
+        let mut verificado = false;
         let mut intervalo = INTERVALO;
-        let (remanescentes, verificado) = loop {
+        loop {
+            let resta = TETO_DA_CONFIRMACAO.saturating_sub(comeco.elapsed());
+            if resta.is_zero() {
+                // Teto estourado com gente viva: `vivos` guarda a ultima
+                // passada, que e o que o relatorio tem de mostrar.
+                break;
+            }
             // A passada le `/proc` inteiro e o conteudo dele e ditado por
             // processo nao confiavel: roda fora das threads da runtime e com
-            // o que resta do teto como prazo. Estourado o prazo, o relatorio
-            // sai como NAO verificado em vez de segurar o encerramento.
+            // o que resta do teto como prazo.
             let marcador = self.marcador.clone();
             let lider = self.lider;
-            let passada = tokio::task::spawn_blocking(move || sobreviventes(&marcador, lider));
-            let resta = TETO_DA_CONFIRMACAO.saturating_sub(comeco.elapsed());
+            let ja_mortos = mortos.clone();
+            let passada =
+                tokio::task::spawn_blocking(move || sobreviventes(&marcador, lider, &ja_mortos));
             let Ok(Ok(passada)) = tokio::time::timeout(resta, passada).await else {
-                break (Vec::new(), false);
+                // A passada nao terminou: o que se sabia antes continua
+                // valendo, mas nao e mais prova.
+                verificado = false;
+                break;
             };
-            mortos_por_marcador += passada.mortos_por_marcador;
-            if passada.vivos.is_empty() || comeco.elapsed() >= TETO_DA_CONFIRMACAO {
-                break (passada.vivos, passada.verificado);
+            mortos.extend(&passada.mortos);
+            vivos = passada.vivos;
+            verificado = passada.verificado;
+            if vivos.is_empty() {
+                break;
             }
-            tokio::time::sleep(intervalo).await;
+            tokio::time::sleep(intervalo.min(resta)).await;
             intervalo = (intervalo * 2).min(INTERVALO_MAXIMO);
-        };
+        }
+        let (remanescentes, mortos_por_marcador) = (vivos, mortos.len());
 
         let relatorio = Relatorio {
             motivo,
@@ -208,24 +227,37 @@ impl Dominio {
             remanescentes,
             verificado,
         };
-        if relatorio.remanescentes.is_empty() {
-            info!(
-                server = %servidor,
-                motivo = motivo.as_str(),
-                vida_ms = relatorio.vida.as_millis() as u64,
-                duracao_ms = relatorio.duracao.as_millis() as u64,
-                mortos_por_marcador = relatorio.mortos_por_marcador,
-                verificado = relatorio.verificado,
-                "MCP server '{servidor}': arvore de processos encerrada"
-            );
-        } else {
+        let vida_ms = relatorio.vida.as_millis() as u64;
+        let duracao_ms = relatorio.duracao.as_millis() as u64;
+        if !relatorio.remanescentes.is_empty() {
             warn!(
                 server = %servidor,
                 motivo = motivo.as_str(),
-                vida_ms = relatorio.vida.as_millis() as u64,
-                duracao_ms = relatorio.duracao.as_millis() as u64,
+                vida_ms,
+                duracao_ms,
+                verificado = relatorio.verificado,
                 remanescentes = ?relatorio.remanescentes,
                 "MCP server '{servidor}': processos da arvore ainda vivos apos o encerramento"
+            );
+        } else if cfg!(target_os = "linux") && !relatorio.verificado {
+            // No Linux a conferencia existe; se ela nao aconteceu, "nao
+            // sobrou nada" nao foi provado e nao pode sair como sucesso.
+            warn!(
+                server = %servidor,
+                motivo = motivo.as_str(),
+                vida_ms,
+                duracao_ms,
+                "MCP server '{servidor}': arvore de processos encerrada SEM conferencia"
+            );
+        } else {
+            info!(
+                server = %servidor,
+                motivo = motivo.as_str(),
+                vida_ms,
+                duracao_ms,
+                mortos_por_marcador = relatorio.mortos_por_marcador,
+                verificado = relatorio.verificado,
+                "MCP server '{servidor}': arvore de processos encerrada"
             );
         }
         relatorio
@@ -234,58 +266,47 @@ impl Dominio {
 
 /// O que uma passada de conferencia viu.
 struct Passada {
-    /// Quem ainda existia no dominio (ja com o sinal enviado, onde ha como).
+    /// Quem ainda existia no dominio (ja com o sinal enviado).
     vivos: Vec<u32>,
     /// Processos fora do grupo mortos pelo marcador nesta passada.
-    mortos_por_marcador: usize,
-    /// `false` quando a plataforma nao soube conferir.
+    mortos: Vec<u32>,
+    /// `false` quando nao houve como conferir.
     verificado: bool,
 }
 
-/// Uma passada: mata o que der e devolve quem ainda existe.
+/// Uma passada: colhe os orfaos ja mortos, mata o que der e devolve quem
+/// ainda existe. `ja_mortos` sao os que passadas anteriores mataram pelo
+/// marcador, para serem colhidos se ficaram orfaos deste processo.
 #[cfg(target_os = "linux")]
-fn sobreviventes(marcador: &str, lider: Option<u32>) -> Passada {
+fn sobreviventes(marcador: &str, lider: Option<u32>, ja_mortos: &[u32]) -> Passada {
+    linux::colher_orfaos(lider, ja_mortos);
     let Some(vivos) = linux::com_marcador(marcador) else {
         // `/proc` ilegivel: nao ha prova nenhuma, e o relatorio diz isso.
         return Passada {
             vivos: Vec::new(),
-            mortos_por_marcador: 0,
+            mortos: Vec::new(),
             verificado: false,
         };
     };
-    let mortos_por_marcador = vivos
+    let mortos = vivos
         .iter()
-        .filter(|pid| linux::matar_fixado(**pid, marcador) && Some(**pid) != lider)
-        .count();
+        .copied()
+        .filter(|pid| linux::matar_fixado(*pid, marcador) && Some(*pid) != lider)
+        .collect();
     Passada {
         vivos,
-        mortos_por_marcador,
+        mortos,
         verificado: true,
     }
 }
 
-/// Sem `/proc`, a prova e o grupo: `kill(-pgid, 0)` responde `ESRCH` quando
-/// nao ha mais ninguem nele. Quem saiu do grupo nao e visto.
-#[cfg(all(unix, not(target_os = "linux")))]
-fn sobreviventes(_marcador: &str, lider: Option<u32>) -> Passada {
-    let pgid = lider
-        .and_then(|pid| i32::try_from(pid).ok())
-        .filter(|p| *p > 1);
-    Passada {
-        vivos: match pgid {
-            Some(pgid) if unix::grupo_tem_alguem(pgid) => vec![pgid as u32],
-            _ => Vec::new(),
-        },
-        mortos_por_marcador: 0,
-        verificado: pgid.is_some(),
-    }
-}
-
-#[cfg(not(unix))]
-fn sobreviventes(_marcador: &str, _lider: Option<u32>) -> Passada {
+/// Fora do Linux nao ha varredura: o grupo ja foi sinalizado por
+/// [`unix::FilhoDoGrupo`] (onde ha grupo), e nada aqui confere o resultado.
+#[cfg(not(target_os = "linux"))]
+fn sobreviventes(_marcador: &str, _lider: Option<u32>, _ja_mortos: &[u32]) -> Passada {
     Passada {
         vivos: Vec::new(),
-        mortos_por_marcador: 0,
+        mortos: Vec::new(),
         verificado: false,
     }
 }
@@ -412,11 +433,14 @@ pub(super) mod unix {
                 return Ok(true);
             }
             let erro = io::Error::last_os_error();
-            // Grupo ja vazio: nao ha o que sinalizar, e nao e erro.
-            if erro.raw_os_error() == Some(libc::ESRCH) {
-                return Ok(false);
+            if erro.raw_os_error() != Some(libc::ESRCH) {
+                return Err(erro);
             }
-            Err(erro)
+            // Grupo vazio. Ou acabou todo mundo, ou o lider se mudou para
+            // outro grupo (`setpgid`) — e ai ele so e alcancavel pelo proprio
+            // PID, que continua nosso enquanto ele nao for colhido.
+            // SAFETY: `pgid > 1` e o PID do lider, ainda nao colhido.
+            Ok(unsafe { libc::kill(self.pgid, sinal) } == 0)
         }
 
         /// Ultimo passo antes de colher: derruba o resto do grupo (se o
@@ -456,6 +480,9 @@ pub(super) mod unix {
             self.sinalizar_grupo(sig).map(|_| ())
         }
 
+        /// Atencao: nao e consulta pura. Visto que o lider saiu, o resto do
+        /// grupo e derrubado ANTES de ele ser colhido — e a colheita que
+        /// libera o numero do grupo, entao e a ultima chance segura.
         fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
             if let Some(status) = self.colhido {
                 return Ok(Some(status));
@@ -533,13 +560,6 @@ pub(super) mod unix {
         }
     }
 
-    /// Ha algum processo (zumbi incluso) no grupo `pgid`?
-    #[cfg(not(target_os = "linux"))]
-    pub(super) fn grupo_tem_alguem(pgid: i32) -> bool {
-        // SAFETY: sinal 0 nao entrega nada, so consulta.
-        unsafe { libc::kill(-pgid, 0) == 0 }
-    }
-
     /// Vigia do lider (ver [`super::Dominio::novo`]). Para sozinho quando o
     /// lider e colhido por outro caminho, e e abortado no `Drop` do dominio.
     ///
@@ -576,244 +596,7 @@ pub(super) mod unix {
 /// `pidfd` (kernel >= 5.3). Android fica de fora de proposito — la o seccomp
 /// de apps pode responder a um syscall desconhecido com `SIGSYS`, nao `ENOSYS`.
 #[cfg(target_os = "linux")]
-mod linux {
-    use super::VAR_DOMINIO;
-
-    /// O processo `pid` carrega exatamente este marcador no ambiente com que
-    /// foi executado? Processo ilegivel (outro uid, setuid) conta como nao.
-    pub(super) fn tem_marcador(pid: u32, marcador: &str) -> bool {
-        let Ok(ambiente) = std::fs::read(format!("/proc/{pid}/environ")) else {
-            return false;
-        };
-        let alvo = format!("{VAR_DOMINIO}={marcador}");
-        ambiente
-            .split(|byte| *byte == 0)
-            .any(|entrada| entrada == alvo.as_bytes())
-    }
-
-    /// Zumbi nao e sobrevivente: ja morreu, so falta o pai colher.
-    fn e_zumbi(pid: u32) -> bool {
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            return false;
-        };
-        // O estado e o primeiro campo depois do ULTIMO `)` — o nome do
-        // comando vai entre parenteses e pode conter espaco e `)`.
-        stat.rsplit_once(')')
-            .and_then(|(_, resto)| resto.split_whitespace().next())
-            .is_some_and(|estado| estado == "Z" || estado == "X")
-    }
-
-    /// PIDs vivos que carregam o marcador; `None` se `/proc` nao pode ser
-    /// listado. O proprio gateway nunca entra, carregue o que carregar.
-    pub(super) fn com_marcador(marcador: &str) -> Option<Vec<u32>> {
-        let eu = std::process::id();
-        let vivos = std::fs::read_dir("/proc")
-            .ok()?
-            .flatten()
-            .filter_map(|entrada| entrada.file_name().to_str()?.parse::<u32>().ok())
-            .filter(|pid| *pid != eu && tem_marcador(*pid, marcador) && !e_zumbi(*pid))
-            .collect();
-        Some(vivos)
-    }
-
-    /// `SIGKILL` no processo `pid`, com protecao contra reuso do numero: o
-    /// processo e fixado por `pidfd` e o marcador e relido ANTES do sinal. Se
-    /// o PID foi reciclado entre a varredura e aqui, o `pidfd` aponta para o
-    /// processo novo, que nao tem o marcador, e nada e enviado.
-    pub(super) fn matar_fixado(pid: u32, marcador: &str) -> bool {
-        if pid == std::process::id() {
-            return false;
-        }
-        // `syscall` e variadica: cada argumento vai como `c_long`, que e o
-        // que o kernel le, em vez de depender da promocao de um `c_int`.
-        let zero: libc::c_long = 0;
-        // SAFETY: `pidfd_open(pid, 0)` so devolve um descritor ou erro.
-        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_long, zero) };
-        if fd < 0 {
-            // Kernel sem pidfd, ou o processo ja se foi: sem identidade
-            // fixada, nao se manda sinal.
-            return false;
-        }
-        let enviado = tem_marcador(pid, marcador)
-            // SAFETY: `fd` e um pidfd valido; `info` nulo e flags 0 sao o uso
-            // documentado de `pidfd_send_signal`.
-            && unsafe {
-                libc::syscall(
-                    libc::SYS_pidfd_send_signal,
-                    fd,
-                    libc::SIGKILL as libc::c_long,
-                    std::ptr::null::<libc::siginfo_t>(),
-                    zero,
-                )
-            } == 0;
-        // SAFETY: `fd` foi aberto acima e nao e usado depois.
-        unsafe { libc::close(fd as libc::c_int) };
-        enviado
-    }
-}
+mod linux;
 
 #[cfg(all(test, unix))]
-mod tests {
-    use process_wrap::tokio::ChildWrapper;
-
-    use super::*;
-
-    fn dorminhoco() -> Command {
-        let mut cmd = Command::new("sh");
-        // O `sh` lanca um neto e espera por ele: lider + um descendente.
-        cmd.args(["-c", "sleep 300 & wait"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        cmd
-    }
-
-    /// O lider nasce lider do proprio grupo — sem isso `kill(-pgid)` nao tem
-    /// alvo. **Mutacao**: tire o `process_group(0)` de `pre_spawn`.
-    #[tokio::test]
-    async fn o_lider_e_lider_do_proprio_grupo() {
-        let mut filho = envolver(dorminhoco(), &novo_marcador())
-            .0
-            .spawn()
-            .expect("spawn");
-        let pid = filho.id().expect("pid") as i32;
-        // SAFETY: `getpgid` so consulta.
-        let pgid = unsafe { libc::getpgid(pid) };
-        assert_eq!(pgid, pid, "o filho deveria liderar o proprio grupo");
-        assert_ne!(
-            pgid,
-            unsafe { libc::getpgid(0) },
-            "o filho nao pode ficar no grupo do gateway"
-        );
-        Box::into_pin(filho.kill()).await.expect("kill");
-    }
-
-    /// Protecao contra reuso de PID: depois de colhido o lider, o numero do
-    /// grupo nao e mais nosso e NENHUM sinal sai. **Mutacao**: tire a guarda
-    /// `colhido.is_some()` de `sinalizar_grupo` e o `kill` passa a ser
-    /// tentado (devolve `ESRCH` aqui, mas num PID reciclado mataria outro).
-    #[tokio::test]
-    async fn depois_de_colhido_nada_e_sinalizado() {
-        let mut cmd = dorminhoco();
-        cmd.process_group(0);
-        let filho = cmd.spawn().expect("spawn");
-        let pgid = filho.id().expect("pid") as i32;
-        let mut filho = unix::FilhoDoGrupo::para_teste(Box::new(filho), pgid);
-
-        assert!(
-            filho.sinalizar_grupo(0).expect("sonda"),
-            "com o lider vivo o grupo e alcancavel"
-        );
-        Box::into_pin(filho.kill()).await.expect("kill");
-        assert!(
-            !filho.sinalizar_grupo(libc::SIGKILL).expect("pos-colheita"),
-            "depois de colhido o lider, nenhum sinal pode sair"
-        );
-        assert_eq!(
-            unix::olhar_lider(pgid),
-            unix::Lider::Indefinido,
-            "o lider ja foi colhido: nao e mais filho"
-        );
-    }
-
-    /// O `kill` derruba o grupo inteiro, nao so o lider. **Mutacao**: troque
-    /// `start_kill` pelo passthrough (`self.inner.start_kill()`) e o neto
-    /// `sleep` sobrevive.
-    #[tokio::test]
-    async fn kill_derruba_o_grupo_inteiro() {
-        let mut filho = envolver(dorminhoco(), &novo_marcador())
-            .0
-            .spawn()
-            .expect("spawn");
-        let pgid = filho.id().expect("pid") as i32;
-        // Da tempo de o `sh` lancar o neto.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        Box::into_pin(filho.kill()).await.expect("kill");
-
-        let comeco = Instant::now();
-        // SAFETY: sinal 0 so consulta.
-        while unsafe { libc::kill(-pgid, 0) } == 0 {
-            assert!(
-                comeco.elapsed() < Duration::from_secs(5),
-                "ainda ha processo no grupo {pgid} depois do kill"
-            );
-            tokio::time::sleep(INTERVALO).await;
-        }
-    }
-
-    /// O vigia so sinaliza com a trava aberta: fechada (o lider foi, ou esta
-    /// sendo, colhido), ele sai sem mandar nada, mesmo com o lider zumbi a
-    /// vista. **Mutacao**: tire o `if *colhido { return true; }` de `vigiar`
-    /// e o neto e morto.
-    #[tokio::test]
-    async fn vigia_nao_sinaliza_com_a_colheita_fechada() {
-        let mut cmd = Command::new("sh");
-        // O lider sai na hora e deixa um neto no grupo.
-        cmd.args(["-c", "sleep 300 & exit 0"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .process_group(0);
-        let mut filho = cmd.spawn().expect("spawn");
-        let pgid = filho.id().expect("pid") as i32;
-        let comeco = Instant::now();
-        while unix::olhar_lider(pgid) != unix::Lider::Saiu {
-            assert!(comeco.elapsed() < Duration::from_secs(5), "lider nao saiu");
-            tokio::time::sleep(INTERVALO).await;
-        }
-
-        let fechada = Colheita(std::sync::Arc::new(std::sync::Mutex::new(true)));
-        tokio::time::timeout(Duration::from_secs(5), unix::vigiar(pgid, fechada))
-            .await
-            .expect("com a trava fechada o vigia sai na primeira olhada");
-        // SAFETY: sinal 0 so consulta.
-        assert_eq!(
-            unsafe { libc::kill(-pgid, 0) },
-            0,
-            "o vigia sinalizou o grupo com a colheita fechada"
-        );
-
-        // Com a trava aberta, o mesmo vigia derruba o grupo.
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            unix::vigiar(pgid, Colheita::default()),
-        )
-        .await
-        .expect("vigia");
-        filho.wait().await.expect("colher o lider");
-        let comeco = Instant::now();
-        while unsafe { libc::kill(-pgid, 0) } == 0 {
-            assert!(comeco.elapsed() < Duration::from_secs(5), "neto sobreviveu");
-            tokio::time::sleep(INTERVALO).await;
-        }
-    }
-
-    /// O marcador casa por igualdade exata da entrada — um token que e
-    /// prefixo de outro nao pode casar com o processo errado.
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn marcador_casa_so_por_igualdade() {
-        let marcador = novo_marcador();
-        let mut filho = envolver(dorminhoco(), &marcador).0.spawn().expect("spawn");
-        let pid = filho.id().expect("pid");
-        // O `environ` so reflete o marcador depois do `exec`.
-        let comeco = Instant::now();
-        while !linux::tem_marcador(pid, &marcador) {
-            assert!(comeco.elapsed() < Duration::from_secs(5), "exec nao veio");
-            tokio::time::sleep(INTERVALO).await;
-        }
-        assert!(!linux::tem_marcador(pid, &marcador[..marcador.len() - 1]));
-        assert!(!linux::tem_marcador(pid, &format!("{marcador}0")));
-        assert!(
-            !linux::matar_fixado(pid, &novo_marcador()),
-            "marcador de outro dominio nao pode matar este processo"
-        );
-        assert!(
-            linux::com_marcador(&marcador)
-                .expect("/proc")
-                .contains(&pid)
-        );
-        assert!(!linux::tem_marcador(std::process::id(), &marcador));
-        Box::into_pin(filho.kill()).await.expect("kill");
-    }
-}
+mod tests;

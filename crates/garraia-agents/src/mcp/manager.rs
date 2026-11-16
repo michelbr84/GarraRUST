@@ -935,7 +935,7 @@ impl McpManager {
             .await
             .insert(name.to_string(), conn);
         if let Some(anterior) = anterior {
-            anterior.encerrar(MotivoDoFim::Desconexao).await;
+            anterior.encerrar(MotivoDoFim::Troca).await;
         }
         self.pending.write().await.remove(name);
 
@@ -1081,7 +1081,7 @@ impl McpManager {
             .await
             .insert(name.to_string(), conn);
         if let Some(anterior) = anterior {
-            anterior.encerrar(MotivoDoFim::Desconexao).await;
+            anterior.encerrar(MotivoDoFim::Troca).await;
         }
         self.pending.write().await.remove(name);
 
@@ -1710,17 +1710,21 @@ impl McpManager {
         // vista morta, e nao so quando for trocada — com os restarts
         // esgotados ela nunca e trocada, e quem saiu do grupo do servidor
         // ficaria de pe para sempre.
-        for (name, _, _) in &to_reconnect {
-            let dominio = self
-                .connections
-                .write()
-                .await
-                .get_mut(name)
-                .and_then(|conn| conn.dominio.take());
-            if let Some(dominio) = dominio {
-                dominio.encerrar(name, MotivoDoFim::Queda).await;
+        // Em paralelo: cada encerramento pode gastar o teto de conferencia, e
+        // N servidores mortos nao podem atrasar o tick N vezes isso.
+        let mut dominios = Vec::new();
+        {
+            let mut conns = self.connections.write().await;
+            for (name, _, _) in &to_reconnect {
+                if let Some(dominio) = conns.get_mut(name).and_then(|c| c.dominio.take()) {
+                    dominios.push((name.clone(), dominio));
+                }
             }
         }
+        futures::future::join_all(dominios.into_iter().map(|(name, dominio)| async move {
+            dominio.encerrar(&name, MotivoDoFim::Queda).await;
+        }))
+        .await;
 
         // Boot failures live in `pending`, never in `connections`.
         let mut to_reconnect: Vec<ReconnectTarget> = to_reconnect;

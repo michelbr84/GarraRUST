@@ -5,8 +5,11 @@
   proprio grupo de processos e o grupo inteiro e encerrado junto — sempre com o
   lider ainda nao colhido, para um PID reciclado nunca ser atingido. No Linux,
   quem saiu do grupo (`setsid`) e achado por um marcador de ambiente por conexao
-  e morto via `pidfd`. Cada encerramento registra motivo, duracao e se sobrou
-  algum processo.
+  e morto via `pidfd`, e os que o gateway adotou (PID 1 de container) sao
+  colhidos em vez de virarem `<defunct>`. Cada encerramento registra motivo,
+  duracao e se sobrou algum processo. Muda um comportamento: um launcher que sobe
+  o servidor em segundo plano e sai passa a ser tratado como servidor que caiu —
+  o servidor deve rodar em primeiro plano (`exec`).
 - **Chamada MCP sem resultado deixa rastro (#1913).** Timeout, erro e chamada
   abandonada passam a registrar servidor, ferramenta, duracao e desfecho — sem
   argumentos nem resposta. O timeout e o abandono continuam cancelando so a

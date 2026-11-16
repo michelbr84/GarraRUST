@@ -254,9 +254,9 @@ How the tree is delimited:
   `pidfd`, after re-reading the marker.
 
 Every teardown logs `arvore de processos encerrada` with the reason
-(`desconexao`, `encerramento`, `queda`, `falha_na_subida`), how long the server
+(`desconexao`, `troca`, `encerramento`, `queda`, `falha_na_subida`), how long the server
 lived, how long the teardown took and whether anything was left; leftovers are a
-`WARN` listing the PIDs. Every call that ends without a result logs
+`WARN` listing the PIDs, and so is a teardown the Linux check could not verify. Every call that ends without a result logs
 `chamada MCP encerrada sem resultado` with `desfecho` = `timeout`, `cancelada`
 or `erro` and its duration. Neither line carries arguments or output.
 
@@ -280,6 +280,23 @@ Limits — this is containment of careless processes, **not** a sandbox:
 - The leftover check is bounded (2 s). If `/proc` cannot be read, or the check
   does not finish in time, the log line says `verificado=false` instead of
   reporting a clean teardown.
+
+- With TLS enabled the gateway has no graceful-shutdown hook yet, so Ctrl+C
+  ends it without disconnecting MCP servers: the server process gets the
+  parent-death signal, its descendants do not.
+- A launcher that starts the real server in the background and **exits** is now
+  treated as a crashed server: its group is killed shortly after the launcher
+  is gone. Start the server in the foreground (`exec`) instead.
+- When the gateway is the adoptive parent of the descendants (PID 1 in a
+  container), the ones it killed are also reaped, so a teardown leaves no
+  `<defunct>` entries — Linux only.
+
+What was considered and not adopted here: a cgroup v2 per server would contain
+even a process that wipes its environment, but needs a delegated cgroup subtree
+the gateway does not have on an ordinary install; a Windows Job Object is the
+equivalent there and is not wired in. A process tree **per call** does not
+exist with a shared stdio server — it would take one server process per call.
+Those are architectural choices for the owner, tracked in issue #1913.
 
 For these reasons the tree teardown is not, by itself, grounds to enable
 privileged delegated execution through an MCP server.
