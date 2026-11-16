@@ -814,13 +814,13 @@ impl AppState {
         }
 
         if let Some(mut session) = self.sessions.get_mut(session_id) {
+            // Cada turno re-prova (ou nao) o dono — inclusive um turno sem
+            // canal: sem isso, um turno do dono deixaria a marca ligada para o
+            // proximo remetente da mesma sessao (web chat incluso).
+            session.ultimo_turno_do_dono = false;
             if let Some(channel) = channel_id {
                 session.channel_id = Some(channel.to_string());
                 session.canais_dos_turnos.insert(channel.to_string());
-                // Cada turno re-prova (ou nao) o dono: sem isso, um turno do
-                // dono deixaria a marca ligada para o proximo remetente da
-                // mesma sessao compartilhada.
-                session.ultimo_turno_do_dono = false;
             }
             if let Some(user) = user_id {
                 session.user_id = Some(user.to_string());
@@ -1554,6 +1554,35 @@ mod tests {
         assert_eq!(a.agent_mode, None);
         // E nada foi gravado como modo deduzido.
         assert_eq!(st.chosen_agent_mode_for(sid).await, None);
+    }
+
+    /// #1905: a marca de dono e do TURNO, nao da sessao. Todo inicio de turno
+    /// zera a marca — inclusive quando o turno chega sem `channel_id` (web
+    /// chat). Se o reset dependesse do canal, um turno do dono no Telegram
+    /// deixaria o proximo remetente da mesma sessao ver o relatorio aberto.
+    #[tokio::test]
+    async fn hydrate_zera_a_marca_de_dono_mesmo_sem_canal() {
+        let st = test_state();
+        let sid = "sess-dono-reset";
+        st.hydrate_session_history(sid, Some("telegram"), Some("123"))
+            .await;
+        st.marcar_turno_do_dono(sid, true);
+        assert!(
+            st.sessions
+                .get(sid)
+                .map(|s| s.ultimo_turno_do_dono)
+                .unwrap_or(false)
+        );
+
+        // Turno seguinte sem canal (ex.: web chat) na mesma sessao.
+        st.hydrate_session_history(sid, None, None).await;
+        assert!(
+            !st.sessions
+                .get(sid)
+                .map(|s| s.ultimo_turno_do_dono)
+                .unwrap_or(true),
+            "marca do dono sobreviveu ao inicio de um turno sem canal"
+        );
     }
 
     /// A chave de sessao do Telegram e montada **num lugar so**.
