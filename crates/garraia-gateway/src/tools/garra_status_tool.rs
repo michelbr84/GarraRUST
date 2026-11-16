@@ -62,8 +62,8 @@ use crate::state::AppState;
 /// mais nova (`releases_api`) quando o operador pergunta "estou atualizado?".
 const UPSTREAM_REPO: &str = "michelbr84/GarraRUST";
 
-/// `concat!` so aceita literal: a URL fica escrita uma vez, aqui, e o repo
-/// acima e o rotulo para o modelo.
+/// O nome do repositorio aparece aqui de novo: `concat!` nao aceita `const`,
+/// entao renomear o repo exige editar os dois lugares.
 const UPSTREAM_RELEASES_API: &str =
     "https://api.github.com/repos/michelbr84/GarraRUST/releases/latest";
 

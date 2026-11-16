@@ -423,8 +423,9 @@ pub(crate) fn decide_operador(
         return false;
     }
     // Um canal de mensagens nao prova o operador por si (#1347) — mas o
-    // allowlist DELE pode: `is_owner` e o dono pareado do bot, que o gate do
-    // canal ja separou de qualquer outro remetente. Nesse caso o relatorio
+    // allowlist da instalacao pode: `is_owner` e o dono pareado do bot — o
+    // mesmo gate que decide quem pode falar, e por isso "quem reivindicou a
+    // instalacao", nao uma identidade do operador desta maquina. Nesse caso o relatorio
     // sai aberto (versao exata, provedores, MCP) porque quem esta do outro
     // lado e o dono na propria instalacao, e a porta do operador esta fechada.
     // A prova do canal NAO vence leitura ilegivel do banco: uma sessao que
@@ -470,10 +471,15 @@ pub(crate) fn decide_operador(
 ///    Telegram por UUID e do Chat Sync, que sobrevive a um restart e a um
 ///    turno local posterior numa sessao compartilhada;
 /// 3. o prefixo do id, como sinal a mais de canal remoto;
-/// 4. a porta do operador fechada ([`porta_do_operador_fechada`]).
+/// 4. a porta do operador fechada ([`porta_do_operador_fechada`]);
+/// 5. a prova do dono do canal neste turno
+///    (`SessionState::ultimo_turno_do_dono`, gravada so pelo Telegram em chat
+///    **privado**), que vence as superficies (1) e as fontes lidas (2) — nao
+///    vence a leitura ilegivel do banco, que segue fail-closed.
 ///
-/// Qualquer sinal remoto, qualquer falha de leitura ou nenhuma superficie
-/// gravada responde `false`: fail-closed.
+/// Qualquer sinal remoto, qualquer falha de leitura (inclusive para o dono) ou
+/// nenhuma superficie gravada responde `false`: fail-closed. O que a prova do
+/// dono dispensa e o rotulo do canal, nao a verificacao do banco.
 ///
 /// Limite conhecido (auditoria #1666): `Operador` e um rotulo de canal, nao uma
 /// identidade. Com `api_key` configurada, cada superficie local so grava o
@@ -871,10 +877,9 @@ mod decisao_operador_tests {
     }
 
     #[test]
-    fn marca_do_dono_nao_vaza_para_superficie_remota() {
-        // Turno marcado como dono, mas com superficie remota no historico:
-        // a marca e do ULTIMO turno e nao pode conceder privilegio sozinha
-        // quando a sessao tem superficie remota sem prova (fail-closed).
+    fn sem_prova_do_dono_superficie_remota_segue_restrita() {
+        // A marca de dono zerada (turno de qualquer remetente) nao muda a
+        // regra da #1347: superficie remota no historico segue restrita.
         let sup = s(&["telegram", "whatsapp"]);
         assert!(!decide_operador(
             true,
@@ -883,6 +888,16 @@ mod decisao_operador_tests {
             &FontesDaSessao::SemBanco,
             false
         ));
+    }
+
+    #[test]
+    fn prova_do_dono_vence_fonte_persistida_remota() {
+        // Politica explicita: a prova do dono neste turno vence as fontes
+        // persistidas (2) — quem esta do outro lado e o dono do bot, e quem
+        // fala no chat privado dele e ele. A unica excecao e `Ilegivel`.
+        let sup = s(&["telegram"]);
+        let fontes = FontesDaSessao::Lidas(s(&["whatsapp"]));
+        assert!(decide_operador(true, None, Some(&sup), &fontes, true));
     }
 
     #[test]
