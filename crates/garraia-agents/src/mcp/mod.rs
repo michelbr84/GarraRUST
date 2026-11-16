@@ -1,3 +1,4 @@
+mod arvore;
 mod child_env;
 mod manager;
 mod npx_cache;

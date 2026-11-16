@@ -224,6 +224,83 @@ garraia health
 
 Check MCP status in health output.
 
+### Process tree: what ends when a call or a server ends
+
+A stdio MCP server is **one process shared by every call** to that server, so
+the isolation domain is the *connection*, not the call (issue #1913).
+
+| Event | What GarraIA does | What it does **not** do |
+| --- | --- | --- |
+| A call exceeds its timeout | The call returns an error and the server receives `notifications/cancelled` carrying that call's request id | Kill the server, or touch any other call on it |
+| The caller gives up (turn cancelled, client gone) | Same `notifications/cancelled` | Same |
+| Server disconnected, restarted or gateway shutdown | Closes stdin, waits, `SIGTERM`, `SIGKILL` — applied to the server's **whole process group**; then looks for leftovers and logs the outcome | Touch another server's tree |
+| Server crashes | Its process group is killed as soon as the exit is seen, even when a descendant still holds the server's stdout open; the rest is swept on the next health-monitor pass, whether or not a restart follows | — |
+| Server never completes the handshake | Same teardown as a disconnect | — |
+
+Stopping the work of **one** call is cooperative: it depends on the server
+honouring `notifications/cancelled`. A server that ignores it keeps working
+until the server itself goes away — GarraIA does not take down a shared server
+(and every other call on it) because one call ran long.
+
+How the tree is delimited:
+
+- **Process group** (Unix): the server is started as the leader of its own
+  group, so children and grandchildren are reached by one signal. The group is
+  only ever signalled while the leader has not been reaped, which is what keeps
+  a recycled PID from being hit.
+- **Environment marker** (Linux): each connection gets a random
+  `GARRAIA_MCP_DOMINIO` value. At teardown, any process still carrying it — for
+  instance one that called `setsid` and left the group — is killed through a
+  `pidfd`, after re-reading the marker.
+
+Every teardown logs `arvore de processos encerrada` with the reason
+(`desconexao`, `troca`, `encerramento`, `queda`, `falha_na_subida`), how long the server
+lived, how long the teardown took and whether anything was left; leftovers are a
+`WARN` listing the PIDs, and so is a teardown the Linux check could not verify. Every call that ends without a result logs
+`chamada MCP encerrada sem resultado` with `desfecho` = `timeout`, `cancelada`
+or `erro` and its duration. Neither line carries arguments or output.
+
+Limits — this is containment of careless processes, **not** a sandbox:
+
+- A descendant that wipes its environment *and* leaves the process group, or
+  one the kernel will not let the gateway inspect (setuid, `hidepid`), is not
+  found.
+- macOS/BSD have the process group but no marker sweep; Android has neither
+  the sweep nor a guarantee beyond the group. Windows still ends only the
+  process it started.
+- If the gateway itself is killed with `SIGKILL`, only the server process gets
+  the parent-death signal (Linux/Android); its descendants depend on the server
+  forwarding it.
+- The trade-off of the server having its own group: a signal sent to the
+  **gateway's** process group (`kill -- -PGID` from a supervisor, Ctrl+C in a
+  terminal) no longer reaches MCP servers directly. They end through the
+  gateway's shutdown, stdin EOF and, on Linux/Android, the parent-death signal;
+  on macOS/BSD a group `SIGKILL` on the gateway leaves the server to notice EOF
+  on its own.
+- The leftover check is bounded (2 s). If `/proc` cannot be read, or the check
+  does not finish in time, the log line says `verificado=false` instead of
+  reporting a clean teardown.
+
+- With TLS enabled the gateway has no graceful-shutdown hook yet, so Ctrl+C
+  ends it without disconnecting MCP servers: the server process gets the
+  parent-death signal, its descendants do not.
+- A launcher that starts the real server in the background and **exits** is now
+  treated as a crashed server: its group is killed shortly after the launcher
+  is gone. Start the server in the foreground (`exec`) instead.
+- When the gateway is the adoptive parent of the descendants (PID 1 in a
+  container), the ones it killed are also reaped, so a teardown leaves no
+  `<defunct>` entries — Linux only.
+
+What was considered and not adopted here: a cgroup v2 per server would contain
+even a process that wipes its environment, but needs a delegated cgroup subtree
+the gateway does not have on an ordinary install; a Windows Job Object is the
+equivalent there and is not wired in. A process tree **per call** does not
+exist with a shared stdio server — it would take one server process per call.
+Those are architectural choices for the owner, tracked in issue #1913.
+
+For these reasons the tree teardown is not, by itself, grounds to enable
+privileged delegated execution through an MCP server.
+
 ### Tool inventory stays in sync with the runtime
 
 A reconnect restores the server's tools into the **agent runtime**, not just

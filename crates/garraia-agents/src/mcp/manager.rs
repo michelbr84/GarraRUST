@@ -15,6 +15,7 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+use super::arvore::{self, Dominio, MotivoDoFim};
 use super::child_env::{build_child_env, parent_env_pairs};
 use super::npx_cache::{self, McpFailureCause};
 use super::tool_bridge::McpTool;
@@ -226,9 +227,32 @@ struct McpConnection {
     /// When this connection was established. Used to decide whether it lived
     /// long enough to count as stable (see `STABILITY_WINDOW`).
     connected_at: Instant,
+    /// #1913: a arvore de processos desta conexao. `None` no transporte HTTP,
+    /// que nao lanca processo nenhum.
+    dominio: Option<Dominio>,
 }
 
 impl McpConnection {
+    /// #1913: unico caminho de saida de uma conexao. Fecha o transporte (o
+    /// encerramento gracioso do rmcp, que para o lider e o grupo dele) e
+    /// depois encerra o dominio — quem saiu do grupo, a conferencia de que
+    /// nao sobrou nada e o registro de motivo e duracao. Largar a conexao sem
+    /// passar por aqui deixaria de fora justamente essa segunda metade.
+    async fn encerrar(self, motivo: MotivoDoFim) {
+        let McpConnection {
+            server_name,
+            service,
+            dominio,
+            ..
+        } = self;
+        if let Err(e) = service.cancel().await {
+            warn!("error cancelling MCP server '{server_name}': {e}");
+        }
+        if let Some(dominio) = dominio {
+            dominio.encerrar(&server_name, motivo).await;
+        }
+    }
+
     /// Liveness of the child/transport.
     ///
     /// `RunningService::is_closed()` is NOT usable here: rmcp only flips it in
@@ -763,7 +787,13 @@ impl McpManager {
         // #1346: stderr is piped, not inherited. Inherited, every failed
         // retry dumped the child's whole Node stack trace into the gateway
         // log, and the manager could not tell what went wrong.
-        let (transport, stderr) = match TokioChildProcess::builder(cmd)
+        //
+        // #1913: o filho nasce dentro de um dominio (grupo de processos +
+        // marcador), para que desconexao, queda e falha de subida derrubem a
+        // arvore inteira e nao so o processo que o gateway lancou.
+        let marcador = arvore::novo_marcador();
+        let (envolto, colheita) = arvore::envolver(cmd, &marcador);
+        let (transport, stderr) = match TokioChildProcess::builder(envolto)
             .stderr(Stdio::piped())
             .spawn()
         {
@@ -777,6 +807,7 @@ impl McpManager {
                 });
             }
         };
+        let dominio = Dominio::novo(marcador, transport.id(), colheita);
         let drain = stderr.map(|s| npx_cache::spawn_stderr_drain(name, s));
 
         let service = match tokio::time::timeout(
@@ -788,6 +819,7 @@ impl McpManager {
             Ok(Ok(service)) => service,
             Ok(Err(e)) => {
                 let error = Error::Mcp(format!("MCP server '{name}' handshake failed: {e}"));
+                dominio.encerrar(name, MotivoDoFim::FalhaNaSubida).await;
                 let c = classify_after_exit(drain).await;
                 return Err(StdioFailure {
                     error,
@@ -800,6 +832,7 @@ impl McpManager {
                 let error = Error::Mcp(format!(
                     "MCP server '{name}' handshake timed out after {timeout_secs}s"
                 ));
+                dominio.encerrar(name, MotivoDoFim::FalhaNaSubida).await;
                 let c = classify_after_exit(drain).await;
                 return Err(StdioFailure {
                     error,
@@ -818,6 +851,7 @@ impl McpManager {
             Ok(Ok(tools)) => tools,
             Ok(Err(e)) => {
                 drop(service);
+                dominio.encerrar(name, MotivoDoFim::FalhaNaSubida).await;
                 let c = classify_after_exit(drain).await;
                 return Err(StdioFailure {
                     error: Error::Mcp(format!("failed to list tools from '{name}': {e}")),
@@ -828,6 +862,7 @@ impl McpManager {
             }
             Err(_) => {
                 drop(service);
+                dominio.encerrar(name, MotivoDoFim::FalhaNaSubida).await;
                 let c = classify_after_exit(drain).await;
                 return Err(StdioFailure {
                     error: Error::Mcp(format!(
@@ -889,12 +924,19 @@ impl McpManager {
             },
             allowed_tools,
             connected_at: Instant::now(),
+            dominio: Some(dominio),
         };
 
-        self.connections
+        // #1913: um `connect` sobre um nome ja conectado troca a conexao; a
+        // antiga sai pelo mesmo caminho de qualquer outra.
+        let anterior = self
+            .connections
             .write()
             .await
             .insert(name.to_string(), conn);
+        if let Some(anterior) = anterior {
+            anterior.encerrar(MotivoDoFim::Troca).await;
+        }
         self.pending.write().await.remove(name);
 
         // GAR-293: the restart counter is NOT reset on successful connect. A server
@@ -1028,12 +1070,19 @@ impl McpManager {
             },
             allowed_tools,
             connected_at: Instant::now(),
+            dominio: None,
         };
 
-        self.connections
+        // #1913: um `connect` sobre um nome ja conectado troca a conexao; a
+        // antiga sai pelo mesmo caminho de qualquer outra.
+        let anterior = self
+            .connections
             .write()
             .await
             .insert(name.to_string(), conn);
+        if let Some(anterior) = anterior {
+            anterior.encerrar(MotivoDoFim::Troca).await;
+        }
         self.pending.write().await.remove(name);
 
         // GAR-293: the restart counter is NOT reset on successful HTTP connect. A server
@@ -1119,11 +1168,11 @@ impl McpManager {
 
     /// Disconnect a specific MCP server.
     pub async fn disconnect(&self, name: &str) {
-        if let Some(conn) = self.connections.write().await.remove(name) {
+        // O guard de escrita e solto antes do `encerrar`, que aguarda.
+        let removida = self.connections.write().await.remove(name);
+        if let Some(conn) = removida {
             info!("disconnecting MCP server '{name}'");
-            if let Err(e) = conn.service.cancel().await {
-                warn!("error cancelling MCP server '{name}': {e}");
-            }
+            conn.encerrar(MotivoDoFim::Desconexao).await;
         }
     }
 
@@ -1138,9 +1187,7 @@ impl McpManager {
         self.pending.write().await.clear();
         let cancels = conns.into_iter().map(|(name, conn)| async move {
             info!("disconnecting MCP server '{name}'");
-            if let Err(e) = conn.service.cancel().await {
-                warn!("error cancelling MCP server '{name}': {e}");
-            }
+            conn.encerrar(MotivoDoFim::Encerramento).await;
         });
         futures::future::join_all(cancels).await;
     }
@@ -1659,6 +1706,26 @@ impl McpManager {
             (dead, stable)
         };
 
+        // #1913: o dominio de uma conexao morta e encerrado assim que ela e
+        // vista morta, e nao so quando for trocada — com os restarts
+        // esgotados ela nunca e trocada, e quem saiu do grupo do servidor
+        // ficaria de pe para sempre.
+        // Em paralelo: cada encerramento pode gastar o teto de conferencia, e
+        // N servidores mortos nao podem atrasar o tick N vezes isso.
+        let mut dominios = Vec::new();
+        {
+            let mut conns = self.connections.write().await;
+            for (name, _, _) in &to_reconnect {
+                if let Some(dominio) = conns.get_mut(name).and_then(|c| c.dominio.take()) {
+                    dominios.push((name.clone(), dominio));
+                }
+            }
+        }
+        futures::future::join_all(dominios.into_iter().map(|(name, dominio)| async move {
+            dominio.encerrar(&name, MotivoDoFim::Queda).await;
+        }))
+        .await;
+
         // Boot failures live in `pending`, never in `connections`.
         let mut to_reconnect: Vec<ReconnectTarget> = to_reconnect;
         {
@@ -1742,8 +1809,14 @@ impl McpManager {
                 "MCP server '{name}' connection lost — restart attempt {attempt_num}/{max_restarts}"
             );
 
-            // Remove stale connection before reconnecting.
-            self.connections.write().await.remove(&name);
+            // Remove stale connection before reconnecting. #1913: a conexao
+            // morta sai por `encerrar` — o servidor que caiu pode ter deixado
+            // descendentes vivos, e a reconexao nao pode empilhar outra
+            // arvore por cima deles.
+            let morta = self.connections.write().await.remove(&name);
+            if let Some(morta) = morta {
+                morta.encerrar(MotivoDoFim::Queda).await;
+            }
 
             let result = match &params {
                 ConnectionParams::Stdio {
