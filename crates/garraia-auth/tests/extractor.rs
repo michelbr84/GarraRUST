@@ -122,7 +122,7 @@ fn sign_expired(secret: &[u8], user_id: Uuid) -> String {
     encode(
         &Header::new(Algorithm::HS256),
         &claims,
-        &EncodingKey::from_secret(secret),
+        &EncodingKey::from_secret(secret).unwrap(),
     )
     .unwrap()
 }

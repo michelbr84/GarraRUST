@@ -111,7 +111,16 @@ impl FromRequestParts<Arc<AppState>> for MobileAuth {
                 return Err(auth_unconfigured());
             }
         };
-        let key = DecodingKey::from_secret(secret.expose_secret().as_bytes());
+        // jsonwebtoken 12: chave HMAC vazia e recusada na construcao. Um
+        // segredo vazio equivale a auth nao configurada — mesmo 503
+        // fail-closed do ramo acima, nunca um token aceito.
+        let key = match DecodingKey::from_secret(secret.expose_secret().as_bytes()) {
+            Ok(k) => k,
+            Err(_) => {
+                warn!("mobile_auth extractor: JWT secret unusable as HMAC key; returning 503");
+                return Err(auth_unconfigured());
+            }
+        };
         // SEC-H-1 (plan 0036 audit): pin the algorithm list explicitly so the
         // guard against algorithm-confusion (e.g. `alg: none`) is closed
         // regardless of future jsonwebtoken defaults. The fluxo Postgres em
@@ -538,11 +547,11 @@ fn issue_jwt(state: &AppState, user_id: &str, email: &str) -> Result<String, Jwt
     // Plan 0046 slice 3: fail-closed — `AuthConfigMissing` converts to
     // `JwtIssueError::AuthUnconfigured` which the handler maps to 503.
     let secret = state.jwt_signing_secret()?;
-    let encoded = encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret.expose_secret().as_bytes()),
-    )?;
+    // jsonwebtoken 12: chave HMAC vazia e recusada na construcao. Tratada
+    // como auth nao configurada (503), igual ao extractor — nao como 500.
+    let key = EncodingKey::from_secret(secret.expose_secret().as_bytes())
+        .map_err(|_| JwtIssueError::AuthUnconfigured)?;
+    let encoded = encode(&Header::default(), &claims, &key)?;
     Ok(encoded)
 }
 
@@ -599,6 +608,21 @@ mod tests {
     }
 
     #[test]
+    fn issue_jwt_with_empty_secret_returns_auth_unconfigured() {
+        // jsonwebtoken 12 recusa chave HMAC vazia em `from_secret`. O
+        // `AuthConfig::from_env` ja exige 32 bytes, mas um `AuthConfig`
+        // montado a mao pode chegar vazio: tem de virar 503 (auth nao
+        // configurada), nunca um token assinado com chave vazia nem um 500.
+        let state = test_state_with_auth_secret("");
+        let err = issue_jwt(&state, "u-1", "alice@example.test")
+            .expect_err("expected AuthUnconfigured, got Ok");
+        assert!(
+            matches!(err, JwtIssueError::AuthUnconfigured),
+            "expected JwtIssueError::AuthUnconfigured, got {err:?}"
+        );
+    }
+
+    #[test]
     fn issue_jwt_with_auth_config_returns_valid_hs256_token() {
         let state = test_state_with_auth_secret(&"S".repeat(32));
         let token = issue_jwt(&state, "u-2", "bob@example.test").expect("issue");
@@ -606,7 +630,7 @@ mod tests {
         assert_eq!(token.matches('.').count(), 2, "token = {token}");
 
         // Round-trip: decode with the same secret.
-        let key = DecodingKey::from_secret(&b"S".repeat(32));
+        let key = DecodingKey::from_secret(&b"S".repeat(32)).expect("chave HMAC");
         let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = true;
         let data = decode::<MobileClaims>(&token, &key, &validation).expect("decode");
@@ -858,7 +882,7 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "body = {body}");
         let token = body["token"].as_str().expect("token string");
         // Decode with the same secret to confirm signing key.
-        let key = DecodingKey::from_secret(&b"V".repeat(32));
+        let key = DecodingKey::from_secret(&b"V".repeat(32)).expect("chave HMAC");
         let mut v = Validation::new(Algorithm::HS256);
         v.validate_exp = true;
         decode::<MobileClaims>(token, &key, &v).expect("must decode with legacy secret");
