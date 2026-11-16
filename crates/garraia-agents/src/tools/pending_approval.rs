@@ -21,6 +21,7 @@
 //!
 //! - a mensagem e exatamente uma palavra de aprovacao;
 //! - o remetente e o mesmo que estava na sessao quando o turno pausou;
+//! - o diretório efetivo é o mesmo do pedido, inclusive ausência (#1912);
 //! - o registro nao expirou ([`PENDING_APPROVAL_TTL`]).
 //!
 //! Qualquer outro desfecho tambem retira o registro: mensagem que nao e
@@ -158,6 +159,7 @@ impl ApprovalScope {
 #[derive(Clone)]
 struct PendingApproval {
     sender: String,
+    workspace: Option<String>,
     tool: String,
     fingerprint: ApprovalFingerprint,
     created_at: Instant,
@@ -246,6 +248,19 @@ impl PendingApprovals {
         fingerprint: ApprovalFingerprint,
         now: Instant,
     ) {
+        self.register_in_workspace(scope, None, tool, fingerprint, now);
+    }
+
+    /// Vincula o pedido ao diretório efetivo do turno, sem expô-lo no log.
+    /// `None` é um escopo distinto de qualquer diretório declarado.
+    pub fn register_in_workspace(
+        &self,
+        scope: &ApprovalScope,
+        workspace: Option<&str>,
+        tool: &str,
+        fingerprint: ApprovalFingerprint,
+        now: Instant,
+    ) {
         let mut map = self.lock();
         map.retain(|_, p| now < p.expires_at);
         let key = scope.key();
@@ -267,6 +282,7 @@ impl PendingApprovals {
             key,
             PendingApproval {
                 sender: scope.sender.clone(),
+                workspace: workspace.map(str::to_string),
                 tool: tool.to_string(),
                 fingerprint,
                 created_at: now,
@@ -280,9 +296,24 @@ impl PendingApprovals {
     /// um "sim" repetido nao aprova duas vezes, e uma mensagem humana
     /// qualquer encerra o pedido.
     pub fn resolve(&self, scope: &ApprovalScope, user_text: &str, now: Instant) -> ToolApproval {
+        self.resolve_in_workspace(scope, None, user_text, now)
+    }
+
+    /// Uma troca de workspace também consome e recusa a pendência anterior.
+    /// Comparação exata do diretório efetivo, não identidade de inode.
+    pub fn resolve_in_workspace(
+        &self,
+        scope: &ApprovalScope,
+        workspace: Option<&str>,
+        user_text: &str,
+        now: Instant,
+    ) -> ToolApproval {
         let Some(pending) = self.lock().remove(&scope.key()) else {
             return ToolApproval::None;
         };
+        if pending.workspace.as_deref() != workspace {
+            return ToolApproval::None;
+        }
         if !is_approval_word(user_text) {
             tracing::info!(
                 channel = %scope.channel,

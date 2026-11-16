@@ -182,11 +182,21 @@ impl Cenario {
             approval_scope: escopo,
             ..ExecContext::default()
         };
+        self.turno_com_exec(sessao, texto, historico, &exec).await
+    }
+
+    pub(super) async fn turno_com_exec(
+        &mut self,
+        sessao: &str,
+        texto: &str,
+        historico: &[ChatMessage],
+        exec: &ExecContext,
+    ) -> String {
         let resposta = match self.caminho {
             Caminho::AgentConfig => self
                 .rt
                 .process_message_with_agent_config(
-                    sessao, texto, historico, None, None, None, None, None, None, &exec,
+                    sessao, texto, historico, None, None, None, None, None, None, exec,
                 )
                 .await
                 .expect("turno"),
@@ -196,7 +206,7 @@ impl Cenario {
                 let r = self
                     .rt
                     .process_message_streaming_with_events(
-                        sessao, texto, historico, tx, None, None, None, None, None, None, &exec,
+                        sessao, texto, historico, tx, None, None, None, None, None, None, exec,
                     )
                     .await
                     .expect("turno");
