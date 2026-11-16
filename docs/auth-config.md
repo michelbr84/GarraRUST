@@ -461,7 +461,7 @@ A credential is not encryption. With a credential configured the bind above is
 allowed, and if the process does not serve TLS (no `--features tls` build, or
 no `gateway.tls_cert_path` / `gateway.tls_key_path`) every request crosses the
 network in clear text: the `Authorization: Bearer <gateway.api_key>` header,
-the `sess_*` session tokens and the `/api/*` bodies. Since #1907 `serve_plain`
+session tokens and the `/api/*` bodies. Since #1907 `serve_plain`
 logs a `WARNING` naming that risk **on every boot** of such a bind. It stays
 silent when the actual bound socket address is loopback, or when serving TLS.
 
