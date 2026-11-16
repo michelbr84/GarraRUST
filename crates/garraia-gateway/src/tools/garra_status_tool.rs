@@ -278,8 +278,19 @@ impl Tool for GarraStatusTool {
         // modo restrito) e quem fala na sessao. Fora de um turno do runtime
         // (`None`) nao ha portao a consultar e vale so a sessao — que, sem
         // superficie gravada, ja e restrita (fail-closed).
-        let restrito = garraia_agents::tools::turn_tools::turno_restrito().unwrap_or(false)
-            || !crate::channels_view::sessao_do_operador(&state, &ctx.session_id).await;
+        //
+        // #1905: a prova do dono do canal em chat privado abre o RELATORIO e
+        // mais nada. O teto de capacidades do turno continua valendo para as
+        // outras ferramentas (`sessao_do_operador`), entao o dono nao ganha
+        // bash/escrita por causa desta excecao.
+        let abre_para_dono =
+            crate::channels_view::relatorio_aberto_para_dono(&state, &ctx.session_id).await;
+        let restrito = if abre_para_dono {
+            false
+        } else {
+            garraia_agents::tools::turn_tools::turno_restrito().unwrap_or(false)
+                || !crate::channels_view::sessao_do_operador(&state, &ctx.session_id).await
+        };
 
         let provider = state.agents.default_provider_id();
         let model = provider
