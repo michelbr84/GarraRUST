@@ -1250,6 +1250,41 @@ declarado só em `allow` legado não tem teto próprio e fica no piso do modo �
 migrar para `access.users` é o passo, e `garraia whatsapp access` mostra
 quem está assim.
 
+## 5.19. Telegram — relatório aberto do `garra_status` para o dono (#1905, #1910)
+
+**O que existe.** A #1905 dispensa a retenção do relatório do `garra_status`
+(versão exata, `providers`, `mcp_servers`, `working_dir`) para o dono pareado
+do bot (`allowlist.is_owner`) **em chat privado** (`chat_id == remetente > 0`),
+com a porta do operador fechada e as fontes persistidas da sessão legíveis.
+
+**O que mudou na #1910 (só esta fatia).** A prova do dono deixou de ser estado
+mutável da sessão — que turnos concorrentes na mesma sessão compartilhavam — e
+passou a ser contexto **imutável do turno**: um `task_local` aberto só em volta
+do processamento de uma mensagem do Telegram (texto, streaming e voz) em
+`crate::prova_do_dono`, preso à instância de `AppState`, à sessão e ao usuário.
+A tool só abre o relatório quando o `ToolContext` casa com os três. Escopo
+ausente, escopo sem prova, divergência, `ToolContext` sem usuário ou task filha
+(`tokio::spawn` não herda o escopo) negam. A prova não é serializável e não sai
+do histórico nem do LLM.
+
+**O que NÃO mudou.** Nenhuma execução foi habilitada: a prova não entra em
+`sessao_do_operador`, o teto `Read` da superfície remota (`teto_da_superficie`)
+continua valendo no turno do dono, e nada muda em modos, hard-deny, sandbox,
+aprovações, `bash` ou MCP. Chat privado sozinho não prova isolamento.
+
+**Residual — critérios da #1910 ainda abertos.** Principal autenticado
+escopado à instalação/bot/canal em `ExecContext`/`ToolContext` com construtor
+comum; concessão explícita de execução só ao dono em privado; testes de Chat
+Sync e sessão compartilhada cobrindo histórico, resultado e pendência (não só a
+autoridade do relatório); conteúdo de site/arquivo/MCP/LLM sem fabricar
+aprovação; rollback que desliga a concessão remota e revoga pendências.
+
+| Ameaça | Mitigação | Prova |
+|---|---|---|
+| Turno concorrente na mesma sessão herda a prova do dono | prova por turno (`task_local`), conferida contra estado + sessão + usuário | `nao_dono_na_mesma_sessao_nao_herda_o_relatorio_do_dono`, `turnos_intercalados_na_mesma_sessao_nao_trocam_autoridade` |
+| Prova vira teto de capacidades | `sessao_do_operador` não consulta a prova | `prova_do_dono_nao_zera_o_teto_de_capacidades`, `prova_do_dono_nao_muda_o_teto_de_capacidades` |
+| Processamento novo do Telegram fora do escopo | guarda de fonte sobre `bootstrap/telegram.rs` + teste pelo runtime real (batch e streaming) | `telegram_processa_todo_turno_dentro_do_escopo`, `dono_recebe_aberto_e_nao_dono_restrito_em_batch_e_streaming` |
+
 ---
 
 ## 6. Mobile apps (`apps/garraia-mobile`)

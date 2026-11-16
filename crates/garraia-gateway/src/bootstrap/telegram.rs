@@ -11,14 +11,8 @@ use crate::state::SharedState;
 
 use super::config::{channel_gates, resolve_api_key};
 
-/// #1905: o relatório aberto do `garra_status` só sai quando a prova de dono
-/// vem de um chat **privado**. Num grupo o mesmo `chat_id` carrega outros
-/// membros pareados e o relatório aberto (`working_dir`, `providers`, MCP,
-/// versão exata) seria postado para todos — exatamente o que a #1347 retém.
-/// No Telegram, o id de um chat privado é o id do usuário.
-fn dono_do_turno(is_owner: bool, chat_id: i64, user_id: &str) -> bool {
-    is_owner && chat_id.to_string() == user_id
-}
+// #1905/#1910: a regra "dono pareado em chat privado" e o escopo por turno
+// que a carrega ate o `garra_status` moram em `crate::prova_do_dono`.
 
 pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
     // Check if voice clients are available
@@ -102,17 +96,6 @@ pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
                 state
                     .hydrate_session_history(&session_id, Some("telegram"), Some(&user_id))
                     .await;
-                // #1905: o dono pareado do bot ve o relatorio aberto do
-                // `garra_status` — mas so em chat privado (em grupo o mesmo
-                // chat carrega outros membros). O gate do canal ja barrou
-                // qualquer outro remetente acima.
-                let is_owner = state
-                    .allowlist
-                    .lock()
-                    .map(|l| l.is_owner(&user_id))
-                    .unwrap_or(false);
-                let dono = dono_do_turno(is_owner, chat_id, &user_id);
-                state.marcar_turno_do_dono(&session_id, dono);
                 let history: Vec<ChatMessage> = state.session_history(&session_id);
                 let continuity_key = state.continuity_key();
 
@@ -124,33 +107,48 @@ pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
                     )
                     .await;
 
-                // Process with LLM
-                let response = state
-                    .agents
-                    .process_message_with_agent_config(
-                        &session_id,
-                        &text,
-                        &history,
-                        continuity_key.as_deref(),
-                        Some(&user_id),
-                        None,
-                        None,
-                        None,
-                        None,
-                        &crate::approval_scope::com_escopo(
-                            state
-                                .exec_context_for_msg(&session_id, Some(&user_id), Some(&text))
-                                .await,
-                            "telegram",
-                            &session_id,
-                            &user_id,
-                        ),
-                    )
-                    .await
-                    .map_err(|e| {
-                        error!("LLM processing failed: {}", e);
-                        e.to_string()
-                    })?;
+                // Process with LLM. #1910: a prova do dono (#1905) vale so para
+                // ESTE turno — escopo imutavel em volta do processamento, nunca
+                // um campo da sessao que um turno concorrente leria.
+                let response = crate::prova_do_dono::no_turno_do_telegram(
+                    &state,
+                    &session_id,
+                    chat_id,
+                    &user_id,
+                    async {
+                        state
+                            .agents
+                            .process_message_with_agent_config(
+                                &session_id,
+                                &text,
+                                &history,
+                                continuity_key.as_deref(),
+                                Some(&user_id),
+                                None,
+                                None,
+                                None,
+                                None,
+                                &crate::approval_scope::com_escopo(
+                                    state
+                                        .exec_context_for_msg(
+                                            &session_id,
+                                            Some(&user_id),
+                                            Some(&text),
+                                        )
+                                        .await,
+                                    "telegram",
+                                    &session_id,
+                                    &user_id,
+                                ),
+                            )
+                            .await
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    error!("LLM processing failed: {}", e);
+                    e.to_string()
+                })?;
 
                 info!(
                     "telegram voice: LLM response ({} chars) for user {}",
@@ -325,14 +323,6 @@ pub fn build_telegram_channels(
                     state
                         .hydrate_session_history(&session_id, Some("telegram"), Some(&user_id))
                         .await;
-                    // O turno re-prova o dono: `is_owner` do allowlist da
-                    // instalacao — e so em chat privado (#1905).
-                    let is_owner = allowlist
-                        .lock()
-                        .map(|l| l.is_owner(&user_id))
-                        .unwrap_or(false);
-                    let dono = dono_do_turno(is_owner, chat_id, &user_id);
-                    state.marcar_turno_do_dono(&session_id, dono);
                     let history: Vec<ChatMessage> = state.session_history(&session_id);
                     let continuity_key = state.continuity_key();
 
@@ -341,62 +331,74 @@ pub fn build_telegram_channels(
                         .get(&session_id)
                         .map(|r| r.value().clone());
 
-                    let response = if let Some(delta_sender) = delta_tx {
-                        state
-                            .agents
-                            .process_message_streaming_with_agent_config(
-                                &session_id,
-                                &text,
-                                &history,
-                                delta_sender,
-                                continuity_key.as_deref(),
-                                Some(&user_id),
-                                None,
-                                model_override.as_deref(),
-                                None,
-                                None,
-                                &crate::approval_scope::com_escopo(
-                                    state
-                                        .exec_context_for_msg(
+                    // #1910: o turno re-prova o dono (allowlist da instalacao,
+                    // so em chat privado, #1905) num escopo imutavel que cobre
+                    // os dois ramos — streaming e batch — e termina com eles.
+                    let response = crate::prova_do_dono::no_turno_do_telegram(
+                        &state,
+                        &session_id,
+                        chat_id,
+                        &user_id,
+                        async {
+                            if let Some(delta_sender) = delta_tx {
+                                state
+                                    .agents
+                                    .process_message_streaming_with_agent_config(
+                                        &session_id,
+                                        &text,
+                                        &history,
+                                        delta_sender,
+                                        continuity_key.as_deref(),
+                                        Some(&user_id),
+                                        None,
+                                        model_override.as_deref(),
+                                        None,
+                                        None,
+                                        &crate::approval_scope::com_escopo(
+                                            state
+                                                .exec_context_for_msg(
+                                                    &session_id,
+                                                    Some(&user_id),
+                                                    Some(&text),
+                                                )
+                                                .await,
+                                            "telegram",
                                             &session_id,
-                                            Some(&user_id),
-                                            Some(&text),
-                                        )
-                                        .await,
-                                    "telegram",
-                                    &session_id,
-                                    &user_id,
-                                ),
-                            )
-                            .await
-                    } else {
-                        state
-                            .agents
-                            .process_message_with_agent_config(
-                                &session_id,
-                                &text,
-                                &history,
-                                continuity_key.as_deref(),
-                                Some(&user_id),
-                                None,
-                                model_override.as_deref(),
-                                None,
-                                None,
-                                &crate::approval_scope::com_escopo(
-                                    state
-                                        .exec_context_for_msg(
+                                            &user_id,
+                                        ),
+                                    )
+                                    .await
+                            } else {
+                                state
+                                    .agents
+                                    .process_message_with_agent_config(
+                                        &session_id,
+                                        &text,
+                                        &history,
+                                        continuity_key.as_deref(),
+                                        Some(&user_id),
+                                        None,
+                                        model_override.as_deref(),
+                                        None,
+                                        None,
+                                        &crate::approval_scope::com_escopo(
+                                            state
+                                                .exec_context_for_msg(
+                                                    &session_id,
+                                                    Some(&user_id),
+                                                    Some(&text),
+                                                )
+                                                .await,
+                                            "telegram",
                                             &session_id,
-                                            Some(&user_id),
-                                            Some(&text),
-                                        )
-                                        .await,
-                                    "telegram",
-                                    &session_id,
-                                    &user_id,
-                                ),
-                            )
-                            .await
-                    }
+                                            &user_id,
+                                        ),
+                                    )
+                                    .await
+                            }
+                        },
+                    )
+                    .await
                     .map_err(|e| e.to_string())?;
 
                     state
@@ -494,30 +496,5 @@ fn handle_command(
             Ok(format!("💥 Internal error: {msg}"))
         }
         Err(garraia_channels::CommandError::Blocked) => Err("__blocked__".to_string()),
-    }
-}
-
-#[cfg(test)]
-mod dono_do_turno_tests {
-    use super::dono_do_turno;
-
-    /// Chat privado do dono pareado: o relatorio aberto pode sair.
-    #[test]
-    fn chat_privado_do_dono_marca_o_turno() {
-        assert!(dono_do_turno(true, 7978617919, "7978617919"));
-    }
-
-    /// Grupo: mesmo o dono perguntando, o relatorio aberto NAO pode sair —
-    /// o chat carrega outros membros pareados (#1347).
-    #[test]
-    fn grupo_nao_marca_nem_para_o_dono() {
-        assert!(!dono_do_turno(true, -1001234567890, "7978617919"));
-    }
-
-    /// Quem nao e o dono nunca marca, em chat nenhum.
-    #[test]
-    fn nao_dono_nunca_marca() {
-        assert!(!dono_do_turno(false, 7978617919, "7978617919"));
-        assert!(!dono_do_turno(false, -1001234567890, "555"));
     }
 }
