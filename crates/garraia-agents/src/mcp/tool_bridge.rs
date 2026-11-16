@@ -179,20 +179,34 @@ impl Tool for McpTool {
         // `Task` (SEP-2663: o servidor materializou uma task e quer polling
         // em `tasks/get`) são fail-closed — este bridge não dirige rounds
         // interativos nem ciclos de task; o LLM vê o motivo e decide.
-        let resultado = tokio::time::timeout(self.timeout, peer.call_tool_once(params))
-            .await
-            .map_err(|_| {
-                Error::Mcp(format!(
-                    "ferramenta {} excedeu o tempo limite após {:?}",
-                    self.nome_completo, self.timeout
-                ))
-            })?
-            .map_err(|e| {
-                Error::Mcp(format!(
+        //
+        // #1913: o `call_tool_once` cancela ao ser largado — estourado o
+        // tempo aqui, ou abandonado o turno la em cima, o rmcp manda
+        // `notifications/cancelled` com o id DESTA requisicao. E a unica via
+        // por chamada: o servidor e compartilhado, entao nada alem disso e
+        // derrubado, e as outras chamadas do mesmo servidor seguem.
+        let mut registro = RegistroDaChamada::nova(&self.nome_servidor, &self.nome_original);
+        let resultado = match tokio::time::timeout(self.timeout, peer.call_tool_once(params)).await
+        {
+            Ok(Ok(resultado)) => {
+                registro.fechar(Desfecho::Concluida);
+                resultado
+            }
+            Ok(Err(e)) => {
+                registro.fechar(Desfecho::Erro);
+                return Err(Error::Mcp(format!(
                     "falha ao chamar '{}' no servidor MCP '{}': {e}",
                     self.nome_original, self.nome_servidor
-                ))
-            })?;
+                )));
+            }
+            Err(_) => {
+                registro.fechar(Desfecho::Timeout);
+                return Err(Error::Mcp(format!(
+                    "ferramenta {} excedeu o tempo limite após {:?}",
+                    self.nome_completo, self.timeout
+                )));
+            }
+        };
 
         let resultado = match resultado {
             CallToolResponse::Complete(resultado) => resultado,
@@ -244,6 +258,79 @@ impl Tool for McpTool {
         let eh_erro = resultado.is_error.unwrap_or(false);
 
         McpTool::blindar(texto_saida, eh_erro)
+    }
+}
+
+/// #1913: como uma chamada `tools/call` terminou.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Desfecho {
+    Concluida,
+    Erro,
+    Timeout,
+    /// O futuro da chamada foi largado antes da resposta: quem chamou
+    /// desistiu (turno cancelado, cliente desconectado).
+    Cancelada,
+}
+
+impl Desfecho {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Concluida => "concluida",
+            Self::Erro => "erro",
+            Self::Timeout => "timeout",
+            Self::Cancelada => "cancelada",
+        }
+    }
+}
+
+/// #1913: registra resultado final, duracao e motivo de cada chamada — no
+/// `Drop`, para que a chamada abandonada (que nao volta por nenhum `return`)
+/// tambem deixe rastro. So nomes de servidor e ferramenta: argumentos e
+/// resposta nunca vao para o log.
+struct RegistroDaChamada<'a> {
+    servidor: &'a str,
+    ferramenta: &'a str,
+    inicio: std::time::Instant,
+    desfecho: Desfecho,
+}
+
+impl<'a> RegistroDaChamada<'a> {
+    fn nova(servidor: &'a str, ferramenta: &'a str) -> Self {
+        Self {
+            servidor,
+            ferramenta,
+            inicio: std::time::Instant::now(),
+            // Ate alguem dizer o contrario, sair daqui e ter sido largado.
+            desfecho: Desfecho::Cancelada,
+        }
+    }
+
+    fn fechar(&mut self, desfecho: Desfecho) {
+        self.desfecho = desfecho;
+    }
+}
+
+impl Drop for RegistroDaChamada<'_> {
+    fn drop(&mut self) {
+        let duracao_ms = self.inicio.elapsed().as_millis() as u64;
+        let desfecho = self.desfecho.as_str();
+        if self.desfecho == Desfecho::Concluida {
+            tracing::debug!(
+                server = %self.servidor,
+                tool = %self.ferramenta,
+                duracao_ms,
+                desfecho,
+                "chamada MCP encerrada"
+            );
+        } else {
+            info!(
+                server = %self.servidor,
+                tool = %self.ferramenta,
+                duracao_ms,
+                desfecho,
+                "chamada MCP encerrada sem resultado"
+            );
+        }
     }
 }
 

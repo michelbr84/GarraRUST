@@ -3220,6 +3220,7 @@ dependencies = [
  "libc",
  "metrics 0.24.6",
  "metrics-util 0.20.4",
+ "process-wrap",
  "reqwest 0.12.28",
  "rmcp",
  "serde",
