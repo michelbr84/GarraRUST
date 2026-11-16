@@ -1,0 +1,1 @@
+- Acrescenta testes com turnos sobrepostos no mesmo runtime para comprovar consumo único de aprovação e independência entre chats nos caminhos batch, streaming e fallback, sem habilitar execução remota (#1912).
