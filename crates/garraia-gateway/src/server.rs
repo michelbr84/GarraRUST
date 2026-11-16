@@ -1504,7 +1504,13 @@ async fn serve_plain(
     .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))
 }
 
-/// Serve HTTPS (rustls) until the process is signalled.
+/// Teto do encerramento gracioso do caminho TLS: passado isso, as conexoes
+/// ainda abertas sao cortadas. Sem teto, uma unica conexao pendurada
+/// seguraria o `serve` e, com ele, a limpeza de MCP/canais que vem depois.
+#[cfg(feature = "tls")]
+const TLS_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Serve HTTPS (rustls) until the shutdown signal.
 #[cfg(feature = "tls")]
 async fn serve_tls(
     addr: &str,
@@ -1512,6 +1518,27 @@ async fn serve_tls(
     key_path: Option<&str>,
     app: axum::Router,
     gateway: &garraia_config::GatewayConfig,
+) -> Result<()> {
+    serve_tls_ate(addr, cert_path, key_path, app, gateway, shutdown_signal()).await
+}
+
+/// [`serve_tls`] com o sinal de encerramento injetado.
+///
+/// #1913: este caminho servia ate o processo morrer — Ctrl+C/SIGTERM matavam
+/// o gateway pela acao padrao do sinal, o `serve` nunca retornava e
+/// `shutdown_subsystems` nao rodava. Desde que cada servidor MCP stdio tem
+/// grupo de processos proprio, o sinal do terminal tambem nao os alcanca
+/// mais, entao a arvore deles ficava para tras. O `Handle` e o que faz o
+/// `serve` retornar: `sinal` dispara o encerramento gracioso e o chamador
+/// segue para a limpeza, igual ao caminho HTTP.
+#[cfg(feature = "tls")]
+async fn serve_tls_ate(
+    addr: &str,
+    cert_path: Option<&str>,
+    key_path: Option<&str>,
+    app: axum::Router,
+    gateway: &garraia_config::GatewayConfig,
+    sinal: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
     let (Some(cert_path), Some(key_path)) = (cert_path, key_path) else {
         return Err(garraia_common::Error::Gateway(
@@ -1528,10 +1555,23 @@ async fn serve_tls(
     // #1261: TLS nao isenta — TLS sem credencial continua aberto.
     conferir_socket(&sock_addr, gateway)?;
     info!("GarraIA gateway listening on https://{}", sock_addr);
-    axum_server::bind_rustls(sock_addr, tls_config)
-        .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .await
-        .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))
+    let handle = axum_server::Handle::<std::net::SocketAddr>::new();
+    let servir = axum_server::bind_rustls(sock_addr, tls_config)
+        .handle(handle.clone())
+        .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>());
+    tokio::pin!(servir);
+    // O sinal e esperado NESTA tarefa, como no caminho HTTP: numa tarefa a
+    // parte, um panico ao instalar o handler sumiria em silencio e o TLS
+    // voltaria a servir sem gancho de encerramento. O `serve` tambem retorna
+    // sozinho (erro de bind), e ai o sinal e simplesmente largado.
+    let servido = tokio::select! {
+        r = &mut servir => r,
+        () = sinal => {
+            handle.graceful_shutdown(Some(TLS_SHUTDOWN_GRACE));
+            servir.await
+        }
+    };
+    servido.map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))
 }
 
 async fn shutdown_signal() {
@@ -2279,6 +2319,118 @@ mod tests {
         )
         .await;
         assert!(r.is_err(), "com credencial serve ate o timeout: {r:?}");
+    }
+
+    // ---- #1913: o caminho TLS retorna no sinal -------------------------
+
+    /// Guarda de FONTE, sem feature: nenhum job padrao compila `tls`, e sem
+    /// isto apagar o `Handle` so apareceria no step dedicado. O `serve` do
+    /// TLS tem de estar ligado a um `Handle`, e o sinal tem de dispara-lo.
+    #[test]
+    fn serve_tls_esta_ligado_ao_sinal_de_encerramento() {
+        let fonte = include_str!("server.rs");
+        let inicio = fonte
+            .find("\nasync fn serve_tls_ate(")
+            .expect("serve_tls_ate existe no fonte");
+        let resto = &fonte[inicio..];
+        let fim = resto
+            .find("\nasync fn shutdown_signal(")
+            .expect("shutdown_signal vem depois do TLS");
+        let corpo = &resto[..fim];
+
+        assert!(
+            corpo.contains(".handle(handle.clone())"),
+            "o serve do TLS tem de usar o Handle"
+        );
+        let espera = corpo
+            .find("() = sinal =>")
+            .expect("o sinal e esperado na tarefa do chamador");
+        let dispara = corpo
+            .find("handle.graceful_shutdown(Some(TLS_SHUTDOWN_GRACE))")
+            .expect("o sinal dispara o encerramento com teto");
+        assert!(espera < dispara, "o encerramento e disparado pelo sinal");
+        assert!(
+            !corpo.contains("tokio::spawn"),
+            "sinal em tarefa a parte engole o panico do handler"
+        );
+
+        // Sem espacos: a quebra de linha do rustfmt nao e contrato.
+        let entrada: String = fonte[..inicio].split_whitespace().collect();
+        assert!(
+            entrada.contains("gateway,shutdown_signal()).await")
+                || entrada.contains("gateway,shutdown_signal(),).await"),
+            "serve_tls entrega o sinal real do processo"
+        );
+    }
+
+    /// Par cert/chave autoassinado gerado na hora pelo `openssl` da maquina
+    /// — nenhuma chave privada fica versionada. `None` sem `openssl`.
+    #[cfg(feature = "tls")]
+    fn par_tls_de_teste(dir: &std::path::Path) -> Option<(String, String)> {
+        let cert = dir.join("cert.pem");
+        let key = dir.join("key.pem");
+        let saida = std::process::Command::new("openssl")
+            .args([
+                "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+            ])
+            .args(["-subj", "/CN=localhost", "-keyout"])
+            .arg(&key)
+            .arg("-out")
+            .arg(&cert)
+            .output()
+            .ok()?;
+        saida.status.success().then(|| {
+            (
+                cert.to_string_lossy().into_owned(),
+                key.to_string_lossy().into_owned(),
+            )
+        })
+    }
+
+    /// Comportamento: sem sinal o TLS segue servindo; com o sinal, `serve`
+    /// retorna `Ok` e o chamador chega a `shutdown_subsystems`. **Mutacao**:
+    /// tire o `.handle(handle.clone())` e o `serve` nunca mais retorna.
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn serve_tls_retorna_quando_o_sinal_dispara() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let Some((cert, key)) = par_tls_de_teste(dir.path()) else {
+            // No CI o step da feature `tls` existe para ESTE teste rodar:
+            // pular la seria verde cobrindo nada.
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "openssl e obrigatorio no CI para o teste de TLS"
+            );
+            eprintln!("openssl indisponivel: teste de TLS pulado");
+            return;
+        };
+        let (dispara, sinal) = tokio::sync::oneshot::channel::<()>();
+        let mut servindo = tokio::spawn(async move {
+            serve_tls_ate(
+                "127.0.0.1:0",
+                Some(&cert),
+                Some(&key),
+                axum::Router::new(),
+                &gateway_em("127.0.0.1", None),
+                async move {
+                    let _ = sinal.await;
+                },
+            )
+            .await
+        });
+
+        if let Ok(cedo) =
+            tokio::time::timeout(std::time::Duration::from_millis(400), &mut servindo).await
+        {
+            panic!("sem sinal o TLS deveria seguir servindo, mas retornou: {cedo:?}");
+        }
+
+        dispara.send(()).expect("o servidor ainda espera o sinal");
+        let fim = tokio::time::timeout(std::time::Duration::from_secs(5), servindo)
+            .await
+            .expect("com o sinal o serve retorna")
+            .expect("a tarefa nao entra em panico");
+        assert!(fim.is_ok(), "encerramento gracioso nao e erro: {fim:?}");
     }
 
     /// FIACAO do #1907: o aviso de transporte vive numa linha de log, entao o

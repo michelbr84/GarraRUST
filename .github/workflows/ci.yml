@@ -549,6 +549,24 @@ jobs:
         #    decoracao. Com esta linha, ele continua rodando.
         run: cargo test -p garraia-gateway --features mcp-http-server --test mcp_http_contract
 
+      - name: Run clippy + tests (tls)
+        # Mesmo buraco do `mcp-http`: a feature `tls` do `garraia-gateway`
+        # (axum-server + rustls) e OFF por default e nenhum job a compilava,
+        # entao `serve_tls` — o caminho HTTPS inteiro — podia quebrar num bump
+        # do axum-server sem um vermelho sequer. #1913: o encerramento
+        # gracioso desse caminho tem teste de comportamento atras da feature;
+        # sem este step ele compila em lugar nenhum e nunca roda.
+        #
+        # `--lib` de proposito: o que a feature muda vive em `src/server.rs`,
+        # e recompilar todos os alvos de integracao do gateway com outro
+        # conjunto de features custaria minutos sem cobrir nada a mais.
+        # O segundo clippy (`--profile test`) e o que enxerga o `cfg(test)`
+        # da lib sem puxar os alvos de integracao, como `--tests` faria.
+        run: |
+          cargo clippy -p garraia-gateway --features tls --lib -- -D warnings
+          cargo clippy -p garraia-gateway --features tls --lib --profile test -- -D warnings
+          cargo test -p garraia-gateway --features tls --lib serve_tls
+
       - name: Run clippy + tests (mcp)
         # Buraco vizinho do `mcp-http` acima: `crates/garraia-agents` declara
         # `default = []` e `mcp = ["dep:rmcp"]`, e tanto `pub mod mcp` quanto
