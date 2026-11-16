@@ -283,16 +283,16 @@ impl std::error::Error for BindRecusado {}
 /// `Some(texto)` quando **qualquer** endereco nao e loopback: o socket inteiro
 /// fica alcancavel pela rede.
 ///
-/// Nao recusa: composicoes containerizadas legitimas ligam em `0.0.0.0` com o
-/// TLS terminado noutro container (`docker-compose.yml` deste repo faz isso).
+/// Nao recusa: composicoes containerizadas podem terminar TLS num proxy externo.
+/// O `docker-compose.yml` deste repo publica HTTP em claro; nao inclui proxy TLS.
 /// O degrau de recusa e decisao separada; ver `docs/auth-config.md` §5.1.
-pub fn aviso_de_transporte(pedido: &str, enderecos: &[SocketAddr]) -> Option<String> {
+/// O nome do executavel e recebido do chamador para manter a funcao pura.
+pub fn aviso_de_transporte(pedido: &str, enderecos: &[SocketAddr], bin: &str) -> Option<String> {
     let exposto = enderecos.iter().find(|a| !a.ip().is_loopback())?;
-    let bin = garraia_common::executavel::nome();
     Some(format!(
         "the gateway is serving plain HTTP on {pedido} ({exposto}), which is reachable from the \
-         network: the gateway credential (Authorization: Bearer), the session tokens and every \
-         /api payload travel in clear text, and HSTS cannot be sent over plain HTTP. Fix it with \
+         network: any gateway credential (Authorization: Bearer), session tokens and every \
+         /api payload travel in clear text; browsers ignore HSTS received over plain HTTP. Fix it with \
          ONE of:\n  \
          - serve TLS in this process: set gateway.tls_cert_path and gateway.tls_key_path and \
          build the binary with `--features tls`;\n  \
@@ -528,7 +528,7 @@ mod tests {
 
         for (enderecos, esperado_aviso) in casos {
             let addrs: Vec<SocketAddr> = enderecos.iter().map(|e| a(e)).collect();
-            let aviso = aviso_de_transporte("h:1", &addrs);
+            let aviso = aviso_de_transporte("h:1", &addrs, "garraia");
             assert_eq!(
                 aviso.is_some(),
                 *esperado_aviso,
@@ -540,13 +540,13 @@ mod tests {
     /// O aviso nomeia o risco E as saidas; sem segredo e sem binario chumbado.
     #[test]
     fn aviso_de_transporte_diz_como_corrigir() {
-        let aviso =
-            aviso_de_transporte("0.0.0.0:3888", &[a("0.0.0.0:3888")]).expect("bind exposto avisa");
+        let aviso = aviso_de_transporte("0.0.0.0:3888", &[a("0.0.0.0:3888")], "garra")
+            .expect("bind exposto avisa");
         for trecho in [
             "plain HTTP",
             "gateway.tls_cert_path",
             "--features tls",
-            "--host 127.0.0.1",
+            "`garra start --host 127.0.0.1`",
             "docs/auth-config.md",
         ] {
             assert!(aviso.contains(trecho), "falta `{trecho}` em: {aviso}");
@@ -555,9 +555,8 @@ mod tests {
             !aviso.contains("Bearer <"),
             "nada de valor de credencial: {aviso}"
         );
-        assert!(
-            !aviso.contains("`garra "),
-            "o binario e o instalado: {aviso}"
-        );
+        let outro = aviso_de_transporte("0.0.0.0:3888", &[a("0.0.0.0:3888")], "garraia")
+            .expect("bind exposto avisa");
+        assert!(outro.contains("`garraia start --host 127.0.0.1`"));
     }
 }
