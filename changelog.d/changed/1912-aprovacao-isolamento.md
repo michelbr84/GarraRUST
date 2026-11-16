@@ -1,0 +1,1 @@
+A suíte do runtime verifica expiração e coexistência de pedidos de aprovação em sessões distintas nos caminhos batch, streaming e fallback, sem habilitar execução remota. Cobertura parcial da #1912; não substitui os testes de transporte Telegram/MCP nem o vínculo de workspace/id da chamada.
