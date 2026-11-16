@@ -190,12 +190,18 @@ fn scope_dir<'a>(opts: &'a RegistryOptions, scope: &SkillScope) -> &'a Path {
 /// Lists skills from one or both scopes.
 ///
 /// If `scope` is `None`, returns all skills from both global and project dirs.
+/// When both roots resolve to the same directory (working directory == HOME,
+/// as in the official image's `WORKDIR /home/garraia`), the project pass is
+/// skipped: reading the global root twice would duplicate every skill and make
+/// the CLI report a scope divergence that does not exist (#1903).
 pub fn list_skills(opts: &RegistryOptions, scope: Option<SkillScope>) -> Result<Vec<Skill>> {
     match scope {
         Some(s) => list_skills_in_dir(scope_dir(opts, &s)),
         None => {
             let mut all = list_skills_in_dir(&opts.global_dir)?;
-            all.extend(list_skills_in_dir(&opts.project_dir)?);
+            if !mesma_raiz(&opts.global_dir, &opts.project_dir) {
+                all.extend(list_skills_in_dir(&opts.project_dir)?);
+            }
             Ok(all)
         }
     }
@@ -875,5 +881,28 @@ mod tests {
         );
         assert_eq!(scans[0].0, SkillScope::Global);
         assert_eq!(scans[0].1.candidates.len(), 1);
+    }
+
+    /// O mesmo caso em `list_skills(None)`: sem o guarda, cada skill global
+    /// aparece duas vezes e a CLI anuncia divergencia de escopo falsa (#1903).
+    #[test]
+    fn list_skills_nao_duplica_quando_os_escopos_coincidem() {
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("home").join(".garra").join("skills");
+        std::fs::create_dir_all(&global).unwrap();
+        for (nome, score) in [("uma-skill", "0.8"), ("outra-skill", "0.7")] {
+            std::fs::write(
+                global.join(format!("{nome}.md")),
+                format!(
+                    "---\nname: {nome}\nversion: 0.1.0\nsource: mined\nscope: global\nscore: {score}\n---\n\n## Steps\n\nbody\n"
+                ),
+            )
+            .unwrap();
+        }
+        let opts = RegistryOptions::new(global.clone(), global.clone());
+
+        let skills = list_skills(&opts, None).unwrap();
+
+        assert_eq!(skills.len(), 2, "cada skill uma vez: {skills:?}");
     }
 }
