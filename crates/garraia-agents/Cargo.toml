@@ -45,13 +45,18 @@ base64 = { workspace = true }
 jsonwebtoken = { workspace = true }
 
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-io"], optional = true }
+# #1913: o mesmo `process-wrap` que o rmcp ja usa por baixo do
+# `transport-child-process` — dependencia direta so para nomear os traits
+# (`CommandWrapper`/`ChildWrapper`) do embrulho de grupo de processos em
+# `mcp/arvore.rs`. Sem features proprias: as que valem sao as do rmcp.
+process-wrap = { version = "10.0", default-features = false, features = ["tokio1"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
 [features]
 default = []
-mcp = ["dep:rmcp"]
+mcp = ["dep:rmcp", "dep:process-wrap"]
 mcp-http = ["mcp", "rmcp?/transport-streamable-http-client-reqwest"]
 # Plan 0051 (GAR-444): deterministic echo LLM provider for dev + CI smoke
 # tests. OFF by default — a release build without this feature never links
