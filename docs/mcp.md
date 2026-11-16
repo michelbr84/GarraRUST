@@ -281,9 +281,11 @@ Limits — this is containment of careless processes, **not** a sandbox:
   does not finish in time, the log line says `verificado=false` instead of
   reporting a clean teardown.
 
-- With TLS enabled the gateway has no graceful-shutdown hook yet, so Ctrl+C
-  ends it without disconnecting MCP servers: the server process gets the
-  parent-death signal, its descendants do not.
+- With TLS enabled (`--features tls` builds) Ctrl+C and `SIGTERM` now go
+  through the same shutdown as plain HTTP: the listener stops, open
+  connections get up to 10 s to finish, and MCP servers are disconnected with
+  their whole tree. Before this, the TLS listener never returned on a signal
+  and the servers' descendants were left behind.
 - A launcher that starts the real server in the background and **exits** is now
   treated as a crashed server: its group is killed shortly after the launcher
   is gone. Start the server in the foreground (`exec`) instead.
