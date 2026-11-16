@@ -85,6 +85,8 @@ mod tool_program_basico;
 mod tool_program_gate_e_orcamento;
 mod tool_program_loop_e_streaming;
 mod tool_program_pausa;
+/// #1912: aprovacao, `ToolContext` e pausa leem o MESMO workspace do turno.
+mod workspace_do_turno;
 mod workspace_por_sessao;
 
 // So os temas que exportam helper para os outros; um tema novo entra aqui

@@ -1210,6 +1210,68 @@ fn parece_nome_de_variavel(nome: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// O diretorio efetivo de UM turno (#1912), resolvido no maximo uma vez.
+///
+/// A aprovacao do turno, o [`ToolContext`] de cada chamada e o registro da
+/// pausa leem daqui. Antes cada um chamava
+/// [`AgentRuntime::working_dir_efetivo`] por conta propria, e uma mudanca no
+/// disco entre as leituras (a raiz do workspace padrao aparecendo, o
+/// diretorio da sessao virando arquivo) fazia a ferramenta rodar com um
+/// `working_dir` diferente daquele a que a aprovacao estava vinculada.
+///
+/// - **Preguicoso:** so resolve quando alguem precisa. Conversa sem
+///   ferramenta nao materializa o diretorio da sessao.
+/// - **Grudento:** o primeiro resultado vale para o turno inteiro, `None`
+///   inclusive. Uma raiz que aparece no meio do turno nao muda o destino de
+///   uma decisao ja tomada.
+///
+/// E uma string de caminho, nao um handle de diretorio: tira a divergencia
+/// entre os pontos de decisao do runtime, mas nao elimina TOCTOU
+/// adversarial no sistema de arquivos — o confinamento continua sendo o do
+/// [`crate::tools::FileJail`] no momento do uso.
+struct WorkspaceDoTurno<'a> {
+    runtime: &'a AgentRuntime,
+    exec: &'a ExecContext,
+    session_id: &'a str,
+    resolvido: std::sync::OnceLock<Option<String>>,
+}
+
+impl<'a> WorkspaceDoTurno<'a> {
+    fn novo(runtime: &'a AgentRuntime, exec: &'a ExecContext, session_id: &'a str) -> Self {
+        Self {
+            runtime,
+            exec,
+            session_id,
+            resolvido: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// O diretorio do turno — resolvido na primeira consulta, fixo depois.
+    fn diretorio(&self) -> Option<&str> {
+        self.resolvido
+            .get_or_init(|| self.runtime.working_dir_efetivo(self.exec, self.session_id))
+            .as_deref()
+    }
+
+    /// O **unico** literal de [`ToolContext`] do runtime (#1449): a sessao e
+    /// o diretorio vem deste turno, e nao de uma segunda leitura do disco.
+    fn contexto(
+        &self,
+        user_id: Option<&str>,
+        approval: ToolApproval,
+        is_heartbeat: bool,
+    ) -> crate::tools::ToolContext {
+        crate::tools::ToolContext {
+            session_id: self.session_id.to_string(),
+            user_id: user_id.map(|s| s.to_string()),
+            is_heartbeat,
+            approval,
+            working_dir: self.diretorio().map(str::to_string),
+            project_id: None,
+        }
+    }
+}
+
 impl AgentRuntime {
     pub fn new() -> Self {
         Self {
@@ -1307,13 +1369,17 @@ impl AgentRuntime {
         Some(caminho.to_string_lossy().into_owned())
     }
 
-    /// O [`crate::tools::ToolContext`] de uma invocacao de ferramenta.
+    /// O [`crate::tools::ToolContext`] de uma invocacao de ferramenta avulsa,
+    /// fora de um turno do runtime (o gateway a usa).
     ///
-    /// **Ponto unico de montagem** nos caminhos de execucao do runtime: e o que
-    /// garante que todo turno passe por [`Self::working_dir_efetivo`], em vez
-    /// de um dos quatro lacos de tool-call lembrar do escopo por sessao e outro
-    /// esquecer (#1449). Um teste varre este fonte para que nao volte a haver
-    /// um `ToolContext` montado a mao aqui.
+    /// Monta pelo mesmo construtor dos quatro lacos de tool-call
+    /// (`WorkspaceDoTurno::contexto`), entao todo `ToolContext` passa por
+    /// [`Self::working_dir_efetivo`] — um laco lembrar do escopo por sessao e
+    /// outro esquecer reabriria a #1449. Aqui o "turno" e esta chamada so: o
+    /// diretorio e resolvido uma vez, como antes. Dentro de um turno os lacos
+    /// compartilham UM workspace com a aprovacao e a pausa (#1912). Um teste
+    /// varre este fonte para que nao volte a haver um `ToolContext` montado a
+    /// mao aqui.
     pub fn contexto_de_ferramenta(
         &self,
         exec: &ExecContext,
@@ -1322,14 +1388,7 @@ impl AgentRuntime {
         approval: crate::tools::approval::ToolApproval,
         is_heartbeat: bool,
     ) -> crate::tools::ToolContext {
-        crate::tools::ToolContext {
-            session_id: session_id.to_string(),
-            user_id: user_id.map(|s| s.to_string()),
-            is_heartbeat,
-            approval,
-            working_dir: self.working_dir_efetivo(exec, session_id),
-            project_id: None,
-        }
+        WorkspaceDoTurno::novo(self, exec, session_id).contexto(user_id, approval, is_heartbeat)
     }
 
     /// Set the model to use when tools are available (overrides model_override for tool-capable requests).
@@ -2198,7 +2257,11 @@ impl AgentRuntime {
         );
 
         // GAR-187: detect if the user approved a pending tool confirmation
-        let aprovacao = self.aprovacao_do_turno(exec, session_id, conversation_history, user_text);
+        // #1912: um workspace por turno, lido pela aprovacao, por todo
+        // `ToolContext` e pelo registro da pausa. Preguicoso: so resolve se
+        // alguem precisar.
+        let workspace = WorkspaceDoTurno::novo(self, exec, session_id);
+        let aprovacao = self.aprovacao_do_turno(&workspace, conversation_history, user_text);
 
         // GAR-208: apply sliding window before building the message list
         let windowed = self.context_policy.apply_window(conversation_history);
@@ -2350,13 +2413,7 @@ impl AgentRuntime {
             let mut confirmation_response: Option<String> = None;
             for block in &response.content {
                 if let ContentBlock::ToolUse { id, name, input } = block {
-                    let context = self.contexto_de_ferramenta(
-                        exec,
-                        session_id,
-                        user_id,
-                        aprovacao.clone(),
-                        false,
-                    );
+                    let context = workspace.contexto(user_id, aprovacao.clone(), false);
 
                     match self
                         .dispatch_tool_call(&portao, &mut budget, None, &context, id, name, input)
@@ -2373,7 +2430,7 @@ impl AgentRuntime {
                             tool,
                             fingerprint,
                         } => {
-                            self.registrar_pausa(exec, session_id, &tool, fingerprint);
+                            self.registrar_pausa(&workspace, &tool, fingerprint);
                             tool_results.push(tool_result);
                             confirmation_response = Some(prompt);
                             break;
@@ -2500,7 +2557,11 @@ impl AgentRuntime {
         trim_messages_to_budget(&mut messages, &system, &tool_defs, max_ctx);
 
         // GAR-187: detect if the user approved a pending tool confirmation
-        let aprovacao = self.aprovacao_do_turno(exec, session_id, conversation_history, user_text);
+        // #1912: um workspace por turno, lido pela aprovacao, por todo
+        // `ToolContext` e pelo registro da pausa. Preguicoso: so resolve se
+        // alguem precisar.
+        let workspace = WorkspaceDoTurno::novo(self, exec, session_id);
+        let aprovacao = self.aprovacao_do_turno(&workspace, conversation_history, user_text);
 
         // #979: os limites do modo valem, no lugar dos fixos. Precedencia:
         // override explicito do runtime > limites do modo > padrao. Quem passou
@@ -2620,13 +2681,7 @@ impl AgentRuntime {
             let mut confirmation_response: Option<String> = None;
             for block in &response.content {
                 if let ContentBlock::ToolUse { id, name, input } = block {
-                    let context = self.contexto_de_ferramenta(
-                        exec,
-                        session_id,
-                        user_id,
-                        aprovacao.clone(),
-                        is_heartbeat,
-                    );
+                    let context = workspace.contexto(user_id, aprovacao.clone(), is_heartbeat);
 
                     match self
                         .dispatch_tool_call(&portao, &mut budget, None, &context, id, name, input)
@@ -2643,7 +2698,7 @@ impl AgentRuntime {
                             tool,
                             fingerprint,
                         } => {
-                            self.registrar_pausa(exec, session_id, &tool, fingerprint);
+                            self.registrar_pausa(&workspace, &tool, fingerprint);
                             tool_results.push(tool_result);
                             confirmation_response = Some(prompt);
                             break;
@@ -2953,7 +3008,11 @@ impl AgentRuntime {
         );
 
         // GAR-187: detect if the user approved a pending tool confirmation
-        let aprovacao = self.aprovacao_do_turno(exec, session_id, conversation_history, user_text);
+        // #1912: um workspace por turno, lido pela aprovacao, por todo
+        // `ToolContext` e pelo registro da pausa. Preguicoso: so resolve se
+        // alguem precisar.
+        let workspace = WorkspaceDoTurno::novo(self, exec, session_id);
+        let aprovacao = self.aprovacao_do_turno(&workspace, conversation_history, user_text);
 
         // GAR-208: apply sliding window before building the message list
         let windowed = self.context_policy.apply_window(conversation_history);
@@ -3285,13 +3344,7 @@ impl AgentRuntime {
                     for (id, name, input_json) in &tool_uses {
                         let input: serde_json::Value =
                             serde_json::from_str(input_json).unwrap_or_default();
-                        let context = self.contexto_de_ferramenta(
-                            exec,
-                            session_id,
-                            user_id,
-                            aprovacao.clone(),
-                            false,
-                        );
+                        let context = workspace.contexto(user_id, aprovacao.clone(), false);
 
                         match self
                             .dispatch_tool_call(
@@ -3316,7 +3369,7 @@ impl AgentRuntime {
                                 tool,
                                 fingerprint,
                             } => {
-                                self.registrar_pausa(exec, session_id, &tool, fingerprint);
+                                self.registrar_pausa(&workspace, &tool, fingerprint);
                                 tool_results.push(tool_result);
                                 confirmation_response = Some(prompt);
                                 break;
@@ -3467,13 +3520,7 @@ impl AgentRuntime {
                     let mut confirmation_response: Option<String> = None;
                     for block in &response.content {
                         if let ContentBlock::ToolUse { id, name, input } = block {
-                            let context = self.contexto_de_ferramenta(
-                                exec,
-                                session_id,
-                                user_id,
-                                aprovacao.clone(),
-                                false,
-                            );
+                            let context = workspace.contexto(user_id, aprovacao.clone(), false);
 
                             match self
                                 .dispatch_tool_call(
@@ -3498,7 +3545,7 @@ impl AgentRuntime {
                                     tool,
                                     fingerprint,
                                 } => {
-                                    self.registrar_pausa(exec, session_id, &tool, fingerprint);
+                                    self.registrar_pausa(&workspace, &tool, fingerprint);
                                     tool_results.push(tool_result);
                                     confirmation_response = Some(prompt);
                                     break;
@@ -3550,13 +3597,16 @@ impl AgentRuntime {
     ///
     /// #1912: pendência e concessão lembrada também vinculam o diretório
     /// efetivo. Trocar o workspace exige nova aprovação para aquele destino.
+    /// O diretório é o do `workspace` do turno — o mesmo que o `ToolContext`
+    /// e o registro da pausa leem, então a ferramenta recebe exatamente o
+    /// destino a que esta aprovação foi vinculada.
     fn aprovacao_do_turno(
         &self,
-        exec: &ExecContext,
-        session_id: &str,
+        workspace: &WorkspaceDoTurno<'_>,
         conversation_history: &[ChatMessage],
         user_text: &str,
     ) -> ToolApproval {
+        let (exec, session_id) = (workspace.exec, workspace.session_id);
         match exec.approval_scope.as_ref() {
             None => detect_confirmation_approval(conversation_history, user_text),
             Some(scope) if scope.session_id() != session_id => {
@@ -3577,20 +3627,13 @@ impl AgentRuntime {
                     return ToolApproval::None;
                 }
                 let agora = std::time::Instant::now();
-                let workspace = self.working_dir_efetivo(exec, session_id);
-                let deste_turno = self.pending_approvals.resolve_in_workspace(
-                    scope,
-                    workspace.as_deref(),
-                    user_text,
-                    agora,
-                );
+                let diretorio = workspace.diretorio();
+                let deste_turno = self
+                    .pending_approvals
+                    .resolve_in_workspace(scope, diretorio, user_text, agora);
                 if self.approval_level.lembra_aprovacao_na_sessao() {
-                    self.session_approvals.compor_in_workspace(
-                        scope,
-                        workspace.as_deref(),
-                        deste_turno,
-                        agora,
-                    )
+                    self.session_approvals
+                        .compor_in_workspace(scope, diretorio, deste_turno, agora)
                 } else {
                     deste_turno
                 }
@@ -3601,13 +3644,17 @@ impl AgentRuntime {
     /// Grava o pedido que acabou de pausar o turno (#1343), quando o turno
     /// tem escopo e o pedido tem impressao digital bem formada. Fora disso
     /// nao grava nada, e a pausa e terminal como antes.
+    ///
+    /// #1912: o pedido fica vinculado ao diretorio do `workspace` do turno —
+    /// o que a ferramenta que pausou recebeu no `ToolContext`, e nao o que o
+    /// disco diz depois que ela devolveu o pedido.
     fn registrar_pausa(
         &self,
-        exec: &ExecContext,
-        session_id: &str,
+        workspace: &WorkspaceDoTurno<'_>,
         tool: &str,
         fingerprint: Option<ApprovalFingerprint>,
     ) {
+        let (exec, session_id) = (workspace.exec, workspace.session_id);
         let Some(scope) = exec.approval_scope.as_ref() else {
             return;
         };
@@ -3622,10 +3669,9 @@ impl AgentRuntime {
             );
             return;
         };
-        let workspace = self.working_dir_efetivo(exec, session_id);
         self.pending_approvals.register_in_workspace(
             scope,
-            workspace.as_deref(),
+            workspace.diretorio(),
             tool,
             fp,
             std::time::Instant::now(),
