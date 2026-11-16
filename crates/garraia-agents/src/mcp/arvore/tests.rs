@@ -203,6 +203,20 @@ async fn encerrar_relata_motivo_e_dominio_vazio() {
     let _ = fugitivo.wait().await;
 }
 
+/// Um processo que demora a morrer e sinalizado em mais de uma passada, mas
+/// conta uma vez so no relatorio — era o que fazia o teste acima falhar com
+/// `mortos_por_marcador == 5` em runner carregado. **Mutacao**: troque o
+/// corpo de `registrar_mortos` por `mortos.extend(da_passada)`.
+#[test]
+fn processo_sinalizado_em_varias_passadas_conta_uma_vez() {
+    let mut mortos = Vec::new();
+    registrar_mortos(&mut mortos, &[41]);
+    registrar_mortos(&mut mortos, &[41, 42]);
+    registrar_mortos(&mut mortos, &[42, 41]);
+    registrar_mortos(&mut mortos, &[]);
+    assert_eq!(mortos, vec![41, 42]);
+}
+
 /// O marcador casa por igualdade exata da entrada — um token que e
 /// prefixo de outro nao pode casar com o processo errado.
 #[cfg(target_os = "linux")]

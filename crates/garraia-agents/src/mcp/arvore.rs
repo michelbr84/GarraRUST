@@ -208,7 +208,7 @@ impl Dominio {
                 verificado = false;
                 break;
             };
-            mortos.extend(&passada.mortos);
+            registrar_mortos(&mut mortos, &passada.mortos);
             vivos = passada.vivos;
             verificado = passada.verificado;
             if vivos.is_empty() {
@@ -261,6 +261,19 @@ impl Dominio {
             );
         }
         relatorio
+    }
+}
+
+/// Junta os sinalizados de uma passada aos das anteriores, sem repetir PID.
+///
+/// O `SIGKILL` nao e sincrono: sob carga, um processo ja sinalizado ainda
+/// aparece vivo (e e sinalizado de novo) nas passadas seguintes. Ele continua
+/// sendo UM processo morto pelo marcador, e e isso que o relatorio conta.
+fn registrar_mortos(mortos: &mut Vec<u32>, da_passada: &[u32]) {
+    for pid in da_passada {
+        if !mortos.contains(pid) {
+            mortos.push(*pid);
+        }
     }
 }
 
