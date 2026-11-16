@@ -312,6 +312,11 @@ impl PendingApprovals {
             return ToolApproval::None;
         };
         if pending.workspace.as_deref() != workspace {
+            tracing::info!(
+                channel = %scope.channel,
+                tool = %pending.tool,
+                "aprovacao pendente recusada: workspace diferente do que pausou"
+            );
             return ToolApproval::None;
         }
         if !is_approval_word(user_text) {
@@ -349,6 +354,12 @@ impl PendingApprovals {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Sondagem conservadora antes de resolver o workspace preguiçoso.
+    /// Não concede nem consome aprovação; a resolução atômica decide depois.
+    pub fn has_pending_for(&self, scope: &ApprovalScope) -> bool {
+        self.lock().contains_key(&scope.key())
     }
 }
 

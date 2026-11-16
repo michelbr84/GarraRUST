@@ -96,8 +96,38 @@ async fn aprovacao_usa_workspace_efetivo_nao_so_o_declarado() {
             vec!["x"],
             "{caminho:?}: mesmo destino efetivo aprova"
         );
+        let mut c = Cenario::novo(caminho, &["x", "x"]);
+        c.rt.set_workspace_padrao(Some(crate::tools::SessionWorkspace::nova(
+            raiz.path().to_path_buf(),
+        )));
+        assert!(e_pedido(
+            &c.turno_com_exec("s1", "apaga x", &[], &automatico).await
+        ));
         let outro = exec(Some("outro-workspace"));
         assert!(e_pedido(&c.turno_com_exec("s1", "sim", &[], &outro).await));
-        assert_eq!(c.rodou(), vec!["x"], "{caminho:?}");
+        assert!(
+            c.rodou().is_empty(),
+            "{caminho:?}: pendência automática não atravessa destino"
+        );
+    }
+}
+
+#[tokio::test]
+async fn conversa_sem_tool_nao_materializa_workspace() {
+    for caminho in CAMINHOS {
+        for nivel in [ApprovalLevel::Always, ApprovalLevel::Session] {
+            let raiz = tempfile::tempdir().expect("workspace isolado");
+            let mut c = Cenario::novo(caminho, &[""]);
+            c.rt.set_approval_level(nivel);
+            c.rt.set_workspace_padrao(Some(crate::tools::SessionWorkspace::nova(
+                raiz.path().to_path_buf(),
+            )));
+            c.turno_com_exec("s1", "oi", &[], &exec(None)).await;
+            assert_eq!(
+                std::fs::read_dir(raiz.path()).expect("read_dir").count(),
+                0,
+                "{caminho:?}: conversa sem ferramenta não cria diretórios"
+            );
+        }
     }
 }

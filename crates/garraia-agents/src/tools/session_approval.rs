@@ -54,10 +54,10 @@ use super::pending_approval::ApprovalScope;
 /// Por quanto tempo uma sessao sem turno guarda o que o humano aprovou.
 pub const SESSION_APPROVAL_IDLE_TTL: Duration = Duration::from_secs(60 * 60);
 
-/// Quantos pedidos aprovados uma sessao guarda.
+/// Quantos pedidos aprovados um par (sessão, workspace) guarda por principal.
 pub const SESSION_APPROVAL_MAX_POR_SESSAO: usize = 64;
 
-/// Quantas sessoes o processo acompanha ao mesmo tempo.
+/// Quantos escopos (canal, sessão, remetente, workspace) o processo acompanha.
 pub const SESSION_APPROVAL_CAPACITY: usize = 1024;
 
 /// Identidade do [`ApprovalScope`] mais o workspace efetivo do turno.
@@ -78,7 +78,8 @@ struct Lembradas {
     ultimo_turno: Instant,
 }
 
-/// As aprovacoes lembradas do processo, por `(canal, sessao, remetente)`.
+/// Aprovações por `(canal, sessão, remetente, workspace)`. Voltar a um
+/// workspace recupera suas concessões ainda válidas (até o TTL de inatividade).
 ///
 /// `Debug` manual: a chave carrega o remetente (telefone no WhatsApp, id da
 /// plataforma nos outros canais — PII). O dump mostra so quantas sessoes ha.
@@ -244,6 +245,14 @@ impl SessionApprovals {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Há concessão deste principal em algum workspace? Apenas uma sondagem:
+    /// `compor_in_workspace` ainda valida workspace e TTL sob o próprio lock.
+    pub fn has_remembered_for(&self, scope: &ApprovalScope) -> bool {
+        self.lock().keys().any(|(channel, session, sender, _)| {
+            channel == scope.channel() && session == scope.session_id() && sender == scope.sender()
+        })
     }
 }
 

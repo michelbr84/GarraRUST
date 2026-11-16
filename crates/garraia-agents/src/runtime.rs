@@ -3547,6 +3547,7 @@ impl AgentRuntime {
     /// aprovacao do turno passa a cobrir tambem o que esta
     /// `(canal, sessao, remetente)` ja aprovou. Sem escopo, ou com escopo de
     /// outra sessao, nada e lembrado nem consultado.
+    ///
     /// #1912: pendência e concessão lembrada também vinculam o diretório
     /// efetivo. Trocar o workspace exige nova aprovação para aquele destino.
     fn aprovacao_do_turno(
@@ -3566,6 +3567,15 @@ impl AgentRuntime {
                 ToolApproval::None
             }
             Some(scope) => {
+                // Não materializa workspace em conversa sem ferramentas (#1912).
+                // A sondagem não aprova nada. Uma inserção concorrente depois
+                // dela deixa este turno sem concessão (falha fechada).
+                if !self.pending_approvals.has_pending_for(scope)
+                    && !(self.approval_level.lembra_aprovacao_na_sessao()
+                        && self.session_approvals.has_remembered_for(scope))
+                {
+                    return ToolApproval::None;
+                }
                 let agora = std::time::Instant::now();
                 let workspace = self.working_dir_efetivo(exec, session_id);
                 let deste_turno = self.pending_approvals.resolve_in_workspace(
