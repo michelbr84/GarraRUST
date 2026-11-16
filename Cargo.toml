@@ -100,7 +100,7 @@ rand = "0.9"
 # into the lockfile even though the code only uses HS256/RS256 — both served
 # natively by aws-lc-rs, which is already in the dependency graph. Trade-off
 # accepted: aws-lc-sys needs cmake + perl at build time (present on CI).
-jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_rs"] }
 
 # Plugin system — bumped 28→44 in GAR-454, 44→45 in GAR-708 (health run 32),
 # 45→46 in GAR-895 (health run 146, 2026-08-16): RUSTSEC-2026-0222 wasmtime 45.x
