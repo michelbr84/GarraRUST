@@ -373,13 +373,38 @@ pub fn candidate_dirs(opts: &RegistryOptions) -> [PathBuf; 2] {
 /// Scans the candidate directories of both scopes, tagging each result with
 /// the scope it came from. Isolation is preserved: a candidate found under the
 /// project root is never reported as global.
+///
+/// When the working directory IS the user's home (`WORKDIR /home/garraia` in
+/// the official image, or `garra skills candidates` run from `~`), the project
+/// root resolves to `<home>/.garra/skills` — the same directory as the global
+/// root. Scanning it twice would list every candidate twice and invent a
+/// `project` scope that does not exist (#1903), so the project scope is
+/// skipped when both paths resolve to the same place.
 pub fn scan_candidates_scoped(opts: &RegistryOptions) -> Result<Vec<(SkillScope, CandidateScan)>> {
     let dirs = candidate_dirs(opts);
     let mut out = Vec::with_capacity(dirs.len());
     for (dir, scope) in dirs.iter().zip([SkillScope::Global, SkillScope::Project]) {
+        if scope == SkillScope::Project && mesma_raiz(&dirs[0], dir) {
+            continue;
+        }
         out.push((scope, scan_candidates(dir)?));
     }
     Ok(out)
+}
+
+/// Whether two paths point at the same directory, resolving relative against
+/// the current directory first. Unresolvable paths are never "the same".
+fn mesma_raiz(a: &Path, b: &Path) -> bool {
+    match (raiz_de(a), raiz_de(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn raiz_de(path: &Path) -> Option<PathBuf> {
+    fs::canonicalize(path)
+        .ok()
+        .or_else(|| std::path::absolute(path).ok())
 }
 
 /// Resolves the user home directory from explicit values: `HOME` first, then
@@ -821,5 +846,34 @@ mod tests {
             scans[0].1.candidates[0].slug
         );
         assert!(scans[1].1.candidates[0].slug.contains("projeto"));
+    }
+
+    /// CWD == HOME (imagem oficial: `WORKDIR /home/garraia`) faz o escopo de
+    /// projeto resolver para o MESMO diretorio do global. Varrer duas vezes
+    /// duplicaria cada candidato e inventaria `project` (#1903).
+    #[test]
+    fn scan_candidates_scoped_nao_duplica_quando_os_escopos_coincidem() {
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("home").join(".garra").join("skills");
+        let dir = global.join("_candidates");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("mined-unico-11111111.md"),
+            "## Commands\n\n```\nls\n```\n",
+        )
+        .unwrap();
+        // Projeto aponta para a mesma raiz do global (relativo resolvido
+        // contra o CWD == HOME na imagem oficial).
+        let opts = RegistryOptions::new(global.clone(), global.clone());
+
+        let scans = scan_candidates_scoped(&opts).unwrap();
+
+        assert_eq!(
+            scans.len(),
+            1,
+            "escopo de projeto igual ao global nao e varrido"
+        );
+        assert_eq!(scans[0].0, SkillScope::Global);
+        assert_eq!(scans[0].1.candidates.len(), 1);
     }
 }
