@@ -16,8 +16,8 @@
 //! - **Nao e padrao.** Aprovar `cargo test -p a` nao aprova `cargo test -p b`,
 //!   nem `cargo test -p a && curl ...`: a regra e a igualdade da impressao
 //!   digital, a mesma do [`ToolApproval::Granted`].
-//! - **Nao atravessa sessao, canal nem remetente.** A chave e o trio do
-//!   [`ApprovalScope`] — `(canal, sessao, remetente)`, derivado pelo
+//! - **Nao atravessa sessao, canal, remetente nem workspace efetivo.** A chave
+//!   soma o workspace ao [`ApprovalScope`] — `(canal, sessao, remetente)`, derivado pelo
 //!   servidor. O "sim" do dono num grupo nao aprova o pedido de outra pessoa
 //!   do mesmo grupo, e uma sessao nova comeca sem nada lembrado.
 //! - **Nao passa por cima de nada que decide antes do tier arriscado.** O
@@ -54,20 +54,21 @@ use super::pending_approval::ApprovalScope;
 /// Por quanto tempo uma sessao sem turno guarda o que o humano aprovou.
 pub const SESSION_APPROVAL_IDLE_TTL: Duration = Duration::from_secs(60 * 60);
 
-/// Quantos pedidos aprovados uma sessao guarda.
+/// Quantos pedidos aprovados um par (sessão, workspace) guarda por principal.
 pub const SESSION_APPROVAL_MAX_POR_SESSAO: usize = 64;
 
-/// Quantas sessoes o processo acompanha ao mesmo tempo.
+/// Quantos escopos (canal, sessão, remetente, workspace) o processo acompanha.
 pub const SESSION_APPROVAL_CAPACITY: usize = 1024;
 
-/// `(canal, sessao, remetente)` — o trio do [`ApprovalScope`].
-type Chave = (String, String, String);
+/// Identidade do [`ApprovalScope`] mais o workspace efetivo do turno.
+type Chave = (String, String, String, Option<String>);
 
-fn chave(scope: &ApprovalScope) -> Chave {
+fn chave(scope: &ApprovalScope, workspace: Option<&str>) -> Chave {
     (
         scope.channel().to_string(),
         scope.session_id().to_string(),
         scope.sender().to_string(),
+        workspace.map(str::to_string),
     )
 }
 
@@ -77,7 +78,8 @@ struct Lembradas {
     ultimo_turno: Instant,
 }
 
-/// As aprovacoes lembradas do processo, por `(canal, sessao, remetente)`.
+/// Aprovações por `(canal, sessão, remetente, workspace)`. Voltar a um
+/// workspace recupera suas concessões ainda válidas (até o TTL de inatividade).
 ///
 /// `Debug` manual: a chave carrega o remetente (telefone no WhatsApp, id da
 /// plataforma nos outros canais — PII). O dump mostra so quantas sessoes ha.
@@ -163,10 +165,22 @@ impl SessionApprovals {
         deste_turno: ToolApproval,
         now: Instant,
     ) -> ToolApproval {
+        self.compor_in_workspace(scope, None, deste_turno, now)
+    }
+
+    /// Concessões lembradas não atravessam o diretório efetivo do turno.
+    /// O caminho não aparece no Debug nem nos logs; igualdade é textual.
+    pub fn compor_in_workspace(
+        &self,
+        scope: &ApprovalScope,
+        workspace: Option<&str>,
+        deste_turno: ToolApproval,
+        now: Instant,
+    ) -> ToolApproval {
         let mut map = self.lock();
         let idle_ttl = self.idle_ttl;
         map.retain(|_, l| now.saturating_duration_since(l.ultimo_turno) < idle_ttl);
-        let chave = chave(scope);
+        let chave = chave(scope, workspace);
 
         if let ToolApproval::Granted(impressao) = &deste_turno {
             if !map.contains_key(&chave) && map.len() >= self.capacity {
@@ -206,8 +220,18 @@ impl SessionApprovals {
 
     /// Quantos pedidos esta sessao tem lembrados agora (vencida = zero).
     pub fn lembradas(&self, scope: &ApprovalScope, now: Instant) -> usize {
+        self.lembradas_in_workspace(scope, None, now)
+    }
+
+    /// Contagem no mesmo escopo de workspace usado para compor a concessão.
+    pub fn lembradas_in_workspace(
+        &self,
+        scope: &ApprovalScope,
+        workspace: Option<&str>,
+        now: Instant,
+    ) -> usize {
         let map = self.lock();
-        match map.get(&chave(scope)) {
+        match map.get(&chave(scope, workspace)) {
             Some(l) if !self.vencida(l, now) => l.impressoes.len(),
             _ => 0,
         }
@@ -221,6 +245,14 @@ impl SessionApprovals {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Há concessão deste principal em algum workspace? Apenas uma sondagem:
+    /// `compor_in_workspace` ainda valida workspace e TTL sob o próprio lock.
+    pub fn has_remembered_for(&self, scope: &ApprovalScope) -> bool {
+        self.lock().keys().any(|(channel, session, sender, _)| {
+            channel == scope.channel() && session == scope.session_id() && sender == scope.sender()
+        })
     }
 }
 

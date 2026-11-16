@@ -46,6 +46,7 @@ mod aprovacao_isolamento;
 /// a aprovacao retomada e o pedido do `bash` sem marcador.
 mod aprovacao_retomada;
 mod aprovacao_vinculada;
+mod aprovacao_workspace;
 mod aviso_de_loop;
 mod breaker;
 /// #1725: data e hora do turno no system prompt.

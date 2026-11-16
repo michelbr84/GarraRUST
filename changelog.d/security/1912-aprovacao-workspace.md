@@ -1,0 +1,1 @@
+- Vincula pendências e concessões lembradas de aprovação ao caminho efetivo do turno (comparação textual): trocar de workspace exige aprovação para aquele caminho. Preserva a criação preguiçosa de diretórios, o caminho legado sem escopo e não habilita execução remota (#1912).

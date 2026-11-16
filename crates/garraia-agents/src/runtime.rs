@@ -3547,6 +3547,9 @@ impl AgentRuntime {
     /// aprovacao do turno passa a cobrir tambem o que esta
     /// `(canal, sessao, remetente)` ja aprovou. Sem escopo, ou com escopo de
     /// outra sessao, nada e lembrado nem consultado.
+    ///
+    /// #1912: pendência e concessão lembrada também vinculam o diretório
+    /// efetivo. Trocar o workspace exige nova aprovação para aquele destino.
     fn aprovacao_do_turno(
         &self,
         exec: &ExecContext,
@@ -3564,10 +3567,30 @@ impl AgentRuntime {
                 ToolApproval::None
             }
             Some(scope) => {
+                // Não materializa workspace em conversa sem ferramentas (#1912).
+                // A sondagem não aprova nada. Uma inserção concorrente depois
+                // dela deixa este turno sem concessão (falha fechada).
+                if !self.pending_approvals.has_pending_for(scope)
+                    && !(self.approval_level.lembra_aprovacao_na_sessao()
+                        && self.session_approvals.has_remembered_for(scope))
+                {
+                    return ToolApproval::None;
+                }
                 let agora = std::time::Instant::now();
-                let deste_turno = self.pending_approvals.resolve(scope, user_text, agora);
+                let workspace = self.working_dir_efetivo(exec, session_id);
+                let deste_turno = self.pending_approvals.resolve_in_workspace(
+                    scope,
+                    workspace.as_deref(),
+                    user_text,
+                    agora,
+                );
                 if self.approval_level.lembra_aprovacao_na_sessao() {
-                    self.session_approvals.compor(scope, deste_turno, agora)
+                    self.session_approvals.compor_in_workspace(
+                        scope,
+                        workspace.as_deref(),
+                        deste_turno,
+                        agora,
+                    )
                 } else {
                     deste_turno
                 }
@@ -3599,8 +3622,14 @@ impl AgentRuntime {
             );
             return;
         };
-        self.pending_approvals
-            .register(scope, tool, fp, std::time::Instant::now());
+        let workspace = self.working_dir_efetivo(exec, session_id);
+        self.pending_approvals.register_in_workspace(
+            scope,
+            workspace.as_deref(),
+            tool,
+            fp,
+            std::time::Instant::now(),
+        );
     }
 
     /// O unico ponto de despacho de tool do `AgentRuntime` (#1226 S-A).
