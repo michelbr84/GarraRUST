@@ -105,6 +105,8 @@ pub struct CandidateSummary {
     pub slug: String,
     pub occurrence_count: usize,
     pub normalized_commands: Vec<String>,
+    /// Registry scope the candidate was found in: `global` or `project`.
+    pub scope: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -333,8 +335,15 @@ pub async fn delete_learning_skill(Path(name): Path<String>) -> impl IntoRespons
 
 /// GET /api/learning/logs/sessions — list observed session log files.
 pub async fn get_log_sessions() -> impl IntoResponse {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let sessions_dir = PathBuf::from(home).join(".garra").join("sessions");
+    // Mesma resolucao de home do registry (HOME, depois USERPROFILE) em vez de
+    // um fallback inline para /tmp (#1903).
+    let sessions_dir = match registry::user_home_dir() {
+        Ok(home) => home.join(".garra").join("sessions"),
+        Err(e) => {
+            warn!(error = %e, "session log dir unresolved");
+            return Json(serde_json::json!({ "sessions": [] })).into_response();
+        }
+    };
     if !sessions_dir.exists() {
         return Json(serde_json::json!({ "sessions": [] })).into_response();
     }
@@ -357,25 +366,46 @@ pub async fn get_log_sessions() -> impl IntoResponse {
 }
 
 /// GET /api/learning/logs/candidates — list pending candidate skills.
+///
+/// Reads both registry scopes through the same helper the CLI uses
+/// (`registry::scan_candidates_scoped`): the miner writes candidates under the
+/// global root, so a project-only listing hid everything the CLI produced
+/// (#1903). Each item carries the scope it was found in, and the scopes stay
+/// isolated — a project candidate is never reported as global.
 pub async fn get_log_candidates() -> impl IntoResponse {
     let opts = default_registry_opts();
-    let candidates_dir = opts.project_dir.join("_candidates");
-    let candidates = match registry::list_candidates(&candidates_dir) {
-        Ok(c) => c,
+    let scans = match registry::scan_candidates_scoped(&opts) {
+        Ok(s) => s,
         Err(e) => {
-            warn!(error = %e, "list_candidates failed");
+            warn!(error = %e, "scan_candidates failed");
             return Json(serde_json::json!({ "candidates": [] })).into_response();
         }
     };
-    let items: Vec<CandidateSummary> = candidates
-        .into_iter()
-        .map(|c| CandidateSummary {
+    let mut items: Vec<CandidateSummary> = Vec::new();
+    for (scope, scan) in scans {
+        let scope_name = candidate_scope_name(&scope);
+        if !scan.unparseable.is_empty() {
+            warn!(
+                scope = scope_name,
+                skipped = scan.unparseable.len(),
+                "candidate files skipped: unparseable"
+            );
+        }
+        items.extend(scan.candidates.into_iter().map(|c| CandidateSummary {
             slug: c.slug,
             occurrence_count: c.occurrence_count,
             normalized_commands: c.normalized_commands,
-        })
-        .collect();
+            scope: scope_name.to_string(),
+        }));
+    }
     Json(serde_json::json!({ "candidates": items })).into_response()
+}
+
+fn candidate_scope_name(scope: &garraia_learning::SkillScope) -> &'static str {
+    match scope {
+        garraia_learning::SkillScope::Global => "global",
+        garraia_learning::SkillScope::Project => "project",
+    }
 }
 
 /// GET /api/learning/logs/scores?since=<iso> — score history from skill registry.

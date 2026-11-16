@@ -26,12 +26,11 @@ impl RegistryOptions {
         }
     }
 
-    /// Build options using the real HOME dir + an explicit project root.
+    /// Build options using the resolved user home (`HOME`, then `USERPROFILE`)
+    /// plus an explicit project root.
     pub fn default_with_cwd(project_root: &Path) -> Result<Self> {
-        let home =
-            std::env::var("HOME").map_err(|_| Error::Other("HOME env var not set".into()))?;
         Ok(Self {
-            global_dir: PathBuf::from(home).join(".garra").join("skills"),
+            global_dir: global_skills_dir()?,
             project_dir: project_root.join(".garra").join("skills"),
         })
     }
@@ -191,12 +190,18 @@ fn scope_dir<'a>(opts: &'a RegistryOptions, scope: &SkillScope) -> &'a Path {
 /// Lists skills from one or both scopes.
 ///
 /// If `scope` is `None`, returns all skills from both global and project dirs.
+/// When both roots resolve to the same directory (working directory == HOME,
+/// as in the official image's `WORKDIR /home/garraia`), the project pass is
+/// skipped: reading the global root twice would duplicate every skill and make
+/// the CLI report a scope divergence that does not exist (#1903).
 pub fn list_skills(opts: &RegistryOptions, scope: Option<SkillScope>) -> Result<Vec<Skill>> {
     match scope {
         Some(s) => list_skills_in_dir(scope_dir(opts, &s)),
         None => {
             let mut all = list_skills_in_dir(&opts.global_dir)?;
-            all.extend(list_skills_in_dir(&opts.project_dir)?);
+            if !mesma_raiz(&opts.global_dir, &opts.project_dir) {
+                all.extend(list_skills_in_dir(&opts.project_dir)?);
+            }
             Ok(all)
         }
     }
@@ -300,14 +305,32 @@ pub fn set_locked(opts: &RegistryOptions, name: &str, locked: bool) -> Result<bo
     Ok(false)
 }
 
-/// Lists all candidate skill files in `candidates_dir` (files matching `mined-*.md`).
+/// Outcome of scanning one `_candidates` directory.
 ///
-/// Files that fail to parse are skipped with a warning.
-pub fn list_candidates(candidates_dir: &Path) -> Result<Vec<crate::generator::Candidate>> {
+/// The counts are the honest ones: `files` is every `mined-*.md` found on disk,
+/// `candidates` only the ones that parsed. Counting files is not the same as
+/// counting valid candidates (#1903), so both numbers travel together and
+/// `unparseable` names the files that were skipped.
+#[derive(Debug, Clone, Default)]
+pub struct CandidateScan {
+    /// Candidates that parsed.
+    pub candidates: Vec<crate::generator::Candidate>,
+    /// `mined-*.md` files seen in the directory.
+    pub files: usize,
+    /// File names (no directories) that failed to parse.
+    pub unparseable: Vec<String>,
+}
+
+/// Scans `candidates_dir` for `mined-*.md` files, reporting counts and the
+/// names of files that failed to parse.
+///
+/// Files that fail to parse are skipped with a warning, as before; the caller
+/// gets the names so it can print an actionable message where the user looks.
+pub fn scan_candidates(candidates_dir: &Path) -> Result<CandidateScan> {
+    let mut scan = CandidateScan::default();
     if !candidates_dir.exists() {
-        return Ok(vec![]);
+        return Ok(scan);
     }
-    let mut candidates = Vec::new();
     for entry in fs::read_dir(candidates_dir)? {
         let entry = entry?;
         let fname = entry.file_name();
@@ -315,25 +338,107 @@ pub fn list_candidates(candidates_dir: &Path) -> Result<Vec<crate::generator::Ca
         if !name.starts_with("mined-") || !name.ends_with(".md") {
             continue;
         }
+        scan.files += 1;
         let path = entry.path();
         match crate::generator::load_candidate_file(&path) {
-            Ok(c) => candidates.push(c),
+            Ok(c) => scan.candidates.push(c),
             Err(e) => {
                 tracing::warn!(
                     path = %path.display(),
                     error = %e,
                     "skipping unparseable candidate file"
                 );
+                scan.unparseable.push(name.into_owned());
             }
         }
     }
-    Ok(candidates)
+    Ok(scan)
+}
+
+/// Lists all candidate skill files in `candidates_dir` (files matching `mined-*.md`).
+///
+/// Files that fail to parse are skipped with a warning. Use
+/// [`scan_candidates`] when the counts or the skipped names matter.
+pub fn list_candidates(candidates_dir: &Path) -> Result<Vec<crate::generator::Candidate>> {
+    Ok(scan_candidates(candidates_dir)?.candidates)
+}
+
+/// The two `_candidates` directories of a registry, global first — the same
+/// order `list_skills` uses for the skills themselves.
+///
+/// The miner writes to the global root (`~/.garra/skills/_candidates`), so any
+/// reader that only looks at the project scope misses what the CLI produced
+/// (#1903). Both readers (CLI and gateway) go through this function.
+pub fn candidate_dirs(opts: &RegistryOptions) -> [PathBuf; 2] {
+    [
+        opts.global_dir.join("_candidates"),
+        opts.project_dir.join("_candidates"),
+    ]
+}
+
+/// Scans the candidate directories of both scopes, tagging each result with
+/// the scope it came from. Isolation is preserved: a candidate found under the
+/// project root is never reported as global.
+///
+/// When the working directory IS the user's home (`WORKDIR /home/garraia` in
+/// the official image, or `garra skills candidates` run from `~`), the project
+/// root resolves to `<home>/.garra/skills` — the same directory as the global
+/// root. Scanning it twice would list every candidate twice and invent a
+/// `project` scope that does not exist (#1903), so the project scope is
+/// skipped when both paths resolve to the same place.
+pub fn scan_candidates_scoped(opts: &RegistryOptions) -> Result<Vec<(SkillScope, CandidateScan)>> {
+    let dirs = candidate_dirs(opts);
+    let mut out = Vec::with_capacity(dirs.len());
+    for (dir, scope) in dirs.iter().zip([SkillScope::Global, SkillScope::Project]) {
+        if scope == SkillScope::Project && mesma_raiz(&dirs[0], dir) {
+            continue;
+        }
+        out.push((scope, scan_candidates(dir)?));
+    }
+    Ok(out)
+}
+
+/// Whether two paths point at the same directory, resolving relative against
+/// the current directory first. Unresolvable paths are never "the same".
+fn mesma_raiz(a: &Path, b: &Path) -> bool {
+    match (raiz_de(a), raiz_de(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn raiz_de(path: &Path) -> Option<PathBuf> {
+    fs::canonicalize(path)
+        .ok()
+        .or_else(|| std::path::absolute(path).ok())
+}
+
+/// Resolves the user home directory from explicit values: `HOME` first, then
+/// `USERPROFILE` (Windows). Pure: the process environment is read by
+/// [`user_home_dir`], so tests can cover the table without mutating env.
+pub fn home_dir(home: Option<&str>, userprofile: Option<&str>) -> Result<PathBuf> {
+    let raw = home
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .or_else(|| userprofile.map(str::trim).filter(|v| !v.is_empty()))
+        .ok_or_else(|| {
+            Error::Other("nem HOME nem USERPROFILE definidos — sem raiz de skills".into())
+        })?;
+    Ok(PathBuf::from(raw))
+}
+
+/// Resolves the user home directory from the environment (`HOME`, then
+/// `USERPROFILE` on Windows). Single source for every path that lives under
+/// the user's home.
+pub fn user_home_dir() -> Result<PathBuf> {
+    let home = std::env::var("HOME").ok();
+    let userprofile = std::env::var("USERPROFILE").ok();
+    home_dir(home.as_deref(), userprofile.as_deref())
 }
 
 /// Returns the global skills root: `~/.garra/skills/`.
 pub fn global_skills_dir() -> Result<PathBuf> {
-    let home = std::env::var("HOME").map_err(|_| Error::Other("HOME env not set".into()))?;
-    Ok(PathBuf::from(home).join(".garra").join("skills"))
+    Ok(user_home_dir()?.join(".garra").join("skills"))
 }
 
 /// Returns the project skills root: `.garra/skills/` relative to CWD.
@@ -660,5 +765,144 @@ mod tests {
         };
         let path = promote_with_intent(&skill, &opts, &intent).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn home_dir_prefere_home_e_cai_no_userprofile() {
+        // Tabela pura: nada aqui mexe no ambiente do processo.
+        assert_eq!(
+            home_dir(Some("/home/michel"), Some("C:\\Users\\michel"))
+                .unwrap()
+                .to_string_lossy(),
+            "/home/michel"
+        );
+        assert_eq!(
+            home_dir(None, Some("C:\\Users\\michel"))
+                .unwrap()
+                .to_string_lossy(),
+            "C:\\Users\\michel",
+            "Windows sem HOME: USERPROFILE e a raiz"
+        );
+        assert_eq!(
+            home_dir(Some("  "), Some("   /home/espaco   "))
+                .unwrap()
+                .to_string_lossy(),
+            "/home/espaco",
+            "valor vazio/espacos nao vira raiz"
+        );
+        assert!(
+            home_dir(None, None).is_err(),
+            "sem HOME nem USERPROFILE nao ha raiz de skills"
+        );
+    }
+
+    #[test]
+    fn scan_candidates_separa_arquivos_de_candidatos_validos() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("_candidates");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("mined-um-aaaaaaaa.md"),
+            "## Commands\n\n```\nls\n```\n",
+        )
+        .unwrap();
+        // Bytes invalidos em UTF-8: ilegivel, entra em `unparseable`.
+        std::fs::write(dir.join("mined-dois-bbbbbbbb.md"), [0xff, 0xfe]).unwrap();
+        // Nome fora do padrao: nem conta.
+        std::fs::write(dir.join("nota.md"), "texto").unwrap();
+
+        let scan = scan_candidates(&dir).unwrap();
+        assert_eq!(scan.files, 2, "so mined-*.md conta como arquivo");
+        assert_eq!(scan.candidates.len(), 1);
+        assert_eq!(scan.unparseable, vec!["mined-dois-bbbbbbbb.md".to_string()]);
+        assert_eq!(
+            list_candidates(&dir).unwrap().len(),
+            1,
+            "list_candidates preserva o comportamento antigo"
+        );
+    }
+
+    #[test]
+    fn scan_candidates_scoped_nao_mistura_escopos() {
+        let tmp = TempDir::new().unwrap();
+        let opts = opts_in(&tmp);
+        for (dir, nome) in [
+            (
+                opts.global_dir.join("_candidates"),
+                "mined-global-11111111.md",
+            ),
+            (
+                opts.project_dir.join("_candidates"),
+                "mined-projeto-22222222.md",
+            ),
+        ] {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(nome), "## Commands\n\n```\nls\n```\n").unwrap();
+        }
+
+        let scans = scan_candidates_scoped(&opts).unwrap();
+        assert_eq!(scans.len(), 2);
+        assert_eq!(scans[0].0, SkillScope::Global);
+        assert_eq!(scans[1].0, SkillScope::Project);
+        assert_eq!(scans[0].1.candidates.len(), 1);
+        assert_eq!(scans[1].1.candidates.len(), 1);
+        assert!(
+            scans[0].1.candidates[0].slug.contains("global"),
+            "candidato global veio com slug errado: {}",
+            scans[0].1.candidates[0].slug
+        );
+        assert!(scans[1].1.candidates[0].slug.contains("projeto"));
+    }
+
+    /// CWD == HOME (imagem oficial: `WORKDIR /home/garraia`) faz o escopo de
+    /// projeto resolver para o MESMO diretorio do global. Varrer duas vezes
+    /// duplicaria cada candidato e inventaria `project` (#1903).
+    #[test]
+    fn scan_candidates_scoped_nao_duplica_quando_os_escopos_coincidem() {
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("home").join(".garra").join("skills");
+        let dir = global.join("_candidates");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("mined-unico-11111111.md"),
+            "## Commands\n\n```\nls\n```\n",
+        )
+        .unwrap();
+        // Projeto aponta para a mesma raiz do global (relativo resolvido
+        // contra o CWD == HOME na imagem oficial).
+        let opts = RegistryOptions::new(global.clone(), global.clone());
+
+        let scans = scan_candidates_scoped(&opts).unwrap();
+
+        assert_eq!(
+            scans.len(),
+            1,
+            "escopo de projeto igual ao global nao e varrido"
+        );
+        assert_eq!(scans[0].0, SkillScope::Global);
+        assert_eq!(scans[0].1.candidates.len(), 1);
+    }
+
+    /// O mesmo caso em `list_skills(None)`: sem o guarda, cada skill global
+    /// aparece duas vezes e a CLI anuncia divergencia de escopo falsa (#1903).
+    #[test]
+    fn list_skills_nao_duplica_quando_os_escopos_coincidem() {
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("home").join(".garra").join("skills");
+        std::fs::create_dir_all(&global).unwrap();
+        for (nome, score) in [("uma-skill", "0.8"), ("outra-skill", "0.7")] {
+            std::fs::write(
+                global.join(format!("{nome}.md")),
+                format!(
+                    "---\nname: {nome}\nversion: 0.1.0\nsource: mined\nscope: global\nscore: {score}\n---\n\n## Steps\n\nbody\n"
+                ),
+            )
+            .unwrap();
+        }
+        let opts = RegistryOptions::new(global.clone(), global.clone());
+
+        let skills = list_skills(&opts, None).unwrap();
+
+        assert_eq!(skills.len(), 2, "cada skill uma vez: {skills:?}");
     }
 }

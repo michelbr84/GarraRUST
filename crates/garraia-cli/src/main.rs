@@ -433,9 +433,13 @@ enum Commands {
     /// Operate the skills pipeline: mine session logs, list candidates and
     /// installed skills (#1901).
     ///
+    /// Pipeline de aprendizado — nao confundir com `garra skill` (singular),
+    /// que instala/lista o catalogo operacional de skills do agente.
+    ///
     /// Uses the learning registry's global and project skill directories.
-    /// Mining reads JSON SessionRecord logs from `$HOME/.garra/sessions`;
-    /// candidates are global (the gateway currently lists project candidates).
+    /// Mining reads JSON SessionRecord logs from `$HOME/.garra/sessions` and
+    /// writes candidates to the global root (`~/.garra/skills/_candidates`);
+    /// the candidate listing reads both scopes, like the gateway.
     Skills {
         #[command(subcommand)]
         action: SkillsCommands,
@@ -1886,6 +1890,10 @@ fn stderr_is_log_channel(command: &Commands) -> bool {
 ///   conversa com outro processo: morrer no meio dele e deixar trabalho pela
 ///   metade, e ai o `EPIPE` como erro tratado e o comportamento certo.
 ///
+/// Excecao documentada: `skills mine` muda estado, mas termina TODAS as
+/// escritas antes da primeira linha de relatorio; a morte no `write` sem
+/// leitor acontece com os candidatos ja gravados e inteiros (#1903).
+///
 /// So e chamada no Unix (Windows nao tem SIGPIPE); o teste roda em todos.
 #[cfg_attr(not(unix), allow(dead_code))]
 fn sigpipe_padrao_para(command: &Commands) -> bool {
@@ -1901,10 +1909,15 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
             RunsCommands::List { .. } => true,
         },
         Commands::Skills { action } => match action {
-            // `mine` grava candidatos: morrer no meio deixa arquivo pela metade.
-            SkillsCommands::Mine { .. } => false,
-            // So leem estado e imprimem.
-            SkillsCommands::Candidates { .. } | SkillsCommands::List { .. } => true,
+            // `mine` grava candidatos ANTES de imprimir qualquer coisa (o
+            // minerador termina as escritas e so depois o relatorio sai), entao
+            // morrer no primeiro write sem leitor nao deixa arquivo pela
+            // metade — e `garra skills mine | head -1` deixa de ser panico
+            // (#1903). A idempotencia e o conteudo dos candidatos ficam
+            // cobertos pelo teste de pipe fechado em `tests/stdout_fechado.rs`.
+            SkillsCommands::Mine { .. }
+            | SkillsCommands::Candidates { .. }
+            | SkillsCommands::List { .. } => true,
         },
         Commands::Config { action } => match action {
             ConfigCommands::Check { .. } => true,
@@ -4519,6 +4532,9 @@ mod tests {
             &["garra", "channel", "list"],
             &["garra", "channel", "status", "telegram"],
             &["garra", "skill", "list"],
+            &["garra", "skills", "mine", "--sessions-dir", "x"],
+            &["garra", "skills", "candidates"],
+            &["garra", "skills", "list"],
             &["garra", "glob", "test", "*.rs", "a.rs"],
             &["garra", "whatsapp", "status"],
             &["garra", "whatsapp", "users"],
