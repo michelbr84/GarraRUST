@@ -1,6 +1,7 @@
-//! #1912: turnos realmente sobrepostos no mesmo runtime, sem canais reais.
+//! #1912: turnos sobrepostos numa thread no mesmo runtime, sem canais reais.
 //! A barreira no provider só libera a resposta quando ambos os turnos já
-//! resolveram a pendência. Não prova isolamento do transporte Telegram/MCP.
+//! resolveram a pendência. Não prova paralelismo entre threads, isolamento
+//! do transporte Telegram/MCP nem o modo de aprovação por sessão.
 
 use super::aprovacao_entre_turnos::{CAMINHOS, Caminho, PedeAlvos, e_pedido, escopo};
 use super::{AgentRuntime, ToolQuePedeConfirmacao};
