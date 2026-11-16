@@ -1264,7 +1264,7 @@ do processamento de uma mensagem do Telegram (texto, streaming e voz) em
 `crate::prova_do_dono`, preso à instância de `AppState`, à sessão e ao usuário.
 A tool só abre o relatório quando o `ToolContext` casa com os três. Escopo
 ausente, escopo sem prova, divergência, `ToolContext` sem usuário ou task filha
-(`tokio::spawn` não herda o escopo) negam. A prova não é serializável e não sai
+(`tokio::spawn` não herda o escopo) negam. A prova não é serializável e não é derivada
 do histórico nem do LLM.
 
 **O que NÃO mudou.** Nenhuma execução foi habilitada: a prova não entra em
@@ -1276,8 +1276,10 @@ aprovações, `bash` ou MCP. Chat privado sozinho não prova isolamento.
 escopado à instalação/bot/canal em `ExecContext`/`ToolContext` com construtor
 comum; concessão explícita de execução só ao dono em privado; testes de Chat
 Sync e sessão compartilhada cobrindo histórico, resultado e pendência (não só a
-autoridade do relatório); conteúdo de site/arquivo/MCP/LLM sem fabricar
-aprovação; rollback que desliga a concessão remota e revoga pendências.
+autoridade do relatório), inclusive recall de memória entre sessões: a prova
+não é persistida, mas o conteúdo do relatório pode integrar resposta, histórico
+e memória; conteúdo de site/arquivo/MCP/LLM sem fabricar aprovação; rollback
+que desliga a concessão remota e revoga pendências.
 
 | Ameaça | Mitigação | Prova |
 |---|---|---|
