@@ -417,9 +417,20 @@ pub(crate) fn decide_operador(
     canal_do_prefixo: Option<&str>,
     superficies: Option<&[String]>,
     fontes: &FontesDaSessao,
+    dono_do_canal: bool,
 ) -> bool {
     if !porta_fechada {
         return false;
+    }
+    // Um canal de mensagens nao prova o operador por si (#1347) — mas o
+    // allowlist DELE pode: `is_owner` e o dono pareado do bot, que o gate do
+    // canal ja separou de qualquer outro remetente. Nesse caso o relatorio
+    // sai aberto (versao exata, provedores, MCP) porque quem esta do outro
+    // lado e o dono na propria instalacao, e a porta do operador esta fechada.
+    // A prova do canal NAO vence leitura ilegivel do banco: uma sessao que
+    // pode ter fontes remotas persistidas segue fail-closed mesmo para o dono.
+    if dono_do_canal {
+        return !matches!(fontes, FontesDaSessao::Ilegivel);
     }
     if canal_do_prefixo.is_some_and(|c| remetente_da_superficie(c) == Remetente::Qualquer) {
         return false;
@@ -478,6 +489,11 @@ pub(crate) async fn sessao_do_operador(state: &AppState, session_id: &str) -> bo
         .map(|s| s.canais_dos_turnos.iter().cloned().collect());
     // Sem banco nao ha `chat_session_keys` — e tambem nao ha sessao por UUID:
     // o Telegram cai em `telegram-{chat_id}`, e o prefixo ja o pega.
+    let dono_do_canal = state
+        .sessions
+        .get(session_id)
+        .map(|s| s.ultimo_turno_do_dono)
+        .unwrap_or(false);
     let fontes = match &state.session_store {
         None => FontesDaSessao::SemBanco,
         Some(store) => match store.lock().await.get_sources_for_session(session_id) {
@@ -496,6 +512,7 @@ pub(crate) async fn sessao_do_operador(state: &AppState, session_id: &str) -> bo
         channel_of_session(session_id),
         superficies.as_deref(),
         &fontes,
+        dono_do_canal,
     )
 }
 
@@ -732,7 +749,8 @@ mod decisao_operador_tests {
             true,
             None,
             Some(&sup),
-            &FontesDaSessao::SemBanco
+            &FontesDaSessao::SemBanco,
+            false
         ));
     }
 
@@ -744,7 +762,8 @@ mod decisao_operador_tests {
             false,
             None,
             Some(&sup),
-            &FontesDaSessao::SemBanco
+            &FontesDaSessao::SemBanco,
+            false
         ));
     }
 
@@ -756,7 +775,8 @@ mod decisao_operador_tests {
             true,
             Some("telegram"),
             Some(&sup),
-            &FontesDaSessao::SemBanco
+            &FontesDaSessao::SemBanco,
+            false
         ));
     }
 
@@ -768,7 +788,8 @@ mod decisao_operador_tests {
             true,
             None,
             Some(&sup),
-            &FontesDaSessao::SemBanco
+            &FontesDaSessao::SemBanco,
+            false
         ));
     }
 
@@ -778,7 +799,8 @@ mod decisao_operador_tests {
             true,
             None,
             Some(&[]),
-            &FontesDaSessao::SemBanco
+            &FontesDaSessao::SemBanco,
+            false
         ));
     }
 
@@ -788,7 +810,8 @@ mod decisao_operador_tests {
             true,
             None,
             None,
-            &FontesDaSessao::SemBanco
+            &FontesDaSessao::SemBanco,
+            false
         ));
     }
 
@@ -797,14 +820,14 @@ mod decisao_operador_tests {
         // Sessao com superficie local em memoria, mas com fonte remota no banco.
         let sup = s(&["web"]);
         let fontes = FontesDaSessao::Lidas(s(&["whatsapp"]));
-        assert!(!decide_operador(true, None, Some(&sup), &fontes));
+        assert!(!decide_operador(true, None, Some(&sup), &fontes, false));
     }
 
     #[test]
     fn fonte_persistida_local_mantem_operador() {
         let sup = s(&["web"]);
         let fontes = FontesDaSessao::Lidas(s(&["web", "api"]));
-        assert!(decide_operador(true, None, Some(&sup), &fontes));
+        assert!(decide_operador(true, None, Some(&sup), &fontes, false));
     }
 
     #[test]
@@ -815,7 +838,50 @@ mod decisao_operador_tests {
             true,
             None,
             Some(&sup),
-            &FontesDaSessao::Ilegivel
+            &FontesDaSessao::Ilegivel,
+            true
+        ));
+    }
+
+    #[test]
+    fn dono_do_canal_com_porta_fechada_e_operador() {
+        // Telegram: superficie remota por natureza, mas o allowlist provou o
+        // dono do bot neste turno e a porta do operador esta fechada.
+        let sup = s(&["telegram"]);
+        assert!(decide_operador(
+            true,
+            None,
+            Some(&sup),
+            &FontesDaSessao::SemBanco,
+            true
+        ));
+    }
+
+    #[test]
+    fn dono_do_canal_com_porta_aberta_nao_e_operador() {
+        // Porta aberta vence tudo: nem o dono pareado recebe o relatorio aberto.
+        let sup = s(&["telegram"]);
+        assert!(!decide_operador(
+            false,
+            None,
+            Some(&sup),
+            &FontesDaSessao::SemBanco,
+            true
+        ));
+    }
+
+    #[test]
+    fn marca_do_dono_nao_vaza_para_superficie_remota() {
+        // Turno marcado como dono, mas com superficie remota no historico:
+        // a marca e do ULTIMO turno e nao pode conceder privilegio sozinha
+        // quando a sessao tem superficie remota sem prova (fail-closed).
+        let sup = s(&["telegram", "whatsapp"]);
+        assert!(!decide_operador(
+            true,
+            None,
+            Some(&sup),
+            &FontesDaSessao::SemBanco,
+            false
         ));
     }
 
@@ -827,7 +893,8 @@ mod decisao_operador_tests {
             true,
             None,
             Some(&sup),
-            &FontesDaSessao::SemBanco
+            &FontesDaSessao::SemBanco,
+            false
         ));
     }
 }

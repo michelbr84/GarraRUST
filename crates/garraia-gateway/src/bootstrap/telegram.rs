@@ -91,6 +91,15 @@ pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
                 state
                     .hydrate_session_history(&session_id, Some("telegram"), Some(&user_id))
                     .await;
+                // #1877-ish: o dono pareado do bot ve o relatorio aberto do
+                // `garra_status` (versao exata, provedores, MCP). O gate do
+                // canal ja barrou qualquer outro remetente acima.
+                let dono = state
+                    .allowlist
+                    .lock()
+                    .map(|l| l.is_owner(&user_id))
+                    .unwrap_or(false);
+                state.marcar_turno_do_dono(&session_id, dono);
                 let history: Vec<ChatMessage> = state.session_history(&session_id);
                 let continuity_key = state.continuity_key();
 
@@ -303,6 +312,12 @@ pub fn build_telegram_channels(
                     state
                         .hydrate_session_history(&session_id, Some("telegram"), Some(&user_id))
                         .await;
+                    // O turno re-prova o dono: `is_owner` do allowlist do canal.
+                    let dono = allowlist
+                        .lock()
+                        .map(|l| l.is_owner(&user_id))
+                        .unwrap_or(false);
+                    state.marcar_turno_do_dono(&session_id, dono);
                     let history: Vec<ChatMessage> = state.session_history(&session_id);
                     let continuity_key = state.continuity_key();
 

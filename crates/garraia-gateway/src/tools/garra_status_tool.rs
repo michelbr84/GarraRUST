@@ -57,6 +57,16 @@ use crate::capabilities::{feature_flags, feature_inputs};
 use crate::push_channels::PushMounted;
 use crate::state::AppState;
 
+/// O repositorio publico de onde este binario sai. Constante de produto, nao
+/// de instalacao: serve para o agente comparar a versao local com a release
+/// mais nova (`releases_api`) quando o operador pergunta "estou atualizado?".
+const UPSTREAM_REPO: &str = "michelbr84/GarraRUST";
+
+/// `concat!` so aceita literal: a URL fica escrita uma vez, aqui, e o repo
+/// acima e o rotulo para o modelo.
+const UPSTREAM_RELEASES_API: &str =
+    "https://api.github.com/repos/michelbr84/GarraRUST/releases/latest";
+
 /// Os campos que um turno restrito nao recebe, na ordem em que aparecem em
 /// `withheld`.
 const RETIDOS_NO_TURNO_RESTRITO: &[&str] = &[
@@ -447,6 +457,13 @@ impl Tool for GarraStatusTool {
 
         let report = serde_json::json!({
             "version": version,
+            // #1895-ish: de onde este binario vem, para o agente conferir se
+            // e a release mais nova em vez de responder que "nao tem a URL".
+            // Repositorio publico; nenhum dado de instalacao vai aqui.
+            "upstream": {
+                "repo": UPSTREAM_REPO,
+                "releases_api": UPSTREAM_RELEASES_API,
+            },
             "uptime_secs": state.boot_time.elapsed().as_secs(),
             "provider": provider,
             "model": model,
@@ -914,6 +931,7 @@ mod tests {
                 "providers",
                 "session",
                 "tools",
+                "upstream",
                 "uptime_secs",
                 "version",
                 "withheld",
@@ -1285,6 +1303,40 @@ mod tests {
             serde_json::json!(RETIDOS_NO_TURNO_RESTRITO),
             "{json}"
         );
+    }
+
+    /// #1905: o dono pareado do bot, num turno do Telegram com a porta do
+    /// operador fechada, recebe o relatorio ABERTO — versao exata, providers
+    /// e MCP — em vez do `version_patch` retido que fez o Garra responder ao
+    /// dono que "nao consegue confirmar a versao".
+    #[tokio::test]
+    async fn dono_do_telegram_recebe_versao_exata_no_relatorio() {
+        let st = state();
+        let sid = "telegram-7978617919";
+        st.hydrate_session_history(sid, Some("telegram"), Some("7978617919"))
+            .await;
+        st.marcar_turno_do_dono(sid, true);
+        let ctx = ctx_na_sessao(sid, Some("/home/operador/projeto"));
+        let out = tool(&st)
+            .execute(&ctx, serde_json::json!({}))
+            .await
+            .expect("executa");
+        let json: serde_json::Value = serde_json::from_str(&out.content).expect("json");
+        assert_eq!(json["version"], env!("CARGO_PKG_VERSION"), "{json}");
+        assert!(json["providers"].is_array(), "{json}");
+        assert_eq!(json["withheld"], serde_json::json!([]), "{json}");
+        assert_eq!(json["session"]["channel"], "telegram");
+        assert_eq!(json["upstream"]["repo"], UPSTREAM_REPO);
+
+        // Sem a prova do dono, a MESMA sessao volta ao relatorio restrito.
+        st.marcar_turno_do_dono(sid, false);
+        let out2 = tool(&st)
+            .execute(&ctx, serde_json::json!({}))
+            .await
+            .expect("executa");
+        let json2: serde_json::Value = serde_json::from_str(&out2.content).expect("json");
+        assert_eq!(json2["version"], versao_curta(), "{json2}");
+        assert!(json2["providers"].is_null(), "{json2}");
     }
 
     /// O portao restrito do turno (o piso `search`) basta, mesmo numa sessao

@@ -409,6 +409,13 @@ pub struct SessionState {
     /// remoto le esta conversa. E o que o `garra_status` consulta para decidir
     /// se retem o que e do operador (ver `channels_view::sessao_do_operador`).
     pub canais_dos_turnos: std::collections::BTreeSet<String>,
+    /// O ULTIMO turno desta sessao veio de um canal que PROVOU o dono do bot
+    /// (allowlist `is_owner`, ex.: Telegram). Zerado no inicio de todo turno
+    /// ([`AppState::hydrate_session_history`]) para que uma sessao compartilhada
+    /// nao herde privilegio de um turno anterior; so o ponto de entrada que
+    /// provou o dono a marca de novo ([`AppState::marcar_turno_do_dono`]).
+    /// Lida por `channels_view::sessao_do_operador` (relatorio do `garra_status`).
+    pub ultimo_turno_do_dono: bool,
 }
 
 /// Agent configuration override for a session.
@@ -711,6 +718,7 @@ impl AppState {
                 project_name: None,
                 project_id: None,
                 canais_dos_turnos: std::collections::BTreeSet::new(),
+                ultimo_turno_do_dono: false,
             },
         );
     }
@@ -809,6 +817,10 @@ impl AppState {
             if let Some(channel) = channel_id {
                 session.channel_id = Some(channel.to_string());
                 session.canais_dos_turnos.insert(channel.to_string());
+                // Cada turno re-prova (ou nao) o dono: sem isso, um turno do
+                // dono deixaria a marca ligada para o proximo remetente da
+                // mesma sessao compartilhada.
+                session.ultimo_turno_do_dono = false;
             }
             if let Some(user) = user_id {
                 session.user_id = Some(user.to_string());
@@ -862,6 +874,15 @@ impl AppState {
         // #1379: o projeto que a sessao tinha antes do restart volta do banco,
         // confinado de novo pelas raizes de projeto do operador.
         crate::projetos_da_sessao::restaurar(self, session_id).await;
+    }
+
+    /// Marca que o turno ATUAL desta sessao veio de um canal que provou o
+    /// dono do bot (`allowlist.is_owner`). Chamado logo depois de
+    /// [`AppState::hydrate_session_history`], que zera a marca.
+    pub fn marcar_turno_do_dono(&self, session_id: &str, dono: bool) {
+        if let Some(mut session) = self.sessions.get_mut(session_id) {
+            session.ultimo_turno_do_dono = dono;
+        }
     }
 
     /// Append a user/assistant turn to in-memory state and persistent session storage.
