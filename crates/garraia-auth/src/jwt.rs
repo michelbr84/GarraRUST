@@ -107,8 +107,14 @@ impl JwtIssuer {
             ));
         }
 
-        let encoding_key = EncodingKey::from_secret(jwt_bytes);
-        let decoding_key = DecodingKey::from_secret(jwt_bytes);
+        // jsonwebtoken 12: `from_secret` devolve `Result` e recusa chave HMAC
+        // vazia. O piso de 32 bytes acima ja torna esse erro inalcancavel;
+        // propagamos como `Config` (mensagem fixa, sem o segredo) em vez de
+        // `expect`, para continuar fail-closed se o upstream endurecer mais.
+        let encoding_key = EncodingKey::from_secret(jwt_bytes)
+            .map_err(|_| AuthError::Config("GARRAIA_JWT_SECRET rejected as HMAC key".into()))?;
+        let decoding_key = DecodingKey::from_secret(jwt_bytes)
+            .map_err(|_| AuthError::Config("GARRAIA_JWT_SECRET rejected as HMAC key".into()))?;
         let mut validation = Validation::new(Algorithm::HS256);
         validation.set_issuer(&[ISSUER]);
         // Force `sub`, `exp`, and `iss` to be present at decode time.
