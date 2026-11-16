@@ -36,6 +36,7 @@ use garraia_common::Error;
 /// #1912: pedido emitido num processo nao e aprovavel em outro (dois
 /// processos de verdade).
 mod aprovacao_apos_restart;
+mod aprovacao_concorrente;
 /// #1858 fatia 4: `agent.approval: session` — o "sim" vale para o mesmo
 /// pedido no resto da sessao, e so para ele.
 mod aprovacao_da_sessao;
