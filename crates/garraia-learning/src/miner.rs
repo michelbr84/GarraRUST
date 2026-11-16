@@ -403,11 +403,28 @@ fn render_candidate(pattern: &MinedPattern) -> String {
 // Session I/O
 // ──────────────────────────────────────────────
 
-fn load_all_sessions(dir: &Path) -> Result<Vec<SessionRecord>> {
+/// Outcome of scanning a sessions directory.
+///
+/// `files` counts every `*.json` on disk; `sessions` only the ones that parsed.
+/// Counting files is not counting valid sessions (#1903), so the CLI reports
+/// both and names what it skipped.
+#[derive(Debug, Clone, Default)]
+pub struct SessionScan {
+    /// Session records that parsed.
+    pub sessions: Vec<SessionRecord>,
+    /// `*.json` files seen in the directory.
+    pub files: usize,
+    /// File names (no directories) that failed to parse.
+    pub unparseable: Vec<String>,
+}
+
+/// Scans `dir` for `*.json` session records, reporting counts and the names of
+/// files that failed to parse.
+pub fn scan_sessions(dir: &Path) -> Result<SessionScan> {
+    let mut scan = SessionScan::default();
     if !dir.exists() {
-        return Ok(vec![]);
+        return Ok(scan);
     }
-    let mut sessions = Vec::new();
     let entries = std::fs::read_dir(dir)
         .map_err(|e| Error::Other(format!("read_dir {}: {e}", dir.display())))?;
 
@@ -415,15 +432,25 @@ fn load_all_sessions(dir: &Path) -> Result<Vec<SessionRecord>> {
         let entry = entry.map_err(|e| Error::Other(format!("dir entry error: {e}")))?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("json") {
+            scan.files += 1;
             match load_session(&path) {
-                Ok(s) => sessions.push(s),
+                Ok(s) => scan.sessions.push(s),
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = %e, "skipping malformed session");
+                    scan.unparseable.push(
+                        path.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string()),
+                    );
                 }
             }
         }
     }
-    Ok(sessions)
+    Ok(scan)
+}
+
+fn load_all_sessions(dir: &Path) -> Result<Vec<SessionRecord>> {
+    Ok(scan_sessions(dir)?.sessions)
 }
 
 fn load_session(path: &Path) -> Result<SessionRecord> {

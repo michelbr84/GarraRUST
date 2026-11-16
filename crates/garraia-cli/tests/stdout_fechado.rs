@@ -34,6 +34,17 @@ fn porta_livre() -> u16 {
 /// stderr. `stdin` vazio vira `/dev/null`.
 fn roda_com_stdout_fechado(args: &[&str], stdin: &[u8]) -> (ExitStatus, String) {
     let dir = tempdir().expect("tempdir");
+    roda_com_stdout_fechado_em(dir.path(), args, stdin)
+}
+
+/// Igual a [`roda_com_stdout_fechado`], mas com `HOME` (e o diretorio de
+/// trabalho) no caminho dado — para testes que precisam inspecionar o que o
+/// comando gravou sob `$HOME`.
+fn roda_com_stdout_fechado_em(
+    home: &std::path::Path,
+    args: &[&str],
+    stdin: &[u8],
+) -> (ExitStatus, String) {
     let (leitor, escritor) = std::io::pipe().expect("pipe");
     drop(leitor);
 
@@ -42,14 +53,14 @@ fn roda_com_stdout_fechado(args: &[&str], stdin: &[u8]) -> (ExitStatus, String) 
     let porta = porta_livre().to_string();
     let mut cmd = Command::new(garra_bin());
     cmd.args(args)
-        .env("HOME", dir.path())
-        .env("XDG_CONFIG_HOME", dir.path())
-        .env("GARRAIA_CONFIG_DIR", dir.path())
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home)
+        .env("GARRAIA_CONFIG_DIR", home)
         .env("GARRAIA_NO_SPINNER", "1")
         .env("PORT", &porta)
         .env_remove("HOST")
         .env_remove("RUST_BACKTRACE")
-        .current_dir(dir.path())
+        .current_dir(home)
         .stdout(Stdio::from(escritor))
         .stderr(Stdio::piped());
     cmd.stdin(if stdin.is_empty() {
@@ -122,6 +133,69 @@ fn comandos_de_leitura_saem_em_silencio_com_stdout_fechado() {
         }
     }
     assert!(falhas.is_empty(), "{}", falhas.join("\n\n"));
+}
+
+/// `garra skills mine | head -1` (#1903): o minerador termina as escritas
+/// antes de imprimir, entao a morte por SIGPIPE no primeiro write sem leitor
+/// nao pode deixar candidato pela metade — nem reescrever o que ja existe na
+/// segunda passada.
+#[test]
+fn skills_mine_grava_completo_antes_de_morrer_por_sigpipe() {
+    let dir = tempdir().expect("tempdir");
+    let home = dir.path().join("home");
+    let sessoes = dir.path().join("sessoes");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&sessoes).unwrap();
+    for id in ["a", "b"] {
+        let corpo = format!(
+            r#"{{"session_id":"{id}","intent":"release","task_family":"release","commands":[{{"cmd":"git status --porcelain","exit_code":0}},{{"cmd":"cargo test -p garraia --lib","exit_code":0}}],"created_at":"2026-11-15T00:00:00Z"}}"#
+        );
+        std::fs::write(sessoes.join(format!("{id}.json")), corpo).unwrap();
+    }
+
+    let args = [
+        "skills",
+        "mine",
+        "--sessions-dir",
+        sessoes.to_str().unwrap(),
+        "--threshold",
+        "2",
+    ];
+    let (status, stderr) = roda_com_stdout_fechado_em(&home, &args, b"");
+    assert!(
+        !stderr.contains("panicked"),
+        "mine nao pode entrar em panico com stdout fechado:\n{stderr}"
+    );
+    assert_ne!(status.code(), Some(101), "exit 101 = panico de println");
+
+    let candidatos: Vec<_> = std::fs::read_dir(home.join(".garra/skills/_candidates"))
+        .expect("diretorio de candidatos criado antes de imprimir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("mined-") && n.ends_with(".md"))
+        })
+        .collect();
+    assert_eq!(candidatos.len(), 1, "um padrao repetido = um candidato");
+    let conteudo = std::fs::read_to_string(&candidatos[0]).expect("candidato legivel");
+    assert!(
+        conteudo.contains("## Commands") && conteudo.contains("Detected in 2 session(s)"),
+        "candidato incompleto apos o SIGPIPE: {conteudo}"
+    );
+
+    // Segunda passada, tambem com stdout fechado: idempotencia preservada.
+    let (status2, _) = roda_com_stdout_fechado_em(&home, &args, b"");
+    assert!(
+        !matches!(status2.code(), Some(101)),
+        "segunda passada entrou em panico"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&candidatos[0]).unwrap(),
+        conteudo,
+        "candidato reescrito na segunda mineracao"
+    );
 }
 
 /// O outro lado da mesma decisao: no `mcp-server` o SIGPIPE continua
