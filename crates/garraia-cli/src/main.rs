@@ -1790,15 +1790,25 @@ impl Drop for PidFileGuard {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod stop_tests;
+
 /// Terminate the gateway and everything it spawned.
 ///
-/// The daemon path double-forks + `setsid`, so the gateway is a process-group
-/// leader and its MCP children share that group. Signalling only the single
-/// PID left those children running; we signal the whole group when the target
-/// leads one (never our own group), then escalate to SIGKILL if it is still
-/// alive after the grace period.
+/// Signal the gateway's group when it leads one (never our own group).
+/// MCP servers now own separate groups: their descendants are cleaned up by
+/// the gateway, NOT by this group signal. Allow that cleanup to finish before
+/// escalating: TLS draining can take 10 s and MCP shutdown another 10 s.
+/// The 30 s grace includes scheduling margin, but is not a guarantee for
+/// unbounded HTTP requests or channel shutdown. Forced termination can still
+/// leave descendants behind; containment is tracked separately in #1913.
 #[cfg(unix)]
 fn kill_and_wait(pid: u32) -> bool {
+    kill_and_wait_with_grace(pid, std::time::Duration::from_secs(30))
+}
+
+#[cfg(unix)]
+fn kill_and_wait_with_grace(pid: u32, grace: std::time::Duration) -> bool {
     let target = pid as libc::pid_t;
     // SAFETY: getpgid/kill on a pid we were handed; failures are reported via
     // the return value and handled below.
@@ -1814,11 +1824,18 @@ fn kill_and_wait(pid: u32) -> bool {
         }
     }
 
-    for _ in 0..20 {
-        std::thread::sleep(std::time::Duration::from_millis(250));
+    let deadline = std::time::Instant::now() + grace;
+    while std::time::Instant::now() < deadline {
         if !is_process_running(pid) {
             return true;
         }
+        std::thread::sleep(
+            std::time::Duration::from_millis(250)
+                .min(deadline.saturating_duration_since(std::time::Instant::now())),
+        );
+    }
+    if !is_process_running(pid) {
+        return true;
     }
 
     // Grace period spent: stop asking.
