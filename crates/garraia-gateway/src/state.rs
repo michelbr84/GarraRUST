@@ -414,7 +414,9 @@ pub struct SessionState {
     /// ([`AppState::hydrate_session_history`]) para que uma sessao compartilhada
     /// nao herde privilegio de um turno anterior; so o ponto de entrada que
     /// provou o dono a marca de novo ([`AppState::marcar_turno_do_dono`]).
-    /// Lida por `channels_view::sessao_do_operador` (relatorio do `garra_status`).
+    /// Lida por `channels_view::relatorio_aberto_para_dono` (relatorio do
+    /// `garra_status`). NAO entra em `sessao_do_operador`: o teto de
+    /// capacidades do turno continua valendo para superficie remota.
     pub ultimo_turno_do_dono: bool,
 }
 
@@ -1582,6 +1584,33 @@ mod tests {
                 .map(|s| s.ultimo_turno_do_dono)
                 .unwrap_or(true),
             "marca do dono sobreviveu ao inicio de um turno sem canal"
+        );
+    }
+
+    /// #1905 (revisao dupla, bloqueante B1): a prova do dono NAO pode virar
+    /// teto. Se `sessao_do_operador` passar a consultar a marca, o turno do
+    /// Telegram perde o piso Read e ganha `bash`/`file_write`/envio de
+    /// mensagem — foi exatamente a regressao que este teste guarda.
+    #[tokio::test]
+    async fn prova_do_dono_nao_zera_o_teto_de_capacidades() {
+        let st = test_state();
+        let sid = "telegram-7978617919";
+        st.hydrate_session_history(sid, Some("telegram"), Some("7978617919"))
+            .await;
+        st.marcar_turno_do_dono(sid, true);
+        assert_eq!(
+            st.sessions.get(sid).map(|s| s.ultimo_turno_do_dono),
+            Some(true),
+            "a marca do dono precisa estar ligada para o teste valer"
+        );
+        assert!(
+            !crate::channels_view::sessao_do_operador(&st, sid).await,
+            "a prova do dono virou operador: o teto de capacidades caiu"
+        );
+        let exec = st.exec_context_for(sid, None).await;
+        assert!(
+            exec.teto.is_some(),
+            "turno do dono do Telegram saiu sem teto de superficie"
         );
     }
 

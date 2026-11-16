@@ -534,7 +534,7 @@ async fn fatos_da_sessao(state: &AppState, session_id: &str) -> FatosDaSessao {
 /// confianca e a do usuario local. Ver os testes de `decisao_operador_tests`.
 ///
 /// A prova do dono do canal (#1905) NAO entra aqui: esta funcao tambem decide
-/// o teto de capacidades do turno. Ela mora em [`relatorio_aberto`].
+/// o teto de capacidades do turno. Ela mora em [`relatorio_aberto_para_dono`].
 /// Coleta os fatos da sessao e aplica `decide_operador`.
 pub(crate) async fn sessao_do_operador(state: &AppState, session_id: &str) -> bool {
     let fatos = fatos_da_sessao(state, session_id).await;

@@ -41,8 +41,11 @@
 //! operador ([`crate::channels_view::sessao_do_operador`]) — decidido pelo
 //! que os pontos de entrada gravaram sobre a sessao, e nunca pelo prefixo
 //! do id, que a sessao do Telegram por UUID nao tem. Sessao desconhecida e
-//! restrita. O `session.id` e mascarado sempre: o do WhatsApp e o numero de
-//! telefone inteiro.
+//! restrita. Excecao (#1905): o dono do canal provado neste turno em chat
+//! privado do Telegram recebe o relatorio aberto; a prova vale SO para este
+//! relatorio — o teto de capacidades do turno continua negando `bash`/escrita
+//! a superficie remota. O `session.id` e mascarado sempre: o do WhatsApp e o
+//! numero de telefone inteiro.
 //!
 //! [`turno_restrito`]: garraia_agents::tools::turn_tools::turno_restrito
 
