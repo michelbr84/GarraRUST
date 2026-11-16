@@ -35,6 +35,9 @@ garraia-desktop-core = { workspace = true }
 garraia-plugins = { workspace = true, optional = true }
 garraia-security = { workspace = true }
 garraia-skills = { workspace = true }
+# #1901: `garra skills mine|candidates|list` delega ao minerador e ao registro
+# do learning — a mesma stack que o gateway usa em `learning_handler`.
+garraia-learning = { workspace = true }
 garraia-glob = { workspace = true }
 
 tokio = { workspace = true }

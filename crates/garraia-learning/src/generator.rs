@@ -144,8 +144,22 @@ pub fn load_candidate_file(path: &Path) -> Result<Candidate> {
     Ok(Candidate {
         slug,
         normalized_commands: commands,
-        occurrence_count: 1, // file-only parse; occurrence_count not recoverable
+        // O minerador grava "Detected in N session(s)." no corpo; sem reler o
+        // numero a listagem de candidatos mentiria "1 sessao" para um padrao
+        // visto em varias (#1901). Arquivo antigo sem a frase cai no 1.
+        occurrence_count: parse_occurrence_count(&content).unwrap_or(1),
     })
+}
+
+/// Le `Detected in N session(s).` do corpo do candidato minerado.
+fn parse_occurrence_count(content: &str) -> Option<usize> {
+    const MARKER: &str = "Detected in ";
+    let start = content.find(MARKER)? + MARKER.len();
+    let digits: String = content[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
 }
 
 // ──────────────────────────────────────────────
@@ -574,6 +588,18 @@ mod tests {
         assert_eq!(candidate.slug, "mined-merge-delete");
         assert_eq!(candidate.normalized_commands.len(), 2);
         assert!(candidate.normalized_commands[0].contains("gh pr merge"));
+        // #1901: o numero de sessoes do corpo nao pode se perder na releitura.
+        assert_eq!(candidate.occurrence_count, 3);
+    }
+
+    #[test]
+    fn load_candidate_file_sem_contagem_cai_em_um() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("mined-legado-abcd1234.md");
+        let content = "---\nname: mined-legado\nversion: \"0.1.0\"\nsource: mined\nscope: project\nscore: 0.0\nlocked: false\ncritical_paths_touched: []\nfail_count: 0\n---\n\n## Commands\n\n```\ngit status\ncargo test\n```\n";
+        std::fs::write(&path, content).unwrap();
+        let candidate = load_candidate_file(&path).unwrap();
+        assert_eq!(candidate.occurrence_count, 1);
     }
 
     #[test]
