@@ -1480,6 +1480,20 @@ async fn serve_plain(
         .local_addr()
         .map_err(|e| garraia_common::Error::Gateway(format!("local_addr: {e}")))?;
     conferir_socket(&bound, gateway)?;
+    // #1907: o socket REAL e a unica fonte do endereco ligado. Bind
+    // nao-loopback aqui e HTTP em claro por construcao (este e o caminho sem
+    // TLS), entao a credencial e os tokens de sessao viajam sem cifra: avisa
+    // em todo boot. Avisa e nao recusa porque composicoes containerizadas
+    // podem ligar `0.0.0.0` com TLS num proxy externo. O compose deste repo
+    // publica HTTP em claro, sem proxy TLS; o degrau de recusa e decisao a parte
+    // — ver docs/auth-config.md §5.1.
+    if let Some(aviso) = garraia_config::bind::aviso_de_transporte(
+        addr,
+        std::slice::from_ref(&bound),
+        &garraia_common::executavel::nome(),
+    ) {
+        warn!("{aviso}");
+    }
     info!("GarraIA gateway listening on http://{}", addr);
     axum::serve(
         listener,
@@ -2265,6 +2279,38 @@ mod tests {
         )
         .await;
         assert!(r.is_err(), "com credencial serve ate o timeout: {r:?}");
+    }
+
+    /// FIACAO do #1907: o aviso de transporte vive numa linha de log, entao o
+    /// guarda le o FONTE do ponto de entrada. Apagar a chamada de
+    /// `serve_plain` (ou o `warn!`) tem que quebrar aqui — sem isso, um bind
+    /// exposto em HTTP em claro volta a ser silencioso sem falhar teste algum.
+    #[test]
+    fn serve_plain_avisa_bind_exposto_em_http_em_claro() {
+        let fonte = include_str!("server.rs");
+        let inicio = fonte
+            .find("async fn serve_plain(")
+            .expect("serve_plain existe no fonte");
+        let resto = &fonte[inicio..];
+        let fim = resto
+            .find("\nasync fn serve_tls")
+            .expect("serve_tls vem depois de serve_plain");
+        let corpo = &resto[..fim];
+
+        let gate = corpo
+            .find("conferir_socket(&bound, gateway)?")
+            .expect("gate");
+        let aviso = corpo
+            .find("garraia_config::bind::aviso_de_transporte(")
+            .expect("serve_plain deve consultar o aviso (#1907)");
+        let log = corpo.find("warn!(\"{aviso}\")").expect("warn do aviso");
+        let listening = corpo.find("gateway listening on http").expect("listening");
+        assert!(gate < aviso && aviso < log && log < listening);
+        assert!(corpo[aviso..log].contains("std::slice::from_ref(&bound)"));
+
+        let tls = &resto[fim..];
+        let fim_tls = tls.find("async fn shutdown_signal(").expect("fim do TLS");
+        assert!(!tls[..fim_tls].contains("bind::aviso_de_transporte"));
     }
 
     /// A borda que importa: cresce exponencialmente, satura no teto, e não

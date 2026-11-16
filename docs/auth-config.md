@@ -455,6 +455,29 @@ config file. It is file-only by design — there is no env var or flag, so the
 same `HOST` injection that exposes the bind cannot also switch the guard off
 — and every boot with it logs a loud warning.
 
+#### The boot warns when an exposed bind is plain HTTP
+
+A credential is not encryption. With a credential configured the bind above is
+allowed, and if the process does not serve TLS (no `--features tls` build, or
+no `gateway.tls_cert_path` / `gateway.tls_key_path`) every request crosses the
+network in clear text: the `Authorization: Bearer <gateway.api_key>` header,
+session tokens and the `/api/*` bodies. Since #1907 `serve_plain`
+logs a `WARNING` naming that risk **on every boot** of such a bind. It stays
+silent when the actual bound socket address is loopback, or when serving TLS.
+
+It warns instead of refusing on purpose: containerised deployments legitimately
+bind `0.0.0.0` with TLS terminated elsewhere. This repository's own
+`docker-compose.yml` publishes `3888:3888` in clear text and does not include
+a TLS proxy; adding one is the operator's responsibility. A refusal by default
+would break that composition. Fix it with one of:
+
+- serve TLS in this process — `gateway.tls_cert_path` + `gateway.tls_key_path`
+  with a binary built `--features tls`;
+- terminate TLS in a proxy on the same host and bind loopback
+  (`garraia start --host 127.0.0.1`);
+- keep the cleartext hop only when it is trusted end to end (private network,
+  sidecar proxy, container network).
+
 Consequences for `config check`:
 
 - `garraia config check` and `garraia doctor` resolve the bind the way
