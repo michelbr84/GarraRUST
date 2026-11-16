@@ -281,7 +281,9 @@ fn registrar_mortos(mortos: &mut Vec<u32>, da_passada: &[u32]) {
 struct Passada {
     /// Quem ainda existia no dominio (ja com o sinal enviado).
     vivos: Vec<u32>,
-    /// Processos fora do grupo mortos pelo marcador nesta passada.
+    /// Processos fora do grupo SINALIZADOS pelo marcador nesta passada. O
+    /// mesmo PID pode voltar em passadas seguintes; quem conta uma vez so e
+    /// [`registrar_mortos`].
     mortos: Vec<u32>,
     /// `false` quando nao houve como conferir.
     verificado: bool,
