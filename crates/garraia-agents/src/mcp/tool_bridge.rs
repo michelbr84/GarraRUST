@@ -188,10 +188,9 @@ impl Tool for McpTool {
         let mut registro = RegistroDaChamada::nova(&self.nome_servidor, &self.nome_original);
         let resultado = match tokio::time::timeout(self.timeout, peer.call_tool_once(params)).await
         {
-            Ok(Ok(resultado)) => {
-                registro.fechar(Desfecho::Concluida);
-                resultado
-            }
+            // Ainda nao e "concluida": o desfecho so fecha depois de se
+            // saber que tipo de resposta veio (ver o `match` abaixo).
+            Ok(Ok(resultado)) => resultado,
             Ok(Err(e)) => {
                 registro.fechar(Desfecho::Erro);
                 return Err(Error::Mcp(format!(
@@ -209,8 +208,12 @@ impl Tool for McpTool {
         };
 
         let resultado = match resultado {
-            CallToolResponse::Complete(resultado) => resultado,
+            CallToolResponse::Complete(resultado) => {
+                registro.fechar(Desfecho::Concluida);
+                resultado
+            }
             CallToolResponse::InputRequired(_) => {
+                registro.fechar(Desfecho::Erro);
                 return Err(Error::Mcp(format!(
                     "servidor MCP '{}' pediu input do usuário (SEP-2322 input_required) para '{}'; \
                      este runtime não conduz rodadas interativas — chame a ferramenta com \
@@ -219,6 +222,7 @@ impl Tool for McpTool {
                 )));
             }
             CallToolResponse::Task(_) => {
+                registro.fechar(Desfecho::Erro);
                 return Err(Error::Mcp(format!(
                     "servidor MCP '{}' materializou a chamada como task (SEP-2663) para '{}'; \
                      polling de tasks/get não é suportado neste runtime",
@@ -228,6 +232,7 @@ impl Tool for McpTool {
             // `CallToolResponse` é `#[non_exhaustive]` (o mesmo contrato do
             // `ContentBlock`): variantes novas da spec caem aqui, fail-closed.
             _ => {
+                registro.fechar(Desfecho::Erro);
                 return Err(Error::Mcp(format!(
                     "resposta desconhecida do servidor MCP '{}' para '{}'; fail-closed",
                     self.nome_servidor, self.nome_original

@@ -792,7 +792,8 @@ impl McpManager {
         // marcador), para que desconexao, queda e falha de subida derrubem a
         // arvore inteira e nao so o processo que o gateway lancou.
         let marcador = arvore::novo_marcador();
-        let (transport, stderr) = match TokioChildProcess::builder(arvore::envolver(cmd, &marcador))
+        let (envolto, colheita) = arvore::envolver(cmd, &marcador);
+        let (transport, stderr) = match TokioChildProcess::builder(envolto)
             .stderr(Stdio::piped())
             .spawn()
         {
@@ -806,7 +807,7 @@ impl McpManager {
                 });
             }
         };
-        let dominio = Dominio::novo(marcador, transport.id());
+        let dominio = Dominio::novo(marcador, transport.id(), colheita);
         let drain = stderr.map(|s| npx_cache::spawn_stderr_drain(name, s));
 
         let service = match tokio::time::timeout(
@@ -1704,6 +1705,22 @@ impl McpManager {
                 .collect();
             (dead, stable)
         };
+
+        // #1913: o dominio de uma conexao morta e encerrado assim que ela e
+        // vista morta, e nao so quando for trocada — com os restarts
+        // esgotados ela nunca e trocada, e quem saiu do grupo do servidor
+        // ficaria de pe para sempre.
+        for (name, _, _) in &to_reconnect {
+            let dominio = self
+                .connections
+                .write()
+                .await
+                .get_mut(name)
+                .and_then(|conn| conn.dominio.take());
+            if let Some(dominio) = dominio {
+                dominio.encerrar(name, MotivoDoFim::Queda).await;
+            }
+        }
 
         // Boot failures live in `pending`, never in `connections`.
         let mut to_reconnect: Vec<ReconnectTarget> = to_reconnect;

@@ -234,7 +234,7 @@ the isolation domain is the *connection*, not the call (issue #1913).
 | A call exceeds its timeout | The call returns an error and the server receives `notifications/cancelled` carrying that call's request id | Kill the server, or touch any other call on it |
 | The caller gives up (turn cancelled, client gone) | Same `notifications/cancelled` | Same |
 | Server disconnected, restarted or gateway shutdown | Closes stdin, waits, `SIGTERM`, `SIGKILL` — applied to the server's **whole process group**; then looks for leftovers and logs the outcome | Touch another server's tree |
-| Server crashes | Its process group is killed as soon as the exit is seen, even when a descendant still holds the server's stdout open; the rest is swept when the dead connection is replaced | — |
+| Server crashes | Its process group is killed as soon as the exit is seen, even when a descendant still holds the server's stdout open; the rest is swept on the next health-monitor pass, whether or not a restart follows | — |
 | Server never completes the handshake | Same teardown as a disconnect | — |
 
 Stopping the work of **one** call is cooperative: it depends on the server
@@ -271,6 +271,15 @@ Limits — this is containment of careless processes, **not** a sandbox:
 - If the gateway itself is killed with `SIGKILL`, only the server process gets
   the parent-death signal (Linux/Android); its descendants depend on the server
   forwarding it.
+- The trade-off of the server having its own group: a signal sent to the
+  **gateway's** process group (`kill -- -PGID` from a supervisor, Ctrl+C in a
+  terminal) no longer reaches MCP servers directly. They end through the
+  gateway's shutdown, stdin EOF and, on Linux/Android, the parent-death signal;
+  on macOS/BSD a group `SIGKILL` on the gateway leaves the server to notice EOF
+  on its own.
+- The leftover check is bounded (2 s). If `/proc` cannot be read, or the check
+  does not finish in time, the log line says `verificado=false` instead of
+  reporting a clean teardown.
 
 For these reasons the tree teardown is not, by itself, grounds to enable
 privileged delegated execution through an MCP server.
