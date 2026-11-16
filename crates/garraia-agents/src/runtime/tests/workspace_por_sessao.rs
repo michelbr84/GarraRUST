@@ -145,9 +145,38 @@ pub(super) fn nenhum_tool_context_montado_a_mao_neste_runtime() {
         literais.len(),
         literais
     );
+    // #1449 + #1912: o construtor escopa por sessao lendo o workspace DO
+    // TURNO, e o workspace do turno e o unico ponto que resolve o diretorio
+    // efetivo. Antes deste guard o construtor chamava `working_dir_efetivo`
+    // direto, e aprovacao e pausa tambem — tres leituras do disco por turno,
+    // que divergiam quando ele mudava entre elas. O comportamento por sessao
+    // continua provado em `o_contexto_de_ferramenta_carrega_o_diretorio_da_sessao`.
     assert!(
-        producao.contains("working_dir: self.working_dir_efetivo(exec, session_id)"),
-        "o construtor deixou de escopar o workspace padrao por sessao (#1449)"
+        producao.contains("working_dir: self.diretorio().map(str::to_string)"),
+        "o construtor deixou de ler o workspace do turno (#1449/#1912)"
+    );
+    let resolucoes: Vec<usize> = producao
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| {
+            let t = l.trim_start();
+            !t.starts_with("//") && t.contains(".working_dir_efetivo(")
+        })
+        .map(|(n, _)| n + 1)
+        .collect();
+    assert_eq!(
+        resolucoes.len(),
+        1,
+        "`working_dir_efetivo` e chamado em {} lugares no runtime (linhas {:?}); tem de \
+         haver exatamente 1 — o `WorkspaceDoTurno`. Aprovacao, `ToolContext` e pausa \
+         resolvendo cada um por conta propria divergem quando o disco muda no meio do \
+         turno (#1912)",
+        resolucoes.len(),
+        resolucoes
+    );
+    assert!(
+        producao.contains("self.runtime.working_dir_efetivo(self.exec, self.session_id)"),
+        "a unica resolucao tem de ser a do workspace do turno (#1912)"
     );
 }
 
