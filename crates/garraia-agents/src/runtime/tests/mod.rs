@@ -40,6 +40,7 @@ mod aprovacao_apos_restart;
 /// pedido no resto da sessao, e so para ele.
 mod aprovacao_da_sessao;
 mod aprovacao_entre_turnos;
+mod aprovacao_isolamento;
 /// Continuacao de [`aprovacao_entre_turnos`] (dividido pelo teto de 700 linhas do ratchet):
 /// a aprovacao retomada e o pedido do `bash` sem marcador.
 mod aprovacao_retomada;

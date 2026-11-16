@@ -1,0 +1,1 @@
+- **Testes de expiracao e isolamento de aprovacao (#1912).** A suite do runtime verifica expiracao e coexistencia de pedidos em sessoes distintas nos caminhos batch, streaming e fallback, sem habilitar execucao remota. Cobertura parcial: nao substitui testes de transporte Telegram/MCP nem o vinculo de workspace/id da chamada.
