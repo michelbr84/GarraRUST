@@ -1229,7 +1229,7 @@ enum SkillsCommands {
     /// Exit codes (sysexits):
     ///   0  — ok (including "no repeated pattern found")
     ///   2  — invalid argument (e.g. `--threshold 0`)
-    ///   66 — EX_NOINPUT, the sessions directory does not exist
+    ///   66 — EX_NOINPUT, the sessions directory is missing or has no `*.json`
     Mine {
         /// Directory holding the `*.json` session logs.
         /// Defaults to `$HOME/.garra/sessions`.

@@ -304,9 +304,19 @@ fn derive_slug(seq: &[String]) -> String {
         .collect();
 
     if verbs.is_empty() {
+        return "mined".to_string();
+    }
+    // O slug vira nome de arquivo (`mined-<slug>-<hash>.md`): sem teto, um
+    // argumento longo estoura o limite do filesystem e aborta a mineracao.
+    let slug: String = crate::generator::to_kebab(&verbs.join("-"))
+        .chars()
+        .take(60)
+        .collect();
+    let slug = slug.trim_end_matches('-').to_string();
+    if slug.is_empty() {
         "mined".to_string()
     } else {
-        crate::generator::to_kebab(&verbs.join("-"))
+        slug
     }
 }
 

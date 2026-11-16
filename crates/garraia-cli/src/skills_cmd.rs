@@ -4,16 +4,17 @@
 //! (`garraia_learning::registry`) ja existiam. A CLI agora expoe a mineracao
 //! e a inspecao de candidatos/skills sem precisar iniciar o gateway.
 //!
-//! Caminhos: todos derivam de [`registry::global_skills_dir`]
-//! (`$HOME/.garra/skills`). A listagem de skills usa os mesmos dois escopos
-//! do gateway; candidatos seguem o minerador global. O endpoint de candidatos
-//! do gateway ainda consulta o escopo de projeto, nao o global.
+//! Caminhos: a raiz global vem de [`registry::global_skills_dir`]
+//! (`$HOME/.garra/skills`) e a de projeto de `registry::project_skills_dir()`.
+//! A listagem de skills usa os dois escopos, como o gateway; candidatos seguem
+//! o minerador global. O endpoint de candidatos do gateway ainda consulta o
+//! escopo de projeto, nao o global.
 //!
 //! Codigos de saida (sysexits, iguais aos do `garra memory`):
 //!
 //! - `0`  — ok.
 //! - `2`  — `EX_USAGE`: argumento invalido.
-//! - `66` — `EX_NOINPUT`: o diretorio de sessoes nao existe.
+//! - `66` — `EX_NOINPUT`: o diretorio de sessoes nao existe ou nao tem `*.json`.
 
 use std::path::{Path, PathBuf};
 
@@ -27,7 +28,7 @@ use garraia_learning::{Skill, SkillScope, SkillSource};
 const EXIT_OK: i32 = 0;
 /// `EX_USAGE` — argumento invalido.
 const EXIT_USAGE: i32 = 2;
-/// `EX_NOINPUT` — o diretorio de sessoes nao existe.
+/// `EX_NOINPUT` — o diretorio de sessoes nao existe ou nao tem `*.json`.
 const EXIT_NOINPUT: i32 = 66;
 
 /// Diretorios que o pipeline usa.
@@ -46,7 +47,7 @@ pub struct Dirs {
 }
 
 impl Dirs {
-    /// Resolve os diretorios do ambiente, na mesma convencao do gateway.
+    /// Resolve os diretorios do ambiente pelo registro compartilhado.
     pub fn from_env() -> Result<Self> {
         let global =
             registry::global_skills_dir().context("HOME nao definido — sem raiz de skills")?;
