@@ -409,6 +409,15 @@ pub struct SessionState {
     /// remoto le esta conversa. E o que o `garra_status` consulta para decidir
     /// se retem o que e do operador (ver `channels_view::sessao_do_operador`).
     pub canais_dos_turnos: std::collections::BTreeSet<String>,
+    /// O ULTIMO turno desta sessao veio de um canal que PROVOU o dono do bot
+    /// (allowlist `is_owner`, ex.: Telegram). Zerado no inicio de todo turno
+    /// ([`AppState::hydrate_session_history`]) para que uma sessao compartilhada
+    /// nao herde privilegio de um turno anterior; so o ponto de entrada que
+    /// provou o dono a marca de novo ([`AppState::marcar_turno_do_dono`]).
+    /// Lida por `channels_view::relatorio_aberto_para_dono` (relatorio do
+    /// `garra_status`). NAO entra em `sessao_do_operador`: o teto de
+    /// capacidades do turno continua valendo para superficie remota.
+    pub ultimo_turno_do_dono: bool,
 }
 
 /// Agent configuration override for a session.
@@ -711,6 +720,7 @@ impl AppState {
                 project_name: None,
                 project_id: None,
                 canais_dos_turnos: std::collections::BTreeSet::new(),
+                ultimo_turno_do_dono: false,
             },
         );
     }
@@ -806,6 +816,10 @@ impl AppState {
         }
 
         if let Some(mut session) = self.sessions.get_mut(session_id) {
+            // Cada turno re-prova (ou nao) o dono — inclusive um turno sem
+            // canal: sem isso, um turno do dono deixaria a marca ligada para o
+            // proximo remetente da mesma sessao (web chat incluso).
+            session.ultimo_turno_do_dono = false;
             if let Some(channel) = channel_id {
                 session.channel_id = Some(channel.to_string());
                 session.canais_dos_turnos.insert(channel.to_string());
@@ -862,6 +876,15 @@ impl AppState {
         // #1379: o projeto que a sessao tinha antes do restart volta do banco,
         // confinado de novo pelas raizes de projeto do operador.
         crate::projetos_da_sessao::restaurar(self, session_id).await;
+    }
+
+    /// Marca que o turno ATUAL desta sessao veio de um canal que provou o
+    /// dono do bot (`allowlist.is_owner`). Chamado logo depois de
+    /// [`AppState::hydrate_session_history`], que zera a marca.
+    pub fn marcar_turno_do_dono(&self, session_id: &str, dono: bool) {
+        if let Some(mut session) = self.sessions.get_mut(session_id) {
+            session.ultimo_turno_do_dono = dono;
+        }
     }
 
     /// Append a user/assistant turn to in-memory state and persistent session storage.
@@ -1533,6 +1556,62 @@ mod tests {
         assert_eq!(a.agent_mode, None);
         // E nada foi gravado como modo deduzido.
         assert_eq!(st.chosen_agent_mode_for(sid).await, None);
+    }
+
+    /// #1905: a marca de dono e do TURNO, nao da sessao. Todo inicio de turno
+    /// zera a marca — inclusive quando o turno chega sem `channel_id` (web
+    /// chat). Se o reset dependesse do canal, um turno do dono no Telegram
+    /// deixaria o proximo remetente da mesma sessao ver o relatorio aberto.
+    #[tokio::test]
+    async fn hydrate_zera_a_marca_de_dono_mesmo_sem_canal() {
+        let st = test_state();
+        let sid = "sess-dono-reset";
+        st.hydrate_session_history(sid, Some("telegram"), Some("123"))
+            .await;
+        st.marcar_turno_do_dono(sid, true);
+        assert!(
+            st.sessions
+                .get(sid)
+                .map(|s| s.ultimo_turno_do_dono)
+                .unwrap_or(false)
+        );
+
+        // Turno seguinte sem canal (ex.: web chat) na mesma sessao.
+        st.hydrate_session_history(sid, None, None).await;
+        assert!(
+            !st.sessions
+                .get(sid)
+                .map(|s| s.ultimo_turno_do_dono)
+                .unwrap_or(true),
+            "marca do dono sobreviveu ao inicio de um turno sem canal"
+        );
+    }
+
+    /// #1905 (revisao dupla, bloqueante B1): a prova do dono NAO pode virar
+    /// teto. Se `sessao_do_operador` passar a consultar a marca, o turno do
+    /// Telegram perde o piso Read e ganha `bash`/`file_write`/envio de
+    /// mensagem — foi exatamente a regressao que este teste guarda.
+    #[tokio::test]
+    async fn prova_do_dono_nao_zera_o_teto_de_capacidades() {
+        let st = test_state();
+        let sid = "telegram-7978617919";
+        st.hydrate_session_history(sid, Some("telegram"), Some("7978617919"))
+            .await;
+        st.marcar_turno_do_dono(sid, true);
+        assert_eq!(
+            st.sessions.get(sid).map(|s| s.ultimo_turno_do_dono),
+            Some(true),
+            "a marca do dono precisa estar ligada para o teste valer"
+        );
+        assert!(
+            !crate::channels_view::sessao_do_operador(&st, sid).await,
+            "a prova do dono virou operador: o teto de capacidades caiu"
+        );
+        let exec = st.exec_context_for(sid, None).await;
+        assert!(
+            exec.teto.is_some(),
+            "turno do dono do Telegram saiu sem teto de superficie"
+        );
     }
 
     /// A chave de sessao do Telegram e montada **num lugar so**.

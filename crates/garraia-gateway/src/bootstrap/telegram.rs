@@ -11,6 +11,15 @@ use crate::state::SharedState;
 
 use super::config::{channel_gates, resolve_api_key};
 
+/// #1905: o relatório aberto do `garra_status` só sai quando a prova de dono
+/// vem de um chat **privado**. Num grupo o mesmo `chat_id` carrega outros
+/// membros pareados e o relatório aberto (`working_dir`, `providers`, MCP,
+/// versão exata) seria postado para todos — exatamente o que a #1347 retém.
+/// No Telegram, o id de um chat privado é o id do usuário.
+fn dono_do_turno(is_owner: bool, chat_id: i64, user_id: &str) -> bool {
+    is_owner && chat_id.to_string() == user_id
+}
+
 pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
     // Check if voice clients are available
     let stt_client = state.stt_client.clone()?;
@@ -87,10 +96,23 @@ pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
                 }
 
                 // GAR-202: Resolve session via UUID-based key (replaces guessable telegram-{chat_id})
-                let session_id = state.telegram_session_id(chat_id, None).await;
+                let session_id = state
+                    .telegram_session_id(chat_id, user_id.parse::<i64>().ok())
+                    .await;
                 state
                     .hydrate_session_history(&session_id, Some("telegram"), Some(&user_id))
                     .await;
+                // #1905: o dono pareado do bot ve o relatorio aberto do
+                // `garra_status` — mas so em chat privado (em grupo o mesmo
+                // chat carrega outros membros). O gate do canal ja barrou
+                // qualquer outro remetente acima.
+                let is_owner = state
+                    .allowlist
+                    .lock()
+                    .map(|l| l.is_owner(&user_id))
+                    .unwrap_or(false);
+                let dono = dono_do_turno(is_owner, chat_id, &user_id);
+                state.marcar_turno_do_dono(&session_id, dono);
                 let history: Vec<ChatMessage> = state.session_history(&session_id);
                 let continuity_key = state.continuity_key();
 
@@ -303,6 +325,14 @@ pub fn build_telegram_channels(
                     state
                         .hydrate_session_history(&session_id, Some("telegram"), Some(&user_id))
                         .await;
+                    // O turno re-prova o dono: `is_owner` do allowlist da
+                    // instalacao — e so em chat privado (#1905).
+                    let is_owner = allowlist
+                        .lock()
+                        .map(|l| l.is_owner(&user_id))
+                        .unwrap_or(false);
+                    let dono = dono_do_turno(is_owner, chat_id, &user_id);
+                    state.marcar_turno_do_dono(&session_id, dono);
                     let history: Vec<ChatMessage> = state.session_history(&session_id);
                     let continuity_key = state.continuity_key();
 
@@ -464,5 +494,30 @@ fn handle_command(
             Ok(format!("💥 Internal error: {msg}"))
         }
         Err(garraia_channels::CommandError::Blocked) => Err("__blocked__".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod dono_do_turno_tests {
+    use super::dono_do_turno;
+
+    /// Chat privado do dono pareado: o relatorio aberto pode sair.
+    #[test]
+    fn chat_privado_do_dono_marca_o_turno() {
+        assert!(dono_do_turno(true, 7978617919, "7978617919"));
+    }
+
+    /// Grupo: mesmo o dono perguntando, o relatorio aberto NAO pode sair —
+    /// o chat carrega outros membros pareados (#1347).
+    #[test]
+    fn grupo_nao_marca_nem_para_o_dono() {
+        assert!(!dono_do_turno(true, -1001234567890, "7978617919"));
+    }
+
+    /// Quem nao e o dono nunca marca, em chat nenhum.
+    #[test]
+    fn nao_dono_nunca_marca() {
+        assert!(!dono_do_turno(false, 7978617919, "7978617919"));
+        assert!(!dono_do_turno(false, -1001234567890, "555"));
     }
 }

@@ -443,6 +443,69 @@ pub(crate) fn decide_operador(
     }
 }
 
+/// Decisao pura do RELATORIO ABERTO para o dono do canal (#1905).
+///
+/// Separada de [`decide_operador`] de proposito: `sessao_do_operador` tambem
+/// alimenta o teto de capacidades do turno (`exec_context_for_inner` →
+/// `teto_da_superficie`). Um canal de mensagens continua sendo superficie
+/// remota para efeito de capacidades — a prova do dono aqui NAO abre
+/// `bash`/`file_write`/envio de mensagem; ela so dispensa a retencao do
+/// relatorio do `garra_status`, que e informacao da propria instalacao.
+///
+/// Regras: porta do operador fechada, prova do dono gravada no turno
+/// (`SessionState::ultimo_turno_do_dono`, so Telegram em chat privado) e
+/// leitura de fontes nao ilegivel — sessao que pode ter fontes remotas
+/// persistidas segue fail-closed mesmo para o dono.
+pub(crate) fn relatorio_aberto_pelo_dono(
+    porta_fechada: bool,
+    fontes: &FontesDaSessao,
+    dono_do_turno: bool,
+) -> bool {
+    porta_fechada && dono_do_turno && !matches!(fontes, FontesDaSessao::Ilegivel)
+}
+
+/// Fatos da sessao lidos uma vez para as duas decisoes.
+struct FatosDaSessao {
+    porta_fechada: bool,
+    superficies: Option<Vec<String>>,
+    fontes: FontesDaSessao,
+    dono_do_turno: bool,
+}
+
+async fn fatos_da_sessao(state: &AppState, session_id: &str) -> FatosDaSessao {
+    let porta_fechada = porta_do_operador_fechada(&state.config.gateway);
+    let superficies: Option<Vec<String>> = state
+        .sessions
+        .get(session_id)
+        .map(|s| s.canais_dos_turnos.iter().cloned().collect());
+    let dono_do_turno = state
+        .sessions
+        .get(session_id)
+        .map(|s| s.ultimo_turno_do_dono)
+        .unwrap_or(false);
+    // Sem banco nao ha `chat_session_keys` — e tambem nao ha sessao por UUID:
+    // o Telegram cai em `telegram-{chat_id}`, e o prefixo ja o pega.
+    let fontes = match &state.session_store {
+        None => FontesDaSessao::SemBanco,
+        Some(store) => match store.lock().await.get_sources_for_session(session_id) {
+            Ok(f) => FontesDaSessao::Lidas(f),
+            Err(e) => {
+                tracing::warn!(
+                    erro = %e,
+                    "chat_session_keys ilegivel; sessao tratada como remota"
+                );
+                FontesDaSessao::Ilegivel
+            }
+        },
+    };
+    FatosDaSessao {
+        porta_fechada,
+        superficies,
+        fontes,
+        dono_do_turno,
+    }
+}
+
 /// Esta sessao so pode ter o operador do outro lado? (#1347, C1)
 ///
 /// O `garra_status` entrega o que e do operador (`working_dir`, provedores,
@@ -469,34 +532,29 @@ pub(crate) fn decide_operador(
 /// rotulo depois que a chave foi validada na rota (`ws.rs`, `parrot_ws.rs`,
 /// `/api/*`, `/v1/*`). Sem chave, a porta fica fechada so em loopback, e a
 /// confianca e a do usuario local. Ver os testes de `decisao_operador_tests`.
+///
+/// A prova do dono do canal (#1905) NAO entra aqui: esta funcao tambem decide
+/// o teto de capacidades do turno. Ela mora em [`relatorio_aberto_para_dono`].
 /// Coleta os fatos da sessao e aplica `decide_operador`.
 pub(crate) async fn sessao_do_operador(state: &AppState, session_id: &str) -> bool {
-    let porta_fechada = porta_do_operador_fechada(&state.config.gateway);
-    let superficies: Option<Vec<String>> = state
-        .sessions
-        .get(session_id)
-        .map(|s| s.canais_dos_turnos.iter().cloned().collect());
-    // Sem banco nao ha `chat_session_keys` — e tambem nao ha sessao por UUID:
-    // o Telegram cai em `telegram-{chat_id}`, e o prefixo ja o pega.
-    let fontes = match &state.session_store {
-        None => FontesDaSessao::SemBanco,
-        Some(store) => match store.lock().await.get_sources_for_session(session_id) {
-            Ok(f) => FontesDaSessao::Lidas(f),
-            Err(e) => {
-                tracing::warn!(
-                    erro = %e,
-                    "chat_session_keys ilegivel; sessao tratada como remota"
-                );
-                FontesDaSessao::Ilegivel
-            }
-        },
-    };
+    let fatos = fatos_da_sessao(state, session_id).await;
     decide_operador(
-        porta_fechada,
+        fatos.porta_fechada,
         channel_of_session(session_id),
-        superficies.as_deref(),
-        &fontes,
+        fatos.superficies.as_deref(),
+        &fatos.fontes,
     )
+}
+
+/// So a prova do dono do turno (#1905), sem a regra do operador.
+///
+/// O `garra_status` usa isto para saber se o portao do turno pode ser
+/// dispensado APENAS para o relatorio: o dono em chat privado le a versao
+/// exata e os provedores, mas o teto de capacidades da sessao (que nega
+/// `bash`/escrita a superficie remota) segue de pe para as outras ferramentas.
+pub(crate) async fn relatorio_aberto_para_dono(state: &AppState, session_id: &str) -> bool {
+    let fatos = fatos_da_sessao(state, session_id).await;
+    relatorio_aberto_pelo_dono(fatos.porta_fechada, &fatos.fontes, fatos.dono_do_turno)
 }
 
 #[cfg(test)]
@@ -817,6 +875,75 @@ mod decisao_operador_tests {
             Some(&sup),
             &FontesDaSessao::Ilegivel
         ));
+        // Nem com a prova do dono gravada: a leitura ilegivel vence.
+        assert!(!relatorio_aberto_pelo_dono(
+            true,
+            &FontesDaSessao::Ilegivel,
+            true
+        ));
+    }
+
+    // ── relatorio aberto do dono (#1905) ───────
+    //
+    // Esta decisao NAO passa por `decide_operador`: ela so abre o relatorio do
+    // `garra_status`, e por isso e uma funcao propria — o teto de capacidades
+    // do turno (`teto_da_superficie`) continua vindo de `sessao_do_operador`.
+
+    #[test]
+    fn dono_em_chat_privado_abre_o_relatorio() {
+        assert!(relatorio_aberto_pelo_dono(
+            true,
+            &FontesDaSessao::SemBanco,
+            true
+        ));
+    }
+
+    #[test]
+    fn porta_aberta_nao_abre_o_relatorio_para_o_dono() {
+        assert!(!relatorio_aberto_pelo_dono(
+            false,
+            &FontesDaSessao::SemBanco,
+            true
+        ));
+    }
+
+    #[test]
+    fn sem_prova_do_dono_o_relatorio_segue_restrito() {
+        assert!(!relatorio_aberto_pelo_dono(
+            true,
+            &FontesDaSessao::SemBanco,
+            false
+        ));
+    }
+
+    #[test]
+    fn prova_do_dono_vence_fonte_persistida_remota() {
+        // Politica explicita: a prova do dono neste turno vence as fontes
+        // persistidas — quem esta do outro lado e o dono do bot, e quem fala
+        // no chat privado dele e ele. A unica excecao e `Ilegivel`.
+        let fontes = FontesDaSessao::Lidas(s(&["whatsapp"]));
+        assert!(relatorio_aberto_pelo_dono(true, &fontes, true));
+    }
+
+    /// A prova do dono nao pode virar teto nenhum: `sessao_do_operador` (que
+    /// alimenta `teto_da_superficie`) segue restringindo a superficie remota
+    /// mesmo quando a marca do dono esta ligada — so o relatorio abre.
+    #[test]
+    fn prova_do_dono_nao_muda_a_decisao_do_teto() {
+        let sup_telegram = s(&["telegram"]);
+        // Mesmo com `ultimo_turno_do_dono = true` (lido por fora), a decisao
+        // do teto olha so os fatos de superficie: Telegram e remota.
+        assert!(!decide_operador(
+            true,
+            None,
+            Some(&sup_telegram),
+            &FontesDaSessao::SemBanco
+        ));
+        let estado = include_str!("state.rs");
+        assert!(
+            estado.contains("teto_da_superficie(operador)"),
+            "exec_context_for_inner deixou de aplicar o teto de superficie"
+        );
     }
 
     #[test]
