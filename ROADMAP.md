@@ -430,7 +430,7 @@ aprendido, sem nunca promover skill não-validada.
 **Critérios de aceite:**
 
 - [x] Crate `garraia-learning` compila com `cargo check -p garraia-learning` (membro do workspace consumido por `garraia-gateway`).
-- [ ] `garra skills mine --from session-log.json` cria candidate em `~/.garra/skills/_candidates/` sem intervenção manual. *(O Miner existe em `miner.rs`; o subcomando CLI ainda não.)*
+- [ ] `garra skills mine --from session-log.json` cria candidate em `~/.garra/skills/_candidates/` sem intervenção manual. *(#1901 entrega `garra skills mine --sessions-dir <diretorio>` com JSON SessionRecord, limiar padrao 2 e teste de idempotencia; a interface `--from` permanece pendente, sem afirmar equivalencia.)*
 - [ ] `garra skills list` recupera skill relevante (top-1 por embedding + scope-match) e injeta como contexto no prompt do `AgentRuntime`. *(Retriever é stub — GAR-646.)*
 - [x] Evaluator propõe atualização quando vê falha ou caminho melhor — abre PR via `gh`, nunca auto-merge (GAR-647 + GAR-648: `propose_update_with_runner`, `auto_merge_guard`).
 - [x] Tentativa de promover skill contendo `rm -rf /` (test fixture) é bloqueada com `SafetyDenial::DangerousCommand` (GAR-649).

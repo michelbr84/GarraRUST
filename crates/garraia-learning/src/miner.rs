@@ -300,13 +300,13 @@ fn compute_hash(seq: &[String]) -> String {
 fn derive_slug(seq: &[String]) -> String {
     let verbs: Vec<String> = seq
         .iter()
-        .filter_map(|cmd| extract_primary_verb(cmd))
+        .filter_map(|cmd| extract_primary_verb(&redact(cmd)))
         .collect();
 
     if verbs.is_empty() {
         "mined".to_string()
     } else {
-        verbs.join("-")
+        crate::generator::to_kebab(&verbs.join("-"))
     }
 }
 
@@ -459,6 +459,39 @@ mod tests {
         let path = dir.join(format!("{id}.json"));
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(json.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn mine_slugs_are_portable_and_redacted() {
+        let tmp = TempDir::new().unwrap();
+        let opts = MineOptions::with_base(tmp.path(), 2);
+        std::fs::create_dir_all(&opts.sessions_dir).unwrap();
+        let email = ["fixture", "example.invalid"].join("@");
+        let contact = format!("notify {email}");
+        let cmds = [
+            "git add src/x.rs",
+            "type C:\\work\\file.txt",
+            contact.as_str(),
+        ];
+        write_session_json(&opts.sessions_dir, "a", &cmds);
+        write_session_json(&opts.sessions_dir, "b", &cmds);
+        let patterns = mine(&opts).unwrap();
+        assert_eq!(patterns.len(), 2);
+        for pattern in patterns {
+            assert!(
+                pattern
+                    .slug
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            );
+            assert!(!pattern.slug.contains("fixture"));
+            let path = opts.candidates_dir.join(format!(
+                "mined-{}-{}.md",
+                pattern.slug, pattern.content_hash
+            ));
+            assert!(path.is_file());
+            assert!(!std::fs::read_to_string(path).unwrap().contains(&email));
+        }
     }
 
     // ── normalize_cmd ────────────────────────

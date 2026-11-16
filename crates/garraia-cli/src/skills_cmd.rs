@@ -1,15 +1,13 @@
 //! `garra skills` — pipeline de skills pela CLI (#1901).
 //!
 //! O minerador (`garraia_learning::miner`) e o registro
-//! (`garraia_learning::registry`) ja existiam, mas fora do gateway o pipeline
-//! so era alcancavel por HTTP (`GET /api/learning/logs/candidates`). Sem
-//! servidor no ar — maquina recem-instalada, CI, operador sem gateway — nao
-//! havia como minerar sessoes nem inspecionar candidatos/skills.
+//! (`garraia_learning::registry`) ja existiam. A CLI agora expoe a mineracao
+//! e a inspecao de candidatos/skills sem precisar iniciar o gateway.
 //!
 //! Caminhos: todos derivam de [`registry::global_skills_dir`]
-//! (`$HOME/.garra/skills`) — a MESMA fonte que o gateway usa em
-//! `learning_handler`, para a CLI nao relatar um diretorio vazio enquanto o
-//! gateway enxerga outro. Nenhum caminho proprio e inventado aqui.
+//! (`$HOME/.garra/skills`). A listagem de skills usa os mesmos dois escopos
+//! do gateway; candidatos seguem o minerador global. O endpoint de candidatos
+//! do gateway ainda consulta o escopo de projeto, nao o global.
 //!
 //! Codigos de saida (sysexits, iguais aos do `garra memory`):
 //!
@@ -73,7 +71,9 @@ impl Dirs {
 
     #[cfg(test)]
     fn for_test(root: &Path) -> Self {
-        Self::with_global(root.join(".garra").join("skills"))
+        let mut dirs = Self::with_global(root.join(".garra").join("skills"));
+        dirs.project = root.join("project/.garra/skills");
+        dirs
     }
 }
 
@@ -105,13 +105,17 @@ fn run_mine_in(
     if !sessions.is_dir() {
         eprintln!(
             "sem diretorio de sessoes em {} — nenhuma sessao observada ainda; \
-             rode o agente ao menos uma vez ou passe --sessions-dir",
+             passe --sessions-dir com logs JSON no formato SessionRecord",
             sessions.display()
         );
         return Ok(EXIT_NOINPUT);
     }
 
     let session_count = count_sessions(&sessions)?;
+    if session_count == 0 {
+        eprintln!("nenhum arquivo de sessao JSON em {}", sessions.display());
+        return Ok(EXIT_NOINPUT);
+    }
     let options = MineOptions {
         sessions_dir: sessions.clone(),
         candidates_dir: dirs.candidates.clone(),
@@ -141,9 +145,9 @@ fn run_mine_in(
         for pattern in &patterns {
             println!(
                 "- {} ({} sessoes): {}",
-                pattern.slug,
+                miner::redact(&pattern.slug),
                 pattern.occurrence_count,
-                pattern.normalized_sequence.join(" -> ")
+                redacted_sequence(pattern).join(" -> ")
             );
         }
     }
@@ -251,9 +255,9 @@ fn mine_report(
         "patterns": patterns
             .iter()
             .map(|pattern| serde_json::json!({
-                "slug": pattern.slug,
+                "slug": miner::redact(&pattern.slug),
                 "occurrences": pattern.occurrence_count,
-                "sequence": pattern.normalized_sequence,
+                "sequence": redacted_sequence(pattern),
             }))
             .collect::<Vec<_>>(),
     })
@@ -299,6 +303,14 @@ fn list_report(dirs: &Dirs, skills: &[Skill]) -> serde_json::Value {
 // ──────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────
+
+fn redacted_sequence(pattern: &MinedPattern) -> Vec<String> {
+    pattern
+        .normalized_sequence
+        .iter()
+        .map(|cmd| miner::redact(cmd))
+        .collect()
+}
 
 fn count_sessions(dir: &Path) -> Result<usize> {
     let mut total = 0;
@@ -429,6 +441,33 @@ mod tests {
     }
 
     #[test]
+    fn mine_diretorio_vazio_sai_com_noinput() {
+        let tmp = TempDir::new().unwrap();
+        let dirs = Dirs::for_test(tmp.path());
+        std::fs::create_dir_all(&dirs.sessions).unwrap();
+        assert_eq!(run_mine_in(&dirs, None, 2, false).unwrap(), EXIT_NOINPUT);
+        assert!(!dirs.candidates.exists());
+    }
+
+    #[test]
+    fn relatorio_mine_redige_dados_pessoais_como_o_candidato() {
+        let tmp = TempDir::new().unwrap();
+        let dirs = Dirs::for_test(tmp.path());
+        let email = ["fixture", "example.invalid"].join("@");
+        let patterns = vec![MinedPattern {
+            normalized_sequence: vec![
+                format!("git -c user.email={email} status"),
+                "cargo test".into(),
+            ],
+            occurrence_count: 2,
+            slug: email.clone(),
+            content_hash: "fixture".into(),
+        }];
+        let report = mine_report(&dirs, &dirs.sessions, 2, 2, &patterns);
+        assert!(!report.to_string().contains(&email));
+    }
+
+    #[test]
     fn mine_com_threshold_zero_sai_com_usage() {
         let tmp = TempDir::new().unwrap();
         let dirs = Dirs::for_test(tmp.path());
@@ -490,6 +529,42 @@ mod tests {
         let code = run_list_in(&dirs, false).unwrap();
 
         assert_eq!(code, EXIT_OK);
+    }
+
+    #[test]
+    fn list_e_candidates_json_cobrem_os_escopos_isolados() {
+        let tmp = TempDir::new().unwrap();
+        let dirs = Dirs::for_test(tmp.path());
+        for (dir, name) in [
+            (&dirs.global, "global-fixture"),
+            (&dirs.project, "project-fixture"),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(format!("{name}.md")), "fixture body").unwrap();
+        }
+        assert_eq!(run_list_in(&dirs, true).unwrap(), EXIT_OK);
+        let opts = RegistryOptions::new(dirs.global.clone(), dirs.project.clone());
+        let skills = registry::list_skills(&opts, None).unwrap();
+        let report = list_report(&dirs, &skills);
+        let parsed: serde_json::Value = serde_json::from_str(&report.to_string()).unwrap();
+        let names: Vec<_> = parsed["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"global-fixture"));
+        assert!(names.contains(&"project-fixture"));
+        assert_eq!(names.len(), 2);
+        seed_session(&dirs.sessions, "a");
+        seed_session(&dirs.sessions, "b");
+        assert_eq!(run_mine_in(&dirs, None, 2, true).unwrap(), EXIT_OK);
+        assert_eq!(run_candidates_in(&dirs, true).unwrap(), EXIT_OK);
+        let candidates = registry::list_candidates(&dirs.candidates).unwrap();
+        let report = candidates_report(&dirs, &candidates);
+        let parsed: serde_json::Value = serde_json::from_str(&report.to_string()).unwrap();
+        assert_eq!(parsed["candidates"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["candidates"][0]["occurrences"], 2);
     }
 
     #[test]

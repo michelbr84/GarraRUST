@@ -433,9 +433,9 @@ enum Commands {
     /// Operate the skills pipeline: mine session logs, list candidates and
     /// installed skills (#1901).
     ///
-    /// Same directories the gateway's learning handlers use
-    /// (`$HOME/.garra/skills`, `$HOME/.garra/sessions`), so what the CLI
-    /// reports is exactly what the server would see — no gateway required.
+    /// Uses the learning registry's global and project skill directories.
+    /// Mining reads JSON SessionRecord logs from `$HOME/.garra/sessions`;
+    /// candidates are global (the gateway currently lists project candidates).
     Skills {
         #[command(subcommand)]
         action: SkillsCommands,
