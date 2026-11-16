@@ -5,30 +5,41 @@
 //! e a inspecao de candidatos/skills sem precisar iniciar o gateway.
 //!
 //! Caminhos: a raiz global vem de [`registry::global_skills_dir`]
-//! (`$HOME/.garra/skills`) e a de projeto de `registry::project_skills_dir()`.
-//! A listagem de skills usa os dois escopos, como o gateway; candidatos seguem
-//! o minerador global. O endpoint de candidatos do gateway ainda consulta o
-//! escopo de projeto, nao o global.
+//! (`$HOME/.garra/skills`, com `USERPROFILE` como fallback no Windows) e a de
+//! projeto de `registry::project_skills_dir()`. O minerador grava candidatos na
+//! raiz GLOBAL, entao a listagem de candidatos le os dois escopos pelo mesmo
+//! helper do gateway (`registry::scan_candidates_scoped`) e rotula cada item
+//! com o escopo onde ele esta (#1903).
+//!
+//! Este grupo e o pipeline de aprendizado; `garra skill` (singular) e o
+//! catalogo operacional de skills instaladas para o agente — comandos
+//! diferentes, mesmo substantivo.
+//!
+//! Interface: o criterio do ROADMAP pede `mine --from session-log.json`; o que
+//! existe e `--sessions-dir <diretorio>` (varios `*.json` no formato
+//! SessionRecord). Nao ha equivalencia: `--from` recebe UM arquivo e continua
+//! pendente no checkbox do ROADMAP; `--sessions-dir` e a interface entregue.
 //!
 //! Codigos de saida (sysexits, iguais aos do `garra memory`):
 //!
 //! - `0`  — ok.
 //! - `2`  — `EX_USAGE`: argumento invalido.
-//! - `66` — `EX_NOINPUT`: o diretorio de sessoes nao existe ou nao tem `*.json`.
+//! - `66` — `EX_NOINPUT`: o diretorio de sessoes nao existe, nao tem `*.json`
+//!   ou nenhum arquivo tem sessao valida.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use garraia_learning::generator::Candidate;
 use garraia_learning::miner::{self, MineOptions, MinedPattern};
-use garraia_learning::registry::{self, RegistryOptions};
+use garraia_learning::registry::{self, CandidateScan, RegistryOptions};
 use garraia_learning::{Skill, SkillScope, SkillSource};
 
 /// Tudo certo.
 const EXIT_OK: i32 = 0;
 /// `EX_USAGE` — argumento invalido.
 const EXIT_USAGE: i32 = 2;
-/// `EX_NOINPUT` — o diretorio de sessoes nao existe ou nao tem `*.json`.
+/// `EX_NOINPUT` — o diretorio de sessoes nao existe ou nao tem sessao valida.
 const EXIT_NOINPUT: i32 = 66;
 
 /// Diretorios que o pipeline usa.
@@ -44,13 +55,15 @@ pub struct Dirs {
     pub global: PathBuf,
     /// `./.garra/skills` — skills versionadas com o projeto.
     pub project: PathBuf,
+    /// `./.garra/skills/_candidates` — candidatos do escopo de projeto.
+    pub project_candidates: PathBuf,
 }
 
 impl Dirs {
     /// Resolve os diretorios do ambiente pelo registro compartilhado.
     pub fn from_env() -> Result<Self> {
         let global =
-            registry::global_skills_dir().context("HOME nao definido — sem raiz de skills")?;
+            registry::global_skills_dir().context("HOME/USERPROFILE — sem raiz de skills")?;
         Ok(Self::with_global(global))
     }
 
@@ -62,11 +75,13 @@ impl Dirs {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| global.clone());
+        let project = registry::project_skills_dir();
         Self {
             sessions: base.join("sessions"),
             candidates: global.join("_candidates"),
             global,
-            project: registry::project_skills_dir(),
+            project_candidates: project.join("_candidates"),
+            project,
         }
     }
 
@@ -74,6 +89,7 @@ impl Dirs {
     fn for_test(root: &Path) -> Self {
         let mut dirs = Self::with_global(root.join(".garra").join("skills"));
         dirs.project = root.join("project/.garra/skills");
+        dirs.project_candidates = dirs.project.join("_candidates");
         dirs
     }
 }
@@ -112,34 +128,77 @@ fn run_mine_in(
         return Ok(EXIT_NOINPUT);
     }
 
-    let session_count = count_sessions(&sessions)?;
-    if session_count == 0 {
+    // Arquivos e sessoes validas sao contagens diferentes (#1903): o
+    // minerador ignora JSON malformado com um aviso de tracing que, sem
+    // subscriber, ninguem ve. Aqui o aviso vai para o stderr e o numero de
+    // sessoes que alimentaram a mineracao e o de verdade.
+    let scan = miner::scan_sessions(&sessions).context("leitura dos logs de sessao falhou")?;
+    if !scan.unparseable.is_empty() {
+        eprintln!(
+            "{} arquivo(s) de sessao ignorado(s) por JSON invalido em {}: {}",
+            scan.unparseable.len(),
+            sessions.display(),
+            scan.unparseable.join(", ")
+        );
+    }
+    if scan.files == 0 {
         eprintln!("nenhum arquivo de sessao JSON em {}", sessions.display());
         return Ok(EXIT_NOINPUT);
     }
+    if scan.sessions.is_empty() {
+        eprintln!(
+            "nenhuma sessao valida em {} ({} arquivo(s) JSON, todos ilegiveis)",
+            sessions.display(),
+            scan.files
+        );
+        return Ok(EXIT_NOINPUT);
+    }
+
+    let before = registry::scan_candidates(&dirs.candidates)
+        .context("leitura dos candidatos existentes falhou")?;
     let options = MineOptions {
         sessions_dir: sessions.clone(),
         candidates_dir: dirs.candidates.clone(),
         threshold,
     };
     let patterns = miner::mine(&options).context("mineracao de sessoes falhou")?;
+    let after = registry::scan_candidates(&dirs.candidates)
+        .context("leitura dos candidatos gravados falhou")?;
+    // Idempotencia: o minerador nao reescreve candidato existente, entao o
+    // numero de detectados pode ser maior que o de arquivos novos.
+    let new_files = after.files.saturating_sub(before.files);
+    let existing = patterns.len().saturating_sub(new_files);
 
     if json {
-        let report = mine_report(dirs, &sessions, threshold, session_count, &patterns);
+        let report = mine_report(
+            dirs,
+            &sessions,
+            threshold,
+            &scan,
+            MineOutcome {
+                detected: patterns.len(),
+                new_files,
+                existing,
+            },
+            &patterns,
+        );
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else if patterns.is_empty() {
         println!(
-            "nenhum padrao repetido em {session_count} sessao(oes) com limiar {threshold} \
+            "nenhum padrao repetido em {} sessao(oes) valida(s) com limiar {threshold} \
              (nada gravado em {})",
+            scan.sessions.len(),
             dirs.candidates.display()
         );
     } else {
         println!(
-            "{session_count} sessao(oes) minerada(s) de {}",
+            "{} arquivo(s) de sessao, {} sessao(oes) valida(s) minerada(s) de {}",
+            scan.files,
+            scan.sessions.len(),
             sessions.display()
         );
         println!(
-            "{} padrao(oes) gravado(s) em {}:",
+            "{} padrao(oes) detectado(s) — {new_files} candidato(s) novo(s), {existing} ja existente(s) — em {}:",
             patterns.len(),
             dirs.candidates.display()
         );
@@ -156,6 +215,13 @@ fn run_mine_in(
     Ok(EXIT_OK)
 }
 
+/// O que a mineracao produziu, separando deteccao de gravacao.
+struct MineOutcome {
+    detected: usize,
+    new_files: usize,
+    existing: usize,
+}
+
 /// `garra skills candidates` — lista os candidatos minerados pendentes.
 pub fn run_candidates(json: bool) -> Result<i32> {
     let dirs = Dirs::from_env()?;
@@ -163,34 +229,71 @@ pub fn run_candidates(json: bool) -> Result<i32> {
 }
 
 fn run_candidates_in(dirs: &Dirs, json: bool) -> Result<i32> {
-    let candidates = registry::list_candidates(&dirs.candidates)
-        .context("leitura dos candidatos minerados falhou")?;
+    // Mesmo helper do gateway: escopo global (onde o minerador grava) e
+    // escopo de projeto, cada um com o seu resultado (#1903).
+    let opts = RegistryOptions::new(dirs.global.clone(), dirs.project.clone());
+    let scans = registry::scan_candidates_scoped(&opts).context("leitura dos candidatos falhou")?;
+
+    let mut warnings = Vec::new();
+    let mut total_files = 0usize;
+    let mut all: Vec<(String, Candidate)> = Vec::new();
+    for (scope, scan) in &scans {
+        total_files += scan.files;
+        let scope_name = scope_label(scope);
+        if !scan.unparseable.is_empty() {
+            warnings.push(format!(
+                "{} arquivo(s) de candidato ignorado(s) no escopo {scope_name} ({}): {}",
+                scan.unparseable.len(),
+                candidate_dir_for(dirs, scope).display(),
+                scan.unparseable.join(", ")
+            ));
+        }
+        all.extend(
+            scan.candidates
+                .iter()
+                .cloned()
+                .map(|c| (scope_name.to_string(), c)),
+        );
+    }
 
     if json {
-        let report = candidates_report(dirs, &candidates);
+        let report = candidates_report(dirs, &scans);
         println!("{}", serde_json::to_string_pretty(&report)?);
-    } else if candidates.is_empty() {
+    } else if all.is_empty() {
         println!(
-            "nenhum candidato pendente em {} — minere com `garra skills mine`",
-            dirs.candidates.display()
+            "nenhum candidato pendente (global: {}, projeto: {}) — minere com `garra skills mine`",
+            dirs.candidates.display(),
+            dirs.project_candidates.display()
         );
     } else {
         println!(
-            "{} candidato(s) em {}:",
-            candidates.len(),
-            dirs.candidates.display()
+            "{} candidato(s) em {} arquivo(s) — global: {}, projeto: {}:",
+            all.len(),
+            total_files,
+            dirs.candidates.display(),
+            dirs.project_candidates.display()
         );
-        for candidate in &candidates {
+        for (scope, candidate) in &all {
             println!(
-                "- {} ({} sessoes): {}",
+                "- [{scope}] {} ({} sessoes): {}",
                 candidate.slug,
                 candidate.occurrence_count,
                 candidate.normalized_commands.join(" -> ")
             );
         }
     }
+    for warning in warnings {
+        eprintln!("{warning}");
+    }
 
     Ok(EXIT_OK)
+}
+
+fn candidate_dir_for(dirs: &Dirs, scope: &SkillScope) -> PathBuf {
+    match scope {
+        SkillScope::Global => dirs.candidates.clone(),
+        SkillScope::Project => dirs.project_candidates.clone(),
+    }
 }
 
 /// `garra skills list` — lista as skills instaladas (global + projeto).
@@ -231,10 +334,35 @@ fn run_list_in(dirs: &Dirs, json: bool) -> Result<i32> {
                 if fm.locked { " locked" } else { "" },
                 if fm.deprecated { " deprecated" } else { "" }
             );
+            // O `scope` acima vem do frontmatter; o diretorio onde o arquivo
+            // esta e o escopo de INSTALACAO. Quando divergem, o arquivo esta
+            // num escopo e se declara em outro (#1903) — quem moveu o arquivo
+            // a mao precisa ver isso.
+            if let Some(installed) = installed_scope(skill, dirs)
+                && installed != scope_label(&fm.scope)
+            {
+                println!(
+                    "  (declarado {}, instalado em {})",
+                    scope_label(&fm.scope),
+                    installed
+                );
+            }
         }
     }
 
     Ok(EXIT_OK)
+}
+
+/// Escopo deduzido do diretorio do arquivo, nao do frontmatter.
+fn installed_scope(skill: &Skill, dirs: &Dirs) -> Option<&'static str> {
+    let path = skill.source_path.as_ref()?;
+    if path.starts_with(&dirs.global) {
+        Some("global")
+    } else if path.starts_with(&dirs.project) {
+        Some("project")
+    } else {
+        None
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -245,14 +373,22 @@ fn mine_report(
     dirs: &Dirs,
     sessions: &Path,
     threshold: usize,
-    session_count: usize,
+    scan: &miner::SessionScan,
+    outcome: MineOutcome,
     patterns: &[MinedPattern],
 ) -> serde_json::Value {
     serde_json::json!({
         "sessions_dir": sessions.display().to_string(),
         "candidates_dir": dirs.candidates.display().to_string(),
         "threshold": threshold,
-        "sessions": session_count,
+        // Nomes honestos: arquivos no diretorio != sessoes que o minerador
+        // conseguiu ler (#1903).
+        "session_files": scan.files,
+        "sessions_valid": scan.sessions.len(),
+        "sessions_skipped": scan.unparseable,
+        "patterns_detected": outcome.detected,
+        "candidates_new": outcome.new_files,
+        "candidates_existing": outcome.existing,
         "patterns": patterns
             .iter()
             .map(|pattern| serde_json::json!({
@@ -264,17 +400,36 @@ fn mine_report(
     })
 }
 
-fn candidates_report(dirs: &Dirs, candidates: &[Candidate]) -> serde_json::Value {
+fn candidates_report(dirs: &Dirs, scans: &[(SkillScope, CandidateScan)]) -> serde_json::Value {
+    let mut files = 0usize;
+    let mut skipped: Vec<serde_json::Value> = Vec::new();
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    for (scope, scan) in scans {
+        let scope_name = scope_label(scope);
+        files += scan.files;
+        for name in &scan.unparseable {
+            skipped.push(serde_json::json!({ "scope": scope_name, "file": name }));
+        }
+        entries.extend(
+            scan.candidates
+                .iter()
+                .map(|candidate| {
+                    serde_json::json!({
+                        "scope": scope_name,
+                        "slug": candidate.slug,
+                        "occurrences": candidate.occurrence_count,
+                        "sequence": candidate.normalized_commands,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
     serde_json::json!({
-        "candidates_dir": dirs.candidates.display().to_string(),
-        "candidates": candidates
-            .iter()
-            .map(|candidate| serde_json::json!({
-                "slug": candidate.slug,
-                "occurrences": candidate.occurrence_count,
-                "sequence": candidate.normalized_commands,
-            }))
-            .collect::<Vec<_>>(),
+        "global_candidates_dir": dirs.candidates.display().to_string(),
+        "project_candidates_dir": dirs.project_candidates.display().to_string(),
+        "files": files,
+        "candidates": entries,
+        "unparseable": skipped,
     })
 }
 
@@ -290,6 +445,8 @@ fn list_report(dirs: &Dirs, skills: &[Skill]) -> serde_json::Value {
                     "name": fm.name,
                     "version": fm.version,
                     "scope": scope_label(&fm.scope),
+                    // Escopo de instalacao (diretorio), distinto do declarado acima.
+                    "installed_scope": installed_scope(skill, dirs),
                     "source": source_label(&fm.source),
                     "score": fm.score,
                     "locked": fm.locked,
@@ -311,19 +468,6 @@ fn redacted_sequence(pattern: &MinedPattern) -> Vec<String> {
         .iter()
         .map(|cmd| miner::redact(cmd))
         .collect()
-}
-
-fn count_sessions(dir: &Path) -> Result<usize> {
-    let mut total = 0;
-    for entry in
-        std::fs::read_dir(dir).with_context(|| format!("nao consegui ler {}", dir.display()))?
-    {
-        let entry = entry.with_context(|| format!("erro de entrada em {}", dir.display()))?;
-        if entry.path().extension().and_then(|ext| ext.to_str()) == Some("json") {
-            total += 1;
-        }
-    }
-    Ok(total)
 }
 
 fn scope_label(scope: &SkillScope) -> &'static str {
@@ -464,7 +608,19 @@ mod tests {
             slug: email.clone(),
             content_hash: "fixture".into(),
         }];
-        let report = mine_report(&dirs, &dirs.sessions, 2, 2, &patterns);
+        let scan = miner::SessionScan::default();
+        let report = mine_report(
+            &dirs,
+            &dirs.sessions,
+            2,
+            &scan,
+            MineOutcome {
+                detected: patterns.len(),
+                new_files: patterns.len(),
+                existing: 0,
+            },
+            &patterns,
+        );
         assert!(!report.to_string().contains(&email));
     }
 
@@ -561,8 +717,9 @@ mod tests {
         seed_session(&dirs.sessions, "b");
         assert_eq!(run_mine_in(&dirs, None, 2, true).unwrap(), EXIT_OK);
         assert_eq!(run_candidates_in(&dirs, true).unwrap(), EXIT_OK);
-        let candidates = registry::list_candidates(&dirs.candidates).unwrap();
-        let report = candidates_report(&dirs, &candidates);
+        let opts = RegistryOptions::new(dirs.global.clone(), dirs.project.clone());
+        let scans = registry::scan_candidates_scoped(&opts).unwrap();
+        let report = candidates_report(&dirs, &scans);
         let parsed: serde_json::Value = serde_json::from_str(&report.to_string()).unwrap();
         assert_eq!(parsed["candidates"].as_array().unwrap().len(), 1);
         assert_eq!(parsed["candidates"][0]["occurrences"], 2);
@@ -580,17 +737,191 @@ mod tests {
             candidates_dir: dirs.candidates.clone(),
             threshold: 2,
         };
+        let scan = miner::scan_sessions(&dirs.sessions).unwrap();
         let patterns = miner::mine(&options).unwrap();
-        let report = mine_report(&dirs, &dirs.sessions, 2, 2, &patterns);
+        let report = mine_report(
+            &dirs,
+            &dirs.sessions,
+            2,
+            &scan,
+            MineOutcome {
+                detected: patterns.len(),
+                new_files: 1,
+                existing: 0,
+            },
+            &patterns,
+        );
 
         assert_eq!(report["threshold"], 2);
-        assert_eq!(report["sessions"], 2);
+        // Nomes honestos: dois arquivos, duas sessoes validas (#1903).
+        assert_eq!(report["session_files"], 2);
+        assert_eq!(report["sessions_valid"], 2);
+        assert_eq!(report["sessions_skipped"].as_array().unwrap().len(), 0);
+        assert_eq!(report["patterns_detected"], 1);
+        assert_eq!(report["candidates_new"], 1);
+        assert_eq!(report["candidates_existing"], 0);
         let primeiro = &report["patterns"][0];
         assert_eq!(primeiro["occurrences"], 2);
         assert_eq!(primeiro["sequence"].as_array().unwrap().len(), 2);
         assert!(
             !primeiro["slug"].as_str().unwrap().is_empty(),
             "slug do padrao nao pode ser vazio"
+        );
+    }
+
+    #[test]
+    fn mine_conta_sessoes_validas_e_avisa_as_ilegiveis() {
+        let tmp = TempDir::new().unwrap();
+        let dirs = Dirs::for_test(tmp.path());
+        seed_session(&dirs.sessions, "a");
+        seed_session(&dirs.sessions, "b");
+        std::fs::write(dirs.sessions.join("quebrada.json"), b"{ nao e json").unwrap();
+
+        let scan = miner::scan_sessions(&dirs.sessions).unwrap();
+        assert_eq!(scan.files, 3, "conta todo *.json no diretorio");
+        assert_eq!(scan.sessions.len(), 2, "so as sessoes que parseiam");
+        assert_eq!(scan.unparseable, vec!["quebrada.json".to_string()]);
+
+        // A mineracao continua com as sessoes validas.
+        assert_eq!(run_mine_in(&dirs, None, 2, false).unwrap(), EXIT_OK);
+        assert_eq!(candidate_files(&dirs).len(), 1);
+    }
+
+    #[test]
+    fn mine_com_todas_as_sessoes_ilegiveis_sai_com_noinput() {
+        let tmp = TempDir::new().unwrap();
+        let dirs = Dirs::for_test(tmp.path());
+        std::fs::create_dir_all(&dirs.sessions).unwrap();
+        std::fs::write(dirs.sessions.join("ruim.json"), b"[]").unwrap();
+
+        let code = run_mine_in(&dirs, None, 2, false).unwrap();
+
+        assert_eq!(code, EXIT_NOINPUT, "arquivo sem sessao valida nao e input");
+        assert!(candidate_files(&dirs).is_empty());
+    }
+
+    #[test]
+    fn candidates_le_os_dois_escopos_e_rotula_cada_um() {
+        let tmp = TempDir::new().unwrap();
+        let dirs = Dirs::for_test(tmp.path());
+        seed_session(&dirs.sessions, "a");
+        seed_session(&dirs.sessions, "b");
+        run_mine_in(&dirs, None, 2, false).unwrap();
+        // Candidato do escopo de projeto, escrito a mao (nada no minerador
+        // grava la hoje, mas o gateway e a CLI precisam enxergar o escopo).
+        std::fs::create_dir_all(&dirs.project_candidates).unwrap();
+        std::fs::write(
+            dirs.project_candidates.join("mined-projeto-abc12345.md"),
+            "## Commands\n\n```\ncargo fmt\n```\n",
+        )
+        .unwrap();
+
+        let opts = RegistryOptions::new(dirs.global.clone(), dirs.project.clone());
+        let scans = registry::scan_candidates_scoped(&opts).unwrap();
+        let report = candidates_report(&dirs, &scans);
+        let parsed: serde_json::Value = serde_json::from_str(&report.to_string()).unwrap();
+
+        assert_eq!(parsed["files"], 2);
+        let escopos: Vec<&str> = parsed["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["scope"].as_str().unwrap())
+            .collect();
+        assert!(
+            escopos.contains(&"global"),
+            "faltou o candidato global: {escopos:?}"
+        );
+        assert!(
+            escopos.contains(&"project"),
+            "faltou o candidato de projeto: {escopos:?}"
+        );
+        assert_eq!(
+            escopos.len(),
+            2,
+            "escopos nao podem se misturar: {escopos:?}"
+        );
+    }
+
+    #[test]
+    fn candidates_reporta_arquivo_ilegivel_como_ignorado() {
+        let tmp = TempDir::new().unwrap();
+        let dirs = Dirs::for_test(tmp.path());
+        std::fs::create_dir_all(&dirs.candidates).unwrap();
+        // Bytes invalidos em UTF-8: o registro nao consegue ler o arquivo.
+        std::fs::write(dirs.candidates.join("mined-quebrado.md"), [0xff, 0xfe]).unwrap();
+
+        let opts = RegistryOptions::new(dirs.global.clone(), dirs.project.clone());
+        let scans = registry::scan_candidates_scoped(&opts).unwrap();
+        let report = candidates_report(&dirs, &scans);
+        let parsed: serde_json::Value = serde_json::from_str(&report.to_string()).unwrap();
+
+        assert_eq!(parsed["files"], 1);
+        assert_eq!(parsed["candidates"].as_array().unwrap().len(), 0);
+        assert_eq!(parsed["unparseable"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["unparseable"][0]["scope"], "global");
+        assert_eq!(parsed["unparseable"][0]["file"], "mined-quebrado.md");
+    }
+
+    #[test]
+    fn mine_reporta_candidato_existente_sem_contar_como_novo() {
+        let tmp = TempDir::new().unwrap();
+        let dirs = Dirs::for_test(tmp.path());
+        seed_session(&dirs.sessions, "a");
+        seed_session(&dirs.sessions, "b");
+        run_mine_in(&dirs, None, 2, false).unwrap();
+
+        let before = registry::scan_candidates(&dirs.candidates).unwrap();
+        let options = MineOptions {
+            sessions_dir: dirs.sessions.clone(),
+            candidates_dir: dirs.candidates.clone(),
+            threshold: 2,
+        };
+        let scan = miner::scan_sessions(&dirs.sessions).unwrap();
+        let patterns = miner::mine(&options).unwrap();
+        let after = registry::scan_candidates(&dirs.candidates).unwrap();
+        let report = mine_report(
+            &dirs,
+            &dirs.sessions,
+            2,
+            &scan,
+            MineOutcome {
+                detected: patterns.len(),
+                new_files: after.files.saturating_sub(before.files),
+                existing: 1,
+            },
+            &patterns,
+        );
+
+        assert_eq!(report["patterns_detected"], 1);
+        assert_eq!(
+            report["candidates_new"], 0,
+            "idempotencia: nada novo gravado"
+        );
+        assert_eq!(report["candidates_existing"], 1);
+    }
+
+    #[test]
+    fn list_report_distingue_escopo_declarado_do_escopo_instalado() {
+        let tmp = TempDir::new().unwrap();
+        let dirs = Dirs::for_test(tmp.path());
+        std::fs::create_dir_all(&dirs.global).unwrap();
+        // Arquivo instalado no escopo GLOBAL se declarando `project` no frontmatter.
+        std::fs::write(
+            dirs.global.join("moved-skill.md"),
+            "---\nname: moved-skill\nversion: 0.1.0\nsource: mined\nscope: project\nscore: 0.8\n---\n\n## Steps\n\nbody\n",
+        )
+        .unwrap();
+
+        let opts = RegistryOptions::new(dirs.global.clone(), dirs.project.clone());
+        let skills = registry::list_skills(&opts, None).unwrap();
+        let report = list_report(&dirs, &skills);
+        let parsed: serde_json::Value = serde_json::from_str(&report.to_string()).unwrap();
+
+        assert_eq!(parsed["skills"][0]["scope"], "project");
+        assert_eq!(
+            parsed["skills"][0]["installed_scope"], "global",
+            "o diretorio e a prova do escopo de instalacao"
         );
     }
 }
