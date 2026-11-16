@@ -20,8 +20,8 @@ async fn pedido_expirado_pausa_e_exige_novo_sim_nos_tres_caminhos() {
         assert_eq!(c.rt.pending_approvals.len(), 1, "{caminho:?}");
         assert!(c.rodou().is_empty(), "{caminho:?}");
 
-        // Mantém o pedido real e sua impressão digital, mudando só a data de
-        // criação para antes do TTL. A resolução continua pelo runtime real.
+        // Substitui o registro real por outro com a mesma impressão digital,
+        // retrodatado antes do TTL. A resolução continua pelo runtime real.
         c.rt.pending_approvals.register(
             &scope,
             "precisa_confirmar",
