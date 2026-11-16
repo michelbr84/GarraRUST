@@ -1480,6 +1480,18 @@ async fn serve_plain(
         .local_addr()
         .map_err(|e| garraia_common::Error::Gateway(format!("local_addr: {e}")))?;
     conferir_socket(&bound, gateway)?;
+    // #1907: o socket REAL e a unica fonte do endereco ligado. Bind
+    // nao-loopback aqui e HTTP em claro por construcao (este e o caminho sem
+    // TLS), entao a credencial e os tokens de sessao viajam sem cifra: avisa
+    // em todo boot. Avisa e nao recusa porque composicoes containerizadas
+    // legitimas ligam `0.0.0.0` com o TLS terminado noutro container
+    // (`docker-compose.yml` deste repo); o degrau de recusa e decisao a parte
+    // — ver docs/auth-config.md §5.1.
+    if let Some(aviso) =
+        garraia_config::bind::aviso_de_transporte(addr, std::slice::from_ref(&bound))
+    {
+        warn!("{aviso}");
+    }
     info!("GarraIA gateway listening on http://{}", addr);
     axum::serve(
         listener,
@@ -2265,6 +2277,32 @@ mod tests {
         )
         .await;
         assert!(r.is_err(), "com credencial serve ate o timeout: {r:?}");
+    }
+
+    /// FIACAO do #1907: o aviso de transporte vive numa linha de log, entao o
+    /// guarda le o FONTE do ponto de entrada. Apagar a chamada de
+    /// `serve_plain` (ou o `warn!`) tem que quebrar aqui — sem isso, um bind
+    /// exposto em HTTP em claro volta a ser silencioso sem falhar teste algum.
+    #[test]
+    fn serve_plain_avisa_bind_exposto_em_http_em_claro() {
+        let fonte = include_str!("server.rs");
+        let inicio = fonte
+            .find("async fn serve_plain(")
+            .expect("serve_plain existe no fonte");
+        let resto = &fonte[inicio..];
+        let fim = resto
+            .find("\nasync fn serve_tls")
+            .expect("serve_tls vem depois de serve_plain");
+        let corpo = &resto[..fim];
+
+        assert!(
+            corpo.contains("bind::aviso_de_transporte"),
+            "serve_plain deve consultar bind::aviso_de_transporte (#1907)"
+        );
+        assert!(
+            corpo.contains("warn!(\"{aviso}\")"),
+            "o aviso de transporte tem de ser emitido com warn! (#1907)"
+        );
     }
 
     /// A borda que importa: cresce exponencialmente, satura no teto, e não

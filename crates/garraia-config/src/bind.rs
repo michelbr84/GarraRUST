@@ -22,6 +22,14 @@
 //! [`verificar`] resolve o host (um nome pode cair em rede) e aplica a regra;
 //! resolucao que falha tambem recusa (fail-closed — o bind falharia de
 //! qualquer jeito).
+//!
+//! # Aviso de transporte
+//!
+//! Bind exposto **com** credencial passa pela regra acima e, se o processo nao
+//! serve TLS, a credencial viaja em claro. [`aviso_de_transporte`] e a decisao
+//! (pura) que o boot usa para dizer isso ao operador: avisa, nao recusa —
+//! composicoes containerizadas legitimas ligam em `0.0.0.0` com o TLS
+//! terminado fora do container (#1907).
 
 use std::fmt;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -261,6 +269,41 @@ impl fmt::Display for BindRecusado {
 
 impl std::error::Error for BindRecusado {}
 
+/// Aviso de transporte: o gateway vai servir **HTTP em claro** num endereco
+/// que nao e loopback (#1907).
+///
+/// Esta funcao existe para o caso que a [`decidir`] deixa passar de proposito:
+/// bind exposto **com** credencial, num processo sem TLS nativo. A credencial
+/// viaja em claro em cada request, junto com os tokens de sessao e o corpo de
+/// `/api/*`; nada no boot dizia isso ao operador.
+///
+/// `None` quando todos os enderecos resolvidos sao loopback (caso default da
+/// instalacao: nada privado sai da maquina) e quando a lista esta vazia (sem
+/// endereco nao ha o que avisar — a recusa de bind vazio e da [`decidir`]).
+/// `Some(texto)` quando **qualquer** endereco nao e loopback: o socket inteiro
+/// fica alcancavel pela rede.
+///
+/// Nao recusa: composicoes containerizadas legitimas ligam em `0.0.0.0` com o
+/// TLS terminado noutro container (`docker-compose.yml` deste repo faz isso).
+/// O degrau de recusa e decisao separada; ver `docs/auth-config.md` §5.1.
+pub fn aviso_de_transporte(pedido: &str, enderecos: &[SocketAddr]) -> Option<String> {
+    let exposto = enderecos.iter().find(|a| !a.ip().is_loopback())?;
+    let bin = garraia_common::executavel::nome();
+    Some(format!(
+        "the gateway is serving plain HTTP on {pedido} ({exposto}), which is reachable from the \
+         network: the gateway credential (Authorization: Bearer), the session tokens and every \
+         /api payload travel in clear text, and HSTS cannot be sent over plain HTTP. Fix it with \
+         ONE of:\n  \
+         - serve TLS in this process: set gateway.tls_cert_path and gateway.tls_key_path and \
+         build the binary with `--features tls`;\n  \
+         - terminate TLS in a proxy on this host and bind loopback: `{bin} start --host \
+         127.0.0.1`;\n  \
+         - keep the cleartext hop only if it is trusted end to end (private network, sidecar \
+         proxy, container network).\n\
+         See docs/auth-config.md section 5.1."
+    ))
+}
+
 /// O aviso de cada boot com o opt-out ligado: sobe, mas nunca em silencio.
 pub fn aviso_de_opt_out(host: &str, port: u16) -> String {
     format!(
@@ -460,5 +503,61 @@ mod tests {
         // `api_key_env` e serde(skip): um arquivo nao consegue injeta-la.
         let g: GatewayConfig = serde_norway::from_str("api_key_env: \"x\"\n").expect("yaml");
         assert!(g.api_key_env.is_none());
+    }
+
+    /// A tabela do aviso de transporte (#1907): so o bind alcancavel pela
+    /// rede, servido em claro, avisa. O caso default da instalacao fica calado.
+    #[test]
+    fn aviso_de_transporte_so_para_bind_alcancavel_pela_rede() {
+        // (enderecos, avisa?)
+        let casos: &[(&[&str], bool)] = &[
+            // default de instalacao: loopback, nada sai da maquina
+            (&["127.0.0.1:3888"], false),
+            (&["[::1]:3888"], false),
+            (&["127.0.0.2:1"], false),
+            // qualquer endereco de rede → avisa
+            (&["0.0.0.0:3888"], true),
+            (&["[::]:3888"], true),
+            (&["192.168.1.10:3888"], true),
+            (&["8.8.8.8:1"], true),
+            // resolucao mista: basta um endereco de rede
+            (&["127.0.0.1:1", "10.0.0.5:1"], true),
+            // sem endereco nao ha o que avisar (a recusa e da `decidir`)
+            (&[], false),
+        ];
+
+        for (enderecos, esperado_aviso) in casos {
+            let addrs: Vec<SocketAddr> = enderecos.iter().map(|e| a(e)).collect();
+            let aviso = aviso_de_transporte("h:1", &addrs);
+            assert_eq!(
+                aviso.is_some(),
+                *esperado_aviso,
+                "enderecos={enderecos:?} aviso={aviso:?}"
+            );
+        }
+    }
+
+    /// O aviso nomeia o risco E as saidas; sem segredo e sem binario chumbado.
+    #[test]
+    fn aviso_de_transporte_diz_como_corrigir() {
+        let aviso =
+            aviso_de_transporte("0.0.0.0:3888", &[a("0.0.0.0:3888")]).expect("bind exposto avisa");
+        for trecho in [
+            "plain HTTP",
+            "gateway.tls_cert_path",
+            "--features tls",
+            "--host 127.0.0.1",
+            "docs/auth-config.md",
+        ] {
+            assert!(aviso.contains(trecho), "falta `{trecho}` em: {aviso}");
+        }
+        assert!(
+            !aviso.contains("Bearer <"),
+            "nada de valor de credencial: {aviso}"
+        );
+        assert!(
+            !aviso.contains("`garra "),
+            "o binario e o instalado: {aviso}"
+        );
     }
 }
