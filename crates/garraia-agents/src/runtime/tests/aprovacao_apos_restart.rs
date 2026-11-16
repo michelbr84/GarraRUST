@@ -8,12 +8,17 @@
 //! conferia a impressao digital no MESMO processo, entao trocar a chave
 //! aleatoria por uma constante, ou por uma lida de disco, passaria verde.
 //!
-//! Este arquivo usa dois processos de verdade. O "gateway A" e o proprio
+//! A via do historico usa dois processos de verdade. O "gateway A" e o proprio
 //! binario de teste reexecutado: ele sorteia a chave dele, cunha o marcador do
 //! pedido e o devolve pelo stdout. O "gateway B" e o processo deste teste, que
-//! recebe aquele marcador pelas duas vias por onde um pedido antigo poderia
-//! voltar depois de um restart — o historico reidratado e o "sim" do humano
-//! dentro do TTL — e precisa negar nas duas.
+//! recebe aquele marcador num historico reidratado e precisa negar.
+//!
+//! A outra via — o "sim" do humano dentro do TTL, e o `agent.approval:
+//! session` — nao depende da chave e sim dos registros, que sao campos do
+//! `AgentRuntime`. Ali o restart e um runtime novo no mesmo processo, com o
+//! historico em texto que os canais persistem; a guarda de fonte no fim fecha
+//! a ponta que isso deixa (registro que passasse a ler disco, banco ou
+//! ambiente).
 //!
 //! O que NAO esta aqui: o percurso por Telegram e por MCP delegado, que a
 //! #1912 tambem pede. Isso depende de transporte real e fica na issue.
@@ -161,7 +166,7 @@ async fn com_escopo_historico_de_outro_processo_nao_executa() {
 }
 
 /// Via 2 — o "sim" dentro do TTL. O pedido pausa no gateway A; o gateway B
-/// sobe (runtime novo, registro de pendencias vazio) com o mesmo historico em
+/// (runtime novo NESTE processo, registro de pendencias vazio) sobe com o mesmo historico em
 /// texto que os canais persistem, e o humano responde "sim" na hora. Nada
 /// roda: o "sim" vira um pedido NOVO, e so a aprovacao desse pedido novo
 /// executa — uma vez.
@@ -197,7 +202,8 @@ async fn sim_logo_apos_restart_pede_nova_aprovacao() {
 }
 
 /// `agent.approval: session` tambem nao atravessa o restart: o que o humano
-/// aprovou "para o resto da sessao" no gateway A e perguntado de novo no B.
+/// aprovou "para o resto da sessao" no gateway A e perguntado de novo no B
+/// (runtime novo neste processo).
 #[tokio::test]
 async fn aprovacao_da_sessao_nao_sobrevive_ao_restart() {
     for caminho in CAMINHOS {
@@ -221,7 +227,8 @@ async fn aprovacao_da_sessao_nao_sobrevive_ao_restart() {
 }
 
 /// Guarda de fonte: a chave do marcador e os dois registros de aprovacao nao
-/// tocam disco, banco nem ambiente. E o que sustenta "nao restaurar concessao
+/// tocam disco, banco nem ambiente, nem recebem valor fixado em build. So a
+/// parte de producao de cada arquivo e varrida (ate o `#[cfg(test)]`). E o que sustenta "nao restaurar concessao
 /// a partir de persistencia" — quem um dia quiser persistir isto tem de passar
 /// por aqui e pelos testes de dois processos acima.
 #[test]
@@ -245,8 +252,13 @@ fn chave_e_registros_de_aprovacao_ficam_so_em_memoria() {
         "sqlx",
         "env::var",
         "include_bytes!",
+        "include_str!",
+        "env!",
     ];
     for (arquivo, fonte) in fontes {
+        let (fonte, _testes) = fonte
+            .split_once("#[cfg(test)]")
+            .unwrap_or_else(|| panic!("{arquivo}: cade o modulo de testes?"));
         for p in proibidos {
             assert!(!fonte.contains(p), "{arquivo} passou a usar `{p}`");
         }
