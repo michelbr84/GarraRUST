@@ -452,10 +452,10 @@ pub(crate) fn decide_operador(
 /// `bash`/`file_write`/envio de mensagem; ela so dispensa a retencao do
 /// relatorio do `garra_status`, que e informacao da propria instalacao.
 ///
-/// Regras: porta do operador fechada, prova do dono gravada no turno
-/// (`SessionState::ultimo_turno_do_dono`, so Telegram em chat privado) e
-/// leitura de fontes nao ilegivel — sessao que pode ter fontes remotas
-/// persistidas segue fail-closed mesmo para o dono.
+/// Regras: porta do operador fechada, prova do dono DESTE turno (#1910:
+/// escopo imutavel de [`crate::prova_do_dono`], so Telegram em chat privado,
+/// nunca um campo da sessao) e leitura de fontes nao ilegivel — sessao que
+/// pode ter fontes remotas persistidas segue fail-closed mesmo para o dono.
 pub(crate) fn relatorio_aberto_pelo_dono(
     porta_fechada: bool,
     fontes: &FontesDaSessao,
@@ -464,12 +464,12 @@ pub(crate) fn relatorio_aberto_pelo_dono(
     porta_fechada && dono_do_turno && !matches!(fontes, FontesDaSessao::Ilegivel)
 }
 
-/// Fatos da sessao lidos uma vez para as duas decisoes.
+/// Fatos da sessao lidos uma vez para as duas decisoes. A prova do dono NAO
+/// esta aqui (#1910): ela e do turno, nao da sessao.
 struct FatosDaSessao {
     porta_fechada: bool,
     superficies: Option<Vec<String>>,
     fontes: FontesDaSessao,
-    dono_do_turno: bool,
 }
 
 async fn fatos_da_sessao(state: &AppState, session_id: &str) -> FatosDaSessao {
@@ -478,11 +478,6 @@ async fn fatos_da_sessao(state: &AppState, session_id: &str) -> FatosDaSessao {
         .sessions
         .get(session_id)
         .map(|s| s.canais_dos_turnos.iter().cloned().collect());
-    let dono_do_turno = state
-        .sessions
-        .get(session_id)
-        .map(|s| s.ultimo_turno_do_dono)
-        .unwrap_or(false);
     // Sem banco nao ha `chat_session_keys` — e tambem nao ha sessao por UUID:
     // o Telegram cai em `telegram-{chat_id}`, e o prefixo ja o pega.
     let fontes = match &state.session_store {
@@ -502,7 +497,6 @@ async fn fatos_da_sessao(state: &AppState, session_id: &str) -> FatosDaSessao {
         porta_fechada,
         superficies,
         fontes,
-        dono_do_turno,
     }
 }
 
@@ -552,9 +546,22 @@ pub(crate) async fn sessao_do_operador(state: &AppState, session_id: &str) -> bo
 /// dispensado APENAS para o relatorio: o dono em chat privado le a versao
 /// exata e os provedores, mas o teto de capacidades da sessao (que nega
 /// `bash`/escrita a superficie remota) segue de pe para as outras ferramentas.
-pub(crate) async fn relatorio_aberto_para_dono(state: &AppState, session_id: &str) -> bool {
+///
+/// #1910: a prova vem do escopo do turno em que a chamada roda
+/// ([`crate::prova_do_dono::dono_provado_neste_turno`]), conferida contra a
+/// instancia de estado, a sessao e o usuario do `ToolContext` — nunca de um
+/// campo da sessao, que um turno concorrente na mesma sessao leria.
+pub(crate) async fn relatorio_aberto_para_dono(
+    state: &AppState,
+    session_id: &str,
+    user_id: Option<&str>,
+) -> bool {
+    let dono_do_turno = crate::prova_do_dono::dono_provado_neste_turno(state, session_id, user_id);
+    if !dono_do_turno {
+        return false;
+    }
     let fatos = fatos_da_sessao(state, session_id).await;
-    relatorio_aberto_pelo_dono(fatos.porta_fechada, &fatos.fontes, fatos.dono_do_turno)
+    relatorio_aberto_pelo_dono(fatos.porta_fechada, &fatos.fontes, dono_do_turno)
 }
 
 #[cfg(test)]
@@ -931,8 +938,8 @@ mod decisao_operador_tests {
     #[test]
     fn prova_do_dono_nao_muda_a_decisao_do_teto() {
         let sup_telegram = s(&["telegram"]);
-        // Mesmo com `ultimo_turno_do_dono = true` (lido por fora), a decisao
-        // do teto olha so os fatos de superficie: Telegram e remota.
+        // Mesmo com a prova do dono no turno (#1910: escopo do turno), a
+        // decisao do teto olha so os fatos de superficie: Telegram e remota.
         assert!(!decide_operador(
             true,
             None,

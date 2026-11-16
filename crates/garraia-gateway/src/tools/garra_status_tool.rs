@@ -44,8 +44,10 @@
 //! restrita. Excecao (#1905): o dono do canal provado neste turno em chat
 //! privado do Telegram recebe o relatorio aberto; a prova vale SO para este
 //! relatorio — o teto de capacidades do turno continua negando `bash`/escrita
-//! a superficie remota. O `session.id` e mascarado sempre: o do WhatsApp e o
-//! numero de telefone inteiro.
+//! a superficie remota. A prova e um escopo imutavel do turno
+//! ([`crate::prova_do_dono`], #1910), conferido contra a sessao e o usuario
+//! do `ToolContext`; nao e fato da sessao. O `session.id` e mascarado sempre:
+//! o do WhatsApp e o numero de telefone inteiro.
 //!
 //! [`turno_restrito`]: garraia_agents::tools::turn_tools::turno_restrito
 
@@ -286,8 +288,16 @@ impl Tool for GarraStatusTool {
         // mais nada. O teto de capacidades do turno continua valendo para as
         // outras ferramentas (`sessao_do_operador`), entao o dono nao ganha
         // bash/escrita por causa desta excecao.
-        let abre_para_dono =
-            crate::channels_view::relatorio_aberto_para_dono(&state, &ctx.session_id).await;
+        //
+        // #1910: a prova e do TURNO em que esta chamada roda (escopo imutavel
+        // aberto pelo Telegram) e precisa casar com a sessao e o usuario
+        // DESTE contexto — um turno concorrente na mesma sessao nao a herda.
+        let abre_para_dono = crate::channels_view::relatorio_aberto_para_dono(
+            &state,
+            &ctx.session_id,
+            ctx.user_id.as_deref(),
+        )
+        .await;
         let restrito = if abre_para_dono {
             false
         } else {
@@ -1319,38 +1329,198 @@ mod tests {
         );
     }
 
+    // ─── #1905/#1910: o relatorio aberto do dono e do TURNO ──────────────
+
+    const DONO: &str = "7978617919";
+    const DONO_CHAT: i64 = 7978617919;
+    const SID_DONO: &str = "telegram-7978617919";
+
+    /// Pareia o dono SO em memoria: `Allowlist::restricted` nao tem caminho,
+    /// entao `claim_owner` nao grava arquivo.
+    fn pareia_dono(st: &Arc<AppState>) {
+        let mut lista = garraia_security::Allowlist::restricted(Vec::<String>::new());
+        assert!(lista.claim_owner(DONO));
+        *st.allowlist.lock().expect("lock") = lista;
+    }
+
+    fn ctx_de(sid: &str, user: Option<&str>) -> ToolContext {
+        let mut c = ctx_na_sessao(sid, Some("/home/operador/projeto-plantado"));
+        c.user_id = user.map(str::to_string);
+        c
+    }
+
+    /// Estado num tempdir, dono pareado e a sessao gravada como o Telegram a
+    /// grava antes do turno.
+    async fn estado_do_dono() -> (tempfile::TempDir, Arc<AppState>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state_com(config_no(dir.path()));
+        pareia_dono(&st);
+        st.hydrate_session_history(SID_DONO, Some("telegram"), Some(DONO))
+            .await;
+        (dir, st)
+    }
+
     /// #1905: o dono pareado do bot, num turno do Telegram com a porta do
     /// operador fechada, recebe o relatorio ABERTO — versao exata, providers
     /// e MCP — em vez do `version_patch` retido que fez o Garra responder ao
-    /// dono que "nao consegue confirmar a versao".
+    /// dono que "nao consegue confirmar a versao". #1910: a prova e o escopo
+    /// do turno; fora dele, a MESMA sessao e o MESMO usuario voltam ao
+    /// relatorio restrito.
     #[tokio::test]
     async fn dono_do_telegram_recebe_versao_exata_no_relatorio() {
-        let st = state();
-        let sid = "telegram-7978617919";
-        st.hydrate_session_history(sid, Some("telegram"), Some("7978617919"))
-            .await;
-        st.marcar_turno_do_dono(sid, true);
-        let ctx = ctx_na_sessao(sid, Some("/home/operador/projeto"));
-        let out = tool(&st)
-            .execute(&ctx, serde_json::json!({}))
-            .await
-            .expect("executa");
-        let json: serde_json::Value = serde_json::from_str(&out.content).expect("json");
+        let (_dir, st) = estado_do_dono().await;
+        let ctx = ctx_de(SID_DONO, Some(DONO));
+        let (json, _) = crate::prova_do_dono::no_turno_do_telegram(
+            &st,
+            SID_DONO,
+            DONO_CHAT,
+            DONO,
+            relatorio_no_turno(&tool(&st), &ctx, false),
+        )
+        .await;
         assert_eq!(json["version"], env!("CARGO_PKG_VERSION"), "{json}");
         assert!(json["providers"].is_array(), "{json}");
         assert_eq!(json["withheld"], serde_json::json!([]), "{json}");
         assert_eq!(json["session"]["channel"], "telegram");
         assert_eq!(json["upstream"]["repo"], UPSTREAM_REPO);
 
-        // Sem a prova do dono, a MESMA sessao volta ao relatorio restrito.
-        st.marcar_turno_do_dono(sid, false);
-        let out2 = tool(&st)
-            .execute(&ctx, serde_json::json!({}))
-            .await
-            .expect("executa");
-        let json2: serde_json::Value = serde_json::from_str(&out2.content).expect("json");
+        // Fora do turno do dono, a MESMA sessao volta ao relatorio restrito.
+        let (json2, texto2) = relatorio_no_turno(&tool(&st), &ctx, false).await;
         assert_eq!(json2["version"], versao_curta(), "{json2}");
-        assert!(json2["providers"].is_null(), "{json2}");
+        assert!(e_restrito(&json2, &texto2), "{json2}");
+    }
+
+    /// #1910 (o RED da main, migrado): a autoridade do relatorio aberto nao
+    /// pode ser um fato da SESSAO. Tres turnos intercalados por uma barreira
+    /// na MESMA sessao, todos chamando `garra_status` com o turno do dono em
+    /// andamento: o do dono recebe o relatorio aberto; o de outro remetente
+    /// do Telegram e o de uma superficie sem prova (web/Chat Sync, mesmo
+    /// alegando o id do dono no contexto) recebem o restrito.
+    ///
+    /// Na base da #1906 a prova era um campo booleano do `SessionState`, e o
+    /// nao-dono recebia `withheld: []` com o `working_dir` do operador.
+    #[tokio::test]
+    async fn nao_dono_na_mesma_sessao_nao_herda_o_relatorio_do_dono() {
+        let (_dir, st) = estado_do_dono().await;
+        let t = tool(&st);
+        let barreira = tokio::sync::Barrier::new(3);
+        let ctx_dono = ctx_de(SID_DONO, Some(DONO));
+        let ctx_outro = ctx_de(SID_DONO, Some("555"));
+
+        let dono =
+            crate::prova_do_dono::no_turno_do_telegram(&st, SID_DONO, DONO_CHAT, DONO, async {
+                barreira.wait().await;
+                tokio::task::yield_now().await;
+                relatorio_no_turno(&t, &ctx_dono, false).await
+            });
+        let outro_do_telegram =
+            crate::prova_do_dono::no_turno_do_telegram(&st, SID_DONO, 555, "555", async {
+                barreira.wait().await;
+                relatorio_no_turno(&t, &ctx_outro, false).await
+            });
+        let sem_prova = async {
+            barreira.wait().await;
+            relatorio_no_turno(&t, &ctx_dono, false).await
+        };
+        let ((jd, td), (jo, to), (js, ts)) = tokio::join!(dono, outro_do_telegram, sem_prova);
+        assert!(!e_restrito(&jd, &td), "o dono perdeu o relatorio: {jd}");
+        assert!(
+            e_restrito(&jo, &to),
+            "nao-dono herdou o relatorio aberto: {jo}"
+        );
+        assert!(
+            e_restrito(&js, &ts),
+            "turno sem prova herdou o relatorio: {js}"
+        );
+    }
+
+    /// Escopo do dono, `ToolContext` que nao casa: outro usuario, sem
+    /// usuario, ou outra sessao — restrito.
+    #[tokio::test]
+    async fn escopo_do_dono_nao_vale_para_contexto_divergente() {
+        let (_dir, st) = estado_do_dono().await;
+        st.hydrate_session_history("telegram-outra", Some("telegram"), Some(DONO))
+            .await;
+        for ctx in [
+            ctx_de(SID_DONO, Some("555")),
+            ctx_de(SID_DONO, None),
+            ctx_de("telegram-outra", Some(DONO)),
+        ] {
+            let (json, texto) = crate::prova_do_dono::no_turno_do_telegram(
+                &st,
+                SID_DONO,
+                DONO_CHAT,
+                DONO,
+                relatorio_no_turno(&tool(&st), &ctx, false),
+            )
+            .await;
+            assert!(
+                e_restrito(&json, &texto),
+                "contexto {:?}/{:?} recebeu o relatorio aberto: {json}",
+                ctx.session_id,
+                ctx.user_id
+            );
+        }
+    }
+
+    /// Porta do operador aberta (opt-out sem chave): nem o turno do dono abre
+    /// o relatorio.
+    #[tokio::test]
+    async fn porta_aberta_nega_o_relatorio_mesmo_no_turno_do_dono() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = config_no(dir.path());
+        config.gateway.allow_unauthenticated_network_bind = true;
+        config.gateway.api_key = None;
+        let st = state_com(config);
+        pareia_dono(&st);
+        st.hydrate_session_history(SID_DONO, Some("telegram"), Some(DONO))
+            .await;
+        let ctx = ctx_de(SID_DONO, Some(DONO));
+        let (json, texto) = crate::prova_do_dono::no_turno_do_telegram(
+            &st,
+            SID_DONO,
+            DONO_CHAT,
+            DONO,
+            relatorio_no_turno(&tool(&st), &ctx, false),
+        )
+        .await;
+        assert!(e_restrito(&json, &texto), "{json}");
+    }
+
+    /// Fontes persistidas ilegiveis: nem o turno do dono abre o relatorio
+    /// (fail-closed). O banco e o do tempdir do teste; a tabela renomeada faz
+    /// a leitura real de `chat_session_keys` falhar.
+    #[tokio::test]
+    async fn fontes_ilegiveis_negam_o_relatorio_mesmo_no_turno_do_dono() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state_com_banco(dir.path());
+        pareia_dono(&st);
+        st.hydrate_session_history(SID_DONO, Some("telegram"), Some(DONO))
+            .await;
+        let ctx = ctx_de(SID_DONO, Some(DONO));
+        let t = tool(&st);
+        let no_turno = || {
+            crate::prova_do_dono::no_turno_do_telegram(
+                &st,
+                SID_DONO,
+                DONO_CHAT,
+                DONO,
+                relatorio_no_turno(&t, &ctx, false),
+            )
+        };
+
+        let (legivel, texto) = no_turno().await;
+        assert!(
+            !e_restrito(&legivel, &texto),
+            "com o banco legivel o dono ve o relatorio: {legivel}"
+        );
+
+        rusqlite::Connection::open(dir.path().join("sessions.db"))
+            .expect("abre o banco do teste")
+            .execute_batch("ALTER TABLE chat_session_keys RENAME TO chat_session_keys_fora;")
+            .expect("renomeia");
+        let (ilegivel, texto) = no_turno().await;
+        assert!(e_restrito(&ilegivel, &texto), "{ilegivel}");
     }
 
     /// O portao restrito do turno (o piso `search`) basta, mesmo numa sessao
