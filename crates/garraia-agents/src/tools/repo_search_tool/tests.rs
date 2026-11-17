@@ -471,6 +471,62 @@ async fn busca_vazia_diz_onde_olhou_sem_entregar_o_caminho() {
     );
 }
 
+/// #1909: o `rg` pula o que o `.gitignore` cobre e os ocultos; o resultado
+/// vazio dele tem de dizer isso, senao "No matches found" le como "nao existe
+/// neste diretorio". A frase do escopo continua na frente, intacta.
+#[test]
+fn vazio_do_rg_ressalva_ignorados_e_ocultos() {
+    let escopo = sem_correspondencias(&RepoDir::Sessao("/x".into()), false);
+    let texto = vazio_do_rg(&escopo);
+    assert!(texto.starts_with(&escopo), "{texto}");
+    assert!(texto.ends_with(RESSALVA_DO_RG), "{texto}");
+    assert!(RESSALVA_DO_RG.contains(".gitignore"));
+    assert!(RESSALVA_DO_RG.contains("hidden"));
+    // O escopo sozinho (o que os fallbacks devolvem) NAO carrega a ressalva:
+    // `grep -r` e `findstr /s` leem ignorados e ocultos, ali ela seria falsa.
+    assert!(!escopo.contains(RESSALVA_DO_RG));
+}
+
+/// Pela tool de verdade, com o `rg`: a agulha existe, mas so num arquivo
+/// oculto e num ignorado — a busca volta vazia E diz que esses nao foram
+/// lidos. Sem a ressalva este e exatamente o caso em que o vazio engana.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn busca_vazia_do_rg_avisa_que_ignorados_e_ocultos_ficaram_de_fora() {
+    if !existe_no_path("rg") {
+        eprintln!("rg ausente no PATH: este teste foi pulado");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    // `.ignore` vale sem repositorio git (o `.gitignore` exigiria um).
+    std::fs::write(dir.path().join(".ignore"), "ignorado.txt\n").expect("write");
+    std::fs::write(dir.path().join("ignorado.txt"), "agulha_1909_ressalva\n").expect("write");
+    std::fs::write(dir.path().join(".oculto"), "agulha_1909_ressalva\n").expect("write");
+    std::fs::write(dir.path().join("visivel.txt"), "nada aqui\n").expect("write");
+
+    let saida = RepoSearchTool::new(Some(10), None)
+        .execute(
+            &ctx_com_working_dir(dir.path()),
+            serde_json::json!({"query": "agulha_1909_ressalva"}),
+        )
+        .await
+        .expect("executa");
+
+    assert!(!saida.is_error, "{}", saida.content);
+    assert!(
+        saida
+            .content
+            .starts_with("No matches found in the session's working directory."),
+        "{}",
+        saida.content
+    );
+    assert!(
+        saida.content.contains(RESSALVA_DO_RG),
+        "o vazio do rg nao disse o que ficou de fora: {}",
+        saida.content
+    );
+}
+
 /// `working_dir` que nao existe, ou que e arquivo: erro que diz isso, e nao
 /// "Search failed (rg: ...)" nem resultado vazio.
 #[tokio::test]
