@@ -412,3 +412,138 @@ fn grep_trata_query_com_traco_como_texto_literal() {
         String::from_utf8_lossy(&saida.stderr)
     );
 }
+
+// ─── #1909: busca vazia nomeia o escopo; alvo inacessivel nao e "vazio" ───
+
+fn ctx_com_working_dir(dir: &Path) -> ToolContext {
+    crate::tools::repo_dir::contexto_de_teste(Some(&dir.to_string_lossy()))
+}
+
+/// O escopo da sessao nunca leva o caminho; o do processo so com permissao.
+#[test]
+fn escopo_da_busca_so_revela_o_cwd_do_processo_com_permissao() {
+    let dir = std::path::PathBuf::from("/caminho/secreto/do-host");
+
+    for revelar in [true, false] {
+        let sessao = sem_correspondencias(&RepoDir::Sessao(dir.clone()), revelar);
+        assert!(sessao.starts_with("No matches found in the session's working directory."));
+        assert!(!sessao.contains("do-host"), "{sessao}");
+    }
+
+    let processo = RepoDir::ProcessoCwd(Some(dir));
+    let aberto = sem_correspondencias(&processo, true);
+    assert!(aberto.contains("/caminho/secreto/do-host"), "{aberto}");
+    assert!(aberto.contains("no working directory"), "{aberto}");
+    let restrito = sem_correspondencias(&processo, false);
+    assert!(!restrito.contains("do-host"), "{restrito}");
+    assert!(restrito.contains("no working directory"), "{restrito}");
+    assert!(restrito.contains("Only that directory was searched"));
+}
+
+/// Pela tool de verdade: sem correspondencia, a resposta diz onde olhou e
+/// nao entrega o caminho da sessao.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn busca_vazia_diz_onde_olhou_sem_entregar_o_caminho() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("notas.txt"), "nada de interessante\n").expect("write");
+
+    let saida = RepoSearchTool::new(Some(10), None)
+        .execute(
+            &ctx_com_working_dir(dir.path()),
+            serde_json::json!({"query": "agulha_ausente_1909_qwx"}),
+        )
+        .await
+        .expect("executa");
+
+    assert!(!saida.is_error, "{}", saida.content);
+    assert!(
+        saida
+            .content
+            .starts_with("No matches found in the session's working directory."),
+        "{}",
+        saida.content
+    );
+    assert!(
+        !saida.content.contains(&*dir.path().to_string_lossy()),
+        "o caminho da sessao nao sai na resposta: {}",
+        saida.content
+    );
+}
+
+/// `working_dir` que nao existe, ou que e arquivo: erro que diz isso, e nao
+/// "Search failed (rg: ...)" nem resultado vazio.
+#[tokio::test]
+async fn working_dir_inacessivel_e_erro_e_nao_resultado_vazio() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let arquivo = dir.path().join("arquivo.txt");
+    std::fs::write(&arquivo, "x\n").expect("write");
+    let ausente = dir.path().join("nao-existe");
+
+    for (alvo, motivo) in [
+        (&ausente, "it does not exist"),
+        (&arquivo, "it is not a directory"),
+    ] {
+        let saida = RepoSearchTool::new(Some(10), None)
+            .execute(
+                &ctx_com_working_dir(alvo),
+                serde_json::json!({"query": "qualquer"}),
+            )
+            .await
+            .expect("executa");
+        assert!(saida.is_error, "{}", saida.content);
+        assert!(saida.content.contains(motivo), "{}", saida.content);
+        assert!(saida.content.contains("nothing was searched"));
+        assert!(!saida.content.contains("No matches found"));
+        assert!(!saida.content.contains("Search failed"));
+        assert!(
+            !saida.content.contains(&*dir.path().to_string_lossy()),
+            "o caminho da sessao nao sai na recusa: {}",
+            saida.content
+        );
+    }
+}
+
+/// O diretorio que existe nao e recusado, e a sessao sem `working_dir` nao
+/// passa por esta checagem (ela tem a recusa propria, da #1380).
+#[test]
+fn working_dir_existente_e_sessao_sem_working_dir_nao_sao_recusados() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert_eq!(
+        recusa_working_dir_inacessivel(&RepoDir::Sessao(dir.path().to_path_buf())),
+        None
+    );
+    assert_eq!(
+        recusa_working_dir_inacessivel(&RepoDir::ProcessoCwd(None)),
+        None
+    );
+}
+
+/// O fallback: sem linhas e com codigo de erro NAO e resultado vazio.
+/// **Mutacao**: devolva `Ok(vazio)` para todo stdout vazio (o comportamento
+/// antigo) e o terceiro bloco falha.
+#[test]
+fn fallback_com_erro_e_sem_linhas_nao_vira_resultado_vazio() {
+    let vazio = || "No matches found in X.".to_string();
+
+    assert_eq!(
+        saida_do_fallback(
+            "a.rs:1:achou\n",
+            Some(2),
+            "grep: b: Permission denied",
+            vazio()
+        ),
+        Ok("a.rs:1:achou\n".to_string()),
+        "resultado parcial continua sendo resultado"
+    );
+    for codigo in [Some(0), Some(1)] {
+        assert_eq!(saida_do_fallback("", codigo, "", vazio()), Ok(vazio()));
+    }
+    for codigo in [Some(2), None] {
+        let falha = saida_do_fallback("", codigo, "grep: .: Permission denied\n", vazio())
+            .expect_err("busca que nao terminou e erro");
+        assert!(falha.contains("did not complete"), "{falha}");
+        assert!(falha.contains("Permission denied"), "{falha}");
+        assert!(!falha.contains("No matches found"), "{falha}");
+    }
+}
