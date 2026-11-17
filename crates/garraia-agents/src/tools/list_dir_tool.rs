@@ -8,7 +8,7 @@ use garraia_common::Result;
 use std::path::{Path, PathBuf};
 
 use super::file_jail::FileJail;
-use super::tool_context::{caminho_para_exibir, process_home_dir, resolve_tool_path};
+use super::tool_context::{caminho_para_exibir_no_turno, process_home_dir, resolve_tool_path};
 use super::{Tool, ToolContext, ToolOutput};
 
 /// Maximum depth for directory traversal
@@ -311,10 +311,11 @@ impl Tool for ListDirTool {
         let mut entries = Vec::new();
         // #1626: a raiz da listagem sai relativa ao working_dir da sessao (ou
         // um prefixo neutro), nunca o caminho absoluto do host — os filhos ja
-        // sao nomes relativos na arvore de `list_recursive`.
+        // sao nomes relativos na arvore de `list_recursive`. #1909: fora do
+        // working_dir o absoluto so sai no turno que pode ve-lo.
         entries.push(format!(
             "{}/",
-            caminho_para_exibir(&path, context.working_dir.as_deref().map(Path::new))
+            caminho_para_exibir_no_turno(&path, context.working_dir.as_deref().map(Path::new))
         ));
 
         match self.list_recursive(&path, "", 0, depth, pattern, &mut entries) {
@@ -442,6 +443,104 @@ mod tests {
             .expect("should not error");
 
         assert!(output.is_error);
+    }
+
+    /// #1909: o cabeçalho da listagem nomeia a raiz que foi listada — mas no
+    /// turno restrito (superfície remota, remetente que não é
+    /// necessariamente o operador) ele não entrega o caminho absoluto do
+    /// host. Os nomes dos filhos continuam saindo: é neles que o modelo
+    /// trabalha.
+    #[tokio::test]
+    async fn cabecalho_retem_o_caminho_do_host_no_turno_restrito() {
+        let (_t, root) = raiz();
+        std::fs::write(root.join("a.txt"), b"x").expect("write");
+        let tool = ListDirTool::new(FileJail::from_roots([&root]), None);
+        let pedido = serde_json::json!({ "path": root.to_str().expect("utf8") });
+        let host = root.to_str().expect("utf8");
+
+        let restrito = crate::tools::turn_tools::com_restricao_do_turno(
+            true,
+            tool.execute(&ctx(None), pedido.clone()),
+        )
+        .await
+        .expect("tool nao deve estourar");
+        assert!(!restrito.is_error, "{}", restrito.content);
+        assert!(
+            !restrito.content.contains(host),
+            "caminho do host no turno restrito: {}",
+            restrito.content
+        );
+        assert!(
+            restrito
+                .content
+                .contains(crate::tools::tool_context::CAMINHO_FORA_DO_TURNO),
+            "o cabecalho tem de dizer que o caminho foi retido: {}",
+            restrito.content
+        );
+        assert!(
+            restrito.content.contains("a.txt"),
+            "os filhos continuam listados: {}",
+            restrito.content
+        );
+
+        let aberto = crate::tools::turn_tools::com_restricao_do_turno(
+            false,
+            tool.execute(&ctx(None), pedido),
+        )
+        .await
+        .expect("tool nao deve estourar");
+        assert!(
+            aberto.content.contains(host),
+            "o operador local continua vendo a raiz: {}",
+            aberto.content
+        );
+    }
+
+    /// #1909 (revisão independente): o caso real do CWD do processo — o
+    /// modelo pede um caminho RELATIVO e a sessão não tem `working_dir`, então
+    /// o jail canonicaliza o alvo contra o CWD do gateway e o cabeçalho sairia
+    /// com esse absoluto. É o caminho do host por outra porta: no turno
+    /// restrito ele vira o marcador (os filhos continuam listados), no aberto
+    /// continua saindo.
+    #[tokio::test]
+    async fn cabecalho_de_listagem_relativa_sem_working_dir_nao_nomeia_o_cwd() {
+        let cwd =
+            std::fs::canonicalize(std::env::current_dir().expect("cwd")).expect("canonicalize");
+        let tool = ListDirTool::new(FileJail::from_roots([&cwd]), None);
+        let host = cwd.to_str().expect("utf8").to_string();
+        let pedido = || serde_json::json!({ "path": ".", "depth": 1 });
+
+        let restrito = crate::tools::turn_tools::com_restricao_do_turno(
+            true,
+            tool.execute(&ctx(None), pedido()),
+        )
+        .await
+        .expect("listagem nao deve estourar");
+        assert!(!restrito.is_error, "{}", restrito.content);
+        assert!(
+            !restrito.content.contains(&host),
+            "o CWD do processo saiu no turno restrito: {}",
+            restrito.content
+        );
+        assert!(
+            restrito
+                .content
+                .contains(crate::tools::tool_context::CAMINHO_FORA_DO_TURNO),
+            "o cabecalho tem de dizer que o caminho foi retido: {}",
+            restrito.content
+        );
+
+        let aberto = crate::tools::turn_tools::com_restricao_do_turno(
+            false,
+            tool.execute(&ctx(None), pedido()),
+        )
+        .await
+        .expect("listagem nao deve estourar");
+        assert!(
+            aberto.content.contains(&host),
+            "o operador local continua vendo a raiz: {}",
+            aberto.content
+        );
     }
 
     // ─── issue #1244: o jail ───────────────────────────────────────────────
