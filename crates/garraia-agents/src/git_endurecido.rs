@@ -191,8 +191,15 @@ pub(crate) fn stderr_para_o_turno(stderr: &str, working_dir: Option<&Path>) -> S
 /// `X:\`, `X:/` ou `\\` (UNC). Entre aspas ele vai ate a aspa que FECHA na
 /// mesma linha — a seguida de espaco, pontuacao ou fim, para que o apostrofo
 /// de `/home/o'brien` nao corte o caminho no meio; fora delas, ate o proximo
-/// espaco, deixando de fora a pontuacao final. O `//` de `https://host/x` nao
-/// e inicio de caminho, entao URL de rede nao e tocada.
+/// espaco, deixando de fora a pontuacao final — e estendido ate a ultima
+/// palavra com separador de caminho antes da proxima pausa, que e o que cobre
+/// o caminho sem aspas com espaco (`not a git repository: /abs com espaco/x`).
+/// O `//` de `https://host/x` nao e inicio de caminho, entao URL de rede nao e
+/// tocada.
+///
+/// Limite conhecido: sem aspas, um ULTIMO componente com espaco e sem
+/// separador depois (`/home/dono/Meus Projetos`) deixa esse nome solto
+/// (`Projetos`) no texto — um fragmento de nome, nao o caminho.
 fn oculta_caminhos_absolutos(texto: &str, working_dir: Option<&Path>) -> String {
     use crate::tools::tool_context::{CAMINHO_FORA_DO_TURNO, caminho_para_exibir_no_turno};
 
@@ -243,6 +250,44 @@ fn oculta_caminhos_absolutos(texto: &str, working_dir: Option<&Path>) -> String 
                     .iter()
                     .position(|c| c.is_whitespace())
                     .unwrap_or(resto.len());
+                // Auditoria da #1943: o git tambem cita caminho SEM aspas
+                // (`not a git repository: /abs`, `bad config line N in file
+                // /abs`), e um diretorio com espaco deixaria o rabo do caminho
+                // de fora. O token se estende ate a ultima palavra com
+                // separador de caminho no mesmo trecho — o trecho acaba na
+                // primeira pausa (`: `, `; `, `, `, ` (`) ou no fim da linha,
+                // para a causa que vem depois do caminho continuar dita.
+                let pausa = (pos..linha)
+                    .find(|j| {
+                        let c = resto[*j];
+                        let seguinte = resto.get(j + 1).copied();
+                        (matches!(c, ':' | ';' | ',') && seguinte.is_none_or(|n| n.is_whitespace()))
+                            || (c.is_whitespace() && seguinte == Some('('))
+                    })
+                    .unwrap_or(linha);
+                // Sem pausa nem fecho colado no proprio token (`/a/config: causa`,
+                // `[/a/b] e ...`): ali o caminho ja acabou.
+                if !(pos > 0 && matches!(resto[pos - 1], ':' | ';' | ',' | ')' | ']' | '>')) {
+                    let mut j = pos;
+                    while j < pausa {
+                        let ini = j + resto[j..pausa]
+                            .iter()
+                            .position(|c| !c.is_whitespace())
+                            .unwrap_or(pausa - j);
+                        let fim_da_palavra = ini
+                            + resto[ini..pausa]
+                                .iter()
+                                .position(|c| c.is_whitespace())
+                                .unwrap_or(pausa - ini);
+                        if resto[ini..fim_da_palavra]
+                            .iter()
+                            .any(|c| matches!(c, '/' | '\\'))
+                        {
+                            pos = fim_da_palavra;
+                        }
+                        j = fim_da_palavra.max(j + 1);
+                    }
+                }
                 while pos > 1 && (e_pontuacao_final(resto[pos - 1]) || e_aspa(resto[pos - 1])) {
                     pos -= 1;
                 }
@@ -456,6 +501,37 @@ mod tests {
                 !saida.contains("dono") && !saida.contains("brien"),
                 "{saida}"
             );
+        }
+    }
+
+    /// Auditoria da #1943: caminho SEM aspas com espaco (formas reais do git
+    /// 2.43) nao deixa o rabo de fora, e a causa depois da pausa fica.
+    #[test]
+    fn caminho_sem_aspas_com_espaco_sai_inteiro() {
+        use crate::tools::tool_context::CAMINHO_FORA_DO_TURNO as M;
+        for (entrada, esperado) in [
+            (
+                "fatal: not a git repository: /home/dono/Meus Projetos/garra/.git/worktrees/wt2",
+                format!("fatal: not a git repository: {M}"),
+            ),
+            (
+                "fatal: bad config line 3 in file /mnt/My Big Volume/x/.git/config\nhint: veja",
+                format!("fatal: bad config line 3 in file {M}\nhint: veja"),
+            ),
+            (
+                "error: could not lock /a b/c/.git/config: File exists; ver /etc/gitconfig",
+                format!("error: could not lock {M}: File exists; ver {M}"),
+            ),
+            (
+                "\tgit config --global --add safe.directory /srv/garra/wt\n",
+                format!("\tgit config --global --add safe.directory {M}\n"),
+            ),
+            (
+                "fatal: /a/b nao e um repositorio valido",
+                format!("fatal: {M} nao e um repositorio valido"),
+            ),
+        ] {
+            assert_eq!(oculta_caminhos_absolutos(entrada, None), esperado);
         }
     }
 
