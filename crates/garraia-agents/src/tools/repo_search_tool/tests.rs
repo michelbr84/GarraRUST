@@ -550,6 +550,14 @@ async fn working_dir_inacessivel_e_erro_e_nao_resultado_vazio() {
         assert!(saida.is_error, "{}", saida.content);
         assert!(saida.content.contains(motivo), "{}", saida.content);
         assert!(saida.content.contains("nothing was searched"));
+        // #1909: e a saida INTEIRA da tool, entao o breaker a reconhece como
+        // deterministica e pausa na primeira ocorrencia.
+        assert_eq!(
+            crate::tools::breaker::classificar(&saida),
+            crate::tools::breaker::Veredito::Falha(crate::tools::breaker::Classe::Deterministica(
+                crate::tools::breaker::Deterministica::SemDiretorioDaSessao
+            ))
+        );
         assert!(!saida.content.contains("No matches found"));
         assert!(!saida.content.contains("Search failed"));
         assert!(

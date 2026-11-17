@@ -366,3 +366,101 @@ fn registrar_diz_so_a_transicao_de_fechado_para_aberto() {
         "cada sessao tem o seu breaker"
     );
 }
+
+/// A recusa real, como as tres tools a emitem (o diretorio nao existe).
+fn recusa_de_diretorio_morto(o_que: &str, repita: &str) -> ToolOutput {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let morto = tmp.path().join("removido");
+    ToolOutput::error(
+        crate::tools::tool_context::recusa_sessao_sem_diretorio(Some(&morto), o_que, repita)
+            .expect("diretorio ausente recusa"),
+    )
+}
+
+/// #1909: a recusa de sessao com diretorio morto e deterministica — repetir
+/// com outro caminho falha igual. Antes caia em `Generica` e o breaker so
+/// abria na TERCEIRA repeticao identica. A frase vem da funcao real, nao de
+/// um literal do teste: se o texto mudar sem o prefixo, isto quebra.
+#[test]
+fn diretorio_da_sessao_ausente_abre_na_primeira_ocorrencia() {
+    for (tool, o_que, repita) in [
+        ("file_read", "nothing was read", "read again"),
+        ("list_dir", "nothing was listed", "list again"),
+        ("repo_search", "nothing was searched", "search again"),
+    ] {
+        let saida = recusa_de_diretorio_morto(o_que, repita);
+        assert_eq!(
+            classificar(&saida),
+            Veredito::Falha(Classe::Deterministica(Deterministica::SemDiretorioDaSessao)),
+            "{tool}"
+        );
+        let mut b = Breaker::new();
+        let t = t0();
+        b.abrir_turno(Some("/projeto/removido"));
+        assert!(b.registrar(tool, &saida, t), "{tool}: abre na primeira");
+        match b.estado(tool, t) {
+            Estado::Aberto {
+                motivo: Motivo::Deterministica(Deterministica::SemDiretorioDaSessao),
+                ate: Ate::FimDoTurno,
+            } => {}
+            outro => panic!("{tool}: {outro:?}"),
+        }
+        let texto = b.estado(tool, t).explicacao(tool, t).expect("aberta");
+        assert!(texto.contains("(session_dir_unavailable)"), "{texto}");
+        assert!(!texto.contains('/'), "sem caminho: {texto}");
+        // Turno seguinte, mesmo contexto: sonda de novo.
+        b.abrir_turno(Some("/projeto/removido"));
+        assert_eq!(b.estado(tool, t), Estado::Fechado, "{tool}");
+    }
+}
+
+/// A frase so classifica quando e a saida inteira da tool: conteudo que a
+/// cite no meio (um arquivo lido com erro, um stderr) segue generico.
+#[test]
+fn frase_do_diretorio_ausente_no_meio_do_texto_nao_e_deterministica() {
+    let citada = format!(
+        "git: fatal: {}",
+        crate::tools::tool_context::SESSAO_SEM_DIRETORIO
+    );
+    assert_eq!(
+        classificar(&ToolOutput::error(citada.clone())),
+        Veredito::Falha(Classe::Generica(citada))
+    );
+}
+
+/// `file_write` (e `bash`) podem criar o diretorio no meio do turno: o
+/// sucesso de uma delas fecha as pausas por diretorio ausente das outras —
+/// e so essas. Sucesso de outra ferramenta nao fecha nada alheio.
+#[test]
+fn sucesso_de_quem_cria_diretorio_fecha_so_a_pausa_por_diretorio_ausente() {
+    let t = t0();
+    for criadora in PODEM_CRIAR_DIRETORIO {
+        let mut b = Breaker::new();
+        b.abrir_turno(Some("/projeto/removido"));
+        let ausente = Classe::Deterministica(Deterministica::SemDiretorioDaSessao);
+        b.registrar_falha("file_read", ausente.clone(), t);
+        b.registrar_falha("list_dir", ausente, t);
+        b.registrar_falha(
+            "repo_search",
+            Classe::Deterministica(Deterministica::SemRepositorio),
+            t,
+        );
+        b.registrar_falha("web_fetch", Classe::Transitoria, t);
+
+        // Sucesso de ferramenta que nao cria diretorio: nada muda.
+        b.registrar("web_search", &ToolOutput::success("ok"), t);
+        assert!(b.estado("file_read", t).esta_aberto());
+
+        b.registrar(criadora, &ToolOutput::success("ok"), t);
+        assert_eq!(b.estado("file_read", t), Estado::Fechado, "{criadora}");
+        assert_eq!(b.estado("list_dir", t), Estado::Fechado, "{criadora}");
+        assert!(
+            b.estado("repo_search", t).esta_aberto(),
+            "outra causa deterministica nao fecha"
+        );
+        assert!(
+            b.estado("web_fetch", t).esta_aberto(),
+            "cooldown de timeout nao fecha"
+        );
+    }
+}

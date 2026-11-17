@@ -360,6 +360,11 @@ pub fn caminho_para_exibir_no_turno(path: &Path, working_dir: Option<&Path>) -> 
 ///
 /// Erro de outra natureza ao olhar (`EACCES` num ancestral, por exemplo) não
 /// recusa: na dúvida a tool segue e o erro real aparece adiante.
+/// O comeco, constante, da recusa de [`recusa_sessao_sem_diretorio`]. E por
+/// ele que o circuit breaker reconhece a causa (`breaker::classificar`): o
+/// resto da frase muda por tool, o comeco nao.
+pub const SESSAO_SEM_DIRETORIO: &str = "The session's working directory is not accessible";
+
 pub fn recusa_sessao_sem_diretorio(
     working_dir: Option<&Path>,
     o_que_nao_foi_feito: &str,
@@ -378,7 +383,7 @@ pub fn recusa_sessao_sem_diretorio(
         Err(_) => return None,
     };
     Some(format!(
-        "The session's working directory is not accessible ({motivo}), so {o_que_nao_foi_feito}. \
+        "{SESSAO_SEM_DIRETORIO} ({motivo}), so {o_que_nao_foi_feito}. \
          This is not an empty result: select an existing project for this session (set its \
          working directory) and {repita}."
     ))
