@@ -123,6 +123,11 @@ fn collective_stop_spends_one_budget_for_every_target() {
     let decorrido = start.elapsed();
 
     assert_eq!(resultados.len(), 2, "um resultado por PID, na ordem pedida");
+    assert_eq!(
+        resultados.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        vec![primeiro.gateway.id(), segundo.gateway.id()],
+        "a ordem de saída acompanha a ordem pedida"
+    );
     assert!(
         resultados.iter().all(|(_, saiu)| *saiu),
         "os dois alvos devem sair dentro do orçamento: {resultados:?}"
@@ -175,6 +180,22 @@ fn process_identity_comes_from_the_start_time() {
     );
 }
 
+/// O parsing trava o campo 22 mesmo com `comm` contendo espaço e parêntese —
+/// o nome do executável do gateway pode ter os dois.
+#[test]
+fn stat_parsing_pins_field_22_after_the_last_parenthesis() {
+    // Campos 3..=22 depois do ÚLTIMO `)`: starttime (22) = 987654.
+    let linha =
+        "1234 (garra) (x) y) S 1 1234 1234 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 0 0";
+    assert_eq!(start_time_do_stat(linha), Some(987654));
+    assert_eq!(start_time_do_stat("sem parentese"), None);
+    assert_eq!(
+        start_time_do_stat("12 (a) S 1"),
+        None,
+        "linha curta não inventa campo"
+    );
+}
+
 /// Um alvo que já era zumbi antes do pedido não é escalado nem contado como
 /// vivo: o `SIGTERM` a um zumbi não faz nada e o `stop` não deve esperar.
 #[test]
@@ -189,4 +210,37 @@ fn collective_stop_returns_at_once_for_an_already_dead_target() {
     assert_eq!(resultados, vec![(pid, true)]);
     assert!(inicio.elapsed() < std::time::Duration::from_secs(2));
     let _ = morto.wait();
+}
+
+/// Dois alvos que não saem: o prazo coletivo vale para os dois e a escalada
+/// atinge cada um que continua sendo o mesmo processo.
+#[test]
+fn collective_stop_escalates_every_target_that_stays() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut primeiro = fixture("60");
+    let mut segundo = fixture("60");
+    let inicio = std::time::Instant::now();
+    let resultados = kill_and_wait_many(
+        &[primeiro.gateway.id(), segundo.gateway.id()],
+        std::time::Duration::from_millis(300),
+    );
+    assert!(
+        resultados.iter().all(|(_, saiu)| *saiu),
+        "os dois devem terminar pelo SIGKILL: {resultados:?}"
+    );
+    assert_eq!(
+        primeiro.gateway.wait().expect("reap primeiro").signal(),
+        Some(libc::SIGKILL)
+    );
+    assert_eq!(
+        segundo.gateway.wait().expect("reap segundo").signal(),
+        Some(libc::SIGKILL)
+    );
+    // Um alvo só já custaria grace + 2 s; dois alvos em sequência custariam o
+    // dobro. Aqui os dois prazos são compartilhados.
+    assert!(
+        inicio.elapsed() < std::time::Duration::from_secs(4),
+        "escalada coletiva levou {:?}",
+        inicio.elapsed()
+    );
 }

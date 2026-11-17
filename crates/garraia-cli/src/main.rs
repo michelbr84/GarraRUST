@@ -1801,9 +1801,15 @@ mod stop_tests;
 /// start-time, e escalar nele mataria um processo alheio (#1913).
 #[cfg(target_os = "linux")]
 fn identidade_do_processo(pid: u32) -> Option<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // `comm` pode ter espaço e parêntese; os campos seguem o ÚLTIMO `)`.
-    // Depois de `comm`, o start-time é o 20º token (campos 3..=22).
+    start_time_do_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// O parsing do start-time, separado da leitura do arquivo para ter teste com
+/// literal: `comm` pode conter espaço e parêntese, então os campos só começam
+/// depois do ÚLTIMO `)`. Depois de `comm`, o start-time (campo 22) é o 20º
+/// token (campos 3..=22).
+#[cfg(target_os = "linux")]
+fn start_time_do_stat(stat: &str) -> Option<u64> {
     stat.rsplit(')')
         .next()?
         .split_whitespace()
@@ -1845,6 +1851,22 @@ struct AlvoDaParada {
     identidade: Option<u64>,
 }
 
+#[cfg(unix)]
+impl AlvoDaParada {
+    /// O PID ainda é o processo que recebeu o `SIGTERM`? Falso também quando o
+    /// número já foi reciclado: quem o ocupa agora não é o nosso alvo.
+    fn ainda_e_o_mesmo(&self) -> bool {
+        pode_escalar(self.identidade, identidade_do_processo(self.pid))
+    }
+
+    /// Ainda há trabalho pendente neste alvo? Um PID reciclado conta como
+    /// encerrado — esperar por ele gastaria o grace e faria o `stop` relatar
+    /// falha (citando um `SIGKILL` que não saiu) por causa de um processo alheio.
+    fn pendente(&self) -> bool {
+        is_process_running(self.pid) && self.ainda_e_o_mesmo()
+    }
+}
+
 /// Envia `SIGTERM` (ao grupo, quando o alvo é líder) e registra a identidade.
 #[cfg(unix)]
 fn pedir_termino(pid: u32) -> AlvoDaParada {
@@ -1872,6 +1894,11 @@ fn pedir_termino(pid: u32) -> AlvoDaParada {
     }
 }
 
+/// Grace única da parada do gateway: HTTP/TLS drenando, MCP e canais cabem
+/// nela com margem. Ver [`kill_and_wait`].
+#[cfg(unix)]
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Terminate the gateway and everything it spawned.
 ///
 /// Signal the gateway's group when it leads one (never our own group).
@@ -1883,7 +1910,7 @@ fn pedir_termino(pid: u32) -> AlvoDaParada {
 /// tracked separately in #1913.
 #[cfg(unix)]
 fn kill_and_wait(pid: u32) -> bool {
-    kill_and_wait_with_grace(pid, std::time::Duration::from_secs(30))
+    kill_and_wait_with_grace(pid, STOP_GRACE)
 }
 
 #[cfg(unix)]
@@ -1901,13 +1928,15 @@ fn kill_and_wait_with_grace(pid: u32, grace: std::time::Duration) -> bool {
 /// espera é coletiva; a escalada para `SIGKILL` também é coletiva, e nenhum
 /// PID reciclado é atingido (ver [`pode_escalar`]).
 ///
-/// Devolve `(pid, saiu_dentro_do_orçamento)` na ordem de `pids`.
+/// Devolve `(pid, encerrado)` na ordem de `pids`. "Encerrado" inclui quem saiu
+/// pelo `SIGKILL` e quem teve o número reciclado — nos dois casos não há mais
+/// processo nosso naquele PID.
 #[cfg(unix)]
 fn kill_and_wait_many(pids: &[u32], grace: std::time::Duration) -> Vec<(u32, bool)> {
     let alvos: Vec<AlvoDaParada> = pids.iter().copied().map(pedir_termino).collect();
 
     let deadline = std::time::Instant::now() + grace;
-    while alvos.iter().any(|alvo| is_process_running(alvo.pid)) {
+    while alvos.iter().any(AlvoDaParada::pendente) {
         let restante = deadline.saturating_duration_since(std::time::Instant::now());
         if restante.is_zero() {
             break;
@@ -1916,10 +1945,7 @@ fn kill_and_wait_many(pids: &[u32], grace: std::time::Duration) -> Vec<(u32, boo
     }
 
     // Grace period spent: stop asking — for whoever is still the same process.
-    for alvo in alvos.iter().filter(|alvo| {
-        is_process_running(alvo.pid)
-            && pode_escalar(alvo.identidade, identidade_do_processo(alvo.pid))
-    }) {
+    for alvo in alvos.iter().filter(|alvo| alvo.pendente()) {
         println!(
             "Process {} did not exit after SIGTERM; sending SIGKILL...",
             alvo.pid
@@ -1937,15 +1963,13 @@ fn kill_and_wait_many(pids: &[u32], grace: std::time::Duration) -> Vec<(u32, boo
     }
 
     let prazo_do_kill = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while alvos.iter().any(|alvo| is_process_running(alvo.pid))
-        && std::time::Instant::now() < prazo_do_kill
-    {
+    while alvos.iter().any(AlvoDaParada::pendente) && std::time::Instant::now() < prazo_do_kill {
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
 
     alvos
         .iter()
-        .map(|alvo| (alvo.pid, !is_process_running(alvo.pid)))
+        .map(|alvo| (alvo.pid, !alvo.pendente()))
         .collect()
 }
 
@@ -3990,7 +4014,7 @@ fn try_stop_daemon(port: u16) {
     for pid in &pids {
         println!("Stopping process on port {port} (PID {pid})...");
     }
-    for (pid, saiu) in kill_and_wait_many(&pids, std::time::Duration::from_secs(30)) {
+    for (pid, saiu) in kill_and_wait_many(&pids, STOP_GRACE) {
         if !saiu {
             println!("Process {pid} did not exit after SIGKILL; leaving it in place.");
         }
