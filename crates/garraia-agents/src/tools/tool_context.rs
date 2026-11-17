@@ -728,7 +728,14 @@ mod tests {
     /// marcador; fora de um turno do runtime o `None` do bit e fail-closed.
     #[tokio::test]
     async fn caminho_fora_do_working_dir_e_retido_no_turno_restrito() {
+        // Absoluto na forma NATIVA: `/home/...` nao tem prefixo de unidade e
+        // no Windows `is_absolute()` e `false` — o caso 2 (relativo) o
+        // deixaria sair e o teste provaria outra coisa.
+        #[cfg(windows)]
+        let alvo = Path::new(r"C:\Users\dono\projetos\cliente-x\notas.txt");
+        #[cfg(not(windows))]
         let alvo = Path::new("/home/dono/projetos/cliente-x/notas.txt");
+        assert!(alvo.is_absolute(), "o fixture tem de ser absoluto aqui");
 
         let restrito = crate::tools::turn_tools::com_restricao_do_turno(true, async {
             caminho_para_exibir_no_turno(alvo, None)
