@@ -158,8 +158,14 @@ fn dentro_de_repositorio(dir: &Path) -> bool {
 /// `com_restricao_do_turno` no despacho do runtime, provado pelo teste
 /// `bit_do_turno_chega_a_toda_tool_e_nao_so_a_garra_status` — de nivel de
 /// DESPACHO, porque o teste de nivel de funcao nao viu o defeito.
+///
+/// #1909: o portao passou a ser um so para todo o crate
+/// ([`super::tool_context::pode_revelar_caminho_do_host`]) — `repo_search`,
+/// `list_dir`, `file_read` e as demais tools de caminho respondem a mesma
+/// pergunta, e uma copia local por tool era como a fresta aberta aqui ficava
+/// fechada ali.
 fn pode_revelar_caminho() -> bool {
-    !crate::tools::turn_tools::turno_restrito().unwrap_or(true)
+    super::tool_context::pode_revelar_caminho_do_host()
 }
 
 /// O inicio da recusa sem repositorio (#1380), como constante: o circuit

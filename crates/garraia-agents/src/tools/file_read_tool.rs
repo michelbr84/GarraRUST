@@ -565,4 +565,49 @@ mod tests {
         assert!(!out.is_error, "{:?}", out);
         assert_eq!(out.content, "conteudo");
     }
+
+    /// #1909: no turno restrito (superfície remota) o lugar do caminho
+    /// RESOLVIDO na mensagem de erro é o marcador — o mesmo caminho que o
+    /// `garra_status` retém ali de propósito (#1347). O `pedido:` continua
+    /// sendo o texto do modelo; o turno aberto vê o caminho inteiro como
+    /// antes.
+    #[tokio::test]
+    async fn erro_de_stat_retem_o_caminho_do_host_no_turno_restrito() {
+        let (_t, root) = raiz_com("outro.txt", "x");
+        let tool = FileReadTool::new(FileJail::from_roots([&root]));
+        let pedido = root.join("sumido.txt");
+        let pedido = serde_json::json!({ "path": pedido.to_str().expect("utf8") });
+        let host = root.to_str().expect("utf8");
+
+        let restrito = crate::tools::turn_tools::com_restricao_do_turno(
+            true,
+            tool.execute(&ctx_with(None), pedido.clone()),
+        )
+        .await
+        .expect_err("stat de arquivo inexistente e Err");
+        let mensagem = restrito.to_string();
+        let retido = crate::tools::tool_context::CAMINHO_FORA_DO_TURNO;
+        assert!(
+            mensagem.contains(&format!("metadados de '{retido}'")),
+            "o caminho resolvido nao foi retido: {mensagem}"
+        );
+        assert!(
+            !mensagem.contains(&format!("metadados de '{host}")),
+            "caminho do host no lugar do resolvido: {mensagem}"
+        );
+        assert!(mensagem.contains("pedido:"), "{mensagem}");
+
+        let aberto = crate::tools::turn_tools::com_restricao_do_turno(
+            false,
+            tool.execute(&ctx_with(None), pedido),
+        )
+        .await
+        .expect_err("stat de arquivo inexistente e Err");
+        assert!(
+            aberto
+                .to_string()
+                .contains(&format!("metadados de '{host}")),
+            "o turno aberto perdeu o caminho que antes via: {aberto}"
+        );
+    }
 }

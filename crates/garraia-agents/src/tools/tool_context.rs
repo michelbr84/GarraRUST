@@ -212,13 +212,14 @@ impl ResolvedPath {
     ///
     /// `<mostrado>` e relativo ao `working_dir` da sessao quando o alvo cai
     /// dentro dele (`notas/a.txt`, nao `/home/<user>/.../workspace/<hash>/notas/a.txt`),
-    /// via [`caminho_para_exibir`]: a mensagem vira o `summary` da tool call no
-    /// envelope servido ao orquestrador, e o caminho absoluto do host nao pode
-    /// sair por ali (#1626).
+    /// via [`caminho_para_exibir_no_turno`]: a mensagem vira o `summary` da tool
+    /// call no envelope servido ao orquestrador, e o caminho absoluto do host
+    /// nao pode sair por ali (#1626) — nem quando ele cai FORA do
+    /// `working_dir` num turno restrito (#1909).
     pub fn describe(&self) -> String {
         format!(
             "'{}' (pedido: '{}', {})",
-            caminho_para_exibir(&self.path, self.working_dir.as_deref()),
+            caminho_para_exibir_no_turno(&self.path, self.working_dir.as_deref()),
             self.requested,
             self.origin.hint()
         )
@@ -241,19 +242,74 @@ impl ResolvedPath {
 /// ja canonicalizado (apos [`super::FileJail::confine`]) enquanto o
 /// `working_dir` ainda e a string crua da sessao.
 pub fn caminho_para_exibir(path: &Path, working_dir: Option<&Path>) -> String {
-    if let Some(wd) = working_dir.filter(|w| !w.as_os_str().is_empty()) {
-        let bases = std::iter::once(wd.to_path_buf()).chain(std::fs::canonicalize(wd).ok());
-        for base in bases {
-            if let Ok(rel) = path.strip_prefix(&base) {
-                return if rel.as_os_str().is_empty() {
-                    ".".to_string()
-                } else {
-                    rel.display().to_string()
-                };
-            }
+    caminho_relativo_ao_working_dir(path, working_dir).unwrap_or_else(|| path.display().to_string())
+}
+
+/// O rotulo que ocupa o lugar do caminho quando o turno nao pode ver o do
+/// host (#1909).
+///
+/// Nao e o caminho "pedido": esse ja aparece ao lado, no campo `pedido:`, e e
+/// texto que o proprio modelo escreveu — devolve-lo aqui nao faria a mensagem
+/// mais curta, e um marcador unico e o que um teste consegue afirmar.
+pub const CAMINHO_FORA_DO_TURNO: &str = "<outside the session's directory>";
+
+/// O caminho resolvido pode aparecer nas mensagens DESTE turno? (#1909)
+///
+/// A mesma pergunta que o `repo_search` faz desde a #1380: o turno restrito e
+/// a superficie read-only dos canais remotos, e o remetente dele nao e
+/// necessariamente o operador — o `garra_status` ja DELIBERADAMENTE retem o
+/// `working_dir` da sessao nesse turno (#1347). Sem este portao o mesmo
+/// caminho absoluto do host voltava pela mensagem de erro de `list_dir`,
+/// `file_read` e `file_write` — a mesma informacao, pela porta dos fundos.
+///
+/// Fail-closed: fora de um turno despachado pelo runtime (teste direto,
+/// chamada sem escopo) a resposta e `false` e o caminho NAO sai. Quem ve o
+/// caminho e o operador local, que le os logs (onde ele segue inteiro, de
+/// proposito) e o turno que o runtime abriu como aberto.
+pub fn pode_revelar_caminho_do_host() -> bool {
+    !crate::tools::turn_tools::turno_restrito().unwrap_or(true)
+}
+
+/// A parte de [`caminho_para_exibir`] que e sempre segura: o caminho relativo
+/// ao `working_dir`, quando ele cai dentro. `None` quando nao ha `working_dir`
+/// ou o alvo esta fora dele.
+fn caminho_relativo_ao_working_dir(path: &Path, working_dir: Option<&Path>) -> Option<String> {
+    let wd = working_dir.filter(|w| !w.as_os_str().is_empty())?;
+    let bases = std::iter::once(wd.to_path_buf()).chain(std::fs::canonicalize(wd).ok());
+    for base in bases {
+        if let Ok(rel) = path.strip_prefix(&base) {
+            return Some(if rel.as_os_str().is_empty() {
+                ".".to_string()
+            } else {
+                rel.display().to_string()
+            });
         }
     }
-    path.display().to_string()
+    None
+}
+
+/// [`caminho_para_exibir`] com o portao do turno (#1909).
+///
+/// Tres casos, nesta ordem:
+///
+/// 1. o alvo cai dentro do `working_dir` da sessao — a forma relativa nao
+///    nomeia o host e e a que o modelo reconhece; sai sempre;
+/// 2. o que sobra e um caminho RELATIVO (o argumento do modelo, ainda nao
+///    canonicalizado) ou um turno que pode ver
+///    ([`pode_revelar_caminho_do_host`]) — sai, como antes (o `garra chat`
+///    local ve o absoluto, onde ele e acionavel; um relativo nao nomeia host
+///    nenhum, seja qual for o turno);
+/// 3. um caminho absoluto fora do `working_dir` num turno restrito — sai
+///    [`CAMINHO_FORA_DO_TURNO`].
+pub fn caminho_para_exibir_no_turno(path: &Path, working_dir: Option<&Path>) -> String {
+    if let Some(rel) = caminho_relativo_ao_working_dir(path, working_dir) {
+        return rel;
+    }
+    if !path.is_absolute() || pode_revelar_caminho_do_host() {
+        path.display().to_string()
+    } else {
+        CAMINHO_FORA_DO_TURNO.to_string()
+    }
 }
 
 /// A recusa quando o diretório da sessão não serve como raiz (#1909), ou
@@ -650,5 +706,110 @@ mod tests {
 
         let ctx = ProjectToolContext::new(Some(tmp.path().to_path_buf()), None);
         assert!(ctx.is_path_allowed(&inside));
+    }
+
+    // ─── #1909: o caminho do host fora do working_dir ─────────────────────
+
+    /// A metade segura continua saindo em QUALQUER turno: o alvo dentro do
+    /// `working_dir` aparece relativo, e relativo nao nomeia host nenhum.
+    #[tokio::test]
+    async fn caminho_dentro_do_working_dir_sai_relativo_ate_no_turno_restrito() {
+        let wd = Path::new("/home/dono/.local/share/garraia/workspace/abc");
+        let alvo = Path::new("/home/dono/.local/share/garraia/workspace/abc/notas/a.txt");
+        let mostrado = crate::tools::turn_tools::com_restricao_do_turno(true, async {
+            caminho_para_exibir_no_turno(alvo, Some(wd))
+        })
+        .await;
+        assert_eq!(mostrado, "notas/a.txt");
+    }
+
+    /// Fora do `working_dir` (ou sem `working_dir`, como uma sessao remota sem
+    /// projeto), o absoluto so sai quando o turno pode ver. No restrito sai o
+    /// marcador; fora de um turno do runtime o `None` do bit e fail-closed.
+    #[tokio::test]
+    async fn caminho_fora_do_working_dir_e_retido_no_turno_restrito() {
+        let alvo = Path::new("/home/dono/projetos/cliente-x/notas.txt");
+
+        let restrito = crate::tools::turn_tools::com_restricao_do_turno(true, async {
+            caminho_para_exibir_no_turno(alvo, None)
+        })
+        .await;
+        assert_eq!(restrito, CAMINHO_FORA_DO_TURNO);
+
+        let aberto = crate::tools::turn_tools::com_restricao_do_turno(false, async {
+            caminho_para_exibir_no_turno(alvo, None)
+        })
+        .await;
+        assert_eq!(
+            aberto,
+            alvo.display().to_string(),
+            "o operador local continua vendo o caminho inteiro"
+        );
+
+        // Fora de um turno despachado pelo runtime nao ha escopo: o lado
+        // seguro e reter.
+        assert_eq!(
+            caminho_para_exibir_no_turno(alvo, None),
+            CAMINHO_FORA_DO_TURNO
+        );
+    }
+
+    /// A mensagem inteira do `describe` obedece ao mesmo portao: o lugar do
+    /// caminho RESOLVIDO passa a ser o marcador. O `pedido:` continua sendo o
+    /// texto que o modelo escreveu — se ele pediu um caminho absoluto, esse
+    /// absoluto e dele, nao uma informacao nova sobre o host.
+    #[tokio::test]
+    async fn describe_retem_o_caminho_do_host_mas_nomeia_o_pedido() {
+        let tmp = TempDir::new().unwrap();
+        let alvo = tmp.path().join("segredo.txt");
+        std::fs::write(&alvo, "x").unwrap();
+        let r = resolve_tool_path(alvo.to_str().unwrap(), None, None).unwrap();
+
+        let restrito =
+            crate::tools::turn_tools::com_restricao_do_turno(true, async { r.clone().describe() })
+                .await;
+        assert!(
+            restrito.starts_with(&format!("'{CAMINHO_FORA_DO_TURNO}'")),
+            "o caminho resolvido nao foi retido: {restrito}"
+        );
+        assert!(
+            restrito.contains("pedido:"),
+            "o pedido continua: {restrito}"
+        );
+        assert!(restrito.contains("caminho absoluto"), "{restrito}");
+
+        let aberto =
+            crate::tools::turn_tools::com_restricao_do_turno(false, async { r.clone().describe() })
+                .await;
+        assert!(
+            aberto.starts_with(&format!("'{}'", alvo.display())),
+            "o turno aberto perdeu o caminho que antes via: {aberto}"
+        );
+
+        let sem_escopo = r.describe();
+        assert!(
+            sem_escopo.starts_with(&format!("'{CAMINHO_FORA_DO_TURNO}'")),
+            "sem escopo e fail-closed: {sem_escopo}"
+        );
+    }
+
+    /// O argumento relativo sem `working_dir` (o caso da sessao remota sem
+    /// projeto) e o que mais importa: o modelo pede `notas.txt`, a resolucao
+    /// e contra o CWD do processo, e a mensagem nao pode nomear esse CWD.
+    #[tokio::test]
+    async fn pedido_relativo_sem_working_dir_nao_nomeia_o_cwd_do_processo() {
+        let r = resolve_tool_path("notas.txt", None, None).unwrap();
+        let restrito =
+            crate::tools::turn_tools::com_restricao_do_turno(true, async { r.clone().describe() })
+                .await;
+        assert!(restrito.contains("pedido: 'notas.txt'"), "{restrito}");
+        assert!(
+            restrito.contains("a sessão não tem working_dir"),
+            "{restrito}"
+        );
+        assert!(
+            restrito.starts_with("'notas.txt'"),
+            "o argumento relativo continua nomeado como o modelo o escreveu: {restrito}"
+        );
     }
 }
