@@ -335,10 +335,11 @@ impl GitDiffTool {
 /// O SHA que o `rev-parse --verify HEAD` devolveu, se a saída tiver um.
 ///
 /// `run_git_command` junta stdout e stderr e devolve `Ok` mesmo quando o git
-/// falha: num repositório sem commit a saída começa com `HEAD` e o erro vem
-/// depois de `STDERR:`. Por isso a validação é a FORMA (40 a 64 dígitos
-/// hexadecimais — SHA-1 e SHA-256), não o código de saída: texto qualquer do
-/// git nunca vira "revisão" na resposta.
+/// falha — num repositório sem commit o stdout é vazio e o combinado começa em
+/// `STDERR:` com `fatal: Needed a single revision` (verificado no git 2.43).
+/// Por isso a validação é a FORMA (40 a 64 dígitos hexadecimais — SHA-1 e
+/// SHA-256), não o código de saída: texto qualquer do git nunca vira
+/// "revisão" na resposta.
 fn revisao_do_output(saida: &str) -> Option<&str> {
     let primeira = saida.lines().next()?.trim();
     let parece_sha =
@@ -592,12 +593,14 @@ mod tests {
         let sha256 = "b".repeat(64);
         assert_eq!(revisao_do_output(&format!("{sha1}\n")), Some(sha1));
         assert_eq!(revisao_do_output(&sha256), Some(sha256.as_str()));
+        // A forma REAL do repo sem commit: stdout vazio, `STDERR:` primeiro.
         assert_eq!(
-            revisao_do_output("HEAD\nSTDERR:\nfatal: Needed a single revision\n"),
+            revisao_do_output("STDERR:\nfatal: Needed a single revision\n"),
             None
         );
         assert_eq!(revisao_do_output(""), None);
         assert_eq!(revisao_do_output(&"a".repeat(39)), None);
+        assert_eq!(revisao_do_output(&"a".repeat(65)), None);
         assert_eq!(revisao_do_output(&"g".repeat(40)), None);
     }
 
@@ -616,11 +619,18 @@ mod tests {
         let recusado =
             "Working tree limpo (nenhuma modificação)\n\nSTDERR:\nfatal: not a git repository\n";
         let saida = anexar_revisao(recusado, None);
+        // O texto do git fica INTEIRO embaixo: nem o cabeçalho `STDERR:` nem
+        // a linha em branco podem ser engolidos pela inserção.
         assert_eq!(
-            saida.lines().next(),
-            Some("Revisão: (indisponível — repositório sem commit legível)")
+            saida.lines().collect::<Vec<_>>(),
+            vec![
+                "Revisão: (indisponível — repositório sem commit legível)",
+                "Working tree limpo (nenhuma modificação)",
+                "",
+                "STDERR:",
+                "fatal: not a git repository",
+            ]
         );
-        assert!(saida.contains("not a git repository"), "{saida}");
     }
 
     /// O caminho real do agente: dois repositorios temporarios, cada um com a
@@ -641,7 +651,12 @@ mod tests {
             let sha = String::from_utf8_lossy(&saida_git.stdout)
                 .trim()
                 .to_string();
-            assert_eq!(sha.len(), 40, "esperava SHA-1 no repo de teste: {sha}");
+            // SHA-1 por padrão, SHA-256 numa máquina com GIT_DEFAULT_HASH: a
+            // produção aceita as duas formas, o teste também.
+            assert!(
+                (40..=64).contains(&sha.len()),
+                "revisao fora das formas aceitas: {sha}"
+            );
 
             let wd = repo.path().to_string_lossy().into_owned();
             let saida = tool
