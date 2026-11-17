@@ -244,6 +244,27 @@ impl Tool for ListDirTool {
             Ok(r) => r,
             Err(e) => return Ok(ToolOutput::error(e.to_string())),
         };
+        // #1909: antes do jail, e só quando o caminho veio relativo ao
+        // `working_dir` — nesse caso a causa de "não existe" pode ser o
+        // proprio diretorio da sessao (projeto movido, worktree removido), e
+        // a recusa do jail leria como politica de acesso. Caminho absoluto
+        // declarado pelo modelo segue direto para o jail.
+        if resolved.origin == super::tool_context::PathOrigin::JoinedWorkingDir
+            && let Some(recusa) = super::tool_context::recusa_sessao_sem_diretorio(
+                context.working_dir.as_deref().map(std::path::Path::new),
+                "nothing was listed",
+                "list again",
+            )
+        {
+            // O operador vê no log o que o modelo vê na resposta — o jail já
+            // registra a recusa dele, e este ramo não é o jail.
+            tracing::warn!(
+                session = %context.session_id,
+                "list_dir: diretorio da sessao inacessivel, nada foi listado"
+            );
+            return Ok(ToolOutput::error(recusa));
+        }
+
         // #1244: confina antes de tocar o disco. `list_dir` devolve a recusa
         // como `ToolOutput::error` (o modelo continua o turno) em vez de `Err`,
         // que e como o resto desta tool reporta problema de caminho.
@@ -492,5 +513,75 @@ mod tests {
 
         assert!(out.is_error, "{}", out.content);
         assert!(!out.content.contains("a.txt"), "{}", out.content);
+    }
+
+    // ─── issue #1909: o escopo da sessão é nomeado ─────────────────────────
+
+    /// O diretório da sessão que morreu (projeto movido, worktree removido)
+    /// não é "acesso negado" nem "Directory not found": é a sessão apontando
+    /// para um caminho que não existe mais, e a recusa diz isso — a mesma
+    /// frase do `repo_search` e do `file_read`.
+    #[tokio::test]
+    async fn working_dir_removido_explica_a_causa_antes_do_jail() {
+        let (_t, root) = raiz();
+        let projeto = root.join("projeto");
+        std::fs::create_dir(&projeto).expect("create");
+        std::fs::remove_dir(&projeto).expect("remove");
+
+        let tool = ListDirTool::new(FileJail::sessions_only(), None);
+        let out = tool
+            .execute(
+                &ctx(Some(projeto.to_str().expect("utf8"))),
+                serde_json::json!({}),
+            )
+            .await
+            .expect("tool nao deve estourar");
+
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("working directory is not accessible (it does not exist)"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("nothing was listed"),
+            "{}",
+            out.content
+        );
+        assert!(
+            !out.content.starts_with(DENIAL_MESSAGE),
+            "nao e recusa de jail: {}",
+            out.content
+        );
+        assert!(
+            !out.content.contains("Directory not found"),
+            "nao e 'diretorio nao encontrado': {}",
+            out.content
+        );
+    }
+
+    /// Caminho absoluto declarado pelo modelo segue para o jail normal: a
+    /// checagem nova fala só do `working_dir` da sessão, nunca alarga nem
+    /// desloca a política de raízes.
+    #[tokio::test]
+    async fn caminho_absoluto_ignora_o_working_dir_morto() {
+        let (_t, root) = raiz();
+        std::fs::write(root.join("a.txt"), b"x").expect("write");
+        let projeto = root.join("projeto_removido");
+        std::fs::create_dir(&projeto).expect("create");
+        std::fs::remove_dir(&projeto).expect("remove");
+
+        let tool = ListDirTool::new(FileJail::from_roots([&root]), None);
+        let out = tool
+            .execute(
+                &ctx(Some(projeto.to_str().expect("utf8"))),
+                serde_json::json!({ "path": root.to_str().expect("utf8"), "depth": 1 }),
+            )
+            .await
+            .expect("tool nao deve estourar");
+
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("a.txt"), "{}", out.content);
     }
 }

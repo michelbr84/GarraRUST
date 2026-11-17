@@ -256,6 +256,60 @@ pub fn caminho_para_exibir(path: &Path, working_dir: Option<&Path>) -> String {
     path.display().to_string()
 }
 
+/// A recusa quando o diretório da sessão não serve como raiz (#1909), ou
+/// `None` quando ele existe e é diretório.
+///
+/// ## Por que isto é compartilhado
+///
+/// O `repo_search` ganhou esta recusa na #1932 e ela resolveu um defeito
+/// concreto do dogfood: o modelo ofereceu um worktree, a busca rodou no
+/// workspace da sessão, e a resposta veio como "No matches found" — que lê
+/// como "não existe". Agora diga-se o mesmo no `list_dir` e no `file_read`:
+/// lá o diretório da sessão ausente caía na recusa do **jail** ("acesso
+/// negado"), que lê como política de segurança, quando a causa é outra (o
+/// projeto foi movido, o worktree foi removido, a sessão aponta para um
+/// caminho que morreu). Três tools, uma frase: o modelo reconhece a MESMA
+/// causa e pede a mesma ação (selecionar um projeto) em vez de trocar o
+/// caminho e tentar de novo.
+///
+/// `o_que_nao_foi_feito` é a consequência ("nothing was searched") e `repita`
+/// é o convite ("search again") — cada tool diz o que é dela sem reescrever a
+/// frase inteira.
+///
+/// ## O que a mensagem NÃO diz
+///
+/// O caminho não entra: ele pode ser a subárvore por-orquestrador do host
+/// (mesmo princípio do `caminho_para_exibir`, #1626, e de
+/// `escopo_da_busca`). O que sai é o motivo (`it does not exist` /
+/// `it is not a directory`) sobre o diretório **da própria sessão**, que não
+/// é oráculo de existência de caminho alheio.
+///
+/// Erro de outra natureza ao olhar (`EACCES` num ancestral, por exemplo) não
+/// recusa: na dúvida a tool segue e o erro real aparece adiante.
+pub fn recusa_sessao_sem_diretorio(
+    working_dir: Option<&Path>,
+    o_que_nao_foi_feito: &str,
+    repita: &str,
+) -> Option<String> {
+    // `trim`, e não `is_empty`: um `working_dir` só com espaços não é diretório
+    // nenhum, e `stat("   ")` mediria o CWD do processo para depois afirmar
+    // "it does not exist" sobre ele — mentira sobre um caminho que o usuário
+    // não pediu. Sem diretório de sessão a recusa não é desta função; a tool
+    // segue para o caminho normal (jail).
+    let dir = working_dir.filter(|d| !d.as_os_str().to_string_lossy().trim().is_empty())?;
+    let motivo = match std::fs::metadata(dir) {
+        Ok(meta) if meta.is_dir() => return None,
+        Ok(_) => "it is not a directory",
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "it does not exist",
+        Err(_) => return None,
+    };
+    Some(format!(
+        "The session's working directory is not accessible ({motivo}), so {o_que_nao_foi_feito}. \
+         This is not an empty result: select an existing project for this session (set its \
+         working directory) and {repita}."
+    ))
+}
+
 /// Expand a leading `~`, `~/…` or `$HOME/…` against `home`.
 ///
 /// Only a *leading* segment is expanded, and only when `home` is known: a
@@ -340,6 +394,66 @@ pub fn process_home_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// A recusa compartilhada (#1909): motivo certo por caso, e o caminho da
+    /// sessão NUNCA sai na mensagem.
+    #[test]
+    fn recusa_sessao_sem_diretorio_distingue_os_casos_sem_vazar_o_caminho() {
+        let tmp = TempDir::new().unwrap();
+        let projeto = tmp.path().join("projeto");
+        std::fs::create_dir(&projeto).unwrap();
+
+        assert_eq!(
+            recusa_sessao_sem_diretorio(Some(&projeto), "nothing was read", "read again"),
+            None,
+            "diretório que existe e é diretório não é recusado"
+        );
+
+        std::fs::remove_dir(&projeto).unwrap();
+        let recusa = recusa_sessao_sem_diretorio(Some(&projeto), "nothing was read", "read again")
+            .expect("diretório removido é recusado");
+        // A sentença inteira, não só pedaços: é o contrato que o `repo_search`
+        // entrega desde a #1932 — mudar o vocabulário dele ou o desta recusa
+        // tem de quebrar aqui, não em produção.
+        assert_eq!(
+            recusa,
+            "The session's working directory is not accessible (it does not exist), so nothing \
+             was read. This is not an empty result: select an existing project for this session \
+             (set its working directory) and read again."
+        );
+        assert!(
+            !recusa.contains(projeto.to_str().unwrap()),
+            "o caminho da sessão não sai na recusa: {recusa}"
+        );
+
+        let arquivo = tmp.path().join("arquivo.txt");
+        std::fs::write(&arquivo, "x").unwrap();
+        let recusa =
+            recusa_sessao_sem_diretorio(Some(&arquivo), "nothing was listed", "list again")
+                .expect("arquivo no lugar do diretório é recusado");
+        assert!(recusa.contains("it is not a directory"), "{recusa}");
+        assert!(
+            !recusa.contains(arquivo.to_str().unwrap()),
+            "o caminho da sessão não sai na recusa: {recusa}"
+        );
+
+        assert_eq!(
+            recusa_sessao_sem_diretorio(None, "nothing was read", "read again"),
+            None,
+            "sem working_dir não há diretório da sessão a recusar"
+        );
+        for em_branco in ["", "   ", "\t"] {
+            assert_eq!(
+                recusa_sessao_sem_diretorio(
+                    Some(Path::new(em_branco)),
+                    "nothing was read",
+                    "read again"
+                ),
+                None,
+                "working_dir em branco ({em_branco:?}) não é diretório da sessão"
+            );
+        }
+    }
 
     #[test]
     fn resolve_relative_with_working_dir() {

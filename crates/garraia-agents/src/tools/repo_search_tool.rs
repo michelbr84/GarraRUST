@@ -4,6 +4,7 @@
 //! Returns matching file paths, line numbers, and context.
 
 use super::repo_dir::RepoDir;
+use super::tool_context::recusa_sessao_sem_diretorio;
 use super::{Tool, ToolContext, ToolOutput};
 use crate::sandbox::SandboxPolicy;
 use crate::sandbox_spawn::{Desfecho, Pedido};
@@ -280,17 +281,11 @@ fn recusa_working_dir_inacessivel(repo: &RepoDir) -> Option<String> {
     let RepoDir::Sessao(dir) = repo else {
         return None;
     };
-    let motivo = match std::fs::metadata(dir) {
-        Ok(meta) if meta.is_dir() => return None,
-        Ok(_) => "it is not a directory",
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "it does not exist",
-        Err(_) => return None,
-    };
-    Some(format!(
-        "The session's working directory is not accessible ({motivo}), so nothing was \
-         searched. This is not an empty result: select an existing project for this session \
-         (set its working directory) and search again."
-    ))
+    // #1909: a frase é compartilhada com `list_dir` e `file_read`
+    // (`tool_context::recusa_sessao_sem_diretorio`) — o modelo reconhece a
+    // mesma causa nas três tools. Esta função só escolhe o vocabulário do
+    // `repo_search` dentro dela.
+    recusa_sessao_sem_diretorio(Some(dir.as_path()), "nothing was searched", "search again")
 }
 
 /// O que o fallback (`grep`/`findstr`) devolve: `Ok` com os resultados ou com
