@@ -1798,9 +1798,9 @@ mod stop_tests;
 /// Signal the gateway's group when it leads one (never our own group).
 /// MCP servers now own separate groups: their descendants are cleaned up by
 /// the gateway, NOT by this group signal. Allow that cleanup to finish before
-/// escalating: TLS draining can take 10 s and MCP shutdown another 10 s.
-/// The 30 s grace includes scheduling margin, but is not a guarantee for
-/// unbounded HTTP requests or channel shutdown. Forced termination can still
+/// escalating: TLS draining can take 10 s, MCP shutdown another 10 s and the
+/// channel disconnect 5 s. The 30 s grace includes scheduling margin, but is
+/// not a guarantee for unbounded HTTP requests. Forced termination can still
 /// leave descendants behind; containment is tracked separately in #1913.
 #[cfg(unix)]
 fn kill_and_wait(pid: u32) -> bool {
