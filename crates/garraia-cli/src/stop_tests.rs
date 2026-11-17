@@ -33,15 +33,16 @@ fn fixture(delay: &str) -> Fixture {
 import os, signal, subprocess, sys, time
 os.setsid()
 child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'], start_new_session=True)
-def stop(signum, frame):
-    time.sleep(float(sys.argv[1]))
-    child.terminate()
-    child.wait(timeout=5)
-    sys.exit(0)
-signal.signal(signal.SIGTERM, stop)
+# Block AFTER spawning the descendant so it does not inherit the mask.
+# Block BEFORE readiness: an early SIGTERM stays pending until sigwait.
+# A Python handler followed by pause can lose that wakeup (Python 3.14).
+signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
 print(child.pid, flush=True)
-while True:
-    signal.pause()
+signal.sigwait({signal.SIGTERM})
+time.sleep(float(sys.argv[1]))
+child.terminate()
+child.wait(timeout=5)
+sys.exit(0)
 "#,
             delay,
         ])
