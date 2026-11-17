@@ -92,6 +92,21 @@ impl Tool for FileReadTool {
         };
 
         let resolved = self.resolve(context, path_str)?;
+        // #1909: caminho relativo com o diretório da sessão morto (projeto
+        // movido, worktree removido) não é "arquivo não existe" — é a sessão
+        // apontando para um diretório que morreu. A frase é a mesma do
+        // `repo_search` e do `list_dir`
+        // (`tool_context::recusa_sessao_sem_diretorio`), dita antes do jail
+        // para não virar "acesso negado".
+        if resolved.origin == super::tool_context::PathOrigin::JoinedWorkingDir
+            && let Some(recusa) = super::tool_context::recusa_sessao_sem_diretorio(
+                context.working_dir.as_deref().map(std::path::Path::new),
+                "nothing was read",
+                "read again",
+            )
+        {
+            return Ok(ToolOutput::error(recusa));
+        }
         let confined = self.confine(context, &resolved.path)?;
         let path = &confined;
         debug!(
@@ -482,5 +497,68 @@ mod tests {
 
         assert_eq!(out.content, fonte);
         assert!(!out.content.contains("garra-security"), "{out:?}",);
+    }
+
+    // ─── issue #1909: o escopo da sessão é nomeado ─────────────────────────
+
+    /// Caminho relativo com o diretório da sessão morto não é "arquivo não
+    /// existe" nem recusa de jail: a causa é a sessão, e a frase é a mesma do
+    /// `repo_search` e do `list_dir`.
+    #[tokio::test]
+    async fn working_dir_removido_explica_a_causa_antes_do_jail() {
+        let (_t, root) = raiz_com("notas.txt", "x");
+        let projeto = root.join("projeto");
+        std::fs::create_dir(&projeto).expect("create");
+        std::fs::remove_dir(&projeto).expect("remove");
+
+        let tool = FileReadTool::new(FileJail::sessions_only());
+        let out = tool
+            .execute(
+                &ctx_with(Some(projeto.to_str().expect("utf8"))),
+                serde_json::json!({"path": "notas.txt"}),
+            )
+            .await
+            .expect("tool nao deve estourar");
+
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("working directory is not accessible (it does not exist)"),
+            "{}",
+            out.content
+        );
+        assert!(out.content.contains("nothing was read"), "{}", out.content);
+        assert!(
+            !out.content.starts_with(DENIAL_MESSAGE),
+            "nao e recusa de jail: {}",
+            out.content
+        );
+        assert!(
+            !out.content.contains("metadados"),
+            "nao e erro de stat: {}",
+            out.content
+        );
+    }
+
+    /// Caminho absoluto segue o caminho normal: a checagem fala só do
+    /// `working_dir` da sessão e não muda a política de raízes.
+    #[tokio::test]
+    async fn caminho_absoluto_ignora_o_working_dir_morto() {
+        let (_t, root) = raiz_com("notas.txt", "conteudo");
+        let projeto = root.join("projeto_removido");
+        std::fs::create_dir(&projeto).expect("create");
+        std::fs::remove_dir(&projeto).expect("remove");
+
+        let tool = FileReadTool::new(FileJail::from_roots([&root]));
+        let out = tool
+            .execute(
+                &ctx_with(Some(projeto.to_str().expect("utf8"))),
+                serde_json::json!({"path": root.join("notas.txt").to_str().expect("utf8")}),
+            )
+            .await
+            .expect("deve ler");
+
+        assert!(!out.is_error, "{:?}", out);
+        assert_eq!(out.content, "conteudo");
     }
 }
