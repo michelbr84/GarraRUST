@@ -300,20 +300,74 @@ impl GitDiffTool {
 
         let output = self.run_git_command(&args, repo).await?;
 
+        // #1909: a revisao exata entra no status. Sem ela "Branch: main" nao
+        // diz QUAL main o operador esta vendo, e o fluxo de revisao remota
+        // ficava sem identidade de checkout (a issue pede "revisao exata,
+        // estado do checkout e intervalo do diff" sem shell generico).
+        let revisao = self.revisao_exata(repo).await;
+
         // Formata o status de forma mais legível
-        let formatted = self.format_status(&output);
+        let formatted = format_status(&output);
+        let com_revisao = anexar_revisao(&formatted, revisao.as_deref());
 
         // Aplica filtros de segurança
-        let filtered = self.filter_secrets(&formatted);
+        let filtered = self.filter_secrets(&com_revisao);
         let limited = self.limit_lines(&filtered);
 
         Ok(limited)
     }
 
-    /// Formata a saída do git status --porcelain
-    fn format_status(&self, output: &str) -> String {
-        format_status(output)
+    /// O SHA completo do `HEAD` do mesmo repositório do `status` (#1909).
+    ///
+    /// `None` quando o git não devolve revisão legível — um repositório
+    /// recém-criado, sem commit, não pode derrubar o `status` inteiro: o
+    /// estado do checkout (branch, arquivos) continua sendo a resposta útil.
+    async fn revisao_exata(&self, repo: &RepoDir) -> Option<String> {
+        let args: Vec<String> = ["rev-parse", "--verify", "HEAD"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let saida = self.run_git_command(&args, repo).await.ok()?;
+        revisao_do_output(&saida).map(str::to_string)
     }
+}
+
+/// O SHA que o `rev-parse --verify HEAD` devolveu, se a saída tiver um.
+///
+/// `run_git_command` junta stdout e stderr e devolve `Ok` mesmo quando o git
+/// falha: num repositório sem commit a saída começa com `HEAD` e o erro vem
+/// depois de `STDERR:`. Por isso a validação é a FORMA (40 a 64 dígitos
+/// hexadecimais — SHA-1 e SHA-256), não o código de saída: texto qualquer do
+/// git nunca vira "revisão" na resposta.
+fn revisao_do_output(saida: &str) -> Option<&str> {
+    let primeira = saida.lines().next()?.trim();
+    let parece_sha =
+        (40..=64).contains(&primeira.len()) && primeira.bytes().all(|b| b.is_ascii_hexdigit());
+    parece_sha.then_some(primeira)
+}
+
+/// A linha da revisão exata, com o motivo explícito quando não há uma.
+fn linha_da_revisao(revisao: Option<&str>) -> String {
+    match revisao {
+        Some(sha) => format!("Revisão: {sha}"),
+        None => "Revisão: (indisponível — repositório sem commit legível)".to_string(),
+    }
+}
+
+/// Insere a linha da revisão logo depois de `Branch:`, que é onde o operador
+/// procura a identidade do checkout. Sem linha de branch (git recusado, dir
+/// que não é repositório) a revisão vai no topo, e o texto do git que já
+/// estava na resposta fica intacto embaixo.
+fn anexar_revisao(status: &str, revisao: Option<&str>) -> String {
+    let mut linhas: Vec<String> = status.lines().map(str::to_string).collect();
+    let posicao = linhas
+        .iter()
+        .position(|l| l.starts_with("Branch: "))
+        .map_or(0, |i| i + 1);
+    linhas.insert(posicao, linha_da_revisao(revisao));
+    let mut saida = linhas.join("\n");
+    saida.push('\n');
+    saida
 }
 
 /// Formata a saida de `git status --porcelain -b` (mais o bloco `STDERR:`
@@ -380,7 +434,8 @@ impl Tool for GitDiffTool {
         "Retorna diferenças do repositório git (diff) e status.\n\
          Use 'operation' para escolher entre 'diff' ou 'status'.\n\
          - diff: retorna as mudanças (aceita file_path, context_lines, from_commit, to_commit)\n\
-         - status: retorna arquivos modificados, adicionados, deletados e branch atual\n\
+         - status: retorna arquivos modificados, adicionados, deletados, branch atual\n\
+           e a revisão exata do checkout (SHA completo do HEAD)\n\
          Limites de segurança: máximo de linhas retornadas, timeout de 15s"
     }
 
@@ -525,6 +580,125 @@ mod tests {
         assert!(!saida.contains("Desconhecido: nable"), "{saida}");
     }
     use crate::tools::repo_dir::{contexto_de_teste as ctx, repo_git_temporario};
+
+    // ─── #1909: revisao exata no status ────────────────────────────────────
+
+    /// So a FORMA de SHA passa por `revisao_do_output`. Num repositorio sem
+    /// commit o git imprime `HEAD` e o `fatal:` atras de `STDERR:`; nenhum dos
+    /// dois pode virar "Revisão:" na resposta ao operador.
+    #[test]
+    fn revisao_do_output_so_aceita_sha() {
+        let sha1 = "5483327950f3aed7a5897cb5eefcf782e46d18e8";
+        let sha256 = "b".repeat(64);
+        assert_eq!(revisao_do_output(&format!("{sha1}\n")), Some(sha1));
+        assert_eq!(revisao_do_output(&sha256), Some(sha256.as_str()));
+        assert_eq!(
+            revisao_do_output("HEAD\nSTDERR:\nfatal: Needed a single revision\n"),
+            None
+        );
+        assert_eq!(revisao_do_output(""), None);
+        assert_eq!(revisao_do_output(&"a".repeat(39)), None);
+        assert_eq!(revisao_do_output(&"g".repeat(40)), None);
+    }
+
+    /// A revisao entra logo depois de `Branch:` — e, quando o git recusou o
+    /// diretorio (nao ha linha de branch), no topo, sem engolir o texto que o
+    /// git devolveu.
+    #[test]
+    fn revisao_entra_depois_do_branch() {
+        let saida = anexar_revisao("Branch: main\nModificado: a.rs\n", Some("abc123"));
+        let linhas: Vec<&str> = saida.lines().collect();
+        assert_eq!(
+            linhas,
+            vec!["Branch: main", "Revisão: abc123", "Modificado: a.rs"]
+        );
+
+        let recusado =
+            "Working tree limpo (nenhuma modificação)\n\nSTDERR:\nfatal: not a git repository\n";
+        let saida = anexar_revisao(recusado, None);
+        assert_eq!(
+            saida.lines().next(),
+            Some("Revisão: (indisponível — repositório sem commit legível)")
+        );
+        assert!(saida.contains("not a git repository"), "{saida}");
+    }
+
+    /// O caminho real do agente: dois repositorios temporarios, cada um com a
+    /// SUA revisao, e o status nomeia o SHA que `git rev-parse HEAD` le
+    /// NAQUELE diretorio. **Mutacao**: apontar `revisao_exata` para o CWD do
+    /// processo em vez de `repo.cwd_do_git()` (o mesmo defeito que a #1258
+    /// fechou no diff) e o SHA deixa de casar.
+    #[tokio::test]
+    async fn status_traz_a_revisao_exata_do_checkout() {
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        for marcador in ["alvo-da-revisao-a", "alvo-da-revisao-b"] {
+            let repo = repo_git_temporario(marcador, "ramo-da-revisao");
+            let saida_git = std::process::Command::new("git")
+                .current_dir(repo.path())
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .expect("git");
+            let sha = String::from_utf8_lossy(&saida_git.stdout)
+                .trim()
+                .to_string();
+            assert_eq!(sha.len(), 40, "esperava SHA-1 no repo de teste: {sha}");
+
+            let wd = repo.path().to_string_lossy().into_owned();
+            let saida = tool
+                .execute(
+                    &ctx(Some(&wd)),
+                    serde_json::json!({ "operation": "status" }),
+                )
+                .await
+                .expect("execute");
+            assert!(!saida.is_error, "{}", saida.content);
+            assert!(
+                saida.content.contains(&format!("Revisão: {sha}")),
+                "o status nao nomeou a revisao {sha}:\n{}",
+                saida.content
+            );
+            assert!(
+                saida.content.contains("Branch: ramo-da-revisao"),
+                "{}",
+                saida.content
+            );
+        }
+    }
+
+    /// Repositorio sem commit nenhum: o `status` continua respondendo (branch
+    /// e arquivos sao a informacao util) e diz por que a revisao falta, em vez
+    /// de a tool inteira falhar.
+    #[tokio::test]
+    async fn status_sem_commit_diz_que_a_revisao_falta() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let ok = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["init", "-b", "ramo-vazio", "-q", "."])
+            .status()
+            .expect("git")
+            .success();
+        assert!(ok);
+
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let wd = dir.path().to_string_lossy().into_owned();
+        let saida = tool
+            .execute(
+                &ctx(Some(&wd)),
+                serde_json::json!({ "operation": "status" }),
+            )
+            .await
+            .expect("execute");
+        assert!(!saida.is_error, "{}", saida.content);
+        assert!(
+            saida.content.contains("Revisão: (indisponível"),
+            "{}",
+            saida.content
+        );
+        // O git nomeia o ramo sem commit como "No commits yet on <ramo>";
+        // o que importa aqui e a revisao faltar com motivo, sem derrubar
+        // branch nem estado.
+        assert!(saida.content.contains("ramo-vazio"), "{}", saida.content);
+    }
 
     // ─── #1272 S3: config plantada nao executa nada no host ────────────────
 
