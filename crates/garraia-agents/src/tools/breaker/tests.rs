@@ -377,40 +377,64 @@ fn recusa_de_diretorio_morto(o_que: &str, repita: &str) -> ToolOutput {
     )
 }
 
-/// #1909: a recusa de sessao com diretorio morto e deterministica — repetir
-/// com outro caminho falha igual. Antes caia em `Generica` e o breaker so
-/// abria na TERCEIRA repeticao identica. A frase vem da funcao real, nao de
-/// um literal do teste: se o texto mudar sem o prefixo, isto quebra.
+/// #1909: no `repo_search` a recusa de sessao com diretorio morto nao
+/// depende do input — repetir falha igual. Antes caia em `Generica` e o
+/// breaker so abria na TERCEIRA repeticao identica. A frase vem da funcao
+/// real, nao de um literal do teste: se o texto mudar sem o prefixo, quebra.
 #[test]
-fn diretorio_da_sessao_ausente_abre_na_primeira_ocorrencia() {
+fn diretorio_da_sessao_ausente_pausa_o_repo_search_na_primeira_ocorrencia() {
+    let saida = recusa_de_diretorio_morto("nothing was searched", "search again");
+    assert_eq!(
+        classificar(&saida),
+        Veredito::Falha(Classe::Deterministica(Deterministica::SemDiretorioDaSessao))
+    );
+    let mut b = Breaker::new();
+    let t = t0();
+    b.abrir_turno(Some("/projeto/removido"));
+    assert!(b.registrar("repo_search", &saida, t), "abre na primeira");
+    match b.estado("repo_search", t) {
+        Estado::Aberto {
+            motivo: Motivo::Deterministica(Deterministica::SemDiretorioDaSessao),
+            ate: Ate::FimDoTurno,
+        } => {}
+        outro => panic!("{outro:?}"),
+    }
+    let texto = b
+        .estado("repo_search", t)
+        .explicacao("repo_search", t)
+        .expect("aberta");
+    assert!(texto.contains("(session_dir_unavailable)"), "{texto}");
+    assert!(!texto.contains('/'), "sem caminho: {texto}");
+    // Turno seguinte, mesmo contexto: sonda de novo.
+    b.abrir_turno(Some("/projeto/removido"));
+    assert_eq!(b.estado("repo_search", t), Estado::Fechado);
+}
+
+/// `file_read` e `list_dir` so emitem a recusa para caminho RELATIVO: um
+/// absoluto dentro de uma raiz declarada ainda pode dar certo. Pausar na
+/// primeira recusa barraria essa chamada — entao para elas a mesma frase
+/// conta como erro generico, e so a terceira repeticao identica abre.
+#[test]
+fn diretorio_da_sessao_ausente_nao_pausa_file_read_nem_list_dir_na_primeira() {
     for (tool, o_que, repita) in [
         ("file_read", "nothing was read", "read again"),
         ("list_dir", "nothing was listed", "list again"),
-        ("repo_search", "nothing was searched", "search again"),
     ] {
         let saida = recusa_de_diretorio_morto(o_que, repita);
-        assert_eq!(
-            classificar(&saida),
-            Veredito::Falha(Classe::Deterministica(Deterministica::SemDiretorioDaSessao)),
-            "{tool}"
-        );
         let mut b = Breaker::new();
         let t = t0();
         b.abrir_turno(Some("/projeto/removido"));
-        assert!(b.registrar(tool, &saida, t), "{tool}: abre na primeira");
+        assert!(!b.registrar(tool, &saida, t), "{tool}: a primeira nao abre");
+        assert_eq!(b.estado(tool, t), Estado::Fechado, "{tool}");
+        assert!(!b.registrar(tool, &saida, t), "{tool}: a segunda nao abre");
+        assert!(b.registrar(tool, &saida, t), "{tool}: a terceira abre");
         match b.estado(tool, t) {
             Estado::Aberto {
-                motivo: Motivo::Deterministica(Deterministica::SemDiretorioDaSessao),
-                ate: Ate::FimDoTurno,
+                motivo: Motivo::Repetida { vezes: 3 },
+                ..
             } => {}
             outro => panic!("{tool}: {outro:?}"),
         }
-        let texto = b.estado(tool, t).explicacao(tool, t).expect("aberta");
-        assert!(texto.contains("(session_dir_unavailable)"), "{texto}");
-        assert!(!texto.contains('/'), "sem caminho: {texto}");
-        // Turno seguinte, mesmo contexto: sonda de novo.
-        b.abrir_turno(Some("/projeto/removido"));
-        assert_eq!(b.estado(tool, t), Estado::Fechado, "{tool}");
     }
 }
 
@@ -438,10 +462,9 @@ fn sucesso_de_quem_cria_diretorio_fecha_so_a_pausa_por_diretorio_ausente() {
         let mut b = Breaker::new();
         b.abrir_turno(Some("/projeto/removido"));
         let ausente = Classe::Deterministica(Deterministica::SemDiretorioDaSessao);
-        b.registrar_falha("file_read", ausente.clone(), t);
-        b.registrar_falha("list_dir", ausente, t);
+        b.registrar_falha("repo_search", ausente, t);
         b.registrar_falha(
-            "repo_search",
+            "git_diff",
             Classe::Deterministica(Deterministica::SemRepositorio),
             t,
         );
@@ -449,13 +472,12 @@ fn sucesso_de_quem_cria_diretorio_fecha_so_a_pausa_por_diretorio_ausente() {
 
         // Sucesso de ferramenta que nao cria diretorio: nada muda.
         b.registrar("web_search", &ToolOutput::success("ok"), t);
-        assert!(b.estado("file_read", t).esta_aberto());
+        assert!(b.estado("repo_search", t).esta_aberto());
 
         b.registrar(criadora, &ToolOutput::success("ok"), t);
-        assert_eq!(b.estado("file_read", t), Estado::Fechado, "{criadora}");
-        assert_eq!(b.estado("list_dir", t), Estado::Fechado, "{criadora}");
+        assert_eq!(b.estado("repo_search", t), Estado::Fechado, "{criadora}");
         assert!(
-            b.estado("repo_search", t).esta_aberto(),
+            b.estado("git_diff", t).esta_aberto(),
             "outra causa deterministica nao fecha"
         );
         assert!(

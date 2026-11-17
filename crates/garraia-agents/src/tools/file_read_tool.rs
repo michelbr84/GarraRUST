@@ -532,14 +532,6 @@ mod tests {
             out.content
         );
         assert!(out.content.contains("nothing was read"), "{}", out.content);
-        // #1909: e a saida INTEIRA da tool, entao o breaker a reconhece como
-        // deterministica e pausa na primeira ocorrencia.
-        assert_eq!(
-            crate::tools::breaker::classificar(&out),
-            crate::tools::breaker::Veredito::Falha(crate::tools::breaker::Classe::Deterministica(
-                crate::tools::breaker::Deterministica::SemDiretorioDaSessao
-            ))
-        );
         assert!(
             !out.content.starts_with(DENIAL_MESSAGE),
             "nao e recusa de jail: {}",

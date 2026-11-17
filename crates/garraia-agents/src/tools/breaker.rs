@@ -16,11 +16,13 @@
 //!
 //! - **Deterministica** — a frase de sessao sem raiz do jail
 //!   (`NO_ROOTS_MESSAGE`), a recusa sem repositorio do `repo_search` ou a
-//!   recusa de sessao cujo diretorio morreu (`SESSAO_SEM_DIRETORIO`, #1909):
-//!   nao dependem do input, entao repetir nao muda nada dentro do turno, e
-//!   abre **ate o fim do turno**. O turno seguinte sonda de novo (o usuario
-//!   pode ter selecionado um projeto). A do diretorio morto tem uma saida
-//!   dentro do turno: ver [`PODEM_CRIAR_DIRETORIO`].
+//!   recusa do `repo_search` numa sessao cujo diretorio morreu
+//!   (`SESSAO_SEM_DIRETORIO`, #1909): nao dependem do input, entao repetir
+//!   nao muda nada dentro do turno, e abre **ate o fim do turno**. O turno
+//!   seguinte sonda de novo (o usuario pode ter selecionado um projeto). A do
+//!   diretorio morto vale so para quem a emite com QUALQUER input
+//!   ([`SEM_DIRETORIO_COM_QUALQUER_INPUT`]) e tem uma saida dentro do turno
+//!   ([`PODEM_CRIAR_DIRETORIO`]).
 //! - **Transitoria** — o timeout do despacho: abre por um cooldown que dobra a
 //!   cada timeout seguido ([`COOLDOWN_BASE`] ate [`COOLDOWN_TETO`]) e que
 //!   ATRAVESSA turnos — uma mensagem nova um segundo depois nao e motivo para
@@ -79,6 +81,15 @@ pub const ASSINATURA_MAX: usize = 200;
 /// do `TurnStatsRegistry`).
 pub const MAX_SESSOES: usize = 512;
 
+/// Ferramentas em que a recusa por diretorio de sessao ausente NAO depende
+/// do input, e por isso e deterministica (#1909). So o `repo_search`: ele
+/// busca sempre no diretorio da sessao. `file_read` e `list_dir` emitem a
+/// mesma frase, mas so para caminho RELATIVO — um absoluto dentro de uma raiz
+/// declarada (`agent.file_roots`) segue para o jail e pode dar certo. Pausar
+/// essas duas na primeira recusa barraria uma chamada que funcionaria; para
+/// elas a recusa continua generica (tres iguais no turno).
+pub const SEM_DIRETORIO_COM_QUALQUER_INPUT: &[&str] = &["repo_search"];
+
 /// Ferramentas cujo SUCESSO pode fazer o diretorio da sessao voltar a
 /// existir no meio do turno (`file_write` cria os ancestrais; `bash` roda
 /// `mkdir`). Quando uma delas da certo, as pausas por
@@ -98,8 +109,9 @@ pub enum Deterministica {
     /// A recusa do `repo_search` sem repositorio ativo (#1380).
     SemRepositorio,
     /// `SESSAO_SEM_DIRETORIO` (#1909): o `working_dir` da sessao nao existe
-    /// ou nao e diretorio. `file_read`, `list_dir` e `repo_search` recusam
-    /// igual com qualquer caminho ate o diretorio voltar a existir.
+    /// ou nao e diretorio, e a ferramenta recusa com qualquer input ate ele
+    /// voltar a existir. So vale para [`SEM_DIRETORIO_COM_QUALQUER_INPUT`]:
+    /// [`Breaker::registrar`] rebaixa a generica nas outras.
     SemDiretorioDaSessao,
 }
 
@@ -331,6 +343,14 @@ impl Breaker {
         let antes = self.estado(tool, agora).esta_aberto();
         match classificar(saida) {
             Veredito::Sucesso => self.registrar_sucesso(tool),
+            // A frase e a mesma nas tres tools, mas so e independente do
+            // input em algumas: nas outras conta como erro generico.
+            Veredito::Falha(Classe::Deterministica(Deterministica::SemDiretorioDaSessao))
+                if !SEM_DIRETORIO_COM_QUALQUER_INPUT.contains(&tool) =>
+            {
+                let generica = Classe::Generica(assinatura(saida.content.as_str()));
+                self.registrar_falha(tool, generica, agora);
+            }
             Veredito::Falha(classe) => self.registrar_falha(tool, classe, agora),
             Veredito::Neutro => {}
         }
