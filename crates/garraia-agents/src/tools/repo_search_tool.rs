@@ -159,11 +159,11 @@ fn dentro_de_repositorio(dir: &Path) -> bool {
 /// `bit_do_turno_chega_a_toda_tool_e_nao_so_a_garra_status` — de nivel de
 /// DESPACHO, porque o teste de nivel de funcao nao viu o defeito.
 ///
-/// #1909: o portao passou a ser um so para todo o crate
+/// #1909: a pergunta e respondida num lugar so
 /// ([`super::tool_context::pode_revelar_caminho_do_host`]) — `repo_search`,
-/// `list_dir`, `file_read` e as demais tools de caminho respondem a mesma
-/// pergunta, e uma copia local por tool era como a fresta aberta aqui ficava
-/// fechada ali.
+/// `list_dir`, `file_read` e `file_write` consultam o mesmo portao, em vez de
+/// uma copia local por tool. Ainda fora dele: `RepoDir::descricao` (usada por
+/// `git_diff`/`code_review`) e o pedido de confirmacao do `run_tests`.
 fn pode_revelar_caminho() -> bool {
     super::tool_context::pode_revelar_caminho_do_host()
 }
