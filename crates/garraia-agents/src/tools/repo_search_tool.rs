@@ -227,6 +227,70 @@ fn recusa_sem_repositorio(
     }
 }
 
+/// Onde esta busca olhou, em palavras que cabem na resposta (#1909).
+///
+/// O caminho da sessao NUNCA entra (mesmo principio do
+/// [`RepoDir::descricao`], #1626: ele pode ser a subarvore por-orquestrador
+/// do host). O CWD do processo so entra quando [`pode_revelar_caminho`]
+/// deixa, igual a recusa da #1380.
+fn escopo_da_busca(repo: &RepoDir, revelar_caminho: bool) -> String {
+    match repo {
+        RepoDir::Sessao(_) => "the session's working directory".to_string(),
+        RepoDir::ProcessoCwd(Some(dir)) if revelar_caminho => format!(
+            "the gateway process directory ({}; this session has no working directory)",
+            dir.display()
+        ),
+        RepoDir::ProcessoCwd(_) => {
+            "the gateway process directory (this session has no working directory)".to_string()
+        }
+    }
+}
+
+/// O resultado vazio, dizendo ONDE nao achou (#1909).
+///
+/// No dogfood do Telegram o modelo ofereceu revisar um worktree, a busca
+/// rodou no workspace da sessao e voltou "No matches found." — sem nada que
+/// separasse "nao existe" de "olhei em outro lugar". O resultado vazio agora
+/// nomeia o escopo e diz que so ele foi olhado. Comeca com a mesma frase de
+/// antes, de proposito: quem ja reconhece "No matches found" segue
+/// reconhecendo.
+fn sem_correspondencias(repo: &RepoDir, revelar_caminho: bool) -> String {
+    format!(
+        "No matches found in {}. Only that directory was searched: a path outside it (another \
+         project or worktree) is not covered by this result.",
+        escopo_da_busca(repo, revelar_caminho)
+    )
+}
+
+/// A recusa quando o `working_dir` da sessao nao e um diretorio alcancavel
+/// (#1909), ou `None` quando ha onde buscar.
+///
+/// Sem isto o spawn falhava com `current_dir` inexistente, o fallback para o
+/// `grep` falhava igual, e a resposta era "Search failed (rg: No such file or
+/// directory, grep: ...)" — que le como "falta o ripgrep", nao como "o alvo
+/// nao existe". Alvo inacessivel e busca vazia sao respostas diferentes.
+///
+/// So recusa no que e certo: nao existe, ou existe e nao e diretorio. Erro
+/// de outra natureza ao olhar (EACCES num ancestral) nao recusa — na duvida a
+/// tool busca, e o erro real aparece no spawn. O caminho nao entra na
+/// mensagem, pelo mesmo motivo de [`escopo_da_busca`].
+fn recusa_working_dir_inacessivel(repo: &RepoDir) -> Option<String> {
+    let RepoDir::Sessao(dir) = repo else {
+        return None;
+    };
+    let motivo = match std::fs::metadata(dir) {
+        Ok(meta) if meta.is_dir() => return None,
+        Ok(_) => "it is not a directory",
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "it does not exist",
+        Err(_) => return None,
+    };
+    Some(format!(
+        "The session's working directory is not accessible ({motivo}), so nothing was \
+         searched. This is not an empty result: select an existing project for this session \
+         (set its working directory) and search again."
+    ))
+}
+
 /// Searches code in a repository using grep and file pattern matching.
 /// Returns matching file paths with line numbers and surrounding context.
 pub struct RepoSearchTool {
@@ -350,9 +414,14 @@ impl Tool for RepoSearchTool {
         // no CWD herdado nao ha o que buscar, e a recusa sai aqui — antes de
         // qualquer spawn — em vez de depois do timeout.
         let repo = RepoDir::decidir(context.working_dir.as_deref());
-        if let Some(motivo) = recusa_sem_repositorio(&repo, self.timeout, pode_revelar_caminho()) {
+        let revelar_caminho = pode_revelar_caminho();
+        if let Some(motivo) = recusa_sem_repositorio(&repo, self.timeout, revelar_caminho) {
             return Ok(ToolOutput::error(motivo));
         }
+        if let Some(motivo) = recusa_working_dir_inacessivel(&repo) {
+            return Ok(ToolOutput::error(motivo));
+        }
+        let vazio = sem_correspondencias(&repo, revelar_caminho);
         let cwd = repo.cwd_do_git();
         let args_rg = rg_args(query, file_pattern, context_lines, max_results);
         let rg = crate::sandbox_spawn::executar(
@@ -375,7 +444,7 @@ impl Tool for RepoSearchTool {
 
                 if stdout.is_empty() && output.status.code() == Some(1) {
                     // rg returns exit code 1 when no matches found
-                    return Ok(ToolOutput::success("No matches found."));
+                    return Ok(ToolOutput::success(vazio));
                 }
 
                 let mut combined = String::new();
@@ -388,7 +457,7 @@ impl Tool for RepoSearchTool {
                 }
 
                 if combined.is_empty() {
-                    combined = "No matches found.".to_string();
+                    combined = vazio;
                 }
 
                 Ok(ToolOutput::success(self.truncate_output(&combined)))
@@ -418,7 +487,7 @@ impl Tool for RepoSearchTool {
                     Desfecho::Saida(output) => {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         if stdout.is_empty() {
-                            Ok(ToolOutput::success("No matches found."))
+                            Ok(ToolOutput::success(vazio))
                         } else {
                             Ok(ToolOutput::success(self.truncate_output(&stdout)))
                         }
