@@ -6,6 +6,546 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- O motor de QR do canal `whatsapp_linked` ganha rasterização para janela: `qr::png(payload, scale)` devolve um PNG em tons de cinza (8 bits, sem alfa, margem de 4 módulos conforme a norma) pronto para `<img>`/`drawImage` do app desktop, sem terminal.
+- Sem dependência nova: o PNG é escrito à mão (chunks + CRC32 + zlib com blocos *stored*), então a crate `qrcode` segue com `default-features = false` e `image`/`svg` continuam fora do grafo.
+- A polaridade é a da norma (módulo escuro = preto, fundo branco), diferente da do terminal — que desenha o claro porque o tema do terminal é desconhecido. A matriz é a mesma de `qr::modules`, um único motor.
+- **Assistente do Desktop configura quem responde, sem terminal (#1700).** Uma
+  instalacao limpa pareava o WhatsApp e nunca respondia: nada configurava o
+  provedor de LLM, e o aviso mandava rodar `garraia init`, que nem existe no
+  PATH do AppImage. O passo novo "Quem responde" oferece o Ollama local
+  (detectado em `127.0.0.1:11434`, com os modelos instalados) ou o OpenRouter
+  (chave + modelo), grava pelo `garraia config set-routing` com a chave no
+  stdin (nunca em argv, nunca de volta na webview) e testa com uma chamada real
+  (`garraia ask --json`), com motivo e dica quando falha. A tela Pronto so diz
+  "pronto para conversar" com o teste ok; senao diz que o WhatsApp conectou mas
+  o Garra nao conversa, e por que. O `/api/health` passa a avisar quando nao ha
+  provedor registrado, e a instrucao do primeiro "oi" segue o modo (conversa
+  "Voce" no proprio numero, #1813).
+- **Teste do binario `garra chat` para a trilha de ferramentas com e sem `--persist` (#1708).** Contra um provedor OpenAI local roteirizado, o `garra chat` roda `file_write` de verdade e um segundo turno. Sem `--persist`, nenhum arquivo do diretorio da pessoa recebe a pergunta, os argumentos da ferramenta ou o id da chamada, e nao se cria `sessions.db` nem `history`. Com `--persist`, pergunta e trilha vao para o `sessions.db`. Nos dois casos o pedido do turno seguinte leva `tool_calls` e a mensagem `tool` pareados pelo id. Sem mudanca de producao.
+- **E2E real cobre o par de ferramentas entre turnos em dois provedores (#1708).** Teste de integracao manda o `garra chat` contra dois provedores de verdade (Anthropic e um segundo, o OpenAI compativel) por HTTP local e afirma que o payload do turno seguinte carrega o `tool_use`/`tool_result` pareados pelo id no formato de cada protocolo, mais o caso de denegacao: operacao registrada no turno 1 aparece com o resultado real no payload do turno 2. Trava a correcao da #1708 contra regressao.
+- **Testes do historico de ferramentas entre turnos no CLI (#1708).** Pelas mesmas funcoes que o REPL chama (runtime, `stream_turn`, `ToolTrail`, `anexar_turno`), um provedor que grava o pedido confirma que o turno seguinte recebe `ToolUse`/`ToolResult` pareados pelo id: escrita seguida de pergunta, escrita e leitura como dois ciclos distintos, e arquivo apagado por fora (a escrita anterior continua registrada e a ausencia chega como falha da leitura). Tambem confirma que `GARRAIA_TOOL_HISTORY=text|off` nao manda blocos estruturados. Sem mudanca de producao.
+- **Conclusoes auditaveis: estrutura `Claim + EvidenceRef + VerificationStatus` (#1709).** Camada reutilizavel que descreve o que se sabe sobre uma acao e de onde veio o saber, alimentada pelo registro do executor (`TurnEvent`), nunca pela resposta do modelo. As cinco classes de evidencia (Observado, Inferido, Relatado, NaoVerificado, Falhou) fixam a semantica minima: ausencia de evidencia nao vira "nao aconteceu"; `Observado`/`Falhou` exigem `EvidenceRef` apontando para a execucao (id de chamada + resultado); `TextDelta`/`ToolStarted` sozinhos nao provam acao. Sem percentual arbitrario de confianca. Fatia de infraestrutura; a projecao de superficie (CLI/canais) e o E2E de divergencia vem em PRs seguintes.
+- **`cli_inspect` passa a mostrar os efeitos de ferramenta que o executor
+  registrou (#1709).** O agente conseguia o estado da sessão (versão, provider,
+  gateway declarado, ferramentas liberadas), mas não a trilha do que de fato
+  rodou — e uma pergunta como "você escreveu o arquivo?" só podia ser respondida
+  de memória do modelo. A tool agora projeta a trilha que o `ToolTrail` fecha a
+  cada turno em classes de evidência (`observado`, `falhou`, `nao_verificado`)
+  com o id da chamada, usando a camada `garraia_agents::evidence` (#1709): só
+  `Ok` do executor vira `observado` com referência; falha/bloqueio vira
+  `falhou`; chamada interrompida ou em execução vira `nao_verificado` — ausência
+  de resultado não é prova de que não aconteceu. A saída é limitada às últimas
+  20 execuções com o total ao lado, não carrega `input`, `output`, `detail` nem
+  caminho, e sem turno com ferramenta a seção responde `unverified` com motivo
+  em vez de uma lista vazia que sugeriria "nada rodou".
+- **Conclusoes auditaveis: projecao de superficie + deteccao de divergencia (#1709).** `SurfaceSummary` projeta `Claim` num sumario curto com proveniencia (classe de evidencia + id de execucao) para a camada de resposta; `detect_divergencia` compara a afirma do modelo contra o ledger do runtime e sinaliza `AfirmaSucessoMasLedgerFalhou` / `SemEvidenciaNoLedger` (ausencia de evidencia nunca vira "nao aconteceu"). O `/tool` da CLI passa a exibir o sumario com proveniencia; a saida completa continua sob demanda. Fatia 2; E2E de divergencia e testes de seguranca vem em PRs seguintes.
+- **E2E multi-provedor do `cli_inspect` (#1712).** A tool real de inspecao passa a ser exercitada pelo fio em dois protocolos (Anthropic e OpenAI compativel): o provedor de teste pede `cli_inspect` em dois turnos e o payload do turno seguinte e afirmado campo a campo — gateway/MCP como **declarados** (`live_verification: unavailable_from_cli`), permissao vinda do snapshot do dispatch, a propria tool listada como liberada e nenhum campo sensivel (url/env/args) projetado. Fecha o criterio E2E da #1712 com gateway desligado: a unica porta que a CLI fala e a do provedor, e credencial rotulada da configuracao nao atravessa o payload; o guarda foi visto vermelho antes do verde. Junto vai um guarda de fiacao que impede o prompt de ser montado sem anunciar o `cli_inspect` (a tool e registrada depois dele) — a regressao que faria o agente voltar a dizer que nao sabe a propria versao.
+- E2E do `cli_inspect` passa a provar, pelo fio e nos dois provedores, a semântica de identidade que a #1712 exige: `provider_selected` (seleção da CLI), `model_requested` (seleção corrente, acompanhando a troca de `/model`) e `last_turn` (o que o turno realmente usou) são campos distintos. No caminho de streaming — o do REPL — o relatório declara `model_confirmed_by_provider: false` e `source: runtime_requested_model`, em vez de apresentar o modelo pedido como confirmado; trocar o modelo entre turnos muda `model_requested` sem reescrever o modelo do turno anterior.
+- `fix`: no streaming sem override, o último modelo do turno passa a cair para o modelo configurado do provider; antes o `/status` mostrava o nome em branco ("Ultimo modelo:  (pedido; o provider nao confirmou)") porque `effective_model` era vazio.
+- **Voice Chat continuo no Web Console (#1754).** Nova pagina `#/voice`: inicia
+  uma chamada uma vez, fala sem apertar botao a cada turno, interrompe o GarraIA
+  falando por cima e troca STT, modelo de conversa, TTS, voz e idioma no meio da
+  chamada sem perder a sessao. Captura por AudioWorklet (PCM 16 kHz) com VAD por
+  energia (pre-roll, fim de fala configuravel, teto de 30 s), STT por fala
+  (`POST /api/voice/transcribe`), turno no `/ws` existente e TTS por frase
+  (`POST /api/voice/synthesize`). Catalogo em `GET /api/voice/models`: servidores
+  locais do `--with-voice` e instancias OpenRouter ja configuradas, filtradas por
+  `architecture.*_modalities` (sem heuristica por nome), com preco como o
+  provedor informa ("unidade nao informada"), horario da consulta e motivo de
+  indisponibilidade; speech-to-speech aparece como nao executavel. O navegador
+  so escolhe IDs: URL, chave e politica de roteamento ficam no servidor, e STT/TTS
+  nao tem fallback. ADR 0027, plan 0366 e `docs/voice.md`. Validacao com
+  microfone e alto-falante reais segue pendente.
+- **`/ws` ganha `turn_id`, `stop` por turno e contexto de voz fiel (#1754).**
+  Opt-in e aditivo: com `turn_id`, todo frame do turno o leva de volta e um
+  `stop` de turno velho nao derruba o turno atual; com `voice: true`, a resposta
+  diz quem respondeu (`provider`, `model`, `fallback`), o `stop` aceita
+  `heard_chars` e o historico separa o trecho falado do gerado e nao ouvido.
+  Cliente sem esses campos recebe os frames de sempre.
+- **Latencia de `GET /v1/me/export` medida em cenario reproduzivel (#1801).**
+  Novo teste de integracao `rest_v1_me_export_perf`: 10 mil mensagens da
+  titular em dois grupos, pelo router autenticado contra PostgreSQL real, com
+  o corpo consumido inteiro e conteudo/isolamento validados fora da janela
+  medida. O teste afirma so a referencia historica de 30 s e reporta p50/p95;
+  receita (`run.sh`), maquina, versoes, SHA e amostras cruas ficam em
+  `benches/data-export/`. O cenario registra tambem o teto do endpoint: com
+  10 mil mensagens o export traz 5 000 e declara o corte em
+  `truncated_sections`.
+- **Cobertura HTTP de anonimização de titular (#1802).** O endpoint destrutivo
+  `POST /v1/me/anonymize` agora tem um cenário de integração contra PostgreSQL
+  real: `401` sem JWT, `204` sem corpo/PII, e-mail e `provider_sub` com o token
+  determinístico completo, status `anonymized`, sessão revogada, convites
+  pendente e histórico migrados, auditoria `account.anonymized`, `409` na
+  segunda chamada e isolamento de um segundo titular. A suíte usa o router
+  autenticado e o harness `test-helpers`, não mock de SQL.
+- **Opt-in da conversa "Você" (`access.self_chat`, #1822).** A conversa "Você" (o dono falando com o Garra pelo próprio número) passa a ter opt-in explícito: `access.self_chat: false` a mantém como bloco de notas (nada vai ao modelo); `true` declara o opt-in. Sem a chave vale o comportamento de sempre — a conversa vira turno quando o portão admite o próprio número (compat: nada muda no update). Acompanham o tri-estado: `garra whatsapp access self-chat on|off`, a ação `self-chat` do endpoint admin de acesso, export/import da política e a visão do operador. O assistente de primeiro uso grava a escolha explícita (`on` no modo "meu próprio número", `off` no restante — instalações novas nascem com ela declarada) e o `reset` volta com a conversa desligada.
+- **Nível de aprovação `agent.approval` e `--yolo` no CLI (#1858, segunda
+  fatia).** O knob declara o que o runtime faz com o tier arriscado de
+  comando: `always` (default — comportamento atual) e `never-confirm`,
+  que dispensa o **pedido** de confirmação onde existe canal. O `garra chat`
+  ganha `--yolo` / `--dangerously-skip-permissions` como atalho da sessão:
+  opt-in explícito, vence o config, nunca persiste e nunca é default. O
+  hard-deny (`rm -rf /`, fork bomb, exfiltração) e o fail-closed de canal
+  ausente continuam intocados em todos os níveis. Auditoria: sob
+  `never-confirm` todo comando executado sai com registro de auditoria —
+  `WARN` no log (`bash`, `run_tests`, `device_execute`) e linha JSONL em
+  `<data_dir>/audit/never-confirm.jsonl` para o `bash`, com comando redigido,
+  origem e timestamp. `/status` mostra o nível ativo. Documentado em
+  `docs/hardening-gateway.md` §2.
+- **Nível `session` no knob de aprovação (`agent.approval: session`, #1858).** O primeiro pedido arriscado de cada comando continua pausando e pedindo "sim"; aprovado, o **mesmo** pedido (igualdade da impressão digital `(ferramenta, assunto)`) não pergunta de novo até o fim da sessão — só no `(canal, sessão, remetente)` que aprovou. A lembrança fica na memória do processo (HMAC, nunca o comando cru), esquece após 1 h sem turno e guarda até 64 pedidos por sessão. Hard-deny, modo, teto da superfície e fail-closed sem canal não mudam; o default segue `always`. Vale na CLI (`garra chat`) e nos canais do gateway com escopo de aprovação.
+- **`garra chat --mode` e `/mode` (#1858, primeira fatia).** O REPL do CLI
+  ganha os mesmos modos de execucao do gateway e do Web Console (`search`,
+  `architect`, `code`, `ask`, `debug`...), aplicados pelo mesmo `ToolGate` do
+  runtime via `ExecContext::agent_mode`: `search`/`architect` sao somente
+  leitura. `/mode` mostra o atual, `/mode <nome>` troca, `/mode off` volta ao
+  "sem politica"; `/status` mostra o modo. Sem a flag nada muda. Nome
+  desconhecido e erro, nunca portao aberto em silencio (`auto` avisa que roda
+  sem politica quando a heuristica nao decide, como no gateway). O prompt do modo entra
+  depois do prompt do CLI, que carrega o diretorio de trabalho. So restringe
+  ferramentas: o tier de confirmacao do bash e o hard-deny ficam intocados — o
+  nivel de aprovacao (`yolo`) segue em aberto na issue.
+- **`plan` como nome de modo (#1858).** `garra chat --mode plan`, `/mode plan` e o header `X-Agent-Mode: plan` resolvem para `architect`, o modo de planejamento somente leitura: toda ferramenta nativa que muta (`file_write`, `bash`, `run_tests`, `device_execute`…) é negada, e ler/pesquisar segue permitido. É apelido, não política nova — o rótulo continua `architect`. Antes, `plan` era nome desconhecido: erro no `garra chat` e portão aberto no gateway.
+- **Pipeline de skills pela CLI (#1901):** `garra skills mine`, `candidates` e `list` permitem minerar logs JSON SessionRecord, inspecionar candidatos globais e listar skills globais e de projeto sem gateway.
+- `mine` preserva candidatos existentes, usa limiar padrao 2 e aceita `--sessions-dir`, `--threshold` e `--json`. Diretorio ausente ou sem arquivos JSON retorna `EX_NOINPUT` (66); limiar zero retorna `EX_USAGE` (2). Saida humana/JSON aplica a redacao do minerador e nomes de candidatos sao normalizados para arquivos portaveis.
+- Os caminhos de skills instaladas seguem o registro compartilhado. Candidatos da CLI ficam em `~/.garra/skills/_candidates`; o endpoint do gateway ainda consulta candidatos de projeto (`./.garra/skills/_candidates`). Nao ha paridade entre essas duas listagens de candidatos.
+- A releitura de candidatos recupera a contagem de sessoes gravada no corpo, em vez de sempre informar 1; arquivos legados sem contagem mantem fallback 1. Isso tambem afeta a listagem de candidatos do gateway.
+
+### Changed
+- **Justificativa das excecoes de `zbus_names`/`zvariant` reavaliada (#1667).**
+  O comentario do `deny.toml` e o espelho em `.cargo/audit.toml` afirmavam que o
+  bloqueio era o `notify-rust` 4.18.2 "a mais nova, ainda em zbus 5". Isso
+  deixou de ser verdade em 2026-11-08, quando o `notify-rust` 4.19.0 passou a
+  declarar `zbus ^6`; o que mantem o `zbus` 5 no grafo e o proprio
+  `tauri-plugin-notification`, que declara `zbus ^5` direto em todas as versoes
+  publicadas (2.8.0, 2.8.1 e 3.0.0-alpha.3) — comprovado com
+  `cargo tree -i zbus_names`. Nenhuma decisao de gate muda: os tres `RUSTSEC`
+  seguem `unmaintained`, sem advisory de vulnerabilidade, com o prazo
+  `EXPIRA 2026-12-31` intacto e verificado por
+  `scripts/security/check_deny_exceptions_expiry.py`. O registro importa porque
+  bumpar o `notify-rust` sozinho adicionaria um segundo `zbus` ao grafo sem
+  remover as crates e pareceria (falsamente) que a excecao podia sair.
+- **`cli_inspect` reporta gateway e MCP como estado declarado, não mais `unknown` (#1712).** O relatório passa a distinguir "nada configurado" (`not_configured`) de "configurado, saúde não observável da CLI" (`declared`): a fonte é a configuração que o processo já carregou (`config.yml` + `mcp.json`, a mesma visão mesclada que o boot do gateway conecta), e o campo `live_verification: unavailable_from_cli` deixa explícito que a CLI não fala com o gateway nem sobe servidores MCP. Servidores entram só com nome, transporte e habilitado — `env`, `args` e `url` (que podem conter credencial) nunca são projetados — e a lista é limitada a 16 entradas com `has_more`.
+- **Documentação do `cli_inspect` alinhada ao contrato entregue (#1712).** `docs/cli-runtime-inspection.md` descrevia apenas a primeira fatia: dizia que `gateway`/`mcp_servers` eram `unknown`, omitia o bloco `tool_effects` e listava como follow-up a verificação multi-provedor e o alinhamento com as superfícies de status — tudo já entregue em #1889, #1890, #1891, #1892 e #1893. O documento passa a declarar as três classes de evidência (observado, declarado, não verificado), o contrato de cada bloco com seus campos e limites (16 por página, 16 servidores MCP, `has_more`), o `registered_total` × `count` e o envelope de segurança. Sem mudança de código.
+- **`/status`, `/tools` e `cli_inspect` passam a ler a MESMA fonte do inventario
+  de ferramentas (#1712, fatia 5).** O `/status` contava
+  `AgentRuntime::list_tool_info()` — toda tool registrada — e chamava o total de
+  "ferramentas"; a tool `cli_inspect` reportava so o que o portao do turno
+  liberou. Os dois numeros pareciam discordar, e o painel `/tools` se chamava
+  "Ferramentas disponiveis" listando o que estava apenas REGISTRADO. Agora um
+  coletor comum (`AgentRuntime::visao_das_ferramentas`, em
+  `garraia-agents/src/ferramentas_visiveis.rs`) produz inventario + origem +
+  disponibilidade operacional + liberacao observada, e as duas projecoes o
+  consomem: a de interface mostra as registradas e diz que a liberacao e por
+  turno (o portao da CLI depende do texto do pedido, entao nao ha "liberado"
+  honesto fora de um turno); a do modelo continua fail-closed, omitindo o que o
+  portao nega. `/tools` passa a marcar a ferramenta registrada mas indisponivel
+  com o codigo do motivo, e o relatorio do `cli_inspect` ganha
+  `registered_total` ao lado de `count`. Nenhuma permissao mudou: o conjunto que
+  o modelo enxerga e o mesmo que o despacho libera.
+- **Release executa os AppImages Linux antes de publicar (#1818).** A rc2 saiu
+  verde sem que o AppImage do desktop publicado tivesse sido aberto uma vez. O
+  job novo `smoke-appimages-linux` (e o `smoke-linux-appimage-real` do
+  `desktop.yml`, na PR) roda `scripts/release/smoke-appimages-linux.sh` sobre
+  os arquivos que vao para a release: o desktop sob Xvfb, sem Node no PATH,
+  com o sidecar em `/api/health` na versao certa, a ponte do WhatsApp no Node
+  privado, a janela do assistente aberta e o sidecar morrendo com o app; a CLI
+  com `--version`, sem argumento saindo sozinha e o duplo clique abrindo
+  terminal. Com o desktop presente, uma falha bloqueia o release.
+- **Auditoria JSONL do `never-confirm` cobre `run_tests` e `device_execute`
+  (#1858).** Alem do `bash`, as suites e as acoes de hardware executadas sem
+  pedido de confirmacao viram linha em `<data_dir>/audit/never-confirm.jsonl`
+  (no `garra chat` e no gateway). O `device_execute` grava dispositivo,
+  capability e risco, nunca os `args`. O append agora espera a escrita
+  (`flush`) antes de voltar: sem isso, o `tokio::fs::File` podia gravar a
+  linha depois do retorno e fora de ordem com o registro seguinte.
+- **Recusa da tool `bash` diz ao modelo qual padrao casou (#1861, criterio 3).**
+  O bloqueio da denylist devolvia so "padrao perigoso detectado", e na sessao
+  que originou a #1861 o modelo recebeu ~13 recusas seguidas sem saber por que,
+  em loop. A mensagem agora nomeia o padrao estatico que casou (texto fixo do
+  `DENY_LIST`, nunca um trecho do comando, que pode levar segredo), explica que
+  o gate le o texto literal inclusive dentro de aspas, heredoc e comentario, e
+  aponta o `file_write` para quem so esta citando o texto, pedindo
+  explicitamente que o comando nao seja reescrito para escapar do bloqueio. A
+  recusa fail-closed do tier de confirmacao tambem nomeia o padrao. Nenhuma
+  decisao do gate mudou: o que bloqueava continua bloqueando.
+- **Aviso de transporte em bind exposto servido em HTTP em claro (#1907):** bind nao-loopback **com** credencial passa pela recusa do #1261 e, sem TLS, deixava o boot silencioso — enquanto a credencial (`Authorization: Bearer`), os tokens de sessao e o corpo de `/api/*` atravessavam a rede sem cifra. `serve_plain` agora consulta `garraia_config::bind::aviso_de_transporte` (função pura, tabela de teste) e emite um `WARNING` em todo boot de socket alcançável pela rede, nomeando o risco e as três saídas (TLS nativo com `--features tls`, proxy TLS no mesmo host com bind loopback, ou hop confiável fim a fim). Avisa em vez de recusar para preservar composicoes existentes: o `docker-compose.yml:19` publica HTTP em claro, sem proxy TLS incluido; o operador pode adicionar terminacao TLS externa; o degrau de recusa do "TLS obrigatório" fica registrado no ROADMAP §5.1 com o motivo. Instalação default (loopback) não muda uma linha de log.
+- **`repo_search` diz onde olhou quando nao acha nada (#1909).** O resultado
+  vazio era so "No matches found.", sem separar "nao existe" de "olhei em
+  outro lugar" — no dogfood do Telegram a busca rodou no workspace da sessao
+  enquanto o assunto era outro worktree. Agora a resposta nomeia o escopo
+  (o diretorio de trabalho da sessao, ou o do processo quando a sessao nao
+  tem um) e avisa que so ele foi olhado; o caminho da sessao nao entra na
+  mensagem. E um `working_dir` que nao existe ou nao e diretorio vira erro
+  proprio, em vez de "Search failed (rg: No such file or directory, ...)". O mesmo
+  vale para o fallback de `grep`: uma busca que sai com erro e sem nenhuma
+  linha deixa de ser lida como resultado vazio.
+- **`git_diff` (`operation: "status"`) nomeia a revisao exata do checkout
+  (#1909).** O status dizia o ramo e os arquivos modificados, mas nao QUAL
+  commit: num worktree de revisao, "Branch: main" nao distingue duas arvores, e
+  o fluxo remoto de revisao ficava sem identidade de checkout — no dogfood do
+  Telegram o agente ofereceu revisar um worktree e nao havia como saber que
+  revisao seria lida. Agora a resposta traz `Revisão: <SHA completo do HEAD>`
+  logo depois do ramo, lida no MESMO diretorio do `status` (o `working_dir` da
+  sessao), e a revisao so aparece se a forma for de SHA — texto de erro do git
+  nunca vira revisao. Repositorio ainda sem commit nao derruba a tool: a linha
+  diz que a revisao esta indisponivel e o resto do estado continua na resposta.
+- **Testes de turnos sobrepostos provam que um "sim" consome o pedido pendente uma vez so (#1912).** Uma barreira no provider faz os dois turnos resolverem a pendencia antes de qualquer tool rodar, nos caminhos batch, streaming e fallback para batch; chats distintos nao se consomem. So testes, sem mudanca de producao. Nao cobre paralelismo entre threads nem o transporte Telegram/MCP.
+- **Testes de expiracao e isolamento de aprovacao (#1912).** A suite do runtime verifica expiracao e coexistencia de pedidos em sessoes distintas nos caminhos batch, streaming e fallback, sem habilitar execucao remota. Cobertura parcial: nao substitui testes de transporte Telegram/MCP nem o vinculo de workspace/id da chamada.
+- **`jsonwebtoken` sobe de 11.1 para 12.0 (#1925).** A 12 recusa chave HMAC
+  vazia ja na construcao (`EncodingKey`/`DecodingKey::from_secret` passam a
+  devolver `Result`), rejeita extensoes `crit` desconhecidas e fecha o resto da
+  confusao de tipo em `sub`/`iss`/`aud`. Os quatro pontos que montam chave a
+  partir de segredo propagam o erro em vez de `unwrap`: `JwtIssuer::new` devolve
+  `AuthError::Config` e o `mobile_auth` (extractor e emissao) responde o mesmo
+  **503 fail-closed** de auth nao configurada. Nenhum caminho alcancavel muda
+  hoje — o piso de 32 bytes do `AuthConfig` ja barrava segredo vazio antes.
+
+### Fixed
+- **`garra chat`: chamada de ferramenta interrompida nao some mais do historico (#1708).** Um Ctrl+C ou o teto de tempo com a ferramenta ainda rodando, antes de qualquer texto, descartava o turno do historico em memoria: o resumo de evidencias so registra chamadas que terminaram, e o turno seguinte nao sabia que a ferramenta tinha comecado (o `--persist` ja gravava o mesmo registro como `interrupted`). Agora o registro da trilha conta como evidencia, e o turno seguinte recebe a chamada pareada como `[interrompido: sem resultado]` junto com o marcador de interrupcao. Novos testes pelo caminho do REPL cobrem isso e a recusa pelo portao de politica do runtime (o modo `ask` negando `file_write` chega como `ToolResult` de erro pareado pelo id, sem a ferramenta rodar). O cartao de timeout e a dica de cancelamento passam a usar o mesmo criterio, e deixam de dizer "historico intacto" nesse caso.
+- CLI: histórico entre turnos passa a carregar chamadas e resultados de ferramenta de verdade (`ToolUse`/`ToolResult` pareados por id), em vez de só o texto final do assistant. Vale para a sessão em memória, para `--persist`/`--resume` e para o modo `GARRAIA_TOOL_HISTORY=structured|text|off` (#1708).
+- O helper `detect_divergencia` passa a comparar a polaridade tipada de `AlegacaoOperacional` com o resultado do ledger, sem confundir a alegação com `EvidenceRef`; corpus de regressão e limites documentados em `docs/agent-evidence-evaluation-1709.md`.
+- **CLI inspection reports effective permissions (#1712).** `cli_inspect` now uses the current turn's runtime gate, labels the tools it can actually call, and omits blocked tools. If the turn snapshot is unavailable, the tool list fails closed instead of exposing unverified capabilities.
+- **`garra_capabilities` deixa de sumir nos modos com allowlist (#1712).** A consulta ao catalogo de funcionalidades da versao (R0: dado estatico embutido no binario, sem I/O nem rede) estava fora das allowlists dos seis modos nativos com `whitelist_mode` (`search`, `architect`, `debug`, `orchestrator`, `review`, `edit`), enquanto `garra_status` e `cli_inspect` estavam dentro. Nesses modos, inclusive o piso `search` do WhatsApp, a tool sumia sem aviso e o agente ficava sem a unica fonte estruturada para perguntas como "como o /model valida". Ela entra nas seis allowlists pelo mesmo precedente do #1347, e o teste que ja cobria `garra_status`/`cli_inspect` em todo modo nativo passa a cobri-la tambem, assim como a leitura da superficie remota. `denied` continua vencendo em modo customizado, e itens `operator_only` seguem retidos em turno restrito pela propria tool. A entrada do catalogo passa a declarar o escopo: so existe no agente do gateway e dos canais, nao no `garra chat`, que usa o `cli_inspect`.
+- **Base de voz com limites, timeouts e sem gasto duplicado (#1754).** Os
+  clientes Whisper, Chatterbox, Hibiki e LM Studio leem respostas com teto de
+  tamanho (16 MiB de audio, 1 MiB de metadados), tem timeout de conexao e total
+  e nao seguem redirect. O LM Studio so cai no `/api/v1/chat` quando a rota de
+  fala nao existe (404/405/501): antes qualquer erro, inclusive timeout, gerava
+  uma segunda sintese. O Whisper idem: timeout nao dispara uma segunda
+  transcricao. `POST /api/stt` deixa de gravar o audio em arquivo temporario e
+  limita o upload; `POST /api/tts` limita o texto e nao reflete a mensagem do
+  provedor. O `VoicePipeline` usa diretorio proprio por chamada, limpo em todo
+  caminho de erro, e o `ffmpeg` morre junto com a tarefa cancelada. O idioma
+  `"default"` que o Telegram passa vira o idioma configurado nos tres TTS.
+- **Testes do binario `garra` e clippy da CLI e do gateway verdes em host Windows (#1762).**
+  O pacote `garraia` nao tem alvo lib, entao o job `Unit tests` nunca rodava os testes do
+  binario fora do Linux, e no Windows 7 deles falhavam por premissa de plataforma: varreduras
+  de fonte que procuram `"\n}\n"` num checkout CRLF, a dica de remocao esperada como `sudo rm`
+  (no Windows e `Remove-Item`), caminho do bloco Termux do `doctor` comparado como texto com
+  `/` e a mensagem da recusa do sandbox fora de Unix. O `clippy --all-targets` do Windows
+  tambem acusava import e helpers de teste mortos, usados so por testes `cfg(unix)`. As
+  correcoes ficam nos testes (normalizacao de fim de linha, expectativa por plataforma,
+  `cfg(unix)` nos helpers), sem mudanca de comportamento; o leg Windows do `Unit tests` passa
+  a rodar `cargo test -p garraia --bin garra` e o clippy de `garraia` e `garraia-gateway`.
+- **Janelas de timeout que a #1778 deixou de fora (#1790).** Quatro bordas da
+  janela de `timeouts.llm` fechadas:
+  - **`garra chat --model <tag>`** (atalho do Ollama local): o provider que sai
+    da sonda — instalado ou baixado com `-y` — recebe a janela da entrada
+    `llm:` do modelo pedido (`provider: ollama` com aquele `model`, ou a
+    entrada do Ollama), e nao mais so a global.
+  - **`garra ask`**: quando a janela da config corta a chamada antes do
+    `--timeout-secs`, o erro sai como `timeout` (exit 124), com a mensagem
+    nomeando `timeouts.llm.default_secs` / `llm.<nome>.timeout_secs` — antes
+    saia como `provider_error` (69), como se o provider estivesse quebrado.
+    Vale tambem com a janela disparando no meio de uma resposta em streaming.
+    O mesmo vale para o `garra_ask` do MCP. O aviso de "aumente a janela" deixa
+    de aparecer em timeout de CONEXAO (10s fixos), que a janela nao resolve.
+  - **Sonda do atalho e providers ativados em runtime** (`POST
+    /api/providers`): a sonda sai de `cliente_llm` como todo cliente de
+    provider (sem seguir redirect, regra 14) e nunca passa da janela; o
+    provider ativado pelo Web Console, que ficava sem teto de resposta (sem
+    `base_url`) ou com 30s fixos (com `base_url`, cliente pinado), passa a
+    obedecer `llm.<tipo>.timeout_secs` / `timeouts.llm.default_secs`, ainda
+    pinado e sem redirect.
+  - **Cliente que nao monta deixa de degradar em silencio**: os builders de
+    `garraia_agents::cliente_llm` devolvem o erro em vez de cair num cliente
+    padrao (redirect ligado, sem janela). A CLI falha com a causa; o gateway
+    loga e nao registra provider de LLM com policy errada.
+- **Todo cliente HTTP do `garraia-agents` deixa de seguir redirect, e o retry do runtime passa a decidir pelo status (#1792).** Os clientes fora do caminho principal (embeddings Ollama/OpenAI/Cohere, llama.cpp, A2A e o Brave da `web_search`) usavam o default do reqwest, que segue ate 10 redirects — no mesmo host levando o bearer junto, e no Brave a chave em `X-Subscription-Token`, que o reqwest nao tira num redirect para outro host. Agora todos saem de `cliente_llm::cliente_padrao` (sem redirect, teto de conexao de 10s; a janela total continua vindo da config por `with_client`), inclusive o `embed_client` do gateway, que sobrescrevia o do provider. Os `::new()` de OpenAI/Anthropic/Ollama e os clientes do `openai-codex` perdem o reserva `Client::new()`/`unwrap_or_default()`, que voltava seguindo redirect se o builder falhasse: como nos builders da #1790, `cliente_padrao` devolve o erro de montagem, o gateway deixa de registrar o provider de embeddings (com o motivo no log) e os `::new()` infaliveis param com o motivo (backend TLS indisponivel, o mesmo caso em que o `Client::new()` ja parava). Embeddings, llama.cpp e A2A ganham o diagnostico de 3xx do caminho principal (#1779): `status=3xx, location=<redigido>; redirects desligados por seguranca - corrija <alvo>`, sem retry. No runtime, `is_retryable_error` le o status com `status_http_do_erro` e, havendo status de falha, so ele decide (429/502/503/529): um "4290 tokens", um "upstream" ou um `status=503` citado no corpo de um 400 nao fazem mais o turno insistir; o texto fica como fallback para erro sem status ou entregue com HTTP 200. `timeouts.embeddings.default_secs: 0` passa a significar "sem teto", como no LLM, em vez de falhar toda chamada em ~1ms.
+- **Sondas da escolha de provider e subcomandos `garra mcp` obedecem
+  `config.timeouts`; o default descartado deixa de cair em silencio (#1793).**
+  `garra chat`, `garra --model <tag>` e `garra ask` sem `-p` perguntam a um
+  Ollama/llama.cpp local se ele esta de pe antes de escolhe-lo — o
+  `agent.default_provider` quando e local, e o Ollama no fim da autodeteccao —
+  e essas duas sondas rodavam no cliente de inferencia: `timeouts.llm`
+  (120s) ou `llm.<nome>.timeout_secs` (no Termux, dezenas de minutos). Um
+  daemon que aceita a conexao e nao responde segurava a abertura do REPL pela
+  janela inteira. As sondas passam a usar `timeouts.health.default_secs` (5s
+  por padrao, piso de 1s, a mesma regra da sonda do STT no gateway). Quando o
+  default configurado nao serve (sonda sem resposta, entrada ausente em
+  `llm:`, tipo que a CLI nao escolhe, sem credencial), a escolha continua
+  caindo na autodeteccao, agora com um `warn` que diz a chave e o motivo — o
+  caso de um `default_provider` apontando para uma entrada `openai-codex`, que
+  a CLI ignorava sem aviso, aparece por ai. E `garra mcp
+  inspect|resources|prompts` usavam 30s fixos para falar com o servidor
+  (`garra mcp list` mostrava esse 30 como se fosse o timeout dele): passam a
+  usar o `timeout` da entrada ou `timeouts.mcp.default_secs` (60s), a mesma
+  regra do boot do gateway, agora num lugar so
+  (`McpServerConfig::timeout_efetivo`).
+- **WhatsApp no modo "meu proprio numero": a conversa "Voce" agora conversa com
+  o Garra (#1813).** O assistente do Desktop pedia para testar mandando um "oi"
+  para o proprio numero, e essa mensagem (`from_me`) era descartada em silencio
+  antes de qualquer politica: o primeiro teste nunca funcionava. A ponte marca
+  `self_chat` quando o chat e a propria conta (por telefone ou LID), e o
+  gateway aceita `from_me` so ali; o dono escrevendo a terceiros continua fora.
+  O eco da resposta do proprio Garra nesse chat e barrado em duas camadas
+  (ids enviados na ponte e no runner). A identidade e o numero da conta e passa
+  pelo mesmo portao de admissao.
+  Salvaguardas da revisao de seguranca: so o `remoteJid` decide a conversa
+  "Voce" (o `remoteJidAlt` do Baileys 7 e o do remetente), encaminhada nao vira
+  turno, as respostas ali levam uma marca invisivel que outro Garra na mesma
+  conta reconhece, e um codigo de 6 digitos digitado ali nao vira pareamento.
+- **WhatsApp: mensagem enviada durante o restart do gateway deixa de sumir
+  (#1814).** O Baileys entrega o que ficou na fila do servidor com a ponte fora
+  como `append`, e a ponte so aceitava `notify`: todo "oi" mandado enquanto o
+  gateway reiniciava (inclusive o restart do fim do assistente do Desktop) era
+  perdido sem log. Agora a mensagem de terceiro que chegou "offline" e
+  respondida se tiver ate 10 minutos; as mais velhas viram descarte com motivo
+  `offline_expired`, para o Garra nao acordar respondendo conversa antiga.
+- **WhatsApp: nenhum descarte de mensagem e mais mudo (#1815).** Falha de
+  decriptacao, mensagem offline vencida, enquete e outros conteudos sem texto
+  viram um evento `dropped` da ponte; o gateway loga (`INFO`, so os quatro
+  ultimos digitos) e conta como rejeicao (`decrypt_failed`, `offline_expired`,
+  `unsupported_content`), visivel no Web Console e no `/api/diagnostics`.
+  Audio e foto de terceiro em 1:1 tambem contam. Os eventos `log` e `error` da
+  ponte (inclusive falha de envio da resposta) passam a ir para o log do
+  gateway em vez de serem ignorados.
+- **Desktop e `garraia start` com outro gateway na porta 3888 (#1816).** O
+  Desktop conectava em silencio num gateway de outra instalacao (no teste da
+  rc2, o servico 0.5.1 do systemd) e ainda subia o proprio sidecar, que rodava
+  o boot inteiro (canais e a ponte do WhatsApp com a mesma sessao) so para
+  morrer no bind, apagando o pidfile do outro. Agora o app detecta o gateway
+  pelo `/api/health`, nao sobe outro, avisa a versao que esta atendendo e nao
+  reinicia o que nao e dele; o `garraia start` recusa porta ocupada antes do
+  boot e do pidfile (exit 69), dizendo se e um gateway GarraIA e qual. As notas
+  da tela de modo do assistente, que ficavam escondidas, voltam a aparecer.
+- **AppImage da CLI: duplo clique deixa de "nao fazer nada" (#1817).** O
+  `garraia-linux-x86_64.AppImage` e o programa de terminal, mas o gerenciador
+  de arquivos o executa sem terminal: o chat abria, lia fim de arquivo e saia
+  sem mostrar nada. O `AppRun` virou um script: com argumentos ou num terminal
+  continua o `garraia` direto; no duplo clique abre um emulador de terminal com
+  ele, ou, sem nenhum, avisa por notificacao que e a versao de linha de comando
+  e aponta o AppImage do desktop. `docs/installation.md` explica o que e cada
+  AppImage, como por no PATH e o requisito de FUSE.
+- WhatsApp vinculado: o diagnostico do gateway (`canais.whatsapp_linked.cadencia`, na tool `garra_diagnostics`) passa a contar as rajadas que estouraram o teto da conversa "Voce" na ultima hora (`rajadas_self_chat_ultima_hora`) e fica `degradado` quando ha alguma, com o proximo passo: e possivel sinal de outro aparelho ou bot da mesma conta respondendo ali, e o operador confere em WhatsApp > Aparelhos conectados. Uma rajada conta uma vez, nao uma por mensagem cortada (#1822).
+- WhatsApp vinculado: a mensagem reentregue com o mesmo `id` no mesmo chat (o acumulado offline que a ponte repassa ao reconectar) deixa de virar um segundo turno e uma segunda resposta paga, e o canal passa a ter um teto global de 4 turnos simultaneos — a rajada da reconexao espera na fila em vez de abrir N chamadas ao provider de uma vez. Juntar varias mensagens do mesmo chat num turno so fica para a fatia seguinte (#1822).
+- WhatsApp vinculado: as mensagens de um mesmo chat passam a rodar um turno de cada vez, na ordem de chegada. Antes, a rajada de um chat (o acumulado offline que a ponte repassa ao reconectar, ou alguem mandando varias mensagens seguidas) abria varios turnos ao mesmo tempo na mesma sessao, com corrida de historico e respostas fora de ordem. Chats diferentes seguem em paralelo, ate o teto global de 4 turnos. Cada mensagem ainda vira o proprio turno e a propria resposta; juntar varias num turno so segue em aberto (#1822).
+- WhatsApp vinculado: o backlog da reconexao (`append` reentregue na ponte, agora marcado `backlog` no protocolo) vira UM lote e uma resposta so por chat (#1822). As mensagens offline acumuladas se juntam (textos concatenados na ordem de chegada) com uma janela de juncao de 500 ms antes do primeiro turno: N mensagens de backlog custam 1 chamada ao modelo, nao N. Mensagem ao vivo nunca se junta — continua um turno por mensagem. Comandos de barra (`/help` etc.), remetentes diferentes no grupo e parte que o filtro de injecao recusaria continuam um turno cada, e a ordem dos turnos segue a de chegada.
+- WhatsApp vinculado: a conversa "Voce" (`self_chat`) passa a ter teto de cadencia proprio de 8 turnos por minuto, abaixo do teto do operador (que continua valendo quando for menor). A marca invisivel so evita o ping-pong entre duas instancias do Garra; outro bot da mesma conta respondendo ali (outro Baileys, o self-chat de outra ferramenta) agora e cortado em menos chamadas pagas. O diagnostico do gateway (`canais.whatsapp_linked.cadencia`) mostra o teto efetivo como `max_self_chat` (#1822).
+- **O assistente do Desktop não grava mais na configuração de outra instalação
+  sem perguntar (#1824).** Com um gateway GarraIA de fora do app na porta (um
+  serviço do systemd, outra versão), os passos do assistente gravavam no
+  `config.yml` dele: no teste da rc2, a persona trocou em silêncio o prompt de
+  sistema de um bot do Telegram 0.5.1, e o modo "meu próprio número" podia abrir
+  a admissão do WhatsApp dele. Agora a primeira tela pede uma confirmação
+  explícita; provedor, persona e acesso recusam sem ela e, com ela, o app guarda
+  uma cópia do `config.yml` em `backups/` antes de cada mudança. O pareamento do
+  WhatsApp com um gateway de fora é recusado (abriria uma segunda conexão com a
+  mesma conta), e o app não copia mais o config padrão para a pasta dele. Os
+  Ajustes pedem a mesma confirmação.
+- Gravar um campo do `config.yml` (`set_agent_system_prompt`, `set_channel_enabled`, `config set-routing`, `whatsapp access`) passa a editar so o trecho alterado: ordem das secoes, comentarios e chaves desconhecidas sao preservados; se a edicao cirurgica nao reproduzir a config nova, cai na regravacao inteira (#1825).
+- Desktop: o assistente passa a detectar a outra instalacao tambem pela trava `gateway.lock` da pasta de config, e nao so pela porta na abertura (#1826). Com a trava segurada por um processo que nao e o sidecar do app (outra porta, servico que voltou depois, sidecar morto no bind), os passos que gravam pedem confirmacao, fazem backup e recusam o pareamento.
+- Testes instaveis do CI: o do cliente whisper nao exige mais bytes lidos quando o timeout vence a requisicao, e o do Job Object passa a achar o neto pelo nome `ping.exe` em vez do primeiro filho do `cmd` (#1829).
+- **O dogfood Linux volta a reprovar um passo que falhou (#1830).** O script
+  `scripts/dogfood/linux-clean-install.sh` contava os passos que não passaram
+  dentro de `{ … } | tee resumo.txt`, num subshell; o shell pai seguia com zero,
+  e o job do gate de release ficava verde com `P9 FALHOU` no resumo (visto no
+  dogfood da v0.5.2-rc4). Agora a contagem é feita no shell principal, o
+  workflow confere o `resumo.json` por conta própria, e um job do CI roda o
+  script de verdade sem Ollama e exige que ele reprove.
+- Os jobs `Clippy Linting` e `Test (ubuntu-latest)` do CI passam a liberar espaco em disco do runner (mesma limpeza inline do job de cobertura) antes de compilar, evitando `No space left on device` intermitente (#1832).
+- CI: o caso "env GARRAIA_VERSION vence --version" de `tests/install_sh/parse_args.sh` passa a exportar a variavel de verdade em vez de depender do ambiente temporario de uma chamada de funcao (`VAR=x parse_args ...`), cujo valor depois do retorno varia com a versao do bash. O job `Install.sh shellcheck` vinha falhando em todo PR com `GARRAIA_VERSION: unbound variable` desde 2026-11-10, sem mudanca no `install.sh` (#1846).
+- **Gate de cobertura recuperado com rustc/cargo 1.100 (#1859).** O cargo 1.100.0 (estável desde 2026-11-12) mudou o layout do build-dir — os binários de teste saem em `debug/build/<crate>/<hash>/out/` — e o cargo-llvm-cov `0.6.x` (pin `^0.6` do ci.yml) procura os objetos no layout antigo: a base medida do lcov colapsou de 176.977 para 103.292 linhas (74,15 % → 32,68 %) e o piso de 70 % reprovava o job no `main`. O pin sobe para `^0.9` (0.9.1), que reproduz localmente (rustc 1.100.0) o relatório que o 0.6.24 produzia com rustc 1.99. Sem mudança de código de produção.
+- **O safety gate para de bloquear comando que apenas CITA um literal perigoso (#1861).** O `DENY_LIST`/`CONFIRM_LIST` eram avaliados como substring solta sobre o comando inteiro: `echo 'nunca rode rm -rf /' > aviso.txt`, `printf '%s\n' '# mkfs'` e `grep -r "dd if=" docs/` recebiam hard-deny por carregar o literal dentro de string, heredoc ou comentário — e o modelo entrava em loop de negações porque o motivo não era acionável. Agora o gate modela a fronteira dado/código: o conteúdo de aspas (`'...'`, `"..."`, `$'...'`), corpo de heredoc e comentário vira espaço na forma avaliada; substituição que EXECUTA (`$(...)`, crase) fica de fora da máscara e continua gated, código embutido (`sh -c`, `eval` — o `eval` passa a ser re-avaliado como o `-c`) continua bloqueado, padrões-âncora de leitura de recurso (`/environ`, `os.environ`, WebClient, `Start-Process`) continuam rodando sobre o texto inteiro, e aspas sem par ou heredoc sem fechamento ficam fail-closed. A recusa (que #1864 já devolvia com o padrão casado) ganha a dica de adaptação por padrão, ligada nas duas mensagens de recusa do `bash` — ex.: `kill -9 <pid>` em fail-closed explica a política e aponta o caminho. `kill -9 -1` e `pkill -9` sobem para hard-deny; `kill <pid>` específico fica no tier de confirmação (fail-closed = BLOCK com motivo claro). `rm -rf '/etc'` passa a casar a regra token-aware do `rm` com o alvo sem aspas. Nenhum enfraquecimento: `rm -rf /`, `mkfs`, `dd`, fork bomb, `| sh`, `ssh root@` e o resto do denylist seguem hard-deny, cobertos por testes de regressão novos.
+- **`install.sh` conclui o upgrade com o gateway rodando (#1862).** O instalador gravava com `cp` por cima do binário que o processo em execução tem mapeado e o kernel recusava com `Text file busy` (ETXTBSY) — exatamente no cenário mais comum, atualizar uma máquina com o serviço no ar. O binário novo agora é gravado num arquivo de estágio ao lado do destino (mesmo filesystem) e entra por `mv`/rename(2), que troca a entrada de diretório sem abrir o alvo para escrita; o processo rodando continua no inode antigo até reiniciar, e uma falha no meio não deixa mais lixo nem destino truncado. Detectando serviço ativo (unidade `garraia.service` no systemd — user primeiro, depois system; pgrep onde não há systemd), o bootstrap imprime o comando de restart CERTO para o layout (`systemctl --user restart garraia.service`, `sudo systemctl restart garraia.service`, ou `garraia stop && garraia start` só onde não há unidade — sob unit isso orfana o daemon) em vez de rodar o wizard e iniciar um segundo gateway sobre o serviço vivo. A documentação passa a dizer que a tag na URL do script não escolhe a versão instalada — para instalar um prerelease, fixe com `GARRAIA_VERSION=vX.Y.Z-rcN` (ou `--version <tag>`). Teste novo `tests/install_sh/upgrade_etxtbsy.sh` cobre o caminho de upgrade com um executável rodando (com controle negativo do ETXTBSY), a instalação limpa, o ramo sudo e o aviso de restart por tipo de unidade.
+- **`install.ps1` conclui o upgrade com o `garraia.exe` rodando (#1865).** Paridade com o `install.sh` (#1862, regra 16): o instalador fazia `Copy-Item -Force` por cima do executavel em uso e o Windows recusava, abortando o upgrade mais comum (gateway no ar). Agora o binario novo e estagiado ao lado do destino, o `garraia.exe` em execucao e renomeado para `garraia.exe.old-<pid>` (o Windows permite renomear uma imagem rodando, so nao sobrescrever nem apagar) e o novo entra por rename; falha em qualquer passo desfaz o anterior, sem destino ausente nem estagio esquecido. O `.old-<pid>` que fica enquanto o gateway antigo roda e varrido na instalacao seguinte, e o `garraia.old` do `garraia update --rollback` nunca e tocado. Detectando um processo `garraia` vivo, o bootstrap imprime `garraia stop; garraia start` em vez de rodar o wizard e iniciar um segundo gateway, com o mesmo kill-switch `GARRAIA_SKIP_RUNNING_GATEWAY_NOTICE=1` do lado Linux. Suite nova `tests/install_ps1/upgrade_in_use.ps1` (controle negativo da recusa do Windows, falhas injetadas em cada rename, varredura do aside e o ramo do aviso).
+- O one-liner de instalação Windows (`irm + iex`) em `README.md` e `docs/installation.md` aponta agora para o espelho `raw.githubusercontent.com` (branch `main`), que serve o `install.ps1` como `text/plain` — `garraia.org` e o CDN de release do GitHub servem `application/octet-stream`, o que quebra a execução via `iex` (#1873). Espelhos restantes documentados, com nota do `content-type` de cada um.
+- `bind_fail_closed_cli` nao flakeia mais em `Test (ubuntu-latest)` quando a janela de TIME_WAIT do gateway real de outro teste segura a porta: a prova da recusa passa a ser a saida (exit 78 + stderr), com bind com retry para confirmar que ninguem esta escutando, sem confundir TIME_WAIT com listener vivo.
+- **Candidatos de skills coerentes entre CLI e gateway (#1903):** o endpoint `GET /api/learning/logs/candidates` passou a ler os dois escopos do registro pelo mesmo helper da CLI (`registry::scan_candidates_scoped`), então o candidato que `garra skills mine` grava em `~/.garra/skills/_candidates` deixa de sumir do Web Console. Cada item informa o escopo onde foi encontrado e os escopos seguem isolados. Quando o diretorio de trabalho e o proprio HOME (imagem oficial, `garra skills candidates` rodado de `~`), o escopo de projeto resolve para o mesmo diretorio do global e e ignorado, em vez de duplicar cada candidato.
+- A raiz global de skills passou a resolver `HOME` com fallback para `USERPROFILE` (Windows) numa funcao compartilhada (`registry::home_dir`/`user_home_dir`); o handler de sessoes do gateway deixa de cair num `/tmp` inline quando a variavel falta (a raiz global de skills mantem o fallback antigo de `default_registry_opts`).
+- Contagens honestas: `garra skills mine` e `garra skills candidates` separam arquivos encontrados, sessoes/candidatos validos e arquivos ignorados, com aviso acionavel no stderr nomeando o arquivo ilegivel. `mine` tambem distingue padroes detectados de arquivos novos (idempotencia) e sai com `EX_NOINPUT` (66) quando nenhum arquivo tem sessao valida. No JSON, `sessions` virou `session_files`/`sessions_valid`, e `candidates_dir` virou `global_candidates_dir`/`project_candidates_dir`.
+- `garra skills list` mostra quando o escopo declarado no frontmatter diverge do diretorio onde a skill esta instalada.
+- `garra skills mine` passa a morrer em silencio por SIGPIPE (`garra skills mine | head -1`) em vez de entrar em panico com stdout fechado: o minerador termina todas as escritas antes de imprimir.
+- **`garra_status` abre o relatorio para o dono do bot no Telegram (#1905).** O relatorio restrito da #1347 existe porque, num canal de mensagens, quem pergunta pode ser qualquer um. Faltava o outro lado: o canal ja sabe quem e o dono pareado (`allowlist.is_owner`, o mesmo gate que decide quem pode falar) e essa prova nunca chegava ao `garra_status` — o dono, na propria instalacao e com a porta do operador fechada, recebia a versao sem patch e `providers`, `mcp_servers` e `working_dir` retidos. Agora o turno prova o dono **em chat privado** (grupo nao conta: o mesmo chat carrega outros membros) e o relatorio sai aberto; a prova fica isolada no proprio turno (endurecimento da #1910, sem marca compartilhada na sessao), a porta aberta continua negando o relatorio aberto, e quem nao e o dono continua restrito. A prova vale SO para o relatorio: o teto de capacidades do turno continua negando `bash`, escrita e envio de mensagem a superficie remota — nenhuma outra ferramenta ganha poder por causa dela. O relatorio passa a trazer tambem `upstream.repo` e `upstream.releases_api` (repositorio publico do produto), para o agente comparar a versao local com a release mais recente em vez de responder que nao tem a URL.
+- **`repo_search`: o resultado vazio do ripgrep diz o que ficou de fora
+  (#1909).** O `rg` pula o que `.gitignore`/`.ignore` cobrem e os arquivos
+  ocultos, mas a resposta era so "No matches found in ..." — lida como "nao
+  existe neste diretorio" mesmo quando o texto estava num arquivo ignorado
+  ou oculto. O vazio do `rg` agora acrescenta essa ressalva. Os fallbacks
+  (`grep -r`, `findstr /s`) leem tudo e por isso nao a carregam. Nenhum
+  argumento de busca, raiz, jail ou modo mudou.
+- **Mensagem de ferramenta nao entrega o caminho absoluto do host em turno
+  restrito (#1909).** No turno restrito o `garra_status` ja retinha de
+  proposito o `working_dir` da sessao (#1347). As mensagens de `list_dir`,
+  `file_read` e `file_write` traziam esse mesmo caminho de volta: o cabecalho
+  da listagem, o `describe()` dos erros e as linhas de sucesso/readonly do
+  `file_write` mostravam o caminho absoluto resolvido sempre que o alvo caia
+  FORA do `working_dir` da sessao. Agora essas quatro tools consultam o mesmo
+  portao que o `repo_search` (`tool_context::pode_revelar_caminho_do_host`):
+  alvo dentro do `working_dir` continua saindo relativo em qualquer turno;
+  fora dele, o absoluto so sai no turno aberto, e no restrito sai
+  `<outside the session's directory>`, com o argumento do modelo preservado
+  em `pedido:`. Fail-closed fora de um turno despachado pelo runtime.
+  **Alcance, sem exagero:** "turno restrito" e o modo com allowlist de tools
+  (ou teto por principal que tenha) — nao "remetente remoto". Entao os modos
+  `plan`, `search`, `edit`, `debug`, `review`, `architect` e `orchestrator`
+  retem o caminho ate no `garra chat` local, e um modo sem allowlist (o
+  `ask`) continua mostrando o caminho mesmo num canal remoto sem teto.
+  `git_diff`/`code_review` (via `RepoDir::descricao`) e o pedido de
+  confirmacao do `run_tests` ainda nao passam por este portao. Nenhuma raiz,
+  jail, modo ou mensagem de recusa mudou; os logs do operador seguem com o
+  caminho inteiro.
+- **Listar e ler dizem quando o diretorio da sessao e que morreu (#1909).**
+  Com o `working_dir` da sessao apontando para um caminho que nao existe mais
+  (projeto movido, worktree removido), `list_dir` respondia com a recusa do
+  jail ("acesso negado") e `file_read`, com "nao foi possivel ler metadados" —
+  as duas leem como politica de seguranca ou arquivo ausente, quando a causa e
+  a sessao. As duas tools passam a devolver a mesma frase que o `repo_search`
+  ja devolvia desde a #1932: o diretorio da sessao nao esta acessivel (nao
+  existe / nao e um diretorio), nada foi listado ou lido, e a acao e
+  selecionar um projeto existente. A checagem so vale para caminho RELATIVO ao
+  `working_dir` e roda antes do jail; caminho absoluto, `..`, symlink de fuga e
+  a politica de raizes continuam exatamente como estavam, e o caminho da sessao
+  nao entra na mensagem (#1626).
+- **Aprovacao, ferramenta e pausa passam a ler o mesmo workspace do turno (#1912).**
+  O runtime resolvia o diretorio efetivo tres vezes por turno (na aprovacao, em cada
+  `ToolContext` e no registro da pausa); se o disco mudasse entre as leituras, a
+  ferramenta rodava com um `working_dir` diferente daquele a que o "sim" estava
+  vinculado, e a pausa era gravada para um destino que a ferramenta nao viu. Agora um
+  snapshot preguicoso por turno (que guarda tambem o `None` de uma falha) e
+  compartilhado pelos tres pontos nos caminhos batch, streaming e fallback para batch.
+  Conversa sem ferramenta continua sem criar diretorio; `contexto_de_ferramenta` segue
+  publico. O snapshot e uma string de caminho, nao um handle: nao elimina TOCTOU
+  adversarial no sistema de arquivos. Id da chamada, principal escopado por bot e E2E
+  real por Telegram/MCP seguem abertos na issue.
+- **Servidor MCP stdio deixa de largar descendentes vivos (#1913).** Desconexao,
+  restart, queda e falha de handshake so encerravam o processo que o gateway
+  lancou; filhos e netos dele ficavam orfaos, e um descendente segurando o
+  stdout do servidor morto escondia a queda. Agora cada servidor nasce lider do
+  proprio grupo de processos e o grupo inteiro e encerrado junto — sempre com o
+  lider ainda nao colhido, para um PID reciclado nunca ser atingido. No Linux,
+  quem saiu do grupo (`setsid`) e achado por um marcador de ambiente por conexao
+  e morto via `pidfd`, e os que o gateway adotou (PID 1 de container) sao
+  colhidos em vez de virarem `<defunct>`. Cada encerramento registra motivo,
+  duracao e se sobrou algum processo. Muda um comportamento: um launcher que sobe
+  o servidor em segundo plano e sai passa a ser tratado como servidor que caiu —
+  o servidor deve rodar em primeiro plano (`exec`).
+- **Chamada MCP sem resultado deixa rastro (#1913).** Timeout, erro e chamada
+  abandonada passam a registrar servidor, ferramenta, duracao e desfecho — sem
+  argumentos nem resposta. O timeout e o abandono continuam cancelando so a
+  propria chamada (`notifications/cancelled`), sem derrubar o servidor
+  compartilhado; os testes novos fixam isso com duas chamadas simultaneas.
+- **Desligamento do gateway deixa de esperar um canal para sempre (#1913).**
+  O `disconnect_all` dos canais push era a unica chamada de limpeza sem prazo
+  dentro de `shutdown_subsystems`: um `disconnect()` que nunca retornasse
+  segurava o processo depois do `SIGTERM`, e o gateway so saia pelo `SIGKILL`
+  da CLI — antes do cancelamento do WhatsApp vinculado e da limpeza final do
+  processo. O encerramento dos canais agora tem teto de 5 s (TLS 10 s + MCP
+  10 s + canais 5 s cabem no grace de 30 s da CLI), cobre tambem a espera pelo
+  lock dos canais, avisa no log quando estoura e segue o desligamento.
+- **Encerramento de servidor MCP conta cada processo uma vez (#1913).** O
+  relatorio do encerramento somava o mesmo processo a cada passada de
+  conferencia em que ele ainda aparecia vivo depois do `SIGKILL`, entao
+  `mortos_por_marcador` saia inflado sob carga (5 no lugar de 1) e o teste do
+  relatorio falhava de forma intermitente no CI da `main`. A contagem passa a
+  ser por PID.
+- **Requisicao HTTP pendurada deixa de segurar o desligamento do gateway (#1913).**
+  O caminho HTTP puro drenava as conexoes sem prazo: uma unica requisicao que
+  nao terminasse (stream longo, handler travado) segurava o servidor depois do
+  `SIGTERM`, a limpeza de MCP e canais nao rodava, e o gateway so saia pelo
+  `SIGKILL` da CLI. O dreno agora tem teto de 10 s, igual ao do TLS: passado
+  isso as conexoes abertas sao largadas com aviso no log e o desligamento
+  segue (dreno 10 s + MCP 10 s + canais 5 s cabem no grace de 30 s da CLI).
+- **Pre-stop do `restart` com orcamento unico e sem PID reciclado (#1913).** Sem
+  PID file, o pre-stop do `restart` (e do `start -d` que reinicia) encerrava os
+  PIDs que o `lsof` listasse na porta um por um, cada um com os 30 s de grace
+  inteiros: dois alvos custavam ate um minuto, e o segundo so recebia o
+  `SIGTERM` depois de o primeiro sair. Agora todos recebem `SIGTERM` antes da
+  espera e o orcamento e um so — a espera e coletiva e a escalada para `SIGKILL`
+  tambem. O `stop` (que sempre olhou um PID so) e o resto da parada passam a
+  conferir o start-time do processo (`/proc/<pid>/stat`, Linux): um PID
+  reciclado durante a espera nunca e atingido, e conta como encerrado em vez de
+  segurar o `stop` ate o fim do grace. Quando a identidade nao pode ser lida,
+  vale o comportamento anterior (escalar); nas outras plataformas nada muda.
+- **Gateway com TLS passa a encerrar de forma graciosa (#1913).** No caminho
+  HTTPS (binario compilado com `--features tls`) o listener nao tinha gancho de
+  encerramento: Ctrl+C e `SIGTERM` matavam o processo sem desconectar servidores
+  MCP nem canais, e, desde que cada servidor MCP stdio tem grupo de processos
+  proprio, os descendentes dele ficavam para tras. Agora o sinal para o
+  listener, da ate 10 s para as conexoes abertas terminarem e segue para a
+  mesma limpeza do caminho HTTP. O CI passa a compilar e testar a feature
+  `tls`, que nenhum job exercitava.
+- **CLI Unix amplia a espera pela limpeza do gateway antes do SIGKILL (#1913).**
+  `stop`, `restart` e `uninstall` aguardam ate 30 s, em vez de 5 s, antes de
+  escalar a parada, reservando tempo para o dreno TLS e a limpeza MCP. O retorno
+  continua imediato quando o processo termina; um gateway travado pode levar
+  aproximadamente 32 s para cair. Testes com processos sinteticos isolados cobrem
+  limpeza lenta, retorno rapido, escalada e preservacao de outro dominio. Nao
+  altera o Windows, nao limita o dreno HTTP/canais e nao garante contencao apos
+  parada forcada.
+- **Teste de parada da CLI deixa de travar a espera pelo SIGTERM (#1913).**
+  A fixture Python dos testes de `stop` no Linux podia perder o SIGTERM
+  entre o readiness e o `signal.pause()`. Agora ela bloqueia o sinal antes
+  do readiness e espera com `sigwait`. Nao muda codigo de producao, prazos
+  nem assercoes.
+
+### Security
+- Excecao temporaria (expira 2026-12-31) para RUSTSEC-2026-0440 (astral-tokio-tar sem manutencao, apenas dev-dependency via testcontainers) em `deny.toml` e `.cargo/audit.toml`, para destravar o gate cargo-deny (#1667).
+- **Conclusoes auditaveis: seguranca da superficie de resposta + E2E de divergencia (#1709).** O texto projetado no sumario de superficie (`resumo_de_claims` → `SurfaceSummary` → `/tool`) passa por redacao de credenciais (`[REDACTED]`) e saneamento de injecao de prompt (caracteres invisiveis removidos; conteudo hostil marcado como `[dado nao confiavel]`), com teto de tamanho por linha. Novos testes de seguranca cobrem nao-divulgacao de credenciais (GitHub PAT, header `Authorization`), marcacao de injecao via output de ferramenta e preservacao da classe de evidencia. E2E de divergencia pelo fio: alegacao de sucesso do modelo contra ledger que registrou falha e detectada como `AfirmaSucessoMasLedgerFalhou` (e `Sustentada` quando nao ha contradicao).
+- **`cli_inspect` omite valores com marcador explícito de credencial (#1712).** Campos livres de provider/model que contenham cabeçalho de autorização com esquema Bearer/Basic ou atribuição rotulada de chave/token/segredo são substituídos por `[REDACTED]` por inteiro, em vez de expor texto parcial ao modelo.
+- **Audio do Chatterbox so e baixado da origem configurada (#1754).** A URL do
+  arquivo vinha do SSE do servidor Gradio e era baixada sem conferir o destino:
+  uma resposta adulterada transformava o gateway num buscador de URL arbitraria.
+  Agora ela tem de ter a mesma origem do `tts_endpoint`, sem credenciais na URL.
+  Erros de STT/TTS (rotas `/api/stt`, `/api/tts` e `/api/voice/*`) deixam de
+  ecoar o corpo do provedor, que pode conter chave, URL interna ou transcricao.
+- Sanitizador de erros do provider: caracteres de controle e ANSI na frase do provider viram espaco, `status=` dentro da frase e neutralizado (nao falseia mais retry/mapeamento HTTP) e o `warn!` de falha de parsing do OpenAI loga so um resumo redigido (tamanho, content-type, 200 caracteres) em vez de ate 1000 caracteres do corpo cru (#1769, itens 1-3).
+- **Gate de comandos cobre a familia .NET/PowerShell de leitura de ambiente, download e spawn (#1791).**
+  `[Environment]::GetEnvironmentVariable(s)` (que com `'User'`/`'Machine'` le o
+  ambiente persistente do registro, fora do scrub R3), `reg query HKCU\Environment`,
+  `Get-ChildItem Env:` (o `printenv` do PowerShell), as chamadas `Download*`/`Upload*`
+  do `WebClient`, `Start-BitsTransfer`/`bitsadmin` e `[Diagnostics.Process]::Start`
+  passam a exigir confirmacao, no mesmo nivel de `os.environ`, `printenv` e `curl`.
+  `Start-Process` e avaliado como wrapper: decide o programa que ele dispara, com os
+  argumentos do `-ArgumentList` sem as aspas (`Start-Process notepad.exe` segue livre;
+  `Start-Process git -ArgumentList 'push --force'` pede confirmacao). `$env:PATH` segue
+  livre, como `echo $HOME`.
+- **Atribuicao na frente do comando deixa de esconder o programa do gate (#1791).**
+  `$r = iwr https://...` (PowerShell) e `FOO=1 curl ...` (POSIX) passavam livres em
+  toda regra por programa, porque o primeiro token era o alvo da atribuicao. Agora
+  recebem o tratamento do comando sem a atribuicao; `RUST_LOG=debug cargo run` segue
+  livre, e `DEBUG=1 node server.js` passa a pedir confirmacao como `node server.js`.
+- **Codigo pelo stdin e interpretador com versao no nome passam pelo gate (#1791).**
+  `echo '...' | python3` e `python3.12 -c '...'` (e `py -3 -c` no Windows, `pypy3`,
+  `perl5.36.0`, `nodejs`) passavam livres. Com isso o alias `import os as o; o.environ`
+  fica como residuo aceito, sem ancora textual: o codigo so executa passando por um
+  interpretador, e o interpretador e gated pelo programa, qualquer que seja o texto
+  (decisao em `docs/security/hardening-decisions.md` secao 7). `kubectl exec` tem o
+  mesmo tratamento do `docker exec` em todas as formas, fixado em teste.
+- **`redact_secrets` redige credencial em query string (#1792).** Depois de `?`/`&`, o valor de parametros com nome de credencial (`token`, `access_token`, `refresh_token`, `id_token`, `api_key`, `apikey`, `key`, `sig`, `signature`, `X-Amz-Signature`, `X-Amz-Security-Token`, `password`, `pwd`, `passwd`, `secret`, `client_secret`, `auth`) vira `[REDACTED]`, mantendo o nome. O diagnostico de 3xx dos providers ecoa o `Location`, que o servidor remoto escolhe, e URL assinada ou callback de OAuth carregam o segredo ali sem prefixo reconhecivel. `key=`/`token=` fora de uma query continuam intocados, para nao redigir texto comum de log.
+- Atualiza `rmcp` 3.3.0 -> 3.9.0, fechando RUSTSEC-2026-0457 (SSRF no cliente OAuth), RUSTSEC-2026-0461 (cache de schema ilimitado no servidor HTTP, alta) e RUSTSEC-2026-0462 (buffer de corpo ilimitado no cliente HTTP). `ServerInfo` (deprecado) vira `ServerConfig`.
+- Exceção temporária (expira 2026-12-31, autorizada pelo dono na #1850) para RUSTSEC-2026-0459 — `libsqlite3-sys` 0.37.0 embarca SQLite < 3.54 (CVE-2026-119375, exposição local de memória via `-wal` forjado) — preso por `sqlx-sqlite` 0.9.0 (teto `<0.38`, sem release do sqlx que consuma a 0.39+). Espelhada em `deny.toml` + `.cargo/audit.toml`; o prazo é enforced pelo `check_deny_exceptions_expiry.py` no CI, e a entrada sai (não renova) quando o `sqlx-sqlite` subir o teto para `>= 0.39`.
+- Dependencias: `rustix` 1.1.4 -> 1.1.6 no `Cargo.lock`, fechando RUSTSEC-2026-0486 (as funcoes de xattr marcavam bytes nao escritos como inicializados com buffer de tamanho zero). Era uma das duas causas do `Security Audit` vermelho na `main`; a outra, RUSTSEC-2026-0459 em `libsqlite3-sys`, segue aberta na #1850.
+- Dependencias: `quinn-proto` 0.11.18 -> 0.11.19 e `quinn-udp` 0.5.14 -> 0.5.16 no `Cargo.lock`, fechando RUSTSEC-2026-0523/0524/0538 (token de retry longo pode entrar em panico ou esgotar memoria em cliente QUIC; frame MAX_STREAM_DATA pode abrir streams acima do limite; loop de recebimento pode girar apos datagrama truncado). Tira tres das quatro causas do `Security Audit` vermelho na `main`; a quarta, RUSTSEC-2026-0459 em `libsqlite3-sys`, segue aberta na #1850.
+- Respostas do gateway passam a carregar `Strict-Transport-Security: max-age=31536000` quando o transporte efetivo é https — por TLS nativo (`gateway.tls_cert_path` / `gateway.tls_key_path` com a feature `tls`) ou por proxy TLS declarando `X-Forwarded-Proto: https`.
+- O header vale também para respostas de erro (401/403/404/429): não há caminho de resposta servida em claro sem a instrução ao navegador.
+- Sem `includeSubDomains` e sem `preload`: instalação self-hosted não controla o domínio inteiro e o preload é irreversível na prática.
+- Instalação default em http puro (`127.0.0.1:3888`) não muda — nenhum header novo.
+- **A prova do dono do Telegram que abre o relatorio do `garra_status` passa a valer so para o turno que a fez (#1910, fatia).** Desde a #1905 essa prova era um campo mutavel da sessao, compartilhado por qualquer turno concorrente na mesma sessao. Agora ela e contexto imutavel do turno: aberta so em volta do processamento de uma mensagem do Telegram (texto, streaming e voz), presa a instancia do gateway, a sessao e ao usuario, e conferida pela tool contra o contexto da chamada. Sem escopo, escopo sem prova, contexto divergente, contexto sem usuario ou task filha negam. O campo e o metodo da sessao foram removidos.
+- Nada de execucao foi habilitado: o teto `Read` da superficie remota continua valendo no turno do dono, a prova nao entra na decisao de operador e nada muda em modos, sandbox, aprovacoes, `bash` ou MCP. Os demais criterios da #1910 (principal autenticado para concessao de execucao) seguem abertos.
+- **Testes de dois processos provam que aprovacao nao sobrevive ao restart do gateway (#1912).**
+  A regra ja existia (chave HMAC sorteada por processo, registros so em memoria), mas
+  todo teste cunhava e conferia a impressao digital no mesmo processo: trocar a chave
+  por uma constante passava verde. `runtime/tests/aprovacao_apos_restart.rs` reexecuta
+  o binario de teste como "gateway A", recebe o marcador cunhado la e exige que o
+  "gateway B" negue o "sim" sobre o historico reidratado, nos tres caminhos do runtime.
+  O "sim" dentro do TTL e o `agent.approval: session` sao provados com um runtime novo
+  (registros vazios), e uma guarda de fonte impede que chave ou registros passem a ler
+  disco, banco ou ambiente. So testes; nenhum
+  comportamento de producao muda. O percurso real por Telegram e MCP delegado segue
+  aberto na issue.
+- Vincula pendências e concessões lembradas de aprovação ao caminho efetivo do turno (comparação textual): trocar de workspace exige aprovação para aquele caminho. Preserva a criação preguiçosa de diretórios, o caminho legado sem escopo e não habilita execução remota (#1912).
+- **Excecao com prazo para RUSTSEC-2026-0543/0555 (`chrono` e `chrono-tz`
+  unmaintained) (#1938).** Os dois advisories apareceram no `cargo-deny` em
+  2026-11-17 e reprovavam toda PR sem que nenhuma dependencia tivesse mudado.
+  Sao so `unmaintained` (todas as versoes, sem upgrade seguro): nao e
+  vulnerabilidade nem unsound. As duas IDs entram em `deny.toml` e
+  `.cargo/audit.toml` com `EXPIRA 2026-12-31`, verificado por
+  `scripts/security/check_deny_exceptions_expiry.py`. A saida de verdade e
+  migrar para `jiff` ou `time`, que pede ADR e plano proprios.
+- Seguranca: rusqlite 0.32 -> 0.39 (libsqlite3-sys 0.30.1 -> 0.37.0); `u64`/`usize` deixam de ser `ToSql`/`FromSql` e os dois pontos afetados convertem de forma explicita. Isto NAO fecha o RUSTSEC-2026-0459: a correcao exige `libsqlite3-sys` >= 0.39, e o `sqlx-sqlite 0.9.0` limita a crate a < 0.38 (so uma versao pode ligar `sqlite3`). O upgrade encurta o caminho ate la; o advisory segue aberto ate sair um `sqlx` compativel.
+
 ## [0.5.2-rc4] - 2026-11-03
 
 Quarto candidato da v0.5.2, publicado como pre-lancamento: e a rc3 mais a

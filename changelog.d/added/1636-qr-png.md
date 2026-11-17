@@ -1,3 +1,0 @@
-- O motor de QR do canal `whatsapp_linked` ganha rasterização para janela: `qr::png(payload, scale)` devolve um PNG em tons de cinza (8 bits, sem alfa, margem de 4 módulos conforme a norma) pronto para `<img>`/`drawImage` do app desktop, sem terminal.
-- Sem dependência nova: o PNG é escrito à mão (chunks + CRC32 + zlib com blocos *stored*), então a crate `qrcode` segue com `default-features = false` e `image`/`svg` continuam fora do grafo.
-- A polaridade é a da norma (módulo escuro = preto, fundo branco), diferente da do terminal — que desenha o claro porque o tema do terminal é desconhecido. A matriz é a mesma de `qr::modules`, um único motor.
