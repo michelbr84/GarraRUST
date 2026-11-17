@@ -15,10 +15,14 @@
 //! ferramenta passa por [`classificar`]:
 //!
 //! - **Deterministica** — a frase de sessao sem raiz do jail
-//!   (`NO_ROOTS_MESSAGE`) ou a recusa sem repositorio do `repo_search`: nao
-//!   dependem do input, entao repetir nao muda nada dentro do turno, e abre
-//!   **ate o fim do turno**. O turno seguinte sonda de novo (o usuario pode
-//!   ter selecionado um projeto).
+//!   (`NO_ROOTS_MESSAGE`), a recusa sem repositorio do `repo_search` ou a
+//!   recusa do `repo_search` numa sessao cujo diretorio morreu
+//!   (`SESSAO_SEM_DIRETORIO`, #1909): nao dependem do input, entao repetir
+//!   nao muda nada dentro do turno, e abre **ate o fim do turno**. O turno
+//!   seguinte sonda de novo (o usuario pode ter selecionado um projeto). A do
+//!   diretorio morto vale so para quem a emite com QUALQUER input
+//!   ([`SEM_DIRETORIO_COM_QUALQUER_INPUT`]) e tem uma saida dentro do turno
+//!   ([`PODEM_CRIAR_DIRETORIO`]).
 //! - **Transitoria** — o timeout do despacho: abre por um cooldown que dobra a
 //!   cada timeout seguido ([`COOLDOWN_BASE`] ate [`COOLDOWN_TETO`]) e que
 //!   ATRAVESSA turnos — uma mensagem nova um segundo depois nao e motivo para
@@ -53,6 +57,7 @@ use std::time::{Duration, Instant};
 use super::ToolOutput;
 use super::file_jail::NO_ROOTS_MESSAGE;
 use super::repo_search_tool::SEM_REPOSITORIO;
+use super::tool_context::SESSAO_SEM_DIRETORIO;
 
 /// O prefixo da saida de erro que o despacho monta quando a ferramenta
 /// estoura o timeout do orcamento. Vive aqui porque e a classificacao que
@@ -76,6 +81,23 @@ pub const ASSINATURA_MAX: usize = 200;
 /// do `TurnStatsRegistry`).
 pub const MAX_SESSOES: usize = 512;
 
+/// Ferramentas em que a recusa por diretorio de sessao ausente NAO depende
+/// do input, e por isso e deterministica (#1909). So o `repo_search`: ele
+/// busca sempre no diretorio da sessao. `file_read` e `list_dir` emitem a
+/// mesma frase, mas so para caminho RELATIVO — um absoluto dentro de uma raiz
+/// declarada (`agent.file_roots`) segue para o jail e pode dar certo. Pausar
+/// essas duas na primeira recusa barraria uma chamada que funcionaria; para
+/// elas a recusa continua generica (tres iguais no turno).
+pub const SEM_DIRETORIO_COM_QUALQUER_INPUT: &[&str] = &["repo_search"];
+
+/// Ferramentas cujo SUCESSO pode fazer o diretorio da sessao voltar a
+/// existir no meio do turno (`file_write` cria os ancestrais; `bash` roda
+/// `mkdir`). Quando uma delas da certo, as pausas por
+/// [`Deterministica::SemDiretorioDaSessao`] das OUTRAS ferramentas da sessao
+/// fecham: a causa pode ter sumido, e a sonda seguinte custa um `stat`.
+/// Nenhuma das duas emite essa recusa, entao nao ha como ficar em ciclo.
+pub const PODEM_CRIAR_DIRETORIO: &[&str] = &["file_write", "bash"];
+
 /// Por que uma falha e deterministica: repetir a chamada neste turno, com
 /// qualquer input, falha igual.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +108,11 @@ pub enum Deterministica {
     SemRaiz,
     /// A recusa do `repo_search` sem repositorio ativo (#1380).
     SemRepositorio,
+    /// `SESSAO_SEM_DIRETORIO` (#1909): o `working_dir` da sessao nao existe
+    /// ou nao e diretorio, e a ferramenta recusa com qualquer input ate ele
+    /// voltar a existir. So vale para [`SEM_DIRETORIO_COM_QUALQUER_INPUT`]:
+    /// [`Breaker::registrar`] rebaixa a generica nas outras.
+    SemDiretorioDaSessao,
 }
 
 impl Deterministica {
@@ -94,6 +121,7 @@ impl Deterministica {
         match self {
             Self::SemRaiz => "no_roots",
             Self::SemRepositorio => "no_repository",
+            Self::SemDiretorioDaSessao => "session_dir_unavailable",
         }
     }
 
@@ -107,6 +135,11 @@ impl Deterministica {
             Self::SemRepositorio => {
                 "nao ha repositorio ativo para buscar nesta sessao (sem diretorio de trabalho, e \
                  o diretorio do processo nao e um repositorio)"
+            }
+            Self::SemDiretorioDaSessao => {
+                "o diretorio de trabalho desta sessao nao esta acessivel (nao existe ou nao e \
+                 um diretorio), e a ferramenta recusa qualquer caminho ate o usuario selecionar \
+                 um projeto existente"
             }
         }
     }
@@ -155,6 +188,10 @@ pub fn classificar(saida: &ToolOutput) -> Veredito {
         Classe::Deterministica(Deterministica::SemRaiz)
     } else if texto.contains(SEM_REPOSITORIO) {
         Classe::Deterministica(Deterministica::SemRepositorio)
+    } else if texto.starts_with(SESSAO_SEM_DIRETORIO) {
+        // `starts_with`, e nao `contains`: a recusa e a saida INTEIRA da tool.
+        // Um arquivo lido ou um stderr que cite a frase no meio nao e ela.
+        Classe::Deterministica(Deterministica::SemDiretorioDaSessao)
     } else if texto.starts_with(TIMEOUT_PREFIXO) {
         Classe::Transitoria
     } else {
@@ -306,6 +343,14 @@ impl Breaker {
         let antes = self.estado(tool, agora).esta_aberto();
         match classificar(saida) {
             Veredito::Sucesso => self.registrar_sucesso(tool),
+            // A frase e a mesma nas tres tools, mas so e independente do
+            // input em algumas: nas outras conta como erro generico.
+            Veredito::Falha(Classe::Deterministica(Deterministica::SemDiretorioDaSessao))
+                if !SEM_DIRETORIO_COM_QUALQUER_INPUT.contains(&tool) =>
+            {
+                let generica = Classe::Generica(assinatura(saida.content.as_str()));
+                self.registrar_falha(tool, generica, agora);
+            }
             Veredito::Falha(classe) => self.registrar_falha(tool, classe, agora),
             Veredito::Neutro => {}
         }
@@ -314,8 +359,21 @@ impl Breaker {
 
     /// Uma chamada que deu certo fecha o breaker da ferramenta e zera a
     /// serie de timeouts.
+    ///
+    /// Sucesso de uma das [`PODEM_CRIAR_DIRETORIO`] fecha tambem as pausas
+    /// por diretorio de sessao ausente das outras ferramentas (#1909): o
+    /// diretorio pode ter sido criado agora. So essa causa; timeout e erro
+    /// repetido de outra ferramenta nao mudam.
     pub fn registrar_sucesso(&mut self, tool: &str) {
         self.por_tool.remove(tool);
+        if PODEM_CRIAR_DIRETORIO.contains(&tool) {
+            let ausente = Motivo::Deterministica(Deterministica::SemDiretorioDaSessao);
+            for r in self.por_tool.values_mut() {
+                if r.no_turno.as_ref() == Some(&ausente) {
+                    r.no_turno = None;
+                }
+            }
+        }
     }
 
     pub fn registrar_falha(&mut self, tool: &str, classe: Classe, agora: Instant) {

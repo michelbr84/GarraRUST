@@ -423,9 +423,14 @@ Detalhes do que e feito:
 > **Falha repetida abre o breaker (#1417).** Cada sessao tem um circuit
 > breaker por ferramenta, no unico ponto de despacho do runtime. Uma falha
 > **deterministica** — sem raiz para as file tools, `repo_search` sem
-> repositorio — poe a ferramenta em pausa ate o fim do turno: se o modelo a
-> pedir de novo, ela nao roda, e volta um resultado de ferramenta com o
-> motivo (`no_roots`, `no_repository`) e a instrucao de nao repetir. Um
+> repositorio, `repo_search` numa sessao cujo diretorio de trabalho nao existe
+> mais — poe a ferramenta em pausa ate o fim do turno: se o modelo a pedir de
+> novo, ela nao roda, e volta um resultado de ferramenta com o motivo
+> (`no_roots`, `no_repository`, `session_dir_unavailable`) e a instrucao de
+> nao repetir. A pausa por diretorio ausente fecha antes se um `file_write` ou
+> `bash` der certo no turno, porque qualquer um dos dois pode ter criado o
+> diretorio; `file_read` e `list_dir` nao entram nela, porque um caminho
+> absoluto dentro de uma raiz declarada ainda pode funcionar. Um
 > **timeout** abre um cooldown que dobra a cada timeout seguido (15s, 30s,
 > 60s, teto de 120s) e atravessa turnos; um erro generico so abre depois de
 > tres iguais no mesmo turno (`repeated_error`). A recusa de caminho **fora
