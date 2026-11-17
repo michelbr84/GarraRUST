@@ -1414,6 +1414,17 @@ pub async fn build_router_for_test_with_storage(
 /// their transport is dropped regardless.
 const MCP_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Upper bound for disconnecting the push channels at shutdown. Same reason as
+/// [`MCP_SHUTDOWN_TIMEOUT`]: a channel whose `disconnect()` never returns
+/// (hung socket, poller ignoring cancellation) must not hold the process open
+/// forever.
+///
+/// 5 s, not 10 s, because the CLI grace on Unix is 30 s total: TLS draining
+/// can take 10 s, MCP shutdown another 10 s, and the three together must leave
+/// margin before `kill_and_wait` escalates to SIGKILL
+/// (`crates/garraia-cli/src/main.rs`).
+const CHANNELS_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// #1247: qual campo de TLS falta quando so um dos dois esta configurado,
 /// ou `None` quando os dois estao (TLS) ou nenhum esta (HTTP de proposito).
 /// Os nomes batem com os campos dos achados do `garraia config check`.
@@ -2109,10 +2120,37 @@ async fn shutdown_subsystems(state: &Arc<AppState>) {
     }
 
     info!("disconnecting channels...");
-    state.channels.write().await.disconnect_all().await.ok();
+    if let Some(limite) = desligar_canais(state, CHANNELS_SHUTDOWN_TIMEOUT).await {
+        warn!(
+            "channel disconnect exceeded {:?}; continuing shutdown",
+            limite
+        );
+    }
 
     if state.whatsapp_linked.cancelar() {
         info!("whatsapp_linked: supervisor cancelado");
+    }
+}
+
+/// Encerra os canais push com teto. Devolve o limite quando ele estourou
+/// (para o chamador avisar no log) e `None` quando `disconnect_all` retornou
+/// dentro do prazo — inclusive quando algum canal falhou, caso que o proprio
+/// registro ja loga por canal.
+///
+/// O teto cobre tambem a aquisicao do write lock: um `send_message` em
+/// andamento segura o lock de leitura enquanto envia, e o desligamento
+/// esperaria por ele sem prazo se so a chamada interna fosse limitada.
+async fn desligar_canais(
+    state: &Arc<AppState>,
+    limite: std::time::Duration,
+) -> Option<std::time::Duration> {
+    let desconexao = async {
+        let mut canais = state.channels.write().await;
+        canais.disconnect_all().await
+    };
+    match tokio::time::timeout(limite, desconexao).await {
+        Ok(_) => None,
+        Err(_) => Some(limite),
     }
 }
 
@@ -2192,6 +2230,166 @@ mod tests {
         ));
         shutdown_subsystems(&state).await;
         assert!(!state.whatsapp_linked.cancelamento_vivo());
+    }
+
+    /// **Teto do encerramento dos canais.** O `disconnect_all` daqui era a
+    /// unica chamada de desligamento sem prazo: se um canal travasse no
+    /// `disconnect()` (socket pendurado, poller que ignora cancelamento), o
+    /// gateway nunca chegava ao `gateway shut down gracefully` e a CLI so
+    /// saia do processo pelo SIGKILL — no meio da limpeza de MCP e do
+    /// WhatsApp vinculado. O bloco de MCP logo acima ja tinha teto; o dos
+    /// canais nao.
+    struct CanalDeTeste {
+        entrou: Arc<AtomicUsize>,
+        /// `None` = `disconnect()` nunca retorna (quando `erro` e falso).
+        atraso: Option<std::time::Duration>,
+        /// `disconnect()` devolve erro em vez de encerrar normalmente.
+        erro: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl garraia_channels::Channel for CanalDeTeste {
+        fn channel_type(&self) -> &str {
+            "canal-de-teste"
+        }
+
+        fn display_name(&self) -> &str {
+            "Canal de teste"
+        }
+
+        async fn connect(&mut self) -> garraia_common::Result<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&mut self) -> garraia_common::Result<()> {
+            self.entrou.fetch_add(1, Ordering::SeqCst);
+            match self.atraso {
+                Some(atraso) => {
+                    tokio::time::sleep(atraso).await;
+                    Ok(())
+                }
+                None if self.erro => Err(garraia_common::Error::Channel(
+                    "disconnect falhou (teste)".into(),
+                )),
+                None => std::future::pending::<garraia_common::Result<()>>().await,
+            }
+        }
+
+        async fn send_message(
+            &self,
+            _message: &garraia_common::Message,
+        ) -> garraia_common::Result<()> {
+            Ok(())
+        }
+
+        fn status(&self) -> garraia_channels::ChannelStatus {
+            garraia_channels::ChannelStatus::Disconnected
+        }
+    }
+
+    fn estado_com_canal(
+        atraso: Option<std::time::Duration>,
+        erro: bool,
+    ) -> (Arc<AppState>, Arc<AtomicUsize>) {
+        use garraia_agents::AgentRuntime;
+        use garraia_channels::ChannelRegistry;
+
+        let entrou = Arc::new(AtomicUsize::new(0));
+        let mut registry = ChannelRegistry::new();
+        registry.register(Box::new(CanalDeTeste {
+            entrou: entrou.clone(),
+            atraso,
+            erro,
+        }));
+        let state = Arc::new(AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            registry,
+        ));
+        (state, entrou)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn canal_que_nunca_encerra_respeita_o_teto() {
+        let (state, entrou) = estado_com_canal(None, false);
+        let limite = std::time::Duration::from_millis(100);
+
+        let estourou = desligar_canais(&state, limite).await;
+
+        assert_eq!(
+            estourou,
+            Some(limite),
+            "o estouro do teto tem de ser devolvido para o chamador avisar no log"
+        );
+        assert_eq!(
+            entrou.load(Ordering::SeqCst),
+            1,
+            "premissa: o canal foi chamado e ficou pendurado - nao foi pulado"
+        );
+    }
+
+    /// O teto tem de cobrir a aquisicao do lock, nao so o `disconnect_all`:
+    /// um `send_message` em andamento segura o lock de leitura, e o
+    /// desligamento espera por ele.
+    #[tokio::test(start_paused = true)]
+    async fn teto_cobre_a_espera_pelo_lock_dos_canais() {
+        let (state, _entrou) = estado_com_canal(None, false);
+        let limite = std::time::Duration::from_millis(100);
+        let leitor = state.channels.read().await;
+
+        let estourou = desligar_canais(&state, limite).await;
+
+        drop(leitor);
+        assert_eq!(
+            estourou,
+            Some(limite),
+            "com o write lock preso por um leitor, o desligamento ainda tem de respeitar o teto"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn canal_que_encerra_a_tempo_nao_avisa_estouro() {
+        let (state, entrou) = estado_com_canal(Some(std::time::Duration::from_millis(1)), false);
+
+        let estourou = desligar_canais(&state, std::time::Duration::from_secs(5)).await;
+
+        assert_eq!(
+            estourou, None,
+            "caminho normal nao pode emitir aviso de teto"
+        );
+        assert_eq!(entrou.load(Ordering::SeqCst), 1);
+    }
+
+    /// Falha de um canal nao e estouro de prazo: o registro ja loga o erro por
+    /// canal e o chamador nao pode avisar "exceeded" no caso errado.
+    #[tokio::test(start_paused = true)]
+    async fn canal_que_falha_ao_encerrar_nao_vira_aviso_de_teto() {
+        let (state, entrou) = estado_com_canal(None, true);
+
+        let estourou = desligar_canais(&state, std::time::Duration::from_secs(5)).await;
+
+        assert_eq!(estourou, None);
+        assert_eq!(entrou.load(Ordering::SeqCst), 1);
+    }
+
+    /// Os testes acima provam a funcao; este prova que o desligamento REAL a
+    /// usa. Sem o teto, o `timeout` externo estoura e o teste FALHA - nao
+    /// trava a suite (tempo pausado + prazo explicito).
+    #[tokio::test(start_paused = true)]
+    async fn o_desligamento_do_gateway_nao_passa_do_teto_com_canal_travado() {
+        let (state, entrou) = estado_com_canal(None, false);
+
+        tokio::time::timeout(
+            CHANNELS_SHUTDOWN_TIMEOUT + std::time::Duration::from_secs(5),
+            shutdown_subsystems(&state),
+        )
+        .await
+        .expect(
+            "shutdown_subsystems tem de voltar depois do teto dos canais; sem o teto ele espera \
+             o disconnect pendurado para sempre",
+        );
+
+        assert_eq!(entrou.load(Ordering::SeqCst), 1);
     }
 
     #[test]
