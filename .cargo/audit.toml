@@ -199,6 +199,13 @@ ignore = [
     # EXPIRA 2026-12-31. Acompanhamento: #1667.
     "RUSTSEC-2026-0440",
 
+    # --- chrono / chrono-tz (RUSTSEC-2026-0543 / -0555) — unmaintained ---
+    # Espelho do deny.toml: no CI desde 2026-11-17, todas as versoes, sem
+    # upgrade seguro; nao e vulnerabilidade nem unsound. O gate do prazo vive no
+    # deny.toml. EXPIRA 2026-12-31. Acompanhamento: #1938.
+    "RUSTSEC-2026-0543",
+    "RUSTSEC-2026-0555",
+
     # --- libsqlite3-sys 0.37.0 (RUSTSEC-2026-0459) — CVE-2026-119375 (SQLite < 3.54) ---
     # Vulnerabilidade REAL (memory-exposure local), a primeira entrada de
     # vulnerabilidade espelhada desde o fim do rsa. SQLite bundled < 3.54 pode

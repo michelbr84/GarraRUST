@@ -175,6 +175,18 @@ ignore = [
     # testcontainers trocar de crate de tar. Acompanhamento: #1667.
     { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar unmaintained (Astral ended maintenance 2026-11-03); no vulnerability. Dev-only chain: testcontainers -> astral-tokio-tar (tests only, not in release binary). EXPIRA 2026-12-31 (sem upstream: testcontainers 0.28.0 ainda depende de ^0.6.1). Acompanhamento: #1667." },
 
+    # --- chrono 0.4.45 / chrono-tz 0.10.4 (RUSTSEC-2026-0543 / -0555): unmaintained ---
+    # Apareceram no cargo-deny do CI em 2026-11-17: as duas crates declaradas sem mantenedor
+    # (todas as versoes; "No safe upgrade is available"). NAO e vulnerabilidade
+    # nem unsound. chrono e dependencia direta de 10 crates do workspace e chega
+    # tambem por chrono-tz, croner, rrule e sqlx — sair dele e migracao (jiff ou
+    # time), nao bump; pede ADR e plano proprios. Excecao TEMPORARIA para o
+    # cargo-deny nao reprovar toda PR enquanto a decisao e tomada. Ao vencer:
+    # renovar com justificativa nova (plano de migracao ou mantenedor novo
+    # upstream) ou remover. Acompanhamento: #1938.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained (all versions, no safe upgrade); no vulnerability, not unsound. Direct dep of 10 workspace crates plus chrono-tz/croner/rrule/sqlx; leaving it is a migration, not a bump. EXPIRA 2026-12-31. Acompanhamento: #1938." },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained (all versions, no safe upgrade); no vulnerability, not unsound. Used by garraia-db, garraia-workspace and rrule; leaves the graph together with chrono. EXPIRA 2026-12-31. Acompanhamento: #1938." },
+
     # --- libsqlite3-sys 0.37.0 (RUSTSEC-2026-0459): SQLite C < 3.54 (CVE-2026-119375) ---
     # Vulnerabilidade REAL (memory-exposure LOCAL): SQLite < 3.54.0 pode devolver
     # memoria de page-cache nao inicializada quando o processo abre um .db cujo
