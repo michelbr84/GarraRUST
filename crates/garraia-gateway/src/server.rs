@@ -1506,13 +1506,63 @@ async fn serve_plain(
         warn!("{aviso}");
     }
     info!("GarraIA gateway listening on http://{}", addr);
-    axum::serve(
+    servir_http_ate(listener, app, shutdown_signal(), HTTP_SHUTDOWN_GRACE).await
+}
+
+/// Teto do encerramento gracioso do caminho HTTP, igual ao do TLS
+/// ([`TLS_SHUTDOWN_GRACE`]): passado isso o `serve` e largado com as
+/// requisicoes ainda abertas. Os dois caminhos sao excludentes, entao a conta
+/// do grace de 30 s da CLI e a mesma: dreno 10 s + MCP 10 s + canais 5 s.
+const HTTP_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Serve HTTP em `listener` ate `sinal`, e depois drena por no maximo `teto`.
+///
+/// #1913: `with_graceful_shutdown` sozinho espera TODAS as conexoes
+/// terminarem, sem prazo — uma unica requisicao pendurada (stream longo,
+/// handler travado) segurava o `serve` e, com ele, o `shutdown_subsystems`
+/// que vem depois; o gateway so saia pelo SIGKILL da CLI, com a arvore dos
+/// servidores MCP para tras. Estourado o teto, o `serve` e largado: o
+/// listener fecha, o chamador segue para a limpeza, e as tarefas das
+/// conexoes que sobraram morrem com o runtime na saida do processo.
+///
+/// O sinal e esperado NESTA tarefa (o `with_graceful_shutdown` do axum o
+/// moveria para uma tarefa a parte, onde um panico ao instalar o handler
+/// sumiria em silencio).
+async fn servir_http_ate(
+    listener: TcpListener,
+    app: axum::Router,
+    sinal: impl std::future::Future<Output = ()>,
+    teto: std::time::Duration,
+) -> Result<()> {
+    use std::future::IntoFuture;
+
+    let (dispara, disparado) = tokio::sync::oneshot::channel::<()>();
+    let servir = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))
+    .with_graceful_shutdown(async move {
+        let _ = disparado.await;
+    })
+    .into_future();
+    tokio::pin!(servir);
+    let servido = tokio::select! {
+        r = &mut servir => r,
+        () = sinal => {
+            let _ = dispara.send(());
+            match tokio::time::timeout(teto, &mut servir).await {
+                Ok(r) => r,
+                Err(_) => {
+                    warn!(
+                        "HTTP connections still open after {:?}; dropping them to continue shutdown",
+                        teto
+                    );
+                    Ok(())
+                }
+            }
+        }
+    };
+    servido.map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))
 }
 
 /// Teto do encerramento gracioso do caminho TLS: passado isso, as conexoes
@@ -2517,6 +2567,132 @@ mod tests {
         )
         .await;
         assert!(r.is_err(), "com credencial serve ate o timeout: {r:?}");
+    }
+
+    // ---- #1913: o dreno do caminho HTTP tem teto -----------------------
+
+    /// Rota `/preso` cujo handler nunca responde, e o aviso de que a
+    /// requisicao ja chegou nele.
+    fn app_com_rota_presa() -> (axum::Router, Arc<tokio::sync::Notify>) {
+        let chegou = Arc::new(tokio::sync::Notify::new());
+        let aviso = Arc::clone(&chegou);
+        let app = axum::Router::new().route(
+            "/preso",
+            axum::routing::get(move || {
+                let aviso = Arc::clone(&aviso);
+                async move {
+                    aviso.notify_one();
+                    std::future::pending::<()>().await;
+                }
+            }),
+        );
+        (app, chegou)
+    }
+
+    /// Comportamento: uma requisicao que nunca termina nao segura o
+    /// encerramento alem do teto — o `serve` retorna `Ok`, avisa no log, e o
+    /// chamador chega a `shutdown_subsystems`. **Mutacao**: troque o
+    /// `timeout(teto, ..)` por um `.await` direto e este teste estoura o
+    /// prazo externo (era o comportamento antigo).
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn dreno_http_respeita_o_teto_com_requisicao_presa() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let porta = listener.local_addr().expect("local_addr");
+        let (app, chegou) = app_com_rota_presa();
+        let (dispara, sinal) = tokio::sync::oneshot::channel::<()>();
+        let teto = std::time::Duration::from_millis(300);
+        let servindo = tokio::spawn(servir_http_ate(
+            listener,
+            app,
+            async move {
+                let _ = sinal.await;
+            },
+            teto,
+        ));
+
+        // O cliente fica vivo ate o fim: fechar o socket nao e o que solta o
+        // servidor aqui.
+        let mut cliente = tokio::net::TcpStream::connect(porta)
+            .await
+            .expect("connect");
+        cliente
+            .write_all(b"GET /preso HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .expect("request");
+        tokio::time::timeout(std::time::Duration::from_secs(5), chegou.notified())
+            .await
+            .expect("a requisicao chega ao handler");
+
+        let inicio = std::time::Instant::now();
+        dispara.send(()).expect("o servidor ainda espera o sinal");
+        let fim = tokio::time::timeout(std::time::Duration::from_secs(5), servindo)
+            .await
+            .expect("o dreno nao passa do teto")
+            .expect("a tarefa nao entra em panico");
+        assert!(fim.is_ok(), "estourar o teto nao e erro: {fim:?}");
+        assert!(
+            inicio.elapsed() >= teto,
+            "a requisicao aberta ganha o teto inteiro antes de ser largada"
+        );
+        assert!(logs_contain("HTTP connections still open after"));
+        drop(cliente);
+    }
+
+    /// O outro lado: sem requisicao aberta o sinal encerra na hora, sem
+    /// esperar o teto e sem o aviso.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn dreno_http_sem_conexao_encerra_sem_esperar_o_teto() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let (dispara, sinal) = tokio::sync::oneshot::channel::<()>();
+        let mut servindo = tokio::spawn(servir_http_ate(
+            listener,
+            axum::Router::new(),
+            async move {
+                let _ = sinal.await;
+            },
+            std::time::Duration::from_secs(60),
+        ));
+
+        if let Ok(cedo) =
+            tokio::time::timeout(std::time::Duration::from_millis(300), &mut servindo).await
+        {
+            panic!("sem sinal o HTTP deveria seguir servindo, mas retornou: {cedo:?}");
+        }
+
+        dispara.send(()).expect("o servidor ainda espera o sinal");
+        let fim = tokio::time::timeout(std::time::Duration::from_secs(5), servindo)
+            .await
+            .expect("sem conexao aberta o serve retorna sem esperar o teto")
+            .expect("a tarefa nao entra em panico");
+        assert!(fim.is_ok(), "encerramento gracioso nao e erro: {fim:?}");
+        assert!(!logs_contain("HTTP connections still open after"));
+    }
+
+    /// FIACAO: `serve_plain` entrega o sinal real do processo e o teto de
+    /// producao. Sem espacos: a quebra de linha do rustfmt nao e contrato.
+    #[test]
+    fn serve_plain_drena_com_o_sinal_e_o_teto_de_producao() {
+        let fonte: String = include_str!("server.rs").split_whitespace().collect();
+        let inicio = fonte
+            .find("asyncfnserve_plain(")
+            .expect("serve_plain existe no fonte");
+        let resto = &fonte[inicio..];
+        let fim = resto
+            .find("asyncfnservir_http_ate(")
+            .expect("servir_http_ate vem depois de serve_plain");
+        assert!(
+            resto[..fim]
+                .contains("servir_http_ate(listener,app,shutdown_signal(),HTTP_SHUTDOWN_GRACE)"),
+            "serve_plain usa o dreno com teto"
+        );
+        // O orcamento da parada: dreno + MCP + canais abaixo do grace de 30 s
+        // da CLI (`kill_and_wait`), nos dois caminhos.
+        let soma = HTTP_SHUTDOWN_GRACE + MCP_SHUTDOWN_TIMEOUT + CHANNELS_SHUTDOWN_TIMEOUT;
+        assert!(soma < std::time::Duration::from_secs(30), "{soma:?}");
     }
 
     // ---- #1913: o caminho TLS retorna no sinal -------------------------
