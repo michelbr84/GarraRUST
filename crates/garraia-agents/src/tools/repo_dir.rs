@@ -39,6 +39,8 @@
 
 use std::path::{Path, PathBuf};
 
+use super::tool_context::{CAMINHO_FORA_DO_TURNO, pode_revelar_caminho_do_host};
+
 /// O diretório em que o `git` desta chamada vai rodar, com a procedência da
 /// escolha — e é a procedência que entra na resposta da tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,14 +94,22 @@ impl RepoDir {
     /// #1465). O que a #1258 exige — dizer **de qual** repositório a resposta
     /// falou, sem cair silenciosamente no CWD — continua nomeado: é o
     /// working_dir da sessão. O caso `ProcessoCwd` (sessão SEM working_dir)
-    /// segue nomeando o CWD: ali o caminho é o do próprio gateway, não um
-    /// segredo por-chamador, e nomeá-lo é o que desfaz a confusão da #1258.
+    /// segue nomeando a procedência, mas o caminho do CWD do gateway agora
+    /// passa pelo portão do turno (#1909): num turno restrito ele é o caminho
+    /// do HOST, o mesmo dado que o `garra_status` retém de propósito (#1347) e
+    /// que as mensagens de `list_dir`/`file_read` deixaram de entregar na
+    /// #1936. O que a #1258 exige — dizer que a resposta veio do CWD do
+    /// processo, e não do working_dir de uma sessão que não existe — continua
+    /// dito; só o caminho troca pelo marcador.
     pub fn descricao(&self) -> String {
         match self {
             Self::Sessao(_) => "o working_dir da sessão".to_string(),
-            Self::ProcessoCwd(Some(cwd)) => format!(
+            Self::ProcessoCwd(Some(cwd)) if pode_revelar_caminho_do_host() => format!(
                 "{} (CWD do processo do gateway — a sessão não tem working_dir)",
                 cwd.display()
+            ),
+            Self::ProcessoCwd(Some(_)) => format!(
+                "{CAMINHO_FORA_DO_TURNO} (CWD do processo do gateway — a sessão não tem working_dir)"
             ),
             Self::ProcessoCwd(None) => "indeterminado (CWD do processo do gateway ilegível — \
                  a sessão não tem working_dir)"
@@ -207,18 +217,50 @@ mod tests {
     }
 
     /// Sem `working_dir` o git continua herdando o CWD (`cwd_do_git` é `None`),
-    /// e é justamente por isso que a resposta tem de nomear o diretório.
-    #[test]
-    fn sem_working_dir_herda_o_cwd_mas_nomeia_ele() {
+    /// e é justamente por isso que a resposta tem de nomear o diretório. O
+    /// teste roda no escopo de um turno ABERTO (`com_restricao_do_turno(false)`),
+    /// que é o do operador local — fora do runtime o portão é fail-closed e o
+    /// caminho não sai (#1909).
+    #[tokio::test]
+    async fn sem_working_dir_herda_o_cwd_mas_nomeia_ele() {
         let repo = RepoDir::decidir(None);
         assert_eq!(repo.cwd_do_git(), None);
         let cwd = std::env::current_dir().expect("CWD do processo de teste");
+        let descricao =
+            crate::tools::turn_tools::com_restricao_do_turno(false, async { repo.descricao() })
+                .await;
         assert!(
-            repo.descricao().contains(&cwd.display().to_string()),
-            "{}",
-            repo.descricao()
+            descricao.contains(&cwd.display().to_string()),
+            "{descricao}"
         );
-        assert!(repo.descricao().contains("não tem working_dir"));
+        assert!(descricao.contains("não tem working_dir"), "{descricao}");
+    }
+
+    /// #1909: no turno restrito o CWD do processo do gateway é caminho do HOST
+    /// e não sai na resposta do `git_diff`/`code_review`. A procedência
+    /// continua nomeada (é o que a #1258 exige) e o lugar do caminho é o
+    /// marcador das outras tools.
+    #[tokio::test]
+    async fn sem_working_dir_no_turno_restrito_o_cwd_nao_sai() {
+        let repo = RepoDir::ProcessoCwd(Some(PathBuf::from("/home/alguem/projeto-secreto")));
+        let descricao =
+            crate::tools::turn_tools::com_restricao_do_turno(true, async { repo.descricao() })
+                .await;
+        assert!(descricao.contains("não tem working_dir"), "{descricao}");
+        assert!(
+            descricao.contains(CAMINHO_FORA_DO_TURNO),
+            "o lugar do caminho deveria ser o marcador: {descricao}"
+        );
+        assert!(
+            !descricao.contains("/home/alguem"),
+            "o caminho do host saiu no turno restrito: {descricao}"
+        );
+        // A linha de contexto é a que abre a resposta da tool: mesmo portão.
+        let linha = crate::tools::turn_tools::com_restricao_do_turno(true, async {
+            repo.linha_de_contexto()
+        })
+        .await;
+        assert!(!linha.contains("/home/alguem"), "{linha}");
     }
 
     /// `Some("")` / `Some("  ")` é o mesmo que ausente: `current_dir("")`

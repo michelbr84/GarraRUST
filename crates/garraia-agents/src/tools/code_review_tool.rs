@@ -551,19 +551,60 @@ mod tests {
     /// mantido e a resposta o nomeia. Vale para os dois desfechos — a revisão
     /// de uma árvore suja e o "No diff output" de uma árvore limpa, que é
     /// caminho de erro —, então o teste afirma só o que é comum aos dois.
+    /// Turno ABERTO (operador local); no restrito o caminho não sai (#1909).
     #[tokio::test]
     async fn sem_working_dir_o_code_review_nomeia_o_repositorio_do_cwd() {
         let tool = tool_com_eco();
         let cwd = std::env::current_dir().expect("CWD do processo de teste");
 
-        let saida = tool
-            .execute(&ctx(None), serde_json::json!({}))
-            .await
-            .expect("execute");
+        let saida = crate::tools::turn_tools::com_restricao_do_turno(false, async {
+            tool.execute(&ctx(None), serde_json::json!({}))
+                .await
+                .expect("execute")
+        })
+        .await;
 
         assert!(
             saida.content.contains(&cwd.display().to_string()),
             "{}",
+            saida.content
+        );
+        assert!(
+            saida.content.contains("a sessão não tem working_dir"),
+            "{}",
+            saida.content
+        );
+    }
+
+    /// #1909 no `code_review`: num turno restrito a mesma revisão de sessão
+    /// sem `working_dir` não entrega o caminho do HOST. A procedência
+    /// continua nomeada; o lugar do caminho é o marcador das outras tools.
+    #[tokio::test]
+    async fn sem_working_dir_no_turno_restrito_o_code_review_nao_nomeia_o_cwd() {
+        let tool = tool_com_eco();
+        let cwd = std::env::current_dir().expect("CWD do processo de teste");
+
+        let saida = crate::tools::turn_tools::com_restricao_do_turno(true, async {
+            tool.execute(&ctx(None), serde_json::json!({}))
+                .await
+                .expect("execute")
+        })
+        .await;
+
+        // A linha de procedência da revisão, e não o corpo: o corpo inclui o
+        // diff ecoado pelo provedor de teste.
+        let procedencia = saida
+            .content
+            .lines()
+            .find(|l| l.contains("Repositório:"))
+            .unwrap_or_default();
+        assert!(
+            procedencia.contains(crate::tools::tool_context::CAMINHO_FORA_DO_TURNO),
+            "o lugar do caminho deveria ser o marcador: {procedencia}"
+        );
+        assert!(
+            !saida.content.contains(&cwd.display().to_string()),
+            "o CWD do host saiu no turno restrito:\n{}",
             saida.content
         );
         assert!(

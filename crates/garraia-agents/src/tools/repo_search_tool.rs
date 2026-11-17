@@ -162,8 +162,9 @@ fn dentro_de_repositorio(dir: &Path) -> bool {
 /// #1909: a pergunta e respondida num lugar so
 /// ([`super::tool_context::pode_revelar_caminho_do_host`]) — `repo_search`,
 /// `list_dir`, `file_read` e `file_write` consultam o mesmo portao, em vez de
-/// uma copia local por tool. Ainda fora dele: `RepoDir::descricao` (usada por
-/// `git_diff`/`code_review`) e o pedido de confirmacao do `run_tests`.
+/// uma copia local por tool. Desde a fatia de 17/11 o mesmo portao cobre
+/// tambem `RepoDir::descricao` (usada por `git_diff`/`code_review`) e o texto
+/// do pedido de confirmacao do `run_tests`.
 fn pode_revelar_caminho() -> bool {
     super::tool_context::pode_revelar_caminho_do_host()
 }
