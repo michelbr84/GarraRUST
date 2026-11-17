@@ -532,3 +532,110 @@ pub(super) async fn bit_do_turno_chega_a_toda_tool_e_nao_so_a_garra_status() {
         "o turno aberto tem de ser Some(false), nao None"
     );
 }
+
+/// Sonda do #1915: anota o que `recusa_do_turno` devolveu, para cada nome
+/// pedido, quando o RUNTIME a executou.
+struct SondaDeRecusas {
+    viu: Arc<Mutex<Vec<Option<crate::modes::RecusaDoPortao>>>>,
+    nome: &'static str,
+    perguntas: &'static [&'static str],
+}
+
+#[async_trait::async_trait]
+impl crate::tools::Tool for SondaDeRecusas {
+    fn name(&self) -> &str {
+        self.nome
+    }
+    fn description(&self) -> &str {
+        "sonda"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn execute(
+        &self,
+        _c: &crate::tools::ToolContext,
+        _i: serde_json::Value,
+    ) -> Result<crate::tools::ToolOutput> {
+        *self.viu.lock().expect("lock") = self
+            .perguntas
+            .iter()
+            .map(|n| crate::tools::turn_tools::recusa_do_turno(n))
+            .collect();
+        Ok(crate::tools::ToolOutput::success("{}"))
+    }
+}
+
+/// #1915: o DESPACHO publica, para a `garra_status`, a camada que barrou
+/// cada ferramenta registrada e negada — modo, teto de quem fala, ou os
+/// dois — e nao publica nada para as outras tools.
+#[tokio::test]
+async fn garra_status_recebe_a_camada_de_cada_recusa_do_turno() {
+    use crate::modes::{CamadaDaRecusa, MotivoDaPolitica, Nivel, TetoDeCapacidades};
+    const PERGUNTAS: &[&str] = &["file_write", "srv__sem_classe", "file_read", "inexistente"];
+
+    async fn visto_por(
+        nome: &'static str,
+        exec: &ExecContext,
+    ) -> Vec<Option<crate::modes::RecusaDoPortao>> {
+        let rt = AgentRuntime::new();
+        for n in ["file_write", "file_read"] {
+            rt.register_tool(stub(n));
+        }
+        rt.replace_mcp_tools("srv", vec![stub("srv__sem_classe")]);
+        let viu = Arc::new(Mutex::new(Vec::new()));
+        rt.register_tool(Box::new(SondaDeRecusas {
+            viu: Arc::clone(&viu),
+            nome,
+            perguntas: PERGUNTAS,
+        }));
+        rt.register_provider(Arc::new(PedeStatus(nome)));
+        let r = rt
+            .process_message_with_agent_config(
+                "s-1915-recusas",
+                "o que esta negado e por que?",
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                exec,
+            )
+            .await
+            .expect("turno");
+        assert_eq!(r, "ok");
+        viu.lock().expect("lock").clone()
+    }
+
+    let mut exec = ExecContext::with_mode(Some("ask".to_string()));
+    exec.teto = Some(TetoDeCapacidades {
+        nome: "superficie remota (sem operador)".into(),
+        politica: crate::modes::politica_do_nivel(Nivel::Read, false),
+    });
+
+    let visto = visto_por("garra_status", &exec).await;
+    assert_eq!(visto.len(), PERGUNTAS.len(), "a sonda rodou");
+    let escrita = visto[0].expect("file_write negada");
+    assert_eq!(escrita.camada(), CamadaDaRecusa::ModoETeto);
+    let mcp = visto[1].expect("MCP sem classe negada");
+    assert_eq!(mcp.camada(), CamadaDaRecusa::Teto);
+    assert_eq!(mcp.motivo(), Some(MotivoDaPolitica::SemClasse));
+    assert_eq!(visto[2], None, "liberada nao tem recusa");
+    assert_eq!(visto[3], None, "nome nao registrado nao e inventado");
+
+    // Sem teto, a mesma escrita e barrada SO pelo modo.
+    let so_modo = ExecContext::with_mode(Some("ask".to_string()));
+    let visto = visto_por("garra_status", &so_modo).await;
+    assert_eq!(
+        visto[0].map(|r| r.camada()),
+        Some(CamadaDaRecusa::Modo),
+        "{visto:?}"
+    );
+
+    // Outra tool nao recebe o mapa: e privilegio da introspeccao, como a
+    // lista de liberadas.
+    let visto = visto_por("repo_search", &exec).await;
+    assert!(visto.iter().all(Option::is_none), "{visto:?}");
+}

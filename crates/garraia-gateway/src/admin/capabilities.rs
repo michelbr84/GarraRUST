@@ -77,6 +77,9 @@ pub async fn admin_capabilities(
             .as_ref()
             .is_none_or(|p| app.agents.portao_permite(p, n))
     };
+    // #1915: o mesmo portao, por camada — o console mostra se quem barra e
+    // o modo da sessao ou o teto do principal.
+    let recusa = |n: &str| portao.as_ref().and_then(|p| app.agents.portao_recusa(p, n));
     let disponibilidade = |n: &str| app.agents.disponibilidade_de(n);
     let mcp: Vec<garraia_agents::McpServerStatus> = match &app.mcp_manager_arc {
         Some(mgr) => mgr.server_statuses().await,
@@ -117,6 +120,7 @@ pub async fn admin_capabilities(
     let linhas = registro(&Entradas {
         inventario: &inventario,
         permite: &permite,
+        recusa: &recusa,
         disponibilidade: &disponibilidade,
         mcp: &mcp,
         bash_desligado,

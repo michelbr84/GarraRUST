@@ -142,7 +142,14 @@ in THIS conversation: `visible` = you can call it now; `denied` = it exists and 
 conversation's policy does not allow it (say so; never say it does not exist); `unavailable` = \
 it exists but lacks context or an integration right now (follow `remediation`); `unhealthy` = a \
 known MCP server is down; `not_configured` = this Garra can do it but it was not set up. \
-`reason_code` is machine-readable; `reason` and `remediation` are safe to repeat to the user.";
+`reason_code` is machine-readable; `reason` and `remediation` are safe to repeat to the user. \
+A `denied` entry may carry `denied_by`, the layer that blocks it: `mode` = the session mode \
+(only the user can change it, with /mode); `principal_ceiling` = the access policy of whoever \
+is speaking here (changing mode does NOT help; only the operator can change it); \
+`mode_and_principal_ceiling` = both. `denied_because` says why inside that layer \
+(`unclassified` = the tool declares no capability class, e.g. an MCP tool without \
+annotations: it is connected, not authorized). Name the layer to the user; never propose a \
+way around it.";
 
 const SENTIDO_DE_FILE_TOOLS_SEM_RAIZ: &str = "file_read, file_write and list_dir deny every path in this conversation: the session has no working directory and the operator declared no root. Say so instead of promising to read or write files. The operator can select a project for this session, or declare a root in agent.file_roots (or the GARRAIA_FILE_ROOTS env var) and restart.";
 
@@ -424,6 +431,9 @@ impl Tool for GarraStatusTool {
             let inventario = state.agents.tool_inventory();
             let liberadas = garraia_agents::tools::turn_tools::ferramentas_do_turno();
             let permite = |n: &str| liberadas.as_ref().is_none_or(|l| l.iter().any(|x| x == n));
+            // #1915: a camada que barrou cada negada (modo, teto de quem
+            // fala), publicada pelo runtime junto com a lista do turno.
+            let recusa = garraia_agents::tools::turn_tools::recusa_do_turno;
             let disponibilidade = |n: &str| state.agents.disponibilidade_de(n);
             let mcp: Vec<garraia_agents::McpServerStatus> = match &state.mcp_manager_arc {
                 Some(mgr) => mgr.server_statuses().await,
@@ -454,6 +464,7 @@ impl Tool for GarraStatusTool {
             crate::capacidades_registro::registro(&crate::capacidades_registro::Entradas {
                 inventario: &inventario,
                 permite: &permite,
+                recusa: &recusa,
                 disponibilidade: &disponibilidade,
                 mcp: &mcp,
                 bash_desligado,
@@ -785,6 +796,82 @@ mod tests {
             "{}",
             json["features"]
         );
+    }
+
+    /// #1915: a linha `denied` do relatorio nomeia a camada que o runtime
+    /// publicou para o turno — o dogfood respondia "nao consigo dizer qual
+    /// dos dois motivos se aplica". Sem a publicacao (chamador fora do
+    /// runtime), a linha fica generica: nada e inventado.
+    #[tokio::test]
+    async fn capabilities_nomeia_a_camada_da_recusa_publicada_pelo_runtime() {
+        use garraia_agents::modes::{Nivel, TetoDeCapacidades, ToolGate, politica_do_nivel};
+        let st = state_somente_sessao();
+        st.agents
+            .register_tool(Box::new(garraia_agents::tools::FileReadTool::new(
+                garraia_agents::tools::FileJail::sessions_only(),
+            )));
+        st.agents
+            .register_tool(Box::new(garraia_agents::tools::FileWriteTool::new(
+                garraia_agents::tools::FileJail::sessions_only(),
+            )));
+        // O portao de um turno remoto sem modo: so o teto de leitura.
+        let portao = ToolGate::sem_politica().com_teto(Some(TetoDeCapacidades {
+            nome: "superficie remota (sem operador)".into(),
+            politica: politica_do_nivel(Nivel::Read, false),
+        }));
+        let recusas: Vec<_> = st
+            .agents
+            .tool_names()
+            .into_iter()
+            .filter_map(|n| st.agents.portao_recusa(&portao, &n).map(|r| (n, r)))
+            .collect();
+        assert!(recusas.iter().any(|(n, _)| n == "file_write"));
+        let tool = tool(&st);
+        let contexto = ctx(Some("/tmp/garra-projeto"));
+        let out = garraia_agents::tools::turn_tools::com_recusas_do_turno(
+            recusas,
+            garraia_agents::tools::turn_tools::com_ferramentas_do_turno(
+                vec!["file_read".to_string(), "garra_status".to_string()],
+                true,
+                tool.execute(&contexto, serde_json::json!({})),
+            ),
+        )
+        .await
+        .expect("executa");
+        let json: serde_json::Value = serde_json::from_str(&out.content).expect("json");
+        let caps = json["capabilities"].as_array().expect("lista");
+        let fw = caps
+            .iter()
+            .find(|c| c["name"] == "file_write")
+            .expect("file_write");
+        assert_eq!(fw["state"], serde_json::json!("denied"), "{fw}");
+        assert_eq!(fw["reason_code"], serde_json::json!("policy"));
+        assert_eq!(fw["denied_by"], serde_json::json!("principal_ceiling"));
+        assert_eq!(fw["denied_because"], serde_json::json!("denied_capability"));
+        assert!(
+            fw["remediation"]
+                .as_str()
+                .is_some_and(|r| r.contains("NAO resolve")),
+            "{fw}"
+        );
+        // Turno restrito: o nome da politica de quem fala nao sai.
+        assert!(
+            !out.content.contains("superficie remota"),
+            "{}",
+            out.content
+        );
+        // O sentido do campo esta DENTRO do relatorio.
+        assert!(out.content.contains("denied_by"), "{}", out.content);
+
+        // Fora do escopo das recusas: generico, sem camada inventada.
+        let (json, _) = relatorio_no_turno(&tool, &contexto, true).await;
+        let fw = json["capabilities"]
+            .as_array()
+            .and_then(|c| c.iter().find(|c| c["name"] == "file_write"))
+            .cloned()
+            .expect("file_write");
+        assert_eq!(fw["state"], serde_json::json!("denied"));
+        assert!(fw.get("denied_by").is_none(), "{fw}");
     }
 
     /// Revisao da onda A: dentro de um turno, `tools` e o que o portao do

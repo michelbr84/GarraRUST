@@ -590,6 +590,8 @@ async fn verificacao_capacidades(state: &AppState) -> Verificacao {
     let registro = crate::capacidades_registro::registro(&crate::capacidades_registro::Entradas {
         inventario: &inventario,
         permite: &permite,
+        // Portao aberto aqui: nada e negado, nao ha camada a nomear (#1915).
+        recusa: &|_: &str| None,
         disponibilidade: &disponibilidade,
         mcp: &mcp,
         bash_desligado,

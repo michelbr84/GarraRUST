@@ -385,7 +385,14 @@ Detalhes do que e feito:
 > `not_configured`), motivo e remediacao — e o prompt manda o modelo
 > responder a partir dela: `denied` e "existe e nao esta liberada aqui",
 > nunca "nao existe". O mesmo registro sai em `tools.capabilities` no
-> `/api/diagnostics` e em `GET /admin/api/capabilities` (#1381, #1387). **Falta de
+> `/api/diagnostics` e em `GET /admin/api/capabilities` (#1381, #1387). **A
+> recusa nomeia a camada (#1915):** uma linha `denied` traz `denied_by` —
+> `mode` (o modo da sessao; so o usuario troca, com `/mode`),
+> `principal_ceiling` (o teto de quem fala; trocar de modo nao resolve, e so
+> o operador muda a politica de acesso) ou `mode_and_principal_ceiling` — e
+> `denied_because`, o motivo dentro da camada (`unclassified` e a ferramenta
+> MCP sem classe declarada: conectada, nao autorizada). `reason_code` segue
+> `policy`. **Falta de
 > contexto e um estado proprio (#1416):** `file_read`, `file_write` e `list_dir`
 > numa sessao **sem raiz nenhuma** (sem projeto selecionado, sem
 > `agent.file_roots` e sem workspace padrao) saem como `unavailable` com

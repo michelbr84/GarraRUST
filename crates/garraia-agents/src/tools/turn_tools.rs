@@ -49,6 +49,32 @@ tokio::task_local! {
     /// entao este vale para o despacho inteiro: o bit de #1347 fica
     /// disponivel para toda tool, hoje e para as proximas.
     static RESTRITO: bool;
+    /// #1915: por que o portao barrou cada ferramenta REGISTRADA que ficou
+    /// fora de [`TURNO`] — a camada (modo, teto de quem fala) e o motivo.
+    /// Aberto pelo runtime junto com o [`TURNO`], para as mesmas tools
+    /// nativas de introspeccao: sem isto o `garra_status` sabia QUE a
+    /// ferramenta estava negada e nao sabia por qual camada.
+    static RECUSAS: Arc<[(String, crate::modes::RecusaDoPortao)]>;
+}
+
+/// A recusa do portao deste turno para `nome`, se o runtime a publicou.
+/// `None` fora do escopo, e tambem para ferramenta liberada ou desconhecida
+/// — quem le nao inventa camada: sem dado, o motivo fica generico.
+pub fn recusa_do_turno(nome: &str) -> Option<crate::modes::RecusaDoPortao> {
+    RECUSAS
+        .try_with(|r| r.iter().find(|(n, _)| n == nome).map(|(_, recusa)| *recusa))
+        .ok()
+        .flatten()
+}
+
+/// Roda `fut` com as recusas do portao deste turno publicadas. O runtime
+/// chama em volta do `execute` das tools de introspeccao; e publico para o
+/// teste do gateway montar o mesmo escopo.
+pub async fn com_recusas_do_turno<F: Future>(
+    recusas: Vec<(String, crate::modes::RecusaDoPortao)>,
+    fut: F,
+) -> F::Output {
+    RECUSAS.scope(Arc::from(recusas), fut).await
 }
 
 /// As ferramentas liberadas no turno em que esta execucao roda, ja na ordem
@@ -132,5 +158,21 @@ mod tests {
         assert_eq!(turno_restrito(), None);
         let aberto = com_ferramentas_do_turno(vec![], false, async { turno_restrito() }).await;
         assert_eq!(aberto, Some(false));
+    }
+
+    #[tokio::test]
+    async fn recusa_do_turno_so_existe_dentro_do_escopo_e_para_quem_foi_negado() {
+        use crate::modes::{MotivoDaPolitica, RecusaDoPortao};
+        assert_eq!(recusa_do_turno("bash"), None);
+        let recusa = RecusaDoPortao {
+            modo: None,
+            teto: Some(MotivoDaPolitica::ClasseNegada),
+        };
+        let dentro = com_recusas_do_turno(vec![("bash".into(), recusa)], async {
+            (recusa_do_turno("bash"), recusa_do_turno("file_read"))
+        })
+        .await;
+        assert_eq!(dentro, (Some(recusa), None));
+        assert_eq!(recusa_do_turno("bash"), None);
     }
 }

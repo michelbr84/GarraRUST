@@ -1483,6 +1483,8 @@ pub(crate) async fn relatorio(state: &SharedState) -> DiagnosticsReport {
             crate::capacidades_registro::registro(&crate::capacidades_registro::Entradas {
                 inventario: &inventario,
                 permite: &permite,
+                // Portao aberto aqui: nada e negado, nao ha camada a nomear (#1915).
+                recusa: &|_: &str| None,
                 disponibilidade: &disponibilidade,
                 mcp: &mcp,
                 bash_desligado,
@@ -1759,6 +1761,8 @@ mod tests {
             reason_code: code,
             reason: String::new(),
             remediation: None,
+            denied_by: None,
+            denied_because: None,
         };
         let so_visiveis = [
             linha("file_read", Estado::Visible, "ok"),
@@ -1842,6 +1846,8 @@ mod tests {
         let linhas = registro(&Entradas {
             inventario: &inventario,
             permite: &permite,
+            // Portao aberto aqui: nada e negado, nao ha camada a nomear (#1915).
+            recusa: &|_: &str| None,
             disponibilidade: &instalacao_nova,
             mcp: &[],
             bash_desligado: Some(("sem sandbox".into(), "ligue o sandbox".into())),
@@ -1867,6 +1873,8 @@ mod tests {
         let linhas = registro(&Entradas {
             inventario: &inventario,
             permite: &permite,
+            // Portao aberto aqui: nada e negado, nao ha camada a nomear (#1915).
+            recusa: &|_: &str| None,
             disponibilidade: &adapter_sem_dispositivo,
             mcp: &[],
             bash_desligado: None,

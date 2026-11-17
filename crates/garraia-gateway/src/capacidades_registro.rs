@@ -18,10 +18,21 @@
 //! | estado | significa | o modelo deve dizer |
 //! |---|---|---|
 //! | `visible` | esta na lista do turno | "posso" |
-//! | `denied` | existe e opera, a politica desta conversa nega | "existe, nao esta liberada aqui" |
+//! | `denied` | existe e opera, a politica desta conversa nega | "existe, nao esta liberada aqui" — e por qual camada (#1915) |
 //! | `unavailable` | registrada, falta contexto/integracao (sem raiz, canal desligado) | a remediacao |
 //! | `unhealthy` | servidor MCP conhecido mas caido | "existe, esta fora do ar" |
 //! | `not_configured` | o gateway sabe do recurso, nao esta configurado (`bash` sem sandbox) | "nao esta configurado" |
+//!
+//! # A recusa nomeia a camada (#1915)
+//!
+//! `denied` com `reason_code: policy` dizia "modo da sessao ou teto de quem
+//! fala" — o modelo nao sabia qual dos dois, nem o que mudaria o estado.
+//! Quando quem chama conhece o portao, a linha traz `denied_by` (`mode` |
+//! `principal_ceiling` | `mode_and_principal_ceiling`) e `denied_because`
+//! (`no_tools` | `denied_by_name` | `denied_capability` | `unclassified` |
+//! `not_in_allowlist`), e o motivo/remediacao dizem quem pode mudar o que —
+//! sem sugerir contorno. `reason_code` continua `policy` (contrato antigo);
+//! os dois campos sao aditivos. Sem o dado, o texto generico de antes.
 //!
 //! Sem I/O, sem lock: quem chama ja colheu tudo. Nada aqui carrega segredo
 //! nem caminho do host — os motivos vem de constantes ou do
@@ -29,6 +40,7 @@
 
 use garraia_agents::McpServerState;
 use garraia_agents::mcp::McpServerStatus;
+use garraia_agents::modes::{CamadaDaRecusa, MotivoDaPolitica, RecusaDoPortao};
 use garraia_agents::runtime::ToolInventoryEntry;
 use garraia_agents::tools::Disponibilidade;
 use serde::Serialize;
@@ -76,6 +88,16 @@ pub struct Capacidade {
     pub reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remediation: Option<String>,
+    /// #1915: so em `denied`, e so quando o portao e conhecido — a camada
+    /// que barrou: `mode` | `principal_ceiling` |
+    /// `mode_and_principal_ceiling`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denied_by: Option<&'static str>,
+    /// #1915: o motivo dentro da camada que decide (a do teto, quando ele
+    /// barra): `no_tools` | `denied_by_name` | `denied_capability` |
+    /// `unclassified` | `not_in_allowlist`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denied_because: Option<&'static str>,
 }
 
 /// O que o gateway sabe neste turno. Tudo ja colhido por quem chama.
@@ -84,6 +106,11 @@ pub struct Entradas<'a> {
     pub inventario: &'a [ToolInventoryEntry],
     /// O portao do turno (nome E classe): `AgentRuntime::portao_permite`.
     pub permite: &'a dyn Fn(&str) -> bool,
+    /// #1915: a recusa do portao por camada, para uma ferramenta que
+    /// `permite` negou — `AgentRuntime::portao_recusa`, ou o que o runtime
+    /// publicou no turno. `None` = quem chama nao sabe (nao inventa): a
+    /// linha sai com o motivo generico.
+    pub recusa: &'a dyn Fn(&str) -> Option<RecusaDoPortao>,
     /// `AgentRuntime::disponibilidade_de`.
     pub disponibilidade: &'a dyn Fn(&str) -> Disponibilidade,
     /// `McpManager::server_statuses()`; vazio sem manager.
@@ -189,6 +216,56 @@ fn falta_de_contexto(
     None
 }
 
+/// O motivo e a remediacao de uma recusa do portao, por camada (#1915).
+///
+/// Texto constante: nao cita nome de modo, de politica nem de servidor — o
+/// registro sai tambem no turno restrito. Diz **quem** pode mudar o estado
+/// (o usuario, com `/mode`; o operador/administrador, na politica de acesso)
+/// e nunca sugere contorno: nada de "desligue o teto" ou "use outro canal".
+fn explica_recusa_do_portao(recusa: &RecusaDoPortao, mcp: bool) -> (String, String) {
+    let sem_classe = recusa.motivo() == Some(MotivoDaPolitica::SemClasse);
+    let o_que_falta = if sem_classe && mcp {
+        " A ferramenta nao tem classe de capacidade declarada (o servidor MCP nao a anota como somente-leitura nem como mutante), e uma politica por classe so libera o que esta classificado: e classificacao ausente, nao defeito de conexao."
+    } else if sem_classe {
+        " A ferramenta nao tem classe de capacidade declarada, e uma politica por classe so libera o que esta classificado."
+    } else if recusa.motivo() == Some(MotivoDaPolitica::SemFerramentas) {
+        " Essa politica nao libera ferramenta nenhuma (so conversa)."
+    } else {
+        ""
+    };
+    let como_classificar = if sem_classe {
+        " Para uma ferramenta sem classe, o caminho e o operador declara-la pelo nome na politica, depois de conferir o que ela faz — ou o servidor passar a anotar a operacao."
+    } else {
+        ""
+    };
+    match recusa.camada() {
+        CamadaDaRecusa::Modo => (
+            format!(
+                "existe e esta operacional, mas o MODO desta sessao nao a libera; o teto de quem fala nao e o que barra.{o_que_falta}"
+            ),
+            format!(
+                "Trocar de modo e do usuario (`/mode`), nao do agente: diga qual ferramenta faltou e deixe a pessoa decidir.{como_classificar}"
+            ),
+        ),
+        CamadaDaRecusa::Teto => (
+            format!(
+                "existe e esta operacional, e o modo da sessao a liberaria, mas o TETO de quem fala nesta conversa (a politica de acesso do principal/canal) nao a libera.{o_que_falta}"
+            ),
+            format!(
+                "Trocar de modo NAO resolve. O teto e do operador/administrador do canal, na politica de acesso; o agente nao o altera nem o contorna — siga sem a ferramenta e diga isso a pessoa.{como_classificar}"
+            ),
+        ),
+        CamadaDaRecusa::ModoETeto => (
+            format!(
+                "existe e esta operacional, mas nem o MODO desta sessao nem o TETO de quem fala nesta conversa a liberam.{o_que_falta}"
+            ),
+            format!(
+                "Trocar de modo sozinho NAO resolve: o teto de quem fala tambem barra, e ele e do operador/administrador do canal. O agente nao o altera nem o contorna — siga sem a ferramenta.{como_classificar}"
+            ),
+        ),
+    }
+}
+
 /// Nomes que o gateway considera acoes de canal (a origem vira `channel`).
 const ACOES_DE_CANAL: &[&str] = &["telegram_send"];
 
@@ -236,6 +313,7 @@ pub fn registro(e: &Entradas<'_>) -> Vec<Capacidade> {
             .as_deref()
             .and_then(|s| estado_do_servidor(e.mcp, s))
             .filter(|s| s.state != McpServerState::Connected);
+        let mut recusa_do_portao: Option<RecusaDoPortao> = None;
         let (state, reason_code, reason, remediation) = if let Some(s) = servidor_caido {
             (
                 Estado::Unhealthy,
@@ -286,13 +364,23 @@ pub fn registro(e: &Entradas<'_>) -> Vec<Capacidade> {
                             ),
                         }
                     } else {
-                        (
-                            Estado::Denied,
-                            "policy",
-                            "existe e esta operacional, mas a politica desta conversa (modo da sessao ou teto de quem fala) nao a libera."
-                                .to_string(),
-                            None,
-                        )
+                        // #1915: com o portao conhecido, a linha nomeia a
+                        // camada; sem ele, o motivo generico de sempre.
+                        recusa_do_portao = (e.recusa)(&entrada.name);
+                        match recusa_do_portao.as_ref() {
+                            Some(r) => {
+                                let (motivo, remediacao) =
+                                    explica_recusa_do_portao(r, source == "mcp");
+                                (Estado::Denied, "policy", motivo, Some(remediacao))
+                            }
+                            None => (
+                                Estado::Denied,
+                                "policy",
+                                "existe e esta operacional, mas a politica desta conversa (modo da sessao ou teto de quem fala) nao a libera."
+                                    .to_string(),
+                                None,
+                            ),
+                        }
                     }
                 }
             }
@@ -306,6 +394,11 @@ pub fn registro(e: &Entradas<'_>) -> Vec<Capacidade> {
             reason_code,
             reason,
             remediation,
+            denied_by: recusa_do_portao.as_ref().map(|r| r.camada().as_str()),
+            denied_because: recusa_do_portao
+                .as_ref()
+                .and_then(|r| r.motivo())
+                .map(MotivoDaPolitica::as_str),
         });
     }
 
@@ -346,6 +439,8 @@ pub fn registro(e: &Entradas<'_>) -> Vec<Capacidade> {
                      Servers) ou `POST /admin/api/mcp/<nome>/restart`."
                     .to_string(),
             ),
+            denied_by: None,
+            denied_because: None,
         });
     }
 
@@ -363,6 +458,8 @@ pub fn registro(e: &Entradas<'_>) -> Vec<Capacidade> {
             reason_code: "not_configured",
             reason: motivo.clone(),
             remediation: Some(remediacao.clone()),
+            denied_by: None,
+            denied_because: None,
         });
     }
     linhas
@@ -395,6 +492,9 @@ pub fn contagens(linhas: &[Capacidade]) -> Contagens {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "Quem chama nao sabe a camada": o registro nao inventa.
+    const SEM_RECUSA: fn(&str) -> Option<RecusaDoPortao> = |_| None;
 
     fn entrada(
         name: &str,
@@ -465,6 +565,7 @@ mod tests {
         let linhas = registro(&Entradas {
             inventario: &inventario,
             permite: &permite,
+            recusa: &SEM_RECUSA,
             disponibilidade: &disponibilidade,
             mcp: &mcp,
             bash_desligado: Some(("sandbox desligado".into(), "ligue `agent.sandbox`".into())),
@@ -528,6 +629,7 @@ mod tests {
         let linhas = registro(&Entradas {
             inventario: &inventario,
             permite: &permite,
+            recusa: &SEM_RECUSA,
             disponibilidade: &disponibilidade,
             mcp: &[],
             bash_desligado: None,
@@ -564,6 +666,7 @@ mod tests {
             let linhas = registro(&Entradas {
                 inventario: &inventario,
                 permite: &permite,
+                recusa: &SEM_RECUSA,
                 disponibilidade: &disponibilidade,
                 mcp: &[],
                 bash_desligado: None,
@@ -589,6 +692,7 @@ mod tests {
         let linhas = registro(&Entradas {
             inventario: &[],
             permite: &permite,
+            recusa: &SEM_RECUSA,
             disponibilidade: &disponibilidade,
             mcp: &mcp,
             bash_desligado: None,
@@ -615,6 +719,7 @@ mod tests {
         Entradas {
             inventario,
             permite,
+            recusa: &SEM_RECUSA,
             disponibilidade: disponivel,
             mcp: &[],
             bash_desligado: None,
@@ -754,5 +859,180 @@ mod tests {
         assert!(perguntou.get());
         let c = contexto_de_arquivos(Fonte::WorkspacePadrao, None, || true);
         assert_eq!(c.tem_repositorio, Some(true));
+    }
+
+    // -----------------------------------------------------------------------
+    // #1915: a recusa nomeia a camada (modo, teto de quem fala, ou os dois)
+    // -----------------------------------------------------------------------
+
+    /// O cenario do dogfood, com o portao REAL: Telegram remoto (teto de
+    /// leitura) em modo `ask`. `file_write`, `bash` e a MCP sem anotacao
+    /// saiam com o mesmo "modo da sessao ou teto de quem fala".
+    #[test]
+    fn recusa_nomeia_a_camada_e_o_caminho_seguro() {
+        use garraia_agents::capacidades::{Capacidade as Classe, capacidades_nativas};
+        use garraia_agents::modes::{Nivel, TetoDeCapacidades, ToolGate, politica_do_nivel};
+
+        let inventario = vec![
+            entrada("bash", "native", None, &["process.execute"]),
+            entrada("file_read", "native", None, &["filesystem.read"]),
+            entrada("file_write", "native", None, &["filesystem.write"]),
+            entrada("forja__forja_ask", "mcp", Some("forja"), &[]),
+            entrada("hera__apaga", "mcp", Some("hera"), &["mcp.write"]),
+        ];
+        let classes = |n: &str| -> &'static [Classe] {
+            match n {
+                "forja__forja_ask" => &[],
+                "hera__apaga" => &[Classe::McpWrite],
+                nativa => capacidades_nativas(nativa),
+            }
+        };
+        let disponibilidade = |_: &str| Disponibilidade::Disponivel;
+        let mcp = vec![
+            servidor("forja", McpServerState::Connected, 1),
+            servidor("hera", McpServerState::Connected, 1),
+        ];
+        let teto = || {
+            Some(TetoDeCapacidades {
+                nome: "superficie remota (sem operador)".into(),
+                politica: politica_do_nivel(Nivel::Read, false),
+            })
+        };
+        let registro_de = |portao: &ToolGate| {
+            let permite = |n: &str| portao.permite_com_capacidades(n, classes(n));
+            let recusa = |n: &str| portao.recusa_de(n, classes(n));
+            registro(&Entradas {
+                inventario: &inventario,
+                permite: &permite,
+                recusa: &recusa,
+                disponibilidade: &disponibilidade,
+                mcp: &mcp,
+                bash_desligado: None,
+                restrito: true,
+                contexto: ContextoDaSessao::DESCONHECIDO,
+            })
+        };
+
+        // Sem modo escolhido: so o teto barra.
+        let linhas = registro_de(&ToolGate::sem_politica().com_teto(teto()));
+        let bash = por_nome(&linhas, "bash");
+        assert_eq!(bash.state, Estado::Denied);
+        assert_eq!(bash.reason_code, "policy", "contrato antigo preservado");
+        assert_eq!(bash.denied_by, Some("principal_ceiling"));
+        // O nivel `read` nega execucao de processo pela CLASSE.
+        assert_eq!(bash.denied_because, Some("denied_capability"));
+        assert!(bash.reason.contains("TETO"), "{}", bash.reason);
+        let remediacao = bash.remediation.as_deref().expect("remediacao");
+        assert!(remediacao.contains("NAO resolve"), "{remediacao}");
+
+        // MCP conectada e negada por CLASSIFICACAO AUSENTE — nao por conexao.
+        let forja = por_nome(&linhas, "forja__forja_ask");
+        assert_eq!(forja.state, Estado::Denied, "conectado != autorizado");
+        assert_eq!(forja.denied_by, Some("principal_ceiling"));
+        assert_eq!(forja.denied_because, Some("unclassified"));
+        assert!(
+            forja.reason.contains("classificacao ausente"),
+            "{}",
+            forja.reason
+        );
+        // MCP mutante: mesma camada, outro motivo.
+        let hera = por_nome(&linhas, "hera__apaga");
+        assert_eq!(hera.denied_by, Some("principal_ceiling"));
+        assert_ne!(hera.denied_because, Some("unclassified"));
+        // Liberada nao ganha campo de recusa.
+        let leitura = por_nome(&linhas, "file_read");
+        assert_eq!(leitura.state, Estado::Visible);
+        assert_eq!((leitura.denied_by, leitura.denied_because), (None, None));
+
+        // So o modo (`ask`, sem teto): outra camada, e `/mode` e do usuario.
+        let linhas = registro_de(&ToolGate::for_mode_name("ask"));
+        let escrita = por_nome(&linhas, "file_write");
+        assert_eq!(escrita.denied_by, Some("mode"));
+        assert!(
+            escrita
+                .remediation
+                .as_deref()
+                .is_some_and(|r| r.contains("/mode")),
+            "{escrita:?}"
+        );
+
+        // Os dois: trocar de modo sozinho nao resolve.
+        let linhas = registro_de(&ToolGate::for_mode_name("ask").com_teto(teto()));
+        let escrita = por_nome(&linhas, "file_write");
+        assert_eq!(escrita.denied_by, Some("mode_and_principal_ceiling"));
+
+        // Nenhuma linha sugere contorno nem entrega nome de politica/servidor
+        // no texto livre (o registro sai no turno restrito).
+        for portao in [
+            ToolGate::sem_politica().com_teto(teto()),
+            ToolGate::for_mode_name("ask"),
+            ToolGate::for_mode_name("ask").com_teto(teto()),
+        ] {
+            for l in registro_de(&portao)
+                .iter()
+                .filter(|l| l.state == Estado::Denied)
+            {
+                let texto = format!(
+                    "{} {}",
+                    l.reason,
+                    l.remediation.as_deref().unwrap_or_default()
+                )
+                .to_lowercase();
+                for proibido in [
+                    "yolo",
+                    "desligue",
+                    "desative",
+                    "superficie remota",
+                    "forja",
+                    "hera",
+                ] {
+                    assert!(
+                        !texto.contains(proibido),
+                        "`{proibido}` em {}: {texto}",
+                        l.name
+                    );
+                }
+            }
+        }
+
+        // Serializacao: os campos so existem em quem foi negado com camada.
+        let json =
+            serde_json::to_value(registro_de(&ToolGate::for_mode_name("ask"))).expect("json");
+        let por = |nome: &str| {
+            json.as_array()
+                .and_then(|a| a.iter().find(|l| l["name"] == nome))
+                .cloned()
+                .expect("linha")
+        };
+        assert_eq!(por("file_write")["denied_by"], serde_json::json!("mode"));
+        assert!(por("file_read").get("denied_by").is_none());
+    }
+
+    /// Sem portao conhecido (quem chama passa `None`), a linha negada
+    /// continua com o motivo generico e sem os campos novos: nao se inventa
+    /// camada.
+    #[test]
+    fn sem_portao_conhecido_a_recusa_fica_generica() {
+        let inventario = vec![entrada("file_write", "native", None, &["filesystem.write"])];
+        let permite = |_: &str| false;
+        let disponibilidade = |_: &str| Disponibilidade::Disponivel;
+        let linhas = registro(&Entradas {
+            inventario: &inventario,
+            permite: &permite,
+            recusa: &SEM_RECUSA,
+            disponibilidade: &disponibilidade,
+            mcp: &[],
+            bash_desligado: None,
+            restrito: false,
+            contexto: ContextoDaSessao::DESCONHECIDO,
+        });
+        assert_eq!(linhas[0].state, Estado::Denied);
+        assert_eq!(linhas[0].reason_code, "policy");
+        assert_eq!(
+            (linhas[0].denied_by, linhas[0].denied_because),
+            (None, None)
+        );
+        assert!(linhas[0].reason.contains("modo da sessao ou teto"));
+        assert!(linhas[0].remediation.is_none());
     }
 }
