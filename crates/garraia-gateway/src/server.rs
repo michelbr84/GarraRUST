@@ -1510,7 +1510,7 @@ async fn serve_plain(
 }
 
 /// Teto do encerramento gracioso do caminho HTTP, igual ao do TLS
-/// ([`TLS_SHUTDOWN_GRACE`]): passado isso o `serve` e largado com as
+/// (`TLS_SHUTDOWN_GRACE`): passado isso o `serve` e largado com as
 /// requisicoes ainda abertas. Os dois caminhos sao excludentes, entao a conta
 /// do grace de 30 s da CLI e a mesma: dreno 10 s + MCP 10 s + canais 5 s.
 const HTTP_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -1524,6 +1524,11 @@ const HTTP_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(
 /// servidores MCP para tras. Estourado o teto, o `serve` e largado: o
 /// listener fecha, o chamador segue para a limpeza, e as tarefas das
 /// conexoes que sobraram morrem com o runtime na saida do processo.
+///
+/// Consequencia a ter em mente: passado o teto, essas tarefas seguem VIVAS
+/// em paralelo com o `shutdown_subsystems` — a limpeza deixou de ter a
+/// exclusividade que o dreno sem prazo dava. Por isso cada passo dela tem
+/// teto proprio ([`MCP_SHUTDOWN_TIMEOUT`], [`CHANNELS_SHUTDOWN_TIMEOUT`]).
 ///
 /// O sinal e esperado NESTA tarefa (o `with_graceful_shutdown` do axum o
 /// moveria para uma tarefa a parte, onde um panico ao instalar o handler
@@ -1549,6 +1554,8 @@ async fn servir_http_ate(
     let servido = tokio::select! {
         r = &mut servir => r,
         () = sinal => {
+            // So falha se o serve ja terminou — e ai o braco de cima teria
+            // vencido o select.
             let _ = dispara.send(());
             match tokio::time::timeout(teto, &mut servir).await {
                 Ok(r) => r,
@@ -2674,9 +2681,15 @@ mod tests {
 
     /// FIACAO: `serve_plain` entrega o sinal real do processo e o teto de
     /// producao. Sem espacos: a quebra de linha do rustfmt nao e contrato.
+    /// Sem linhas de comentario: uma chamada comentada, ou citada num
+    /// docstring, nao pode satisfazer a guarda.
     #[test]
     fn serve_plain_drena_com_o_sinal_e_o_teto_de_producao() {
-        let fonte: String = include_str!("server.rs").split_whitespace().collect();
+        let fonte: String = include_str!("server.rs")
+            .lines()
+            .filter(|linha| !linha.trim_start().starts_with("//"))
+            .flat_map(str::split_whitespace)
+            .collect();
         let inicio = fonte
             .find("asyncfnserve_plain(")
             .expect("serve_plain existe no fonte");
