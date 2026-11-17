@@ -232,46 +232,52 @@ fn explica_recusa_do_portao(
     mcp: bool,
     restrito: bool,
 ) -> (String, String) {
-    let sem_classe = recusa.motivo() == Some(MotivoDaPolitica::SemClasse);
+    // A prosa extra so sai quando descreve TODA camada que barra: com modo
+    // e teto negando por motivos diferentes, dizer "falta classe" sugeriria
+    // que classificar libera — e o modo negaria do mesmo jeito.
+    let um_motivo_so = recusa.modo.is_none() || recusa.teto.is_none() || recusa.modo == recusa.teto;
+    let motivo = recusa.motivo().filter(|_| um_motivo_so);
+    let sem_classe = motivo == Some(MotivoDaPolitica::SemClasse);
+    // Curto de proposito: o registro sai inteiro no `garra_status`, e um
+    // servidor MCP sem anotacoes poe uma linha destas por ferramenta. A
+    // explicacao longa mora uma vez so, na legenda do relatorio.
     let o_que_falta = if sem_classe && mcp {
-        " A ferramenta nao tem classe de capacidade declarada (o servidor MCP nao a anota como somente-leitura nem como mutante), e uma politica por classe so libera o que esta classificado: e classificacao ausente, nao defeito de conexao."
+        " Sem classe de capacidade declarada pelo servidor MCP: e classificacao ausente, nao defeito de conexao."
     } else if sem_classe {
-        " A ferramenta nao tem classe de capacidade declarada, e uma politica por classe so libera o que esta classificado."
-    } else if recusa.motivo() == Some(MotivoDaPolitica::SemFerramentas) {
+        " Sem classe de capacidade declarada."
+    } else if motivo == Some(MotivoDaPolitica::SemFerramentas) {
         " Essa politica nao libera ferramenta nenhuma (so conversa)."
     } else {
         ""
     };
     let como_classificar = if sem_classe && restrito {
-        " A classificacao de uma ferramenta e assunto do operador desta instalacao, fora desta conversa."
+        " A classificacao e assunto do operador, fora desta conversa."
     } else if sem_classe {
-        " Para uma ferramenta sem classe, o caminho e o operador declara-la pelo nome na politica, depois de conferir o que ela faz — ou o servidor passar a anotar a operacao."
+        " O operador pode declara-la pelo nome na politica, depois de conferir o que ela faz, ou o servidor passar a anotar a operacao."
     } else {
         ""
     };
     match recusa.camada() {
         CamadaDaRecusa::Modo => (
+            format!("existe e opera, mas o MODO desta sessao nao a libera.{o_que_falta}"),
             format!(
-                "existe e esta operacional, mas o MODO desta sessao nao a libera; o teto de quem fala nao e o que barra.{o_que_falta}"
-            ),
-            format!(
-                "Trocar de modo e do usuario (`/mode`), nao do agente: diga qual ferramenta faltou e deixe a pessoa decidir.{como_classificar}"
+                "Trocar de modo e do usuario (`/mode`), nao do agente: diga qual ferramenta faltou.{como_classificar}"
             ),
         ),
         CamadaDaRecusa::Teto => (
             format!(
-                "existe e esta operacional, e o modo da sessao a liberaria, mas o TETO de quem fala nesta conversa (a politica de acesso do principal/canal) nao a libera.{o_que_falta}"
+                "existe e opera, e o modo a liberaria, mas o TETO de quem fala nesta conversa nao a libera.{o_que_falta}"
             ),
             format!(
-                "Trocar de modo NAO resolve. O teto e do operador/administrador do canal, na politica de acesso; o agente nao o altera nem o contorna — siga sem a ferramenta e diga isso a pessoa.{como_classificar}"
+                "Trocar de modo NAO resolve: o teto e do operador do canal. Nao o contorne; siga sem a ferramenta.{como_classificar}"
             ),
         ),
         CamadaDaRecusa::ModoETeto => (
             format!(
-                "existe e esta operacional, mas nem o MODO desta sessao nem o TETO de quem fala nesta conversa a liberam.{o_que_falta}"
+                "existe e opera, mas nem o MODO desta sessao nem o TETO de quem fala a liberam.{o_que_falta}"
             ),
             format!(
-                "Trocar de modo sozinho NAO resolve: o teto de quem fala tambem barra, e ele e do operador/administrador do canal. O agente nao o altera nem o contorna — siga sem a ferramenta.{como_classificar}"
+                "Trocar de modo sozinho NAO resolve: o teto e do operador do canal. Nao o contorne; siga sem a ferramenta.{como_classificar}"
             ),
         ),
     }
@@ -957,6 +963,21 @@ mod tests {
         };
         let (_, do_operador) = explica_recusa_do_portao(&sem_classe, true, false);
         assert!(do_operador.contains("pelo nome"), "{do_operador}");
+        // Modo e teto negando por motivos DIFERENTES: a prosa nao afirma
+        // "falta classe" (classificar nao liberaria: o modo nega pelo nome).
+        let motivos_distintos = RecusaDoPortao {
+            modo: Some(MotivoDaPolitica::NegadaPorNome),
+            teto: Some(MotivoDaPolitica::SemClasse),
+        };
+        let (motivo, remediacao) = explica_recusa_do_portao(&motivos_distintos, true, false);
+        assert!(!motivo.contains("classe"), "{motivo}");
+        assert!(!remediacao.contains("pelo nome"), "{remediacao}");
+        // Custo de contexto: uma linha negada cabe em poucas centenas de
+        // caracteres mesmo no pior caso (MCP sem classe).
+        assert!(
+            forja.reason.len() + forja.remediation.as_deref().map_or(0, str::len) < 400,
+            "{forja:?}"
+        );
         // MCP mutante: mesma camada, outro motivo.
         let hera = por_nome(&linhas, "hera__apaga");
         assert_eq!(hera.denied_by, Some("principal_ceiling"));

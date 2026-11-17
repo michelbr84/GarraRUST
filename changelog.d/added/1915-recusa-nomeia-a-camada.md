@@ -10,7 +10,9 @@
   modo e do usuario (`/mode`), teto e do operador e trocar de modo nao
   resolve, e MCP sem anotacao e "classificacao ausente", nao defeito de
   conexao. O texto nao cita nome de modo, politica nem servidor, e nao sugere
-  contorno. `reason_code` continua `policy` e os campos novos sao aditivos;
+  contorno; no turno restrito (quem le pode nao ser o operador) a
+  ferramenta sem classe e so "assunto do operador", e o caminho de declara-la
+  pelo nome aparece apenas nas superficies do operador. `reason_code` continua `policy` e os campos novos sao aditivos;
   sem portao conhecido a linha fica generica, como antes. A explicacao e o
   enforcement leem a mesma funcao (`recusa_da_politica`), e um teste varre
   modo x teto x ferramenta para provar que nao divergem. Nenhum modo, teto,

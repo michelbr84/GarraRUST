@@ -637,5 +637,6 @@ async fn garra_status_recebe_a_camada_de_cada_recusa_do_turno() {
     // Outra tool nao recebe o mapa: e privilegio da introspeccao, como a
     // lista de liberadas.
     let visto = visto_por("repo_search", &exec).await;
+    assert_eq!(visto.len(), PERGUNTAS.len(), "a sonda rodou");
     assert!(visto.iter().all(Option::is_none), "{visto:?}");
 }
