@@ -222,7 +222,16 @@ fn falta_de_contexto(
 /// registro sai tambem no turno restrito. Diz **quem** pode mudar o estado
 /// (o usuario, com `/mode`; o operador/administrador, na politica de acesso)
 /// e nunca sugere contorno: nada de "desligue o teto" ou "use outro canal".
-fn explica_recusa_do_portao(recusa: &RecusaDoPortao, mcp: bool) -> (String, String) {
+///
+/// `restrito`: num turno restrito quem le pode nao ser o operador. O caminho
+/// "declarar a ferramenta pelo nome na politica" e exatamente o que vence um
+/// teto por classe, entao ele so e dito nas superficies do operador; no
+/// turno restrito fica so "a classificacao e assunto do operador".
+fn explica_recusa_do_portao(
+    recusa: &RecusaDoPortao,
+    mcp: bool,
+    restrito: bool,
+) -> (String, String) {
     let sem_classe = recusa.motivo() == Some(MotivoDaPolitica::SemClasse);
     let o_que_falta = if sem_classe && mcp {
         " A ferramenta nao tem classe de capacidade declarada (o servidor MCP nao a anota como somente-leitura nem como mutante), e uma politica por classe so libera o que esta classificado: e classificacao ausente, nao defeito de conexao."
@@ -233,7 +242,9 @@ fn explica_recusa_do_portao(recusa: &RecusaDoPortao, mcp: bool) -> (String, Stri
     } else {
         ""
     };
-    let como_classificar = if sem_classe {
+    let como_classificar = if sem_classe && restrito {
+        " A classificacao de uma ferramenta e assunto do operador desta instalacao, fora desta conversa."
+    } else if sem_classe {
         " Para uma ferramenta sem classe, o caminho e o operador declara-la pelo nome na politica, depois de conferir o que ela faz — ou o servidor passar a anotar a operacao."
     } else {
         ""
@@ -370,7 +381,7 @@ pub fn registro(e: &Entradas<'_>) -> Vec<Capacidade> {
                         match recusa_do_portao.as_ref() {
                             Some(r) => {
                                 let (motivo, remediacao) =
-                                    explica_recusa_do_portao(r, source == "mcp");
+                                    explica_recusa_do_portao(r, source == "mcp", e.restrito);
                                 (Estado::Denied, "policy", motivo, Some(remediacao))
                             }
                             None => (
@@ -935,6 +946,17 @@ mod tests {
             "{}",
             forja.reason
         );
+        // Turno restrito: o caminho "declarar pelo nome" (o que vence um teto
+        // por classe) nao e dito a quem pode nao ser o operador.
+        let remediacao = forja.remediation.as_deref().expect("remediacao");
+        assert!(!remediacao.contains("pelo nome"), "{remediacao}");
+        assert!(remediacao.contains("assunto do operador"), "{remediacao}");
+        let sem_classe = RecusaDoPortao {
+            modo: None,
+            teto: Some(MotivoDaPolitica::SemClasse),
+        };
+        let (_, do_operador) = explica_recusa_do_portao(&sem_classe, true, false);
+        assert!(do_operador.contains("pelo nome"), "{do_operador}");
         // MCP mutante: mesma camada, outro motivo.
         let hera = por_nome(&linhas, "hera__apaga");
         assert_eq!(hera.denied_by, Some("principal_ceiling"));
