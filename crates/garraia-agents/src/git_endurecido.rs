@@ -141,15 +141,173 @@ pub(crate) async fn prefixo(cwd: Option<&Path>, timeout: Duration) -> Result<Vec
         Some(0) => neutraliza_filtros(&saida.stdout)?,
         Some(1) => Vec::new(),
         _ => {
+            // #1909: a recusa do git cita o diretorio por extenso (`cannot use
+            // bare repository '/abs'`, `dubious ownership in repository at
+            // '/abs'`). O texto vai para o modelo; passa pelo portao do turno.
             return Err(format!(
                 "git recusou o diretorio: {}",
-                String::from_utf8_lossy(&saida.stderr).trim()
+                stderr_para_o_turno(String::from_utf8_lossy(&saida.stderr).trim(), cwd)
             ));
         }
     };
     let mut args: Vec<String> = PREFIXO_FIXO.iter().map(|s| s.to_string()).collect();
     args.extend(filtros);
     Ok(args)
+}
+
+/// O stderr do git na forma que o turno pode ver (#1909).
+///
+/// O git nomeia caminhos ABSOLUTOS do host nas proprias recusas — `fatal:
+/// cannot use bare repository '/abs' (safe.bareRepository is 'explicit')`,
+/// `detected dubious ownership in repository at '/abs'` seguido de `git config
+/// --global --add safe.directory /abs` — e esse texto sai no corpo de
+/// `git_diff`/`code_review`, logo abaixo da linha `Repositorio:` que ja retem
+/// o caminho. Num turno restrito
+/// ([`crate::tools::tool_context::pode_revelar_caminho_do_host`]) cada caminho
+/// absoluto passa por
+/// [`crate::tools::tool_context::caminho_para_exibir_no_turno`]: relativo
+/// quando cai dentro do `working_dir` da sessao (`.`, `.git/config` — a forma
+/// que o modelo reconhece e que nao nomeia o host), e
+/// [`crate::tools::tool_context::CAMINHO_FORA_DO_TURNO`] quando nao. O resto
+/// da mensagem (a CAUSA, que e o que o modelo precisa) fica intacto. No turno
+/// aberto o texto sai como o git escreveu.
+///
+/// So o STDERR passa por aqui: o stdout de um `git diff` e conteudo do
+/// repositorio (`a/src/x.rs`), nao diagnostico, e nao e tocado.
+pub(crate) fn stderr_para_o_turno(stderr: &str, working_dir: Option<&Path>) -> String {
+    if crate::tools::tool_context::pode_revelar_caminho_do_host() {
+        stderr.to_string()
+    } else {
+        oculta_caminhos_absolutos(stderr, working_dir)
+    }
+}
+
+/// Troca cada caminho absoluto de `texto` pela forma segura do turno
+/// restrito: relativo ao `working_dir` quando cai dentro dele, o marcador
+/// quando nao. Funcao pura (nao consulta o turno).
+///
+/// Um caminho comeca em inicio de token (inicio do texto, depois de espaco,
+/// aspas, crase, `(`, `[`, `<`, `=`, `:` ou do `//` de `file://`) com `/x`,
+/// `X:\`, `X:/` ou `\\` (UNC). Entre aspas ele vai ate a aspa que FECHA na
+/// mesma linha — a seguida de espaco, pontuacao ou fim, para que o apostrofo
+/// de `/home/o'brien` nao corte o caminho no meio; fora delas, ate o proximo
+/// espaco, deixando de fora a pontuacao final — e estendido ate a ultima
+/// palavra com separador de caminho antes da proxima pausa, que e o que cobre
+/// o caminho sem aspas com espaco (`not a git repository: /abs com espaco/x`).
+/// O `//` de `https://host/x` nao e inicio de caminho, entao URL de rede nao e
+/// tocada.
+///
+/// Limite conhecido: sem aspas, um ULTIMO componente com espaco e sem
+/// separador depois (`/home/dono/Meus Projetos`) deixa esse nome solto
+/// (`Projetos`) no texto — um fragmento de nome, nao o caminho.
+fn oculta_caminhos_absolutos(texto: &str, working_dir: Option<&Path>) -> String {
+    use crate::tools::tool_context::{CAMINHO_FORA_DO_TURNO, caminho_para_exibir_no_turno};
+
+    fn comeca_absoluto(resto: &[char]) -> bool {
+        match resto {
+            ['/', c, ..] => !c.is_whitespace() && *c != '/',
+            ['\\', '\\', c, ..] => !c.is_whitespace(),
+            [d, ':', '/' | '\\', ..] => d.is_ascii_alphabetic(),
+            _ => false,
+        }
+    }
+    fn e_aspa(c: char) -> bool {
+        matches!(c, '\'' | '"' | '`')
+    }
+    fn e_pontuacao_final(c: char) -> bool {
+        matches!(c, ':' | ',' | ';' | ')' | ']' | '>' | '.')
+    }
+
+    let chars: Vec<char> = texto.chars().collect();
+    let mut saida = String::with_capacity(texto.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let anterior = i.checked_sub(1).map(|j| chars[j]);
+        let depois_de_file_url = chars[..i].ends_with(&['f', 'i', 'l', 'e', ':', '/', '/']);
+        let inicio_de_token = depois_de_file_url
+            || anterior.is_none_or(|p| {
+                p.is_whitespace() || e_aspa(p) || matches!(p, '(' | '[' | '<' | '=' | ':')
+            });
+        if !(inicio_de_token && comeca_absoluto(&chars[i..])) {
+            saida.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let resto = &chars[i..];
+        let linha = resto.iter().position(|c| *c == '\n').unwrap_or(resto.len());
+        let fecha_aspas = anterior.filter(|p| e_aspa(*p)).and_then(|aspa| {
+            (1..linha).find(|pos| {
+                resto[*pos] == aspa
+                    && resto
+                        .get(pos + 1)
+                        .is_none_or(|c| c.is_whitespace() || e_pontuacao_final(*c))
+            })
+        });
+        let fim = match fecha_aspas {
+            Some(pos) => pos,
+            None => {
+                let mut pos = resto
+                    .iter()
+                    .position(|c| c.is_whitespace())
+                    .unwrap_or(resto.len());
+                // Auditoria da #1943: o git tambem cita caminho SEM aspas
+                // (`not a git repository: /abs`, `bad config line N in file
+                // /abs`), e um diretorio com espaco deixaria o rabo do caminho
+                // de fora. O token se estende ate a ultima palavra com
+                // separador de caminho no mesmo trecho — o trecho acaba na
+                // primeira pausa (`: `, `; `, `, `, ` (`) ou no fim da linha,
+                // para a causa que vem depois do caminho continuar dita.
+                let pausa = (pos..linha)
+                    .find(|j| {
+                        let c = resto[*j];
+                        let seguinte = resto.get(j + 1).copied();
+                        (matches!(c, ':' | ';' | ',') && seguinte.is_none_or(|n| n.is_whitespace()))
+                            || (c.is_whitespace() && seguinte == Some('('))
+                    })
+                    .unwrap_or(linha);
+                // Sem pausa nem fecho colado no proprio token (`/a/config: causa`,
+                // `[/a/b] e ...`): ali o caminho ja acabou.
+                if !(pos > 0 && matches!(resto[pos - 1], ':' | ';' | ',' | ')' | ']' | '>')) {
+                    let mut j = pos;
+                    while j < pausa {
+                        let ini = j + resto[j..pausa]
+                            .iter()
+                            .position(|c| !c.is_whitespace())
+                            .unwrap_or(pausa - j);
+                        let fim_da_palavra = ini
+                            + resto[ini..pausa]
+                                .iter()
+                                .position(|c| c.is_whitespace())
+                                .unwrap_or(pausa - ini);
+                        if resto[ini..fim_da_palavra]
+                            .iter()
+                            .any(|c| matches!(c, '/' | '\\'))
+                        {
+                            pos = fim_da_palavra;
+                        }
+                        j = fim_da_palavra.max(j + 1);
+                    }
+                }
+                while pos > 1 && (e_pontuacao_final(resto[pos - 1]) || e_aspa(resto[pos - 1])) {
+                    pos -= 1;
+                }
+                pos
+            }
+        };
+        let token: String = resto[..fim].iter().collect();
+        let exibido = caminho_para_exibir_no_turno(Path::new(&token), working_dir);
+        // `caminho_para_exibir_no_turno` devolve o proprio caminho quando ele
+        // nao e absoluto NESTA plataforma (um `C:\x` lido no Linux) ou quando
+        // o turno pode ver. Aqui o turno e restrito por contrato: o que nao
+        // virou relativo vira o marcador.
+        if exibido == token {
+            saida.push_str(CAMINHO_FORA_DO_TURNO);
+        } else {
+            saida.push_str(&exibido);
+        }
+        i += fim;
+    }
+    saida
 }
 
 /// Fixture da #1272 S3: planta no repositorio `dir` os tres programas que o
@@ -253,6 +411,161 @@ pub(crate) fn planta_filtro_em_submodulo(dir: &Path, marcas: &Path) -> std::path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1909: as duas recusas do git que nomeiam o diretorio por extenso. O
+    /// caminho sai, a causa fica.
+    #[test]
+    fn oculta_o_caminho_das_recusas_do_git_e_preserva_a_causa() {
+        use crate::tools::tool_context::CAMINHO_FORA_DO_TURNO as M;
+        let bare = "fatal: cannot use bare repository '/home/alguem/proj secreto' \
+                    (safe.bareRepository is 'explicit')";
+        assert_eq!(
+            oculta_caminhos_absolutos(bare, None),
+            format!("fatal: cannot use bare repository '{M}' (safe.bareRepository is 'explicit')")
+        );
+
+        let dubia = "fatal: detected dubious ownership in repository at '/srv/garra/wt'\n\
+                     To add an exception for this directory, call:\n\n\
+                     \tgit config --global --add safe.directory /srv/garra/wt\n";
+        let saida = oculta_caminhos_absolutos(dubia, None);
+        assert!(!saida.contains("/srv"), "{saida}");
+        assert!(saida.contains("dubious ownership"), "{saida}");
+        assert!(saida.contains(&format!("safe.directory {M}\n")), "{saida}");
+
+        // Sem aspas, com pontuacao colada: o `:` da mensagem sobrevive.
+        assert_eq!(
+            oculta_caminhos_absolutos(
+                "error: could not lock /a/b/.git/config: Permission denied",
+                None
+            ),
+            format!("error: could not lock {M}: Permission denied")
+        );
+        // Windows e UNC.
+        assert_eq!(
+            oculta_caminhos_absolutos(r"fatal: not a git repository: 'C:\Users\dono\x'", None),
+            format!("fatal: not a git repository: '{M}'")
+        );
+        assert_eq!(
+            oculta_caminhos_absolutos(r"em \\servidor\share\x agora", None),
+            format!("em {M} agora")
+        );
+    }
+
+    /// Revisao da #1943: o caminho que o git cita e, no caso real, o proprio
+    /// `working_dir` da sessao. Ele sai RELATIVO (`.`, `.git/config`) — dizer
+    /// "fora do diretorio da sessao" seria falso e apagaria o que o modelo
+    /// precisa; so o que cai fora vira o marcador.
+    #[cfg(unix)]
+    #[test]
+    fn caminho_dentro_do_working_dir_sai_relativo() {
+        use crate::tools::tool_context::CAMINHO_FORA_DO_TURNO as M;
+        let wd = Path::new("/srv/sessao/proj");
+        assert_eq!(
+            oculta_caminhos_absolutos(
+                "fatal: cannot use bare repository '/srv/sessao/proj' (safe.bareRepository is 'explicit')",
+                Some(wd)
+            ),
+            "fatal: cannot use bare repository '.' (safe.bareRepository is 'explicit')"
+        );
+        assert_eq!(
+            oculta_caminhos_absolutos(
+                "error: could not lock /srv/sessao/proj/.git/config: File exists; ver /etc/gitconfig",
+                Some(wd)
+            ),
+            format!("error: could not lock .git/config: File exists; ver {M}")
+        );
+    }
+
+    /// Revisao da #1943: formas que o tokenizer deixava passar — `file://`,
+    /// caminho colado em `:` ou entre colchetes, e apostrofo dentro do caminho.
+    #[test]
+    fn formas_coladas_e_apostrofo_tambem_saem() {
+        use crate::tools::tool_context::CAMINHO_FORA_DO_TURNO as M;
+        for (entrada, esperado) in [
+            (
+                "fatal: '/home/o'brien/x' is not a repo".to_string(),
+                format!("fatal: '{M}' is not a repo"),
+            ),
+            (
+                "remote: file:///home/dono/x.git falhou".to_string(),
+                format!("remote: file://{M} falhou"),
+            ),
+            (
+                "hint: [/home/dono/x] e host:/home/dono/y".to_string(),
+                format!("hint: [{M}] e host:{M}"),
+            ),
+        ] {
+            let saida = oculta_caminhos_absolutos(&entrada, None);
+            assert_eq!(saida, esperado);
+            assert!(
+                !saida.contains("dono") && !saida.contains("brien"),
+                "{saida}"
+            );
+        }
+    }
+
+    /// Auditoria da #1943: caminho SEM aspas com espaco (formas reais do git
+    /// 2.43) nao deixa o rabo de fora, e a causa depois da pausa fica.
+    #[test]
+    fn caminho_sem_aspas_com_espaco_sai_inteiro() {
+        use crate::tools::tool_context::CAMINHO_FORA_DO_TURNO as M;
+        for (entrada, esperado) in [
+            (
+                "fatal: not a git repository: /home/dono/Meus Projetos/garra/.git/worktrees/wt2",
+                format!("fatal: not a git repository: {M}"),
+            ),
+            (
+                "fatal: bad config line 3 in file /mnt/My Big Volume/x/.git/config\nhint: veja",
+                format!("fatal: bad config line 3 in file {M}\nhint: veja"),
+            ),
+            (
+                "error: could not lock /a b/c/.git/config: File exists; ver /etc/gitconfig",
+                format!("error: could not lock {M}: File exists; ver {M}"),
+            ),
+            (
+                "\tgit config --global --add safe.directory /srv/garra/wt\n",
+                format!("\tgit config --global --add safe.directory {M}\n"),
+            ),
+            (
+                "fatal: /a/b nao e um repositorio valido",
+                format!("fatal: {M} nao e um repositorio valido"),
+            ),
+        ] {
+            assert_eq!(oculta_caminhos_absolutos(entrada, None), esperado);
+        }
+    }
+
+    /// O que NAO e caminho absoluto do host fica como esta: relativo, URL,
+    /// barra solta, nome de ref.
+    #[test]
+    fn nao_toca_no_que_nao_e_caminho_absoluto() {
+        for texto in [
+            "fatal: Needed a single revision",
+            "fatal: ambiguous argument 'origin/main': unknown revision",
+            "warning: in the working copy of 'src/a.rs', LF will be replaced",
+            "fatal: unable to access 'https://example.com/a/b.git/': timeout",
+            "usage: git diff [<options>] [<commit>] [--] [<path>...]",
+            "a / b // c",
+            "",
+        ] {
+            assert_eq!(oculta_caminhos_absolutos(texto, None), texto);
+        }
+    }
+
+    /// O portao: turno restrito oculta, turno aberto mostra, e fora de um
+    /// turno (sem escopo) e fail-closed.
+    #[tokio::test]
+    async fn stderr_para_o_turno_segue_o_portao() {
+        use crate::tools::turn_tools::com_restricao_do_turno;
+        let texto = "fatal: cannot use bare repository '/home/alguem/x'";
+        let aberto =
+            com_restricao_do_turno(false, async { stderr_para_o_turno(texto, None) }).await;
+        assert_eq!(aberto, texto);
+        let restrito =
+            com_restricao_do_turno(true, async { stderr_para_o_turno(texto, None) }).await;
+        assert!(!restrito.contains("/home/alguem"), "{restrito}");
+        assert!(!stderr_para_o_turno(texto, None).contains("/home/alguem"));
+    }
 
     #[test]
     fn neutraliza_cada_driver_uma_vez() {
