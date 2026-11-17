@@ -23,6 +23,34 @@ pub struct CapabilitiesQuery {
     pub session_id: Option<String>,
 }
 
+/// O portao de uma sessao fora do WhatsApp pessoal: o modo escolhido (se
+/// houver) composto com o **teto de superficie** — o mesmo que
+/// `AppState::exec_context_for` poe no turno de uma sessao que nao e do
+/// operador (`channels_view::teto_da_superficie`).
+///
+/// #1915: sem isto o painel atribuia a recusa so ao modo (ou mostrava a
+/// ferramenta como liberada) numa sessao remota cujo turno real tambem e
+/// barrado pelo teto — a camada relatada ficava errada. So leitura: o
+/// enforcement continua no turno. Sessao do operador sem modo escolhido
+/// segue sem portao (`None`).
+async fn portao_com_teto_de_superficie(
+    app: &crate::state::AppState,
+    session_id: &str,
+    escolhido: Option<String>,
+) -> Option<garraia_agents::modes::ToolGate> {
+    use garraia_agents::modes::ToolGate;
+    let operador = crate::channels_view::sessao_do_operador(app, session_id).await;
+    let teto = crate::channels_view::teto_da_superficie(operador);
+    match (escolhido, teto) {
+        (None, None) => None,
+        (modo, teto) => Some(
+            modo.map(|m| ToolGate::for_mode_name(&m))
+                .unwrap_or_else(ToolGate::sem_politica)
+                .com_teto(teto),
+        ),
+    }
+}
+
 pub async fn admin_capabilities(
     State(state): State<AdminState>,
     axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
@@ -39,7 +67,8 @@ pub async fn admin_capabilities(
     // #1415: com `session_id`, o portao e o do TURNO daquela conversa — no
     // WhatsApp pessoal, o piso do canal (ou a escolha da sessao) composto com
     // o teto do principal (ADR 0025); nas outras superficies, a escolha da
-    // sessao. Sem `session_id`, portao aberto: so estados de runtime.
+    // sessao composta com o teto de superficie (#1915), como o turno faz.
+    // Sem `session_id`, portao aberto: so estados de runtime.
     let resumo = query.session_id.as_deref().and_then(|sid| {
         app.sessions
             .get(sid)
@@ -63,13 +92,13 @@ pub async fn admin_capabilities(
                         ),
                     )
                 }
-                None => escolhido.map(|m| garraia_agents::modes::ToolGate::for_mode_name(&m)),
+                None => portao_com_teto_de_superficie(app, sid, escolhido).await,
             }
         }
-        (Some(sid), None) => app
-            .chosen_agent_mode_for(sid)
-            .await
-            .map(|m| garraia_agents::modes::ToolGate::for_mode_name(&m)),
+        (Some(sid), None) => {
+            let escolhido = app.chosen_agent_mode_for(sid).await;
+            portao_com_teto_de_superficie(app, sid, escolhido).await
+        }
         (None, _) => None,
     };
     let permite = |n: &str| {
@@ -77,6 +106,9 @@ pub async fn admin_capabilities(
             .as_ref()
             .is_none_or(|p| app.agents.portao_permite(p, n))
     };
+    // #1915: o mesmo portao, por camada — o console mostra se quem barra e
+    // o modo da sessao ou o teto do principal.
+    let recusa = |n: &str| portao.as_ref().and_then(|p| app.agents.portao_recusa(p, n));
     let disponibilidade = |n: &str| app.agents.disponibilidade_de(n);
     let mcp: Vec<garraia_agents::McpServerStatus> = match &app.mcp_manager_arc {
         Some(mgr) => mgr.server_statuses().await,
@@ -117,6 +149,7 @@ pub async fn admin_capabilities(
     let linhas = registro(&Entradas {
         inventario: &inventario,
         permite: &permite,
+        recusa: &recusa,
         disponibilidade: &disponibilidade,
         mcp: &mcp,
         bash_desligado,

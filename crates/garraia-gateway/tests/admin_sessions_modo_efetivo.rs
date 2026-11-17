@@ -200,6 +200,57 @@ async fn sessoes_trazem_principal_modo_efetivo_e_projeto_sem_caminho() {
         doc["session"]["effective_mode"],
         serde_json::json!("search")
     );
+    // #1915: a linha negada nomeia a camada — o usuario e `read` com
+    // `write: true`, entao o teto libera a escrita e so o piso `search` barra.
+    assert_eq!(
+        cap("file_write")["denied_by"],
+        serde_json::json!("mode"),
+        "{caps:?}"
+    );
+
+    // #1915: sessao REMOTA fora do WhatsApp, sem modo escolhido. O turno real
+    // recebe o teto de superficie (`exec_context_for`); o painel tem de
+    // relatar a mesma camada, e nao "liberada" ou "so o modo".
+    state
+        .hydrate_session_history("telegram-4242", Some("telegram"), Some("4242"))
+        .await;
+    let (status, doc) = corpo(
+        admin_capabilities(
+            State(admin_state.clone()),
+            admin(Role::Viewer),
+            Query(CapabilitiesQuery {
+                session_id: Some("telegram-4242".to_string()),
+            }),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let caps = doc["capabilities"].as_array().expect("lista");
+    let cap = |n: &str| {
+        caps.iter()
+            .find(|c| c["name"] == n)
+            .unwrap_or_else(|| panic!("{n} ausente: {caps:?}"))
+            .clone()
+    };
+    assert_eq!(cap("file_write")["state"], serde_json::json!("denied"));
+    assert_eq!(
+        cap("file_write")["denied_by"],
+        serde_json::json!("principal_ceiling"),
+        "remoto sem modo: so o teto de superficie barra: {caps:?}"
+    );
+    assert_ne!(
+        cap("file_read")["state"],
+        serde_json::json!("denied"),
+        "leitura continua liberada pelo teto"
+    );
+    // O que o painel diz bate com o portao do turno de verdade.
+    let exec = state.exec_context_for("telegram-4242", Some("4242")).await;
+    let portao = garraia_agents::modes::ToolGate::from_exec(&exec);
+    assert!(!state.agents.portao_permite(&portao, "file_write"));
+    assert!(state.agents.portao_permite(&portao, "file_read"));
+
     // #1417: o painel da conversa traz o estado do breaker (vazio aqui).
     assert!(doc["breaker"].is_array(), "{doc}");
     assert_eq!(doc["breaker"].as_array().map(Vec::len), Some(0));

@@ -236,46 +236,149 @@ pub fn politica_do_nivel(nivel: Nivel, write: bool) -> ToolPolicy {
     }
 }
 
-/// Uma politica deixa esta ferramenta rodar? Nome e classe somam no
-/// `allowed`; `denied` (por nome ou por classe) e `no_tools` vencem tudo;
-/// sem classe, so o nome libera num whitelist (fail-closed).
-fn politica_permite(
+/// Por que UMA politica (a do modo, ou a do teto) barra uma ferramenta
+/// (#1915). E o que separa "o servidor MCP nao declarou classe" de "a classe
+/// declarada nao esta liberada" — dois casos que pedem remediacoes diferentes
+/// e que, ate aqui, saiam com o mesmo texto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotivoDaPolitica {
+    /// `no_tools`: a politica nao libera ferramenta nenhuma.
+    SemFerramentas,
+    /// O nome esta em `denied`.
+    NegadaPorNome,
+    /// Uma classe da ferramenta esta em `denied_capabilities`.
+    ClasseNegada,
+    /// Whitelist, o nome nao esta declarado e a ferramenta **nao tem classe**
+    /// — nada a liberar por classe (fail-closed). E o caso da ferramenta MCP
+    /// cujo servidor nao anota `readOnlyHint`/`destructiveHint`.
+    SemClasse,
+    /// Whitelist, o nome nao esta declarado e alguma classe da ferramenta
+    /// esta fora de `allowed_capabilities`.
+    ForaDaLista,
+}
+
+impl MotivoDaPolitica {
+    /// Codigo estavel, legivel por maquina.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SemFerramentas => "no_tools",
+            Self::NegadaPorNome => "denied_by_name",
+            Self::ClasseNegada => "denied_capability",
+            Self::SemClasse => "unclassified",
+            Self::ForaDaLista => "not_in_allowlist",
+        }
+    }
+}
+
+/// A camada do portao que barrou (#1915).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CamadaDaRecusa {
+    /// So o modo da sessao: trocar de modo (`/mode`, do usuario) resolve.
+    Modo,
+    /// So o teto de quem fala: trocar de modo **nao** resolve.
+    Teto,
+    /// Os dois: trocar de modo sozinho nao resolve.
+    ModoETeto,
+}
+
+impl CamadaDaRecusa {
+    /// Codigo estavel, legivel por maquina.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Modo => "mode",
+            Self::Teto => "principal_ceiling",
+            Self::ModoETeto => "mode_and_principal_ceiling",
+        }
+    }
+}
+
+/// A recusa do portao do turno para UMA ferramenta, por camada (#1915).
+/// Pelo menos um dos dois campos e `Some` — [`ToolGate::recusa_de`] so
+/// devolve este tipo quando alguma camada barrou.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecusaDoPortao {
+    /// Por que o modo da sessao barra; `None` se o modo libera.
+    pub modo: Option<MotivoDaPolitica>,
+    /// Por que o teto de quem fala barra; `None` se o teto libera (ou nao ha).
+    pub teto: Option<MotivoDaPolitica>,
+}
+
+impl RecusaDoPortao {
+    pub fn camada(&self) -> CamadaDaRecusa {
+        match (self.modo, self.teto) {
+            (Some(_), Some(_)) => CamadaDaRecusa::ModoETeto,
+            (None, Some(_)) => CamadaDaRecusa::Teto,
+            // `(None, None)` nao e construido por `recusa_de`; cai no modo
+            // para o tipo nao ter estado que entre em panico.
+            (Some(_), None) | (None, None) => CamadaDaRecusa::Modo,
+        }
+    }
+
+    /// O motivo que **decide**: o do teto quando ele barra (e a camada que
+    /// trocar de modo nao remove), senao o do modo.
+    pub fn motivo(&self) -> Option<MotivoDaPolitica> {
+        self.teto.or(self.modo)
+    }
+}
+
+/// Por que esta politica barra a ferramenta — `None` quando ela libera.
+/// Nome e classe somam no `allowed`; `denied` (por nome ou por classe) e
+/// `no_tools` vencem tudo; sem classe, so o nome libera num whitelist
+/// (fail-closed).
+///
+/// E a UNICA implementacao da decisao: [`politica_permite`] e so
+/// `is_none()` daqui, para que a explicacao nunca divirja do enforcement.
+fn recusa_da_politica(
     p: &ToolPolicy,
     tool_name: &str,
     capacidades: &[crate::capacidades::Capacidade],
-) -> bool {
+) -> Option<MotivoDaPolitica> {
     if p.no_tools {
-        return false;
+        return Some(MotivoDaPolitica::SemFerramentas);
     }
     // `denied` vale sempre, inclusive para MCP — e vence tudo, prefixo
     // declarado incluso.
     if p.denied.iter().any(|t| t == tool_name) {
-        return false;
+        return Some(MotivoDaPolitica::NegadaPorNome);
     }
     if capacidades
         .iter()
         .any(|c| p.denied_capabilities.contains(c))
     {
-        return false;
+        return Some(MotivoDaPolitica::ClasseNegada);
     }
     if p.whitelist_mode {
         // Whitelist vazia nao quer dizer "nada permitido" — quer dizer que
         // o perfil nao restringiu (#1264). Ver o docblock do tipo.
         if p.allowed.is_empty() && p.allowed_capabilities.is_empty() {
-            return true;
+            return None;
         }
         // #1264: ferramenta MCP passa por aqui como qualquer outra.
         if p.allowed.iter().any(|e| entrada_cobre(e, tool_name)) {
-            return true;
+            return None;
         }
         // #1385: pela classe — todas as classes da ferramenta liberadas, e
         // pelo menos uma. Sem classe, nada a liberar.
-        return !capacidades.is_empty()
-            && capacidades
-                .iter()
-                .all(|c| p.allowed_capabilities.contains(c));
+        if capacidades.is_empty() {
+            return Some(MotivoDaPolitica::SemClasse);
+        }
+        if !capacidades
+            .iter()
+            .all(|c| p.allowed_capabilities.contains(c))
+        {
+            return Some(MotivoDaPolitica::ForaDaLista);
+        }
     }
-    true
+    None
+}
+
+/// Uma politica deixa esta ferramenta rodar? Ver [`recusa_da_politica`].
+fn politica_permite(
+    p: &ToolPolicy,
+    tool_name: &str,
+    capacidades: &[crate::capacidades::Capacidade],
+) -> bool {
+    recusa_da_politica(p, tool_name, capacidades).is_none()
 }
 
 /// Configurações de LLM específicas por modo
@@ -528,6 +631,26 @@ impl ToolGate {
         capacidades: &[crate::capacidades::Capacidade],
     ) -> bool {
         self.modo_permite(tool_name, capacidades) && self.teto_permite(tool_name, capacidades)
+    }
+    /// A recusa do portao para esta ferramenta, **por camada** (#1915):
+    /// `None` exatamente quando [`Self::permite_com_capacidades`] e `true`
+    /// (as duas leem [`recusa_da_politica`]). E o dado estruturado que o
+    /// registro de capacidades relata; [`Self::explica_recusa`] continua
+    /// sendo a frase que o modelo recebe no despacho.
+    pub fn recusa_de(
+        &self,
+        tool_name: &str,
+        capacidades: &[crate::capacidades::Capacidade],
+    ) -> Option<RecusaDoPortao> {
+        let modo = self
+            .profile
+            .as_ref()
+            .and_then(|p| recusa_da_politica(&p.tool_policy, tool_name, capacidades));
+        let teto = self
+            .teto
+            .as_ref()
+            .and_then(|t| recusa_da_politica(&t.politica, tool_name, capacidades));
+        (modo.is_some() || teto.is_some()).then_some(RecusaDoPortao { modo, teto })
     }
     /// Por que a ferramenta foi barrada — o modo, ou o teto do principal.
     /// O modo e citado primeiro: quem escolheu `/mode` entende; o teto e
@@ -2919,5 +3042,149 @@ mod superficie_remota_tests {
         let portao = ToolGate::para_o_turno(&ExecContext::default(), "oi");
         assert!(permite_real(&portao, "bash"));
         assert!(permite_real(&portao, "file_write"));
+    }
+}
+
+/// #1915: a recusa do portao nomeia a CAMADA (modo, teto, ou os dois) e o
+/// motivo dentro dela — e nunca diverge do enforcement.
+#[cfg(test)]
+mod recusa_por_camada_tests {
+    use super::*;
+    use crate::capacidades::{Capacidade, NATIVAS, capacidades_nativas};
+
+    fn teto(nivel: Nivel) -> Option<TetoDeCapacidades> {
+        Some(TetoDeCapacidades {
+            nome: nivel.as_str().to_string(),
+            politica: politica_do_nivel(nivel, false),
+        })
+    }
+
+    fn recusa(portao: &ToolGate, nome: &str) -> Option<RecusaDoPortao> {
+        portao.recusa_de(nome, capacidades_nativas(nome))
+    }
+
+    /// O caso do dogfood: no Telegram remoto, `bash` e `file_write` saiam
+    /// com o mesmo motivo generico. Sem modo, so o teto barra os dois; com
+    /// `ask`, `file_write` e barrado tambem pelo modo — camadas diferentes.
+    #[test]
+    fn modo_e_teto_sao_camadas_distintas() {
+        let so_teto = ToolGate::sem_politica().com_teto(teto(Nivel::Read));
+        let r = recusa(&so_teto, "bash").expect("teto read nega bash");
+        assert_eq!(r.camada(), CamadaDaRecusa::Teto);
+        assert_eq!(r.modo, None);
+        assert!(recusa(&so_teto, "file_read").is_none());
+
+        let so_modo = ToolGate::for_mode_name("ask");
+        let r = recusa(&so_modo, "file_write").expect("ask nega file_write");
+        assert_eq!(r.camada(), CamadaDaRecusa::Modo);
+        assert_eq!(r.modo, Some(MotivoDaPolitica::NegadaPorNome));
+        assert_eq!(r.teto, None);
+
+        let ambos = ToolGate::for_mode_name("ask").com_teto(teto(Nivel::Read));
+        let r = recusa(&ambos, "file_write").expect("modo e teto negam");
+        assert_eq!(r.camada(), CamadaDaRecusa::ModoETeto);
+        // O motivo que decide e o do teto: trocar de modo nao o remove.
+        assert_eq!(r.motivo(), r.teto);
+    }
+
+    /// Ferramenta MCP sem anotacao (`forja__forja_ask` no dogfood): o teto
+    /// de leitura barra por FALTA DE CLASSE, e nao por classe proibida.
+    #[test]
+    fn mcp_sem_classe_e_distinguida_de_classe_fora_da_lista() {
+        let portao = ToolGate::sem_politica().com_teto(teto(Nivel::Read));
+        let sem_classe = portao
+            .recusa_de("forja__forja_ask", &[])
+            .expect("sem classe, whitelist nega");
+        assert_eq!(sem_classe.camada(), CamadaDaRecusa::Teto);
+        assert_eq!(sem_classe.motivo(), Some(MotivoDaPolitica::SemClasse));
+
+        // Com classe de leitura declarada, o mesmo teto libera.
+        assert!(
+            portao
+                .recusa_de("forja__forja_ask", &[Capacidade::McpRead])
+                .is_none()
+        );
+        // Com classe mutante, a recusa e pela classe — outro motivo.
+        let mutante = portao
+            .recusa_de("hera__hera_ask", &[Capacidade::McpWrite])
+            .expect("mcp.write nao passa em read");
+        assert_ne!(mutante.motivo(), Some(MotivoDaPolitica::SemClasse));
+    }
+
+    #[test]
+    fn nivel_chat_e_sem_ferramentas() {
+        let portao = ToolGate::sem_politica().com_teto(teto(Nivel::Chat));
+        let r = recusa(&portao, "file_read").expect("chat nega tudo");
+        assert_eq!(r.teto, Some(MotivoDaPolitica::SemFerramentas));
+    }
+
+    /// **A invariante.** Em todo modo x todo teto x toda ferramenta nativa
+    /// (mais MCP com e sem classe), `recusa_de` e `None` exatamente quando o
+    /// portao permite, e a camada bate com quem barrou. Os dois lados leem
+    /// `recusa_da_politica`: isto prova a COMPOSICAO por camada, nao a
+    /// semantica da politica — essa e dos testes de politica deste arquivo.
+    #[test]
+    fn a_explicacao_nunca_diverge_do_enforcement() {
+        let mut portoes: Vec<ToolGate> = vec![ToolGate::sem_politica()];
+        for modo in AgentMode::all_modes() {
+            portoes.push(ToolGate::from_profile(&ModeProfile::from_mode(modo)));
+        }
+        let tetos = [
+            None,
+            teto(Nivel::Chat),
+            teto(Nivel::Read),
+            teto(Nivel::Full),
+        ];
+        let mut casos: Vec<(String, &'static [Capacidade])> = NATIVAS
+            .iter()
+            .map(|(n, c)| ((*n).to_string(), *c))
+            .collect();
+        casos.push(("srv__sem_classe".into(), &[]));
+        casos.push(("srv__leitura".into(), &[Capacidade::McpRead]));
+        casos.push(("srv__escrita".into(), &[Capacidade::McpWrite]));
+        casos.push(("fs__read_text_file".into(), &[Capacidade::FilesystemRead]));
+        let mut negadas = 0usize;
+        for base in &portoes {
+            for t in &tetos {
+                let portao = base.clone().com_teto(t.clone());
+                for (nome, classes) in &casos {
+                    let permite = portao.permite_com_capacidades(nome, classes);
+                    let r = portao.recusa_de(nome, classes);
+                    assert_eq!(permite, r.is_none(), "{nome} em {portao:?}");
+                    let Some(r) = r else { continue };
+                    negadas += 1;
+                    assert_eq!(r.modo.is_some(), !portao.modo_permite(nome, classes));
+                    assert_eq!(r.teto.is_some(), !portao.teto_permite(nome, classes));
+                    assert!(r.motivo().is_some());
+                    let esperada = match (r.modo.is_some(), r.teto.is_some()) {
+                        (true, true) => CamadaDaRecusa::ModoETeto,
+                        (true, false) => CamadaDaRecusa::Modo,
+                        _ => CamadaDaRecusa::Teto,
+                    };
+                    assert_eq!(r.camada(), esperada);
+                }
+            }
+        }
+        assert!(
+            negadas > 50,
+            "a varredura precisa exercitar recusas: {negadas}"
+        );
+    }
+
+    /// Os codigos sao contrato de maquina (saem no `garra_status` e no
+    /// console): nao mudam por acidente.
+    #[test]
+    fn codigos_estaveis() {
+        assert_eq!(CamadaDaRecusa::Modo.as_str(), "mode");
+        assert_eq!(CamadaDaRecusa::Teto.as_str(), "principal_ceiling");
+        assert_eq!(
+            CamadaDaRecusa::ModoETeto.as_str(),
+            "mode_and_principal_ceiling"
+        );
+        assert_eq!(MotivoDaPolitica::SemFerramentas.as_str(), "no_tools");
+        assert_eq!(MotivoDaPolitica::NegadaPorNome.as_str(), "denied_by_name");
+        assert_eq!(MotivoDaPolitica::ClasseNegada.as_str(), "denied_capability");
+        assert_eq!(MotivoDaPolitica::SemClasse.as_str(), "unclassified");
+        assert_eq!(MotivoDaPolitica::ForaDaLista.as_str(), "not_in_allowlist");
     }
 }

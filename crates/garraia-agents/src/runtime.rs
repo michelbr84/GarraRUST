@@ -1983,6 +1983,16 @@ impl AgentRuntime {
         portao.permite_com_capacidades(name, self.capacidades_de(name))
     }
 
+    /// #1915: a recusa do portao para esta ferramenta, por camada — `None`
+    /// exatamente quando [`Self::portao_permite`] e `true`.
+    pub fn portao_recusa(
+        &self,
+        portao: &crate::modes::ToolGate,
+        name: &str,
+    ) -> Option<crate::modes::RecusaDoPortao> {
+        portao.recusa_de(name, self.capacidades_de(name))
+    }
+
     /// #1425: a ferramenta esta operacional agora? Nome desconhecido e
     /// "disponivel" — quem recusa nome desconhecido e o portao.
     pub fn disponibilidade_de(&self, name: &str) -> crate::tools::Disponibilidade {
@@ -3941,6 +3951,18 @@ impl AgentRuntime {
                     let execucao = async {
                         if publica_ferramentas {
                             let nomes_registrados = self.tool_names();
+                            // #1915: o que ficou de fora leva a CAMADA que
+                            // barrou (modo, teto de quem fala), para o
+                            // relatorio nao reduzir tudo a "politica".
+                            let recusas: Vec<(String, crate::modes::RecusaDoPortao)> =
+                                nomes_registrados
+                                    .iter()
+                                    .filter_map(|n| {
+                                        self.portao_recusa(portao, n).map(|r| (n.clone(), r))
+                                    })
+                                    .collect();
+                            let execucao =
+                                crate::tools::turn_tools::com_recusas_do_turno(recusas, execucao);
                             let mut liberadas: Vec<String> = nomes_registrados
                                 .into_iter()
                                 .filter(|n| self.portao_permite(portao, n))
