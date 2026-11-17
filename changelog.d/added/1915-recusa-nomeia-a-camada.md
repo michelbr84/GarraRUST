@@ -15,5 +15,8 @@
   pelo nome aparece apenas nas superficies do operador. `reason_code` continua `policy` e os campos novos sao aditivos;
   sem portao conhecido a linha fica generica, como antes. A explicacao e o
   enforcement leem a mesma funcao (`recusa_da_politica`), e um teste varre
-  modo x teto x ferramenta para provar que nao divergem. Nenhum modo, teto,
+  modo x teto x ferramenta para provar que nao divergem. O painel admin
+  (`?session_id=`) passa a compor o teto de superficie nas sessoes remotas
+  fora do WhatsApp, como o turno faz: antes ele mostrava como liberada (ou
+  negada so pelo modo) uma ferramenta que o turno real barrava pelo teto. Nenhum modo, teto,
   raiz ou jail foi alterado.

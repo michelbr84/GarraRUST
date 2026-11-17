@@ -3120,8 +3120,9 @@ mod recusa_por_camada_tests {
 
     /// **A invariante.** Em todo modo x todo teto x toda ferramenta nativa
     /// (mais MCP com e sem classe), `recusa_de` e `None` exatamente quando o
-    /// portao permite; a camada bate com quem barrou; e a frase do despacho
-    /// (`explica_recusa`) cita o modo quando o modo barra.
+    /// portao permite, e a camada bate com quem barrou. Os dois lados leem
+    /// `recusa_da_politica`: isto prova a COMPOSICAO por camada, nao a
+    /// semantica da politica — essa e dos testes de politica deste arquivo.
     #[test]
     fn a_explicacao_nunca_diverge_do_enforcement() {
         let mut portoes: Vec<ToolGate> = vec![ToolGate::sem_politica()];
