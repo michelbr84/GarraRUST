@@ -518,3 +518,32 @@ fn working_dir_existente_e_sessao_sem_working_dir_nao_sao_recusados() {
         None
     );
 }
+
+/// O fallback: sem linhas e com codigo de erro NAO e resultado vazio.
+/// **Mutacao**: devolva `Ok(vazio)` para todo stdout vazio (o comportamento
+/// antigo) e o terceiro bloco falha.
+#[test]
+fn fallback_com_erro_e_sem_linhas_nao_vira_resultado_vazio() {
+    let vazio = || "No matches found in X.".to_string();
+
+    assert_eq!(
+        saida_do_fallback(
+            "a.rs:1:achou\n",
+            Some(2),
+            "grep: b: Permission denied",
+            vazio()
+        ),
+        Ok("a.rs:1:achou\n".to_string()),
+        "resultado parcial continua sendo resultado"
+    );
+    for codigo in [Some(0), Some(1)] {
+        assert_eq!(saida_do_fallback("", codigo, "", vazio()), Ok(vazio()));
+    }
+    for codigo in [Some(2), None] {
+        let falha = saida_do_fallback("", codigo, "grep: .: Permission denied\n", vazio())
+            .expect_err("busca que nao terminou e erro");
+        assert!(falha.contains("did not complete"), "{falha}");
+        assert!(falha.contains("Permission denied"), "{falha}");
+        assert!(!falha.contains("No matches found"), "{falha}");
+    }
+}

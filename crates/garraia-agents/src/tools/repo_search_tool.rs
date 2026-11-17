@@ -240,6 +240,8 @@ fn escopo_da_busca(repo: &RepoDir, revelar_caminho: bool) -> String {
             "the gateway process directory ({}; this session has no working directory)",
             dir.display()
         ),
+        // Catch-all: o turno restrito. `ProcessoCwd(None)` nao chega aqui —
+        // `recusa_sem_repositorio` ja o recusou antes.
         RepoDir::ProcessoCwd(_) => {
             "the gateway process directory (this session has no working directory)".to_string()
         }
@@ -289,6 +291,37 @@ fn recusa_working_dir_inacessivel(repo: &RepoDir) -> Option<String> {
          searched. This is not an empty result: select an existing project for this session \
          (set its working directory) and search again."
     ))
+}
+
+/// O que o fallback (`grep`/`findstr`) devolve: `Ok` com os resultados ou com
+/// o resultado vazio, `Err` quando a busca nao terminou (#1909).
+///
+/// O fallback olhava so o stdout: um `grep` que saia com erro (diretorio sem
+/// permissao de leitura) e sem nenhuma linha virava "No matches found" — uma
+/// busca que falhou lida como "nao existe". `grep` e `findstr` saem com 1
+/// quando nao acham nada; stdout vazio com qualquer outro codigo de falha e
+/// erro, e o stderr vai junto, como o ramo do `rg` ja faz. Com resultados no
+/// stdout eles seguem valendo, mesmo que algum arquivo nao tenha sido lido.
+fn saida_do_fallback(
+    stdout: &str,
+    codigo: Option<i32>,
+    stderr: &str,
+    vazio: String,
+) -> std::result::Result<String, String> {
+    if !stdout.is_empty() {
+        return Ok(stdout.to_string());
+    }
+    match codigo {
+        Some(0 | 1) => Ok(vazio),
+        outro => Err(format!(
+            "Search did not complete ({}), so this is not an empty result.\nSTDERR: {}",
+            outro.map_or_else(
+                || "terminated by a signal".to_string(),
+                |c| format!("exit code {c}")
+            ),
+            stderr.trim()
+        )),
+    }
 }
 
 /// Searches code in a repository using grep and file pattern matching.
@@ -486,11 +519,13 @@ impl Tool for RepoSearchTool {
                 match fallback {
                     Desfecho::Saida(output) => {
                         let stdout = String::from_utf8_lossy(&output.stdout);
-                        if stdout.is_empty() {
-                            Ok(ToolOutput::success(vazio))
-                        } else {
-                            Ok(ToolOutput::success(self.truncate_output(&stdout)))
-                        }
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        Ok(
+                            match saida_do_fallback(&stdout, output.status.code(), &stderr, vazio) {
+                                Ok(texto) => ToolOutput::success(self.truncate_output(&texto)),
+                                Err(falha) => ToolOutput::error(self.truncate_output(&falha)),
+                            },
+                        )
                     }
                     Desfecho::NaoExecutou(e2) => Ok(ToolOutput::error(format!(
                         "Search failed (rg: {}, grep: {})",
