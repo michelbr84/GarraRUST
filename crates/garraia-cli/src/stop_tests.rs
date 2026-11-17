@@ -105,3 +105,142 @@ fn stop_returns_promptly_when_cleanup_finishes() {
     assert!(!is_process_running(target.descendant));
     assert!(start.elapsed() < std::time::Duration::from_secs(5));
 }
+
+/// A parada por porta pode receber vários PIDs do `lsof`. Antes, cada um
+/// esperava o grace inteiro: dois alvos com 3 s de limpeza custavam ~6 s. Com
+/// o orçamento único, os dois recebem `SIGTERM` juntos e a espera é paralela.
+#[test]
+fn collective_stop_spends_one_budget_for_every_target() {
+    let mut primeiro = fixture("3");
+    let mut segundo = fixture("3");
+    let unrelated = fixture("0");
+
+    let start = std::time::Instant::now();
+    let resultados = kill_and_wait_many(
+        &[primeiro.gateway.id(), segundo.gateway.id()],
+        std::time::Duration::from_secs(20),
+    );
+    let decorrido = start.elapsed();
+
+    assert_eq!(resultados.len(), 2, "um resultado por PID, na ordem pedida");
+    assert_eq!(
+        resultados.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        vec![primeiro.gateway.id(), segundo.gateway.id()],
+        "a ordem de saída acompanha a ordem pedida"
+    );
+    assert!(
+        resultados.iter().all(|(_, saiu)| *saiu),
+        "os dois alvos devem sair dentro do orçamento: {resultados:?}"
+    );
+    assert!(primeiro.gateway.wait().expect("reap primeiro").success());
+    assert!(segundo.gateway.wait().expect("reap segundo").success());
+    assert!(!is_process_running(primeiro.descendant));
+    assert!(!is_process_running(segundo.descendant));
+
+    // Sequencial seriam ~6 s; o orçamento único fica perto dos 3 s de cada
+    // limpeza. A folga cobre a fila do runner sem deixar passar o caso N × grace.
+    assert!(
+        decorrido < std::time::Duration::from_secs(5),
+        "parada coletiva gastou {decorrido:?} — orçamento não foi compartilhado"
+    );
+
+    // Um processo alheio não faz parte do pedido e continua vivo.
+    assert!(is_process_running(unrelated.gateway.id()));
+    assert!(is_process_running(unrelated.descendant));
+}
+
+/// A escalada para `SIGKILL` só atinge o processo que recebeu o `SIGTERM`.
+#[test]
+fn escalation_is_skipped_when_the_pid_was_recycled() {
+    assert!(pode_escalar(Some(7), Some(7)), "mesmo processo: escala");
+    assert!(
+        !pode_escalar(Some(7), Some(9)),
+        "start-time diferente = PID reciclado: não escala"
+    );
+    assert!(
+        pode_escalar(Some(7), None),
+        "identidade atual ilegível: mantém o comportamento anterior"
+    );
+    assert!(
+        pode_escalar(None, Some(9)),
+        "identidade não capturada: mantém o comportamento anterior"
+    );
+}
+
+/// A identidade é estável para o mesmo processo e ausente para quem não existe.
+#[test]
+fn process_identity_comes_from_the_start_time() {
+    let proprio = std::process::id();
+    let primeira = identidade_do_processo(proprio).expect("start-time do próprio processo");
+    let segunda = identidade_do_processo(proprio).expect("start-time do próprio processo");
+    assert_eq!(primeira, segunda, "start-time não muda durante a vida");
+    assert!(
+        identidade_do_processo(u32::MAX - 1).is_none(),
+        "PID inexistente não tem identidade"
+    );
+}
+
+/// O parsing trava o campo 22 mesmo com `comm` contendo espaço e parêntese —
+/// o nome do executável do gateway pode ter os dois.
+#[test]
+fn stat_parsing_pins_field_22_after_the_last_parenthesis() {
+    // Campos 3..=22 depois do ÚLTIMO `)`: starttime (22) = 987654.
+    let linha =
+        "1234 (garra) (x) y) S 1 1234 1234 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 0 0";
+    assert_eq!(start_time_do_stat(linha), Some(987654));
+    assert_eq!(start_time_do_stat("sem parentese"), None);
+    assert_eq!(
+        start_time_do_stat("12 (a) S 1"),
+        None,
+        "linha curta não inventa campo"
+    );
+}
+
+/// Um alvo que já era zumbi antes do pedido não é escalado nem contado como
+/// vivo: o `SIGTERM` a um zumbi não faz nada e o `stop` não deve esperar.
+#[test]
+fn collective_stop_returns_at_once_for_an_already_dead_target() {
+    // Filho já saído e ainda não colhido: o PID continua sendo nosso (não há
+    // risco de reciclagem) e `is_process_running` o vê como zumbi.
+    let mut morto = Command::new("true").spawn().expect("processo efêmero");
+    let pid = morto.id();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let inicio = std::time::Instant::now();
+    let resultados = kill_and_wait_many(&[pid], std::time::Duration::from_secs(10));
+    assert_eq!(resultados, vec![(pid, true)]);
+    assert!(inicio.elapsed() < std::time::Duration::from_secs(2));
+    let _ = morto.wait();
+}
+
+/// Dois alvos que não saem: o prazo coletivo vale para os dois e a escalada
+/// atinge cada um que continua sendo o mesmo processo.
+#[test]
+fn collective_stop_escalates_every_target_that_stays() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut primeiro = fixture("60");
+    let mut segundo = fixture("60");
+    let inicio = std::time::Instant::now();
+    let resultados = kill_and_wait_many(
+        &[primeiro.gateway.id(), segundo.gateway.id()],
+        std::time::Duration::from_millis(300),
+    );
+    assert!(
+        resultados.iter().all(|(_, saiu)| *saiu),
+        "os dois devem terminar pelo SIGKILL: {resultados:?}"
+    );
+    assert_eq!(
+        primeiro.gateway.wait().expect("reap primeiro").signal(),
+        Some(libc::SIGKILL)
+    );
+    assert_eq!(
+        segundo.gateway.wait().expect("reap segundo").signal(),
+        Some(libc::SIGKILL)
+    );
+    // Um alvo só já custaria grace + 2 s; dois alvos em sequência custariam o
+    // dobro. Aqui os dois prazos são compartilhados.
+    assert!(
+        inicio.elapsed() < std::time::Duration::from_secs(4),
+        "escalada coletiva levou {:?}",
+        inicio.elapsed()
+    );
+}

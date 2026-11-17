@@ -1793,6 +1793,112 @@ impl Drop for PidFileGuard {
 #[cfg(all(test, target_os = "linux"))]
 mod stop_tests;
 
+/// Start-time do processo (campo 22 de `/proc/<pid>/stat`, em ticks desde o
+/// boot) — a identidade mais barata que o Linux oferece sem `pidfd` aberto.
+///
+/// Serve para uma coisa só: depois do grace, saber se o PID que vamos escalar
+/// ainda é o MESMO processo que recebeu o SIGTERM. Um PID reciclado tem outro
+/// start-time, e escalar nele mataria um processo alheio (#1913).
+#[cfg(target_os = "linux")]
+fn identidade_do_processo(pid: u32) -> Option<u64> {
+    start_time_do_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// O parsing do start-time, separado da leitura do arquivo para ter teste com
+/// literal: `comm` pode conter espaço e parêntese, então os campos só começam
+/// depois do ÚLTIMO `)`. Depois de `comm`, o start-time (campo 22) é o 20º
+/// token (campos 3..=22).
+#[cfg(target_os = "linux")]
+fn start_time_do_stat(stat: &str) -> Option<u64> {
+    stat.rsplit(')')
+        .next()?
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
+}
+
+/// Sem procfs portátil não há start-time barato: a escalada mantém o
+/// comportamento anterior (ver [`pode_escalar`]).
+#[cfg(all(unix, not(target_os = "linux")))]
+fn identidade_do_processo(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// Decide a escalada para `SIGKILL` comparando a identidade registrada antes
+/// do `SIGTERM` com a de agora.
+///
+/// Só a divergência entre duas identidades conhecidas impede a escalada. Com
+/// identidade indisponível em qualquer dos lados (`None` — procfs ilegível,
+/// plataforma sem start-time), vale o comportamento anterior: escalar. Deixar
+/// um processo vivo por falta de leitura seria pior que o risco de corrida.
+#[cfg(unix)]
+fn pode_escalar(esperada: Option<u64>, atual: Option<u64>) -> bool {
+    match (esperada, atual) {
+        (Some(esperada), Some(atual)) => esperada == atual,
+        _ => true,
+    }
+}
+
+/// Um alvo de [`kill_and_wait_many`]: o que precisa sobreviver entre o
+/// `SIGTERM` e a escalada.
+#[cfg(unix)]
+struct AlvoDaParada {
+    pid: u32,
+    /// Grupo do líder, quando ele lidera um grupo que não é o nosso.
+    grupo: Option<libc::pid_t>,
+    /// Identidade lida ANTES do `SIGTERM` — a do processo que recebeu o sinal.
+    identidade: Option<u64>,
+}
+
+#[cfg(unix)]
+impl AlvoDaParada {
+    /// O PID ainda é o processo que recebeu o `SIGTERM`? Falso também quando o
+    /// número já foi reciclado: quem o ocupa agora não é o nosso alvo.
+    fn ainda_e_o_mesmo(&self) -> bool {
+        pode_escalar(self.identidade, identidade_do_processo(self.pid))
+    }
+
+    /// Ainda há trabalho pendente neste alvo? Um PID reciclado conta como
+    /// encerrado — esperar por ele gastaria o grace e faria o `stop` relatar
+    /// falha (citando um `SIGKILL` que não saiu) por causa de um processo alheio.
+    fn pendente(&self) -> bool {
+        is_process_running(self.pid) && self.ainda_e_o_mesmo()
+    }
+}
+
+/// Envia `SIGTERM` (ao grupo, quando o alvo é líder) e registra a identidade.
+#[cfg(unix)]
+fn pedir_termino(pid: u32) -> AlvoDaParada {
+    let target = pid as libc::pid_t;
+    // SAFETY: getpgid/kill on a pid we were handed; failures are reported via
+    // the return value and handled by the caller.
+    let group = unsafe { libc::getpgid(target) };
+    let own_group = unsafe { libc::getpgid(0) };
+    let grupo = (group > 0 && group == target && group != own_group).then_some(group);
+    let identidade = identidade_do_processo(pid);
+    unsafe {
+        match grupo {
+            Some(grupo) => {
+                libc::kill(-grupo, libc::SIGTERM);
+            }
+            None => {
+                libc::kill(target, libc::SIGTERM);
+            }
+        }
+    }
+    AlvoDaParada {
+        pid,
+        grupo,
+        identidade,
+    }
+}
+
+/// Grace única da parada do gateway: HTTP/TLS drenando, MCP e canais cabem
+/// nela com margem. Ver [`kill_and_wait`].
+#[cfg(unix)]
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Terminate the gateway and everything it spawned.
 ///
 /// Signal the gateway's group when it leads one (never our own group).
@@ -1804,56 +1910,67 @@ mod stop_tests;
 /// tracked separately in #1913.
 #[cfg(unix)]
 fn kill_and_wait(pid: u32) -> bool {
-    kill_and_wait_with_grace(pid, std::time::Duration::from_secs(30))
+    kill_and_wait_with_grace(pid, STOP_GRACE)
 }
 
 #[cfg(unix)]
 fn kill_and_wait_with_grace(pid: u32, grace: std::time::Duration) -> bool {
-    let target = pid as libc::pid_t;
-    // SAFETY: getpgid/kill on a pid we were handed; failures are reported via
-    // the return value and handled below.
-    let group = unsafe { libc::getpgid(target) };
-    let own_group = unsafe { libc::getpgid(0) };
-    let signal_group = group > 0 && group == target && group != own_group;
+    kill_and_wait_many(&[pid], grace)
+        .first()
+        .is_some_and(|(_, saiu)| *saiu)
+}
 
-    unsafe {
-        if signal_group {
-            libc::kill(-group, libc::SIGTERM);
-        } else {
-            libc::kill(target, libc::SIGTERM);
-        }
-    }
+/// Encerra vários alvos com UM orçamento, não um por alvo.
+///
+/// A parada por porta devolve o que o `lsof` listar, e cada `kill_and_wait`
+/// separado gastava o grace inteiro por PID: N alvos custavam N × 30 s, cada
+/// um esperando o anterior terminar. Aqui todos recebem `SIGTERM` primeiro e a
+/// espera é coletiva; a escalada para `SIGKILL` também é coletiva, e nenhum
+/// PID reciclado é atingido (ver [`pode_escalar`]).
+///
+/// Devolve `(pid, encerrado)` na ordem de `pids`. "Encerrado" inclui quem saiu
+/// pelo `SIGKILL` e quem teve o número reciclado — nos dois casos não há mais
+/// processo nosso naquele PID.
+#[cfg(unix)]
+fn kill_and_wait_many(pids: &[u32], grace: std::time::Duration) -> Vec<(u32, bool)> {
+    let alvos: Vec<AlvoDaParada> = pids.iter().copied().map(pedir_termino).collect();
 
     let deadline = std::time::Instant::now() + grace;
-    while std::time::Instant::now() < deadline {
-        if !is_process_running(pid) {
-            return true;
+    while alvos.iter().any(AlvoDaParada::pendente) {
+        let restante = deadline.saturating_duration_since(std::time::Instant::now());
+        if restante.is_zero() {
+            break;
         }
-        std::thread::sleep(
-            std::time::Duration::from_millis(250)
-                .min(deadline.saturating_duration_since(std::time::Instant::now())),
-        );
-    }
-    if !is_process_running(pid) {
-        return true;
+        std::thread::sleep(std::time::Duration::from_millis(250).min(restante));
     }
 
-    // Grace period spent: stop asking.
-    println!("Process {pid} did not exit after SIGTERM; sending SIGKILL...");
-    unsafe {
-        if signal_group {
-            libc::kill(-group, libc::SIGKILL);
-        } else {
-            libc::kill(target, libc::SIGKILL);
+    // Grace period spent: stop asking — for whoever is still the same process.
+    for alvo in alvos.iter().filter(|alvo| alvo.pendente()) {
+        println!(
+            "Process {} did not exit after SIGTERM; sending SIGKILL...",
+            alvo.pid
+        );
+        unsafe {
+            match alvo.grupo {
+                Some(grupo) => {
+                    libc::kill(-grupo, libc::SIGKILL);
+                }
+                None => {
+                    libc::kill(alvo.pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
         }
     }
-    for _ in 0..8 {
+
+    let prazo_do_kill = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while alvos.iter().any(AlvoDaParada::pendente) && std::time::Instant::now() < prazo_do_kill {
         std::thread::sleep(std::time::Duration::from_millis(250));
-        if !is_process_running(pid) {
-            return true;
-        }
     }
-    false
+
+    alvos
+        .iter()
+        .map(|alvo| (alvo.pid, !alvo.pendente()))
+        .collect()
 }
 
 /// Terminate a process by PID (Windows: uses taskkill).
@@ -3885,10 +4002,22 @@ fn try_stop_daemon(port: u16) {
         return;
     }
 
-    // No PID file - kill everything on the port (except ourselves)
-    for pid in find_pids_on_port(port) {
+    // No PID file - kill everything on the port (except ourselves).
+    //
+    // Um orçamento só para todos os PIDs: `lsof` pode listar mais de um
+    // processo no socket, e esperar cada um com o grace inteiro custava
+    // N × 30 s. O `SIGTERM` sai para todos antes da espera.
+    let pids = find_pids_on_port(port);
+    if pids.is_empty() {
+        return;
+    }
+    for pid in &pids {
         println!("Stopping process on port {port} (PID {pid})...");
-        kill_and_wait(pid);
+    }
+    for (pid, saiu) in kill_and_wait_many(&pids, STOP_GRACE) {
+        if !saiu {
+            println!("Process {pid} did not exit after SIGKILL; leaving it in place.");
+        }
     }
 }
 
