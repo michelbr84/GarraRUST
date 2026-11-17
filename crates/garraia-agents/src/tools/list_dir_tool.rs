@@ -496,6 +496,53 @@ mod tests {
         );
     }
 
+    /// #1909 (revisão independente): o caso real do CWD do processo — o
+    /// modelo pede um caminho RELATIVO e a sessão não tem `working_dir`, então
+    /// o jail canonicaliza o alvo contra o CWD do gateway e o cabeçalho sairia
+    /// com esse absoluto. É o caminho do host por outra porta: no turno
+    /// restrito ele vira o marcador (os filhos continuam listados), no aberto
+    /// continua saindo.
+    #[tokio::test]
+    async fn cabecalho_de_listagem_relativa_sem_working_dir_nao_nomeia_o_cwd() {
+        let cwd =
+            std::fs::canonicalize(std::env::current_dir().expect("cwd")).expect("canonicalize");
+        let tool = ListDirTool::new(FileJail::from_roots([&cwd]), None);
+        let host = cwd.to_str().expect("utf8").to_string();
+        let pedido = || serde_json::json!({ "path": ".", "depth": 1 });
+
+        let restrito = crate::tools::turn_tools::com_restricao_do_turno(
+            true,
+            tool.execute(&ctx(None), pedido()),
+        )
+        .await
+        .expect("listagem nao deve estourar");
+        assert!(!restrito.is_error, "{}", restrito.content);
+        assert!(
+            !restrito.content.contains(&host),
+            "o CWD do processo saiu no turno restrito: {}",
+            restrito.content
+        );
+        assert!(
+            restrito
+                .content
+                .contains(crate::tools::tool_context::CAMINHO_FORA_DO_TURNO),
+            "o cabecalho tem de dizer que o caminho foi retido: {}",
+            restrito.content
+        );
+
+        let aberto = crate::tools::turn_tools::com_restricao_do_turno(
+            false,
+            tool.execute(&ctx(None), pedido()),
+        )
+        .await
+        .expect("listagem nao deve estourar");
+        assert!(
+            aberto.content.contains(&host),
+            "o operador local continua vendo a raiz: {}",
+            aberto.content
+        );
+    }
+
     // ─── issue #1244: o jail ───────────────────────────────────────────────
 
     fn raiz() -> (tempfile::TempDir, std::path::PathBuf) {
