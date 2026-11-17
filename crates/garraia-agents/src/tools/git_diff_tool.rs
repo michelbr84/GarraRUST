@@ -218,9 +218,10 @@ impl GitDiffTool {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 // #1909: o stderr do git nomeia caminhos absolutos do host
                 // nas recusas; num turno restrito eles viram o marcador.
-                let stderr = crate::git_endurecido::stderr_para_o_turno(&String::from_utf8_lossy(
-                    &output.stderr,
-                ));
+                let stderr = crate::git_endurecido::stderr_para_o_turno(
+                    &String::from_utf8_lossy(&output.stderr),
+                    repo.cwd_do_git(),
+                );
 
                 let mut combined = String::new();
 
@@ -844,6 +845,13 @@ mod tests {
     /// #1909: a recusa do git cita o diretorio por extenso, e ela sai no
     /// corpo da resposta. Num turno restrito o caminho do host nao sai — a
     /// causa (`safe.bareRepository`) continua dita; no aberto, sai como antes.
+    ///
+    /// So unix, como os vizinhos que dependem da forma do caminho: no Windows
+    /// o git imprime `C:/...` e o `canonicalize` devolve a forma verbatim, entao
+    /// comparar com o caminho do tempdir nao provaria nada. A logica de
+    /// redacao (incluindo as formas do Windows) e coberta, em toda
+    /// plataforma, pelos testes puros de `git_endurecido`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn recusa_do_git_no_turno_restrito_nao_nomeia_o_host() {
         let dir = tempfile::tempdir().expect("tmp");
@@ -883,10 +891,9 @@ mod tests {
             // num bare cai no uso do `--no-index`, que nao nomeia caminho.
             if operacao == "status" {
                 assert!(texto.contains("safe.bareRepository"), "{texto}");
-                assert!(
-                    texto.contains(crate::tools::tool_context::CAMINHO_FORA_DO_TURNO),
-                    "{texto}"
-                );
+                // O diretorio citado e o proprio working_dir da sessao: sai
+                // relativo, nao como "fora do diretorio da sessao".
+                assert!(texto.contains("cannot use bare repository '.'"), "{texto}");
             }
         }
 
