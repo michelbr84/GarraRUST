@@ -3,7 +3,7 @@ use garraia_common::{Error, Result};
 use std::path::{Path, PathBuf};
 
 use super::file_jail::FileJail;
-use super::tool_context::{caminho_para_exibir, process_home_dir, resolve_tool_path};
+use super::tool_context::{caminho_para_exibir_no_turno, process_home_dir, resolve_tool_path};
 use super::{Tool, ToolContext, ToolOutput};
 
 const MAX_BYTES_ESCRITA: usize = 1024 * 1024; // 1MB
@@ -167,7 +167,10 @@ impl Tool for FileWriteTool {
                             path = path_str,
                             "file_write: arquivo é somente-leitura (readonly)"
                         );
-                        let shown = caminho_para_exibir(
+                        // #1909: o mesmo portao do `described` — sem ele a
+                        // frase retinha o caminho e o devolvia no comando
+                        // sugerido logo adiante.
+                        let shown = caminho_para_exibir_no_turno(
                             &path,
                             context.working_dir.as_deref().map(Path::new),
                         );
@@ -234,7 +237,7 @@ impl Tool for FileWriteTool {
         Ok(ToolOutput::success(format!(
             "escreveu {} bytes em {}",
             content.len(),
-            caminho_para_exibir(&path, context.working_dir.as_deref().map(Path::new))
+            caminho_para_exibir_no_turno(&path, context.working_dir.as_deref().map(Path::new))
         )))
     }
 }
@@ -343,6 +346,86 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = std::fs::canonicalize(tmp.path()).expect("canonicalize");
         (tmp, root)
+    }
+
+    /// #1909: as duas linhas do `file_write` que nomeiam o caminho resolvido
+    /// — a de sucesso e a do comando sugerido no readonly — obedecem ao mesmo
+    /// portao das outras tools. No turno restrito o absoluto do host nao sai
+    /// (nem dentro do `chmod`/`attrib` sugerido); no aberto sai como antes.
+    #[tokio::test]
+    async fn sucesso_e_readonly_retem_o_caminho_do_host_no_turno_restrito() {
+        let (_t, root) = raiz();
+        let tool = FileWriteTool::new(FileJail::from_roots([&root]));
+        let host = root.to_str().expect("utf8").to_string();
+        let retido = crate::tools::tool_context::CAMINHO_FORA_DO_TURNO;
+        let pedido = |nome: &str| {
+            serde_json::json!({
+                "path": root.join(nome).to_str().expect("utf8"),
+                "content": "x"
+            })
+        };
+
+        // Sucesso.
+        let restrito = crate::tools::turn_tools::com_restricao_do_turno(
+            true,
+            tool.execute(&ctx_with(None), pedido("a.txt")),
+        )
+        .await
+        .expect("deve escrever");
+        assert!(!restrito.is_error, "{}", restrito.content);
+        assert!(restrito.content.contains(retido), "{}", restrito.content);
+        assert!(!restrito.content.contains(&host), "{}", restrito.content);
+
+        let aberto = crate::tools::turn_tools::com_restricao_do_turno(
+            false,
+            tool.execute(&ctx_with(None), pedido("b.txt")),
+        )
+        .await
+        .expect("deve escrever");
+        assert!(
+            aberto.content.contains(&host),
+            "o turno aberto perdeu o caminho que antes via: {}",
+            aberto.content
+        );
+
+        // Readonly: o caminho aparecia tres vezes na mesma frase.
+        let travado = root.join("travado.txt");
+        std::fs::write(&travado, "x").expect("write");
+        let mut perms = std::fs::metadata(&travado).expect("meta").permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&travado, perms).expect("chmod");
+
+        let restrito = crate::tools::turn_tools::com_restricao_do_turno(
+            true,
+            tool.execute(&ctx_with(None), pedido("travado.txt")),
+        )
+        .await
+        .expect("tool nao deve estourar");
+        assert!(restrito.is_error, "{}", restrito.content);
+        assert!(
+            restrito.content.contains("readonly"),
+            "{}",
+            restrito.content
+        );
+        // O `pedido:` e o texto do modelo e segue la; o que nao pode sair e o
+        // caminho RESOLVIDO nos tres lugares que o nomeavam.
+        assert_eq!(
+            restrito.content.matches(retido).count(),
+            3,
+            "descricao + os dois comandos sugeridos: {}",
+            restrito.content
+        );
+        assert!(
+            !restrito.content.contains(&format!("chmod u+w \"{host}")),
+            "caminho do host no comando sugerido: {}",
+            restrito.content
+        );
+
+        // Devolve a permissao para o tempdir poder ser removido no Windows.
+        let mut perms = std::fs::metadata(&travado).expect("meta").permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&travado, perms).expect("chmod");
     }
 
     #[tokio::test]
