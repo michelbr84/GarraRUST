@@ -384,7 +384,33 @@ impl Tool for RunTestsTool {
         // #1078 item 2: o assunto da aprovacao e o diretorio que a suite vai
         // rodar. Um "ok" dado para rodar os testes de um projeto nao
         // autoriza rodar os de outro, nem um `bash` qualquer.
+        //
+        // #1909: o assunto — impressao digital, log de auditoria e `covers` —
+        // continua sendo o caminho REAL resolvido; e o que a aprovacao cobre.
+        // So o TEXTO exibido no pedido de confirmacao passa pelo portao do
+        // turno: num turno restrito o absoluto do host nao sai (relativo
+        // quando cai dentro do working_dir da sessao, marcador quando nao).
+        //
+        // Revisao da #1909: quando o alvo fica FORA do working_dir, o marcador
+        // sozinho deixaria a aprovacao cega — dois diretorios diferentes
+        // leem igual, e a suite que roda e a do `package.json`/`Cargo.toml`
+        // de la. Por isso o pedido (o argumento que o MODELO escreveu, nunca
+        // o caminho resolvido) acompanha o marcador, como o `pedido:` do
+        // `ResolvedPath::describe`.
         let assunto = working_dir.display().to_string();
+        let exibido = if crate::tools::tool_context::pode_revelar_caminho_do_host() {
+            assunto.clone()
+        } else {
+            let seguro = crate::tools::tool_context::caminho_para_exibir_no_turno(
+                &working_dir,
+                context.working_dir.as_deref().map(Path::new),
+            );
+            if seguro == crate::tools::tool_context::CAMINHO_FORA_DO_TURNO {
+                format!("{seguro} (pedido: '{working_dir_str}')")
+            } else {
+                seguro
+            }
+        };
         // #1858 fatia 2: `never-confirm` dispensa o pedido desta suite onde
         // há canal — mesmo plano da aprovação por impressão digital, nunca
         // do gate fail-closed de canal ausente (abaixo).
@@ -400,7 +426,7 @@ impl Tool for RunTestsTool {
             let marcador = ApprovalFingerprint::of(self.name(), &assunto).marker();
             return Ok(ToolOutput::confirmation_request(format!(
                 "{marcador} run_tests vai executar a suite de testes em:\n\
-                 ```\n{assunto}\n```\n\
+                 ```\n{exibido}\n```\n\
                  Responda **sim** para executar ou **nao** para cancelar."
             )));
         }
@@ -640,16 +666,96 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
 
     /// Com confirmacao ligada e sem aprovacao, nada roda: a tool devolve o
     /// pedido de confirmacao apontando o diretorio da sessao (o default).
+    /// Turno ABERTO (operador local): o pedido mostra o caminho absoluto, que
+    /// e a forma acionavel para quem vai aprovar. O escopo explicito e
+    /// necessario porque fora do runtime o portao e fail-closed (#1909).
     #[tokio::test]
     async fn asks_confirmation_before_running_in_the_session_dir() {
         let dir = env!("CARGO_MANIFEST_DIR");
         let tool = RunTestsTool::new_with_confirmation(Some(1));
-        let out = tool
-            .execute(&ctx(Some(dir), false), serde_json::json!({}))
-            .await
-            .expect("executa");
+        let out = crate::tools::turn_tools::com_restricao_do_turno(false, async {
+            tool.execute(&ctx(Some(dir), false), serde_json::json!({}))
+                .await
+                .expect("executa")
+        })
+        .await;
         assert!(out.requires_confirmation, "{}", out.content);
         assert!(out.content.contains(dir), "{}", out.content);
+    }
+
+    /// #1909: no turno restrito o pedido de confirmacao nao entrega o caminho
+    /// absoluto do host. O alvo esta DENTRO do `working_dir` da sessao, entao
+    /// o que sai e a forma relativa — segura em qualquer turno. A impressao
+    /// digital continua presa ao caminho REAL: e o que a aprovacao cobre e
+    /// nenhuma mudanca de exibicao pode afrouxar isso.
+    #[tokio::test]
+    async fn pedido_de_confirmacao_no_turno_restrito_nao_nomeia_o_host() {
+        let dir = env!("CARGO_MANIFEST_DIR");
+        let tool = RunTestsTool::new_with_confirmation(Some(1));
+        let out = crate::tools::turn_tools::com_restricao_do_turno(true, async {
+            tool.execute(&ctx(Some(dir), false), serde_json::json!({}))
+                .await
+                .expect("executa")
+        })
+        .await;
+        assert!(out.requires_confirmation, "{}", out.content);
+        assert!(
+            !out.content.contains(dir),
+            "o caminho absoluto do host saiu no turno restrito:\n{}",
+            out.content
+        );
+        // E a impressão digital do assunto segue a do caminho REAL, não a do
+        // texto exibido.
+        let real = resolve_tool_path(".", Some(dir), process_home_dir().as_deref())
+            .map(|r| r.path.display().to_string())
+            .expect("resolve");
+        let marcador = ApprovalFingerprint::of(tool.name(), &real).marker();
+        assert!(out.content.contains(&marcador), "{}", out.content);
+    }
+
+    /// #1909, ramo do marcador: alvo ABSOLUTO fora do `working_dir` da sessão
+    /// num turno restrito. O bloco que diz o que vai rodar traz o marcador e,
+    /// ao lado, o PEDIDO (texto do modelo) — sem ele a aprovação seria cega:
+    /// dois diretórios diferentes leriam igual. Sem o portão, esse bloco seria
+    /// o caminho absoluto e nada mais.
+    #[tokio::test]
+    async fn pedido_do_run_tests_fora_da_sessao_mostra_marcador_e_pedido() {
+        let sessao = tempfile::tempdir().expect("tmp da sessao");
+        let alvo = tempfile::tempdir().expect("tmp do alvo");
+        let tool = RunTestsTool::new_with_confirmation(Some(1));
+        let pedido = alvo.path().to_str().expect("utf8").to_string();
+        let contexto = ctx(Some(sessao.path().to_str().expect("utf8")), false);
+
+        let out = crate::tools::turn_tools::com_restricao_do_turno(true, async {
+            tool.execute(&contexto, serde_json::json!({ "working_dir": pedido }))
+                .await
+                .expect("executa")
+        })
+        .await;
+
+        assert!(out.requires_confirmation, "{}", out.content);
+        assert!(
+            out.content
+                .contains(crate::tools::tool_context::CAMINHO_FORA_DO_TURNO),
+            "{}",
+            out.content
+        );
+        let bloco = out
+            .content
+            .split("```")
+            .nth(1)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        assert_eq!(
+            bloco,
+            format!(
+                "{} (pedido: '{pedido}')",
+                crate::tools::tool_context::CAMINHO_FORA_DO_TURNO
+            ),
+            "o bloco do que vai rodar nao pode ser o caminho resolvido:\n{}",
+            out.content
+        );
     }
 
     /// `..` e recusado antes de qualquer execucao; relativo sem sessao

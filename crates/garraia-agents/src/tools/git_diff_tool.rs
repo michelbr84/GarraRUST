@@ -922,17 +922,20 @@ mod tests {
     /// #1258, caso 2 — sessão **sem** `working_dir`, que no gateway é o comum
     /// (um prompt de Telegram não traz projeto). O CWD do processo é mantido,
     /// como antes, mas a resposta passa a dizer de qual repositório ela falou:
-    /// a resposta errada *silenciosa* era o defeito.
+    /// a resposta errada *silenciosa* era o defeito. Turno ABERTO (operador
+    /// local), onde o caminho é acionável; no restrito ele não sai (#1909).
     #[tokio::test]
     async fn sem_working_dir_a_resposta_nomeia_o_repositorio_do_cwd() {
         let tool = GitDiffTool::new(Some(15), Some(500));
         let cwd = std::env::current_dir().expect("CWD do processo de teste");
 
         for operacao in ["diff", "status"] {
-            let saida = tool
-                .execute(&ctx(None), serde_json::json!({"operation": operacao}))
-                .await
-                .expect("execute");
+            let saida = crate::tools::turn_tools::com_restricao_do_turno(false, async {
+                tool.execute(&ctx(None), serde_json::json!({ "operation": operacao }))
+                    .await
+                    .expect("execute")
+            })
+            .await;
 
             let primeira = saida.content.lines().next().unwrap_or_default();
             assert!(
@@ -948,6 +951,35 @@ mod tests {
                 "{operacao}: {primeira}"
             );
         }
+    }
+
+    /// #1909: a mesma resposta de sessão sem `working_dir`, agora num turno
+    /// restrito — o CWD do processo do gateway é caminho do HOST. A
+    /// procedência continua dita (é o que desfaz a confusão silenciosa da
+    /// #1258); o lugar do caminho é o marcador das outras tools.
+    #[tokio::test]
+    async fn sem_working_dir_no_turno_restrito_a_resposta_nao_nomeia_o_cwd() {
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let cwd = std::env::current_dir().expect("CWD do processo de teste");
+
+        let saida = crate::tools::turn_tools::com_restricao_do_turno(true, async {
+            tool.execute(&ctx(None), serde_json::json!({ "operation": "status" }))
+                .await
+                .expect("execute")
+        })
+        .await;
+
+        let primeira = saida.content.lines().next().unwrap_or_default();
+        assert!(primeira.starts_with("Repositório: "), "{primeira}");
+        assert!(
+            primeira.contains(crate::tools::tool_context::CAMINHO_FORA_DO_TURNO),
+            "o lugar do caminho deveria ser o marcador: {primeira}"
+        );
+        assert!(
+            !saida.content.contains(&cwd.display().to_string()),
+            "o CWD do host saiu no turno restrito:\n{}",
+            saida.content
+        );
     }
 
     /// #1258: `working_dir` que não existe falha **nomeando a procedência** (o
