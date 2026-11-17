@@ -105,6 +105,10 @@ impl Tool for FileReadTool {
                 "read again",
             )
         {
+            tracing::warn!(
+                session = %context.session_id,
+                "file_read: diretorio da sessao inacessivel, nada foi lido"
+            );
             return Ok(ToolOutput::error(recusa));
         }
         let confined = self.confine(context, &resolved.path)?;

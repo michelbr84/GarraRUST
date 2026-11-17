@@ -256,6 +256,12 @@ impl Tool for ListDirTool {
                 "list again",
             )
         {
+            // O operador vê no log o que o modelo vê na resposta — o jail já
+            // registra a recusa dele, e este ramo não é o jail.
+            tracing::warn!(
+                session = %context.session_id,
+                "list_dir: diretorio da sessao inacessivel, nada foi listado"
+            );
             return Ok(ToolOutput::error(recusa));
         }
 

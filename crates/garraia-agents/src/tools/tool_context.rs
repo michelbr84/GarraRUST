@@ -291,7 +291,12 @@ pub fn recusa_sessao_sem_diretorio(
     o_que_nao_foi_feito: &str,
     repita: &str,
 ) -> Option<String> {
-    let dir = working_dir.filter(|d| !d.as_os_str().is_empty())?;
+    // `trim`, e não `is_empty`: um `working_dir` só com espaços não é diretório
+    // nenhum, e `stat("   ")` mediria o CWD do processo para depois afirmar
+    // "it does not exist" sobre ele — mentira sobre um caminho que o usuário
+    // não pediu. Sem diretório de sessão a recusa não é desta função; a tool
+    // segue para o caminho normal (jail).
+    let dir = working_dir.filter(|d| !d.as_os_str().to_string_lossy().trim().is_empty())?;
     let motivo = match std::fs::metadata(dir) {
         Ok(meta) if meta.is_dir() => return None,
         Ok(_) => "it is not a directory",
@@ -407,9 +412,15 @@ mod tests {
         std::fs::remove_dir(&projeto).unwrap();
         let recusa = recusa_sessao_sem_diretorio(Some(&projeto), "nothing was read", "read again")
             .expect("diretório removido é recusado");
-        assert!(recusa.contains("it does not exist"), "{recusa}");
-        assert!(recusa.contains("nothing was read"), "{recusa}");
-        assert!(recusa.ends_with("and read again."), "{recusa}");
+        // A sentença inteira, não só pedaços: é o contrato que o `repo_search`
+        // entrega desde a #1932 — mudar o vocabulário dele ou o desta recusa
+        // tem de quebrar aqui, não em produção.
+        assert_eq!(
+            recusa,
+            "The session's working directory is not accessible (it does not exist), so nothing \
+             was read. This is not an empty result: select an existing project for this session \
+             (set its working directory) and read again."
+        );
         assert!(
             !recusa.contains(projeto.to_str().unwrap()),
             "o caminho da sessão não sai na recusa: {recusa}"
@@ -421,17 +432,27 @@ mod tests {
             recusa_sessao_sem_diretorio(Some(&arquivo), "nothing was listed", "list again")
                 .expect("arquivo no lugar do diretório é recusado");
         assert!(recusa.contains("it is not a directory"), "{recusa}");
+        assert!(
+            !recusa.contains(arquivo.to_str().unwrap()),
+            "o caminho da sessão não sai na recusa: {recusa}"
+        );
 
         assert_eq!(
             recusa_sessao_sem_diretorio(None, "nothing was read", "read again"),
             None,
             "sem working_dir não há diretório da sessão a recusar"
         );
-        assert_eq!(
-            recusa_sessao_sem_diretorio(Some(Path::new("")), "nothing was read", "read again"),
-            None,
-            "working_dir em branco não é diretório da sessão"
-        );
+        for em_branco in ["", "   ", "\t"] {
+            assert_eq!(
+                recusa_sessao_sem_diretorio(
+                    Some(Path::new(em_branco)),
+                    "nothing was read",
+                    "read again"
+                ),
+                None,
+                "working_dir em branco ({em_branco:?}) não é diretório da sessão"
+            );
+        }
     }
 
     #[test]
