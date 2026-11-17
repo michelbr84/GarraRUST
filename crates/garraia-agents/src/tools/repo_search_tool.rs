@@ -265,6 +265,25 @@ fn sem_correspondencias(repo: &RepoDir, revelar_caminho: bool) -> String {
     )
 }
 
+/// O que o ripgrep NAO le por padrao, dito no resultado vazio dele (#1909).
+///
+/// O `rg` respeita `.gitignore`/`.ignore` e pula arquivos e diretorios
+/// ocultos; os fallbacks (`grep -r`, `findstr /s`) leem tudo. Sem a ressalva,
+/// "No matches found" lia como "nao existe em lugar nenhum deste diretorio"
+/// quando o texto podia estar num `.env.example`, num `target/` ou em
+/// qualquer coisa ignorada — a mesma confusao entre "nao existe" e "nao
+/// olhei ali" que a frase do escopo ja desfaz para fora do diretorio.
+/// Constante, para o teste afirmar a frase e os fallbacks provarem que NAO a
+/// carregam (ali ela seria falsa).
+const RESSALVA_DO_RG: &str = "Files ignored by .gitignore/.ignore and hidden files were skipped, \
+                              so a match inside one of them would not appear here.";
+
+/// O resultado vazio do ramo do `rg`: o escopo ([`sem_correspondencias`])
+/// mais a [`RESSALVA_DO_RG`]. Continua comecando por "No matches found".
+fn vazio_do_rg(vazio: &str) -> String {
+    format!("{vazio} {RESSALVA_DO_RG}")
+}
+
 /// A recusa quando o `working_dir` da sessao nao e um diretorio alcancavel
 /// (#1909), ou `None` quando ha onde buscar.
 ///
@@ -472,7 +491,7 @@ impl Tool for RepoSearchTool {
 
                 if stdout.is_empty() && output.status.code() == Some(1) {
                     // rg returns exit code 1 when no matches found
-                    return Ok(ToolOutput::success(vazio));
+                    return Ok(ToolOutput::success(vazio_do_rg(&vazio)));
                 }
 
                 let mut combined = String::new();
@@ -485,7 +504,7 @@ impl Tool for RepoSearchTool {
                 }
 
                 if combined.is_empty() {
-                    combined = vazio;
+                    combined = vazio_do_rg(&vazio);
                 }
 
                 Ok(ToolOutput::success(self.truncate_output(&combined)))
