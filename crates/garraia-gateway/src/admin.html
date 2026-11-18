@@ -1296,14 +1296,23 @@ async function showSessionCapabilities(sessionId) {
     var counts = data.counts || {};
     card.appendChild(el('div', { className: 'wa-hint', 'data-testid': 'session-capabilities-counts', textContent: 'visible ' + (counts.visible || 0) + ' · denied ' + (counts.denied || 0) + ' · unavailable ' + (counts.unavailable || 0) + ' · unhealthy ' + (counts.unhealthy || 0) + ' · not configured ' + (counts.not_configured || 0) }));
     var t = el('table', { className: 'wa-table' });
-    t.innerHTML = '<thead><tr><th>Capability</th><th>Source</th><th>State</th><th>Reason</th><th>Remediation</th></tr></thead>';
+    t.innerHTML = '<thead><tr><th>Capability</th><th>Source</th><th>State</th><th>Denied by</th><th>Reason</th><th>Remediation</th></tr></thead>';
     var tb = el('tbody');
     var cls = { visible: 'badge-success', denied: 'badge-error', unavailable: 'badge-neutral', unhealthy: 'badge-error', not_configured: 'badge-neutral' };
+    // #1915: a camada que barrou e o motivo dentro dela, como o registro os
+    // entrega (`denied_by` / `denied_because`). Valor desconhecido sai cru:
+    // o console nunca inventa uma camada que o gateway nao declarou.
+    var camada = { mode: 'session mode', principal_ceiling: 'principal ceiling', mode_and_principal_ceiling: 'session mode + principal ceiling' };
+    var motivo = { no_tools: 'no tools allowed', denied_by_name: 'tool denied by name', denied_capability: 'capability class denied', unclassified: 'tool has no capability class', not_in_allowlist: 'not in the allowlist' };
     (data.capabilities || []).forEach(function (c) {
       var tr = el('tr', { 'data-testid': 'session-capability-row', 'data-capability': c.name, 'data-state': c.state });
+      if (c.denied_by) tr.setAttribute('data-denied-by', c.denied_by);
+      if (c.denied_because) tr.setAttribute('data-denied-because', c.denied_because);
       tr.appendChild(el('td', null, [el('code', { textContent: c.name })]));
       tr.appendChild(el('td', { textContent: c.source + (c.server ? ' (' + c.server + ')' : '') }));
       tr.appendChild(el('td', null, [el('span', { className: 'badge ' + (cls[c.state] || 'badge-neutral'), textContent: c.state })]));
+      var negadoPor = c.denied_by ? (camada[c.denied_by] || c.denied_by) + (c.denied_because ? ': ' + (motivo[c.denied_because] || c.denied_because) : '') : '';
+      tr.appendChild(el('td', { 'data-testid': 'session-capability-denied-by', textContent: negadoPor }));
       tr.appendChild(el('td', { textContent: c.reason || '' }));
       tr.appendChild(el('td', { textContent: c.remediation || '' }));
       tb.appendChild(tr);

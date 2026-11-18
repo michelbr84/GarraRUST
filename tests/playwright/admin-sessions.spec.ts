@@ -107,6 +107,9 @@ test.describe('Sessions page: principal, effective mode and capabilities', () =>
     const fileWrite = page.locator('[data-testid="session-capability-row"][data-capability="file_write"]');
     if (modo === 'search' && (await fileWrite.count()) > 0) {
       await expect(fileWrite).toHaveAttribute('data-state', 'denied');
+      // #1915: the row names the layer that denied it, not just "policy".
+      await expect(fileWrite).toHaveAttribute('data-denied-by', /^(mode|mode_and_principal_ceiling)$/);
+      await expect(fileWrite.getByTestId('session-capability-denied-by')).toContainText('session mode');
     }
     // The panel never carries a filesystem path or a secret-looking value.
     const html = (await panel.innerHTML()) ?? '';
