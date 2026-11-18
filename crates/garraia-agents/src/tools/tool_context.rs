@@ -304,7 +304,7 @@ fn caminho_relativo_ao_working_dir(path: &Path, working_dir: Option<&Path>) -> O
                 .components()
                 .any(|c| matches!(c, std::path::Component::ParentDir))
             {
-                return None;
+                continue;
             }
             return Some(if rel.as_os_str().is_empty() {
                 ".".to_string()
