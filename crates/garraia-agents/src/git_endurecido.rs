@@ -197,9 +197,14 @@ pub(crate) fn stderr_para_o_turno(stderr: &str, working_dir: Option<&Path>) -> S
 /// O `//` de `https://host/x` nao e inicio de caminho, entao URL de rede nao e
 /// tocada.
 ///
-/// Limite conhecido: sem aspas, um ULTIMO componente com espaco e sem
-/// separador depois (`/home/dono/Meus Projetos`) deixa esse nome solto
-/// (`Projetos`) no texto — um fragmento de nome, nao o caminho.
+/// Sem aspas, um ULTIMO componente com espaco e sem separador depois
+/// (`/home/dono/Meus Projetos`) nao tem marca no texto. O sinal que cobre o
+/// caso real (o git citando o repositorio da sessao) vem de fora do texto: o
+/// `working_dir` da sessao, ou um ancestral dele, escrito por extenso ali.
+/// O disco NAO e consultado — o nome a mais sumir ou nao viraria oraculo de
+/// existencia de caminho alheio no turno restrito. Limite restante: um caminho
+/// fora dessa linhagem com espaco no ultimo componente deixa esse nome solto
+/// (`Projetos`) — um fragmento de nome, nao o caminho.
 fn oculta_caminhos_absolutos(texto: &str, working_dir: Option<&Path>) -> String {
     use crate::tools::tool_context::{CAMINHO_FORA_DO_TURNO, caminho_para_exibir_no_turno};
 
@@ -216,6 +221,40 @@ fn oculta_caminhos_absolutos(texto: &str, working_dir: Option<&Path>) -> String 
     }
     fn e_pontuacao_final(c: char) -> bool {
         matches!(c, ':' | ',' | ';' | ')' | ']' | '>' | '.')
+    }
+    /// #1909 (residuo da auditoria da #1943): a partir de `pos`, estende o
+    /// caminho palavra a palavra ate `pausa` e fica com o MAIOR candidato
+    /// que e o `working_dir` da sessao ou um ancestral dele. Sem I/O: o
+    /// disco viraria oraculo de existencia (ver o docblock acima).
+    fn estende_ate_caminho_conhecido(
+        resto: &[char],
+        pos: usize,
+        pausa: usize,
+        working_dir: Option<&Path>,
+    ) -> usize {
+        let mut melhor = pos;
+        let mut j = pos;
+        while j < pausa {
+            let Some(ini) = (j..pausa).find(|k| !resto[*k].is_whitespace()) else {
+                break;
+            };
+            let fim = (ini..pausa)
+                .find(|k| resto[*k].is_whitespace())
+                .unwrap_or(pausa);
+            let mut corte = fim;
+            while corte > ini && (e_pontuacao_final(resto[corte - 1]) || e_aspa(resto[corte - 1])) {
+                corte -= 1;
+            }
+            if corte > ini {
+                let candidato: String = resto[..corte].iter().collect();
+                let caminho = Path::new(&candidato);
+                if working_dir.is_some_and(|wd| wd.starts_with(caminho)) {
+                    melhor = corte;
+                }
+            }
+            j = fim;
+        }
+        melhor
     }
 
     let chars: Vec<char> = texto.chars().collect();
@@ -287,6 +326,7 @@ fn oculta_caminhos_absolutos(texto: &str, working_dir: Option<&Path>) -> String 
                         }
                         j = fim_da_palavra.max(j + 1);
                     }
+                    pos = estende_ate_caminho_conhecido(resto, pos, pausa, working_dir);
                 }
                 while pos > 1 && (e_pontuacao_final(resto[pos - 1]) || e_aspa(resto[pos - 1])) {
                     pos -= 1;
@@ -533,6 +573,64 @@ mod tests {
         ] {
             assert_eq!(oculta_caminhos_absolutos(entrada, None), esperado);
         }
+    }
+
+    /// #1909 (residuo da auditoria da #1943): sem aspas, o ULTIMO componente
+    /// com espaco (`/home/dono/Meus Projetos`) deixava `Projetos` solto. Ele
+    /// sai inteiro quando e o `working_dir` da sessao ou um ancestral dele; a
+    /// causa depois da pausa continua dita, e o disco nao e consultado.
+    #[cfg(unix)]
+    #[test]
+    fn ultimo_componente_com_espaco_sai_inteiro_na_linhagem_da_sessao() {
+        use crate::tools::tool_context::CAMINHO_FORA_DO_TURNO as M;
+        let wd = Path::new("/home/dono/Meus Projetos/garra wt");
+        for (entrada, esperado) in [
+            // O proprio working_dir: sai relativo.
+            (
+                "fatal: not a git repository: /home/dono/Meus Projetos/garra wt",
+                "fatal: not a git repository: .".to_string(),
+            ),
+            // Um ancestral, com pausa e causa depois: marcador inteiro.
+            (
+                "fatal: bad config in /home/dono/Meus Projetos: Permission denied",
+                format!("fatal: bad config in {M}: Permission denied"),
+            ),
+            // Pontuacao final colada continua fora do caminho.
+            (
+                "hint: veja /home/dono/Meus Projetos. Depois tente",
+                format!("hint: veja {M}. Depois tente"),
+            ),
+            // Prefixo da linhagem nao engole a palavra seguinte que nao e dela.
+            (
+                "fatal: /home/dono nao e um repositorio",
+                format!("fatal: {M} nao e um repositorio"),
+            ),
+        ] {
+            let saida = oculta_caminhos_absolutos(entrada, Some(wd));
+            assert_eq!(saida, esperado);
+            assert!(!saida.contains("Projetos"), "{saida}");
+        }
+    }
+
+    /// Sem consulta ao disco: um caminho FORA da linhagem da sessao que
+    /// existe sai igual a um que nao existe — o nome solto e o limite
+    /// documentado, e e o mesmo nos dois casos (sem oraculo de existencia).
+    #[cfg(unix)]
+    #[test]
+    fn existencia_no_disco_nao_muda_a_saida() {
+        use crate::tools::tool_context::CAMINHO_FORA_DO_TURNO as M;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(tmp.path().join("Meus Projetos")).expect("mkdir");
+        let existe = format!("fatal: em {}/Meus Projetos", tmp.path().display());
+        let nao_existe = format!("fatal: em {}/Meus Outros", tmp.path().display());
+        assert_eq!(
+            oculta_caminhos_absolutos(&existe, None),
+            format!("fatal: em {M} Projetos")
+        );
+        assert_eq!(
+            oculta_caminhos_absolutos(&nao_existe, None),
+            format!("fatal: em {M} Outros")
+        );
     }
 
     /// O que NAO e caminho absoluto do host fica como esta: relativo, URL,
