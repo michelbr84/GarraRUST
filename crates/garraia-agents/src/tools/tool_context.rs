@@ -290,11 +290,22 @@ pub fn pode_revelar_caminho_do_host() -> bool {
 /// A parte que e sempre segura de mostrar: o caminho relativo
 /// ao `working_dir`, quando ele cai dentro. `None` quando nao ha `working_dir`
 /// ou o alvo esta fora dele.
+///
+/// `strip_prefix` e LEXICO: `<wd>/../irmao/x` comeca pelo `working_dir` e
+/// mesmo assim aponta para fora dele. Um resto com `..` nao conta como
+/// "dentro" — sem isso o turno restrito recebia `../irmao/x`, o nome de um
+/// diretorio vizinho ao da sessao, no lugar do marcador (#1909).
 fn caminho_relativo_ao_working_dir(path: &Path, working_dir: Option<&Path>) -> Option<String> {
     let wd = working_dir.filter(|w| !w.as_os_str().is_empty())?;
     let bases = std::iter::once(wd.to_path_buf()).chain(std::fs::canonicalize(wd).ok());
     for base in bases {
         if let Ok(rel) = path.strip_prefix(&base) {
+            if rel
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return None;
+            }
             return Some(if rel.as_os_str().is_empty() {
                 ".".to_string()
             } else {

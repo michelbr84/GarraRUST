@@ -218,6 +218,48 @@ fn describe_mostra_relativo_ao_working_dir_e_nunca_o_host() {
     );
 }
 
+/// `strip_prefix` e lexico: `<wd>/../irmao` comeca pelo `working_dir` e
+/// aponta para fora dele. No turno restrito sai o marcador, nao `../irmao/x`
+/// (#1909); o que fica de fato dentro continua relativo.
+#[tokio::test]
+async fn caminho_que_sai_do_working_dir_por_ponto_ponto_nao_conta_como_dentro() {
+    #[cfg(windows)]
+    let (wd, fora, dentro) = (
+        Path::new(r"C:\Users\dono\ws"),
+        Path::new(r"C:\Users\dono\ws\..\cliente-x\notas.txt"),
+        Path::new(r"C:\Users\dono\ws\sub\a.txt"),
+    );
+    #[cfg(not(windows))]
+    let (wd, fora, dentro) = (
+        Path::new("/home/dono/ws"),
+        Path::new("/home/dono/ws/../cliente-x/notas.txt"),
+        Path::new("/home/dono/ws/sub/a.txt"),
+    );
+    assert!(fora.is_absolute(), "o fixture tem de ser absoluto aqui");
+
+    let (mostrado_fora, mostrado_dentro) =
+        crate::tools::turn_tools::com_restricao_do_turno(true, async {
+            (
+                caminho_para_exibir_no_turno(fora, Some(wd)),
+                caminho_para_exibir_no_turno(dentro, Some(wd)),
+            )
+        })
+        .await;
+    assert_eq!(mostrado_fora, CAMINHO_FORA_DO_TURNO);
+    assert!(!mostrado_fora.contains("cliente-x"));
+    assert_eq!(
+        mostrado_dentro,
+        Path::new("sub").join("a.txt").display().to_string()
+    );
+
+    // O turno aberto segue vendo o caminho como chegou.
+    let aberto = crate::tools::turn_tools::com_restricao_do_turno(false, async {
+        caminho_para_exibir_no_turno(fora, Some(wd))
+    })
+    .await;
+    assert_eq!(aberto, fora.display().to_string());
+}
+
 /// `caminho_para_exibir`: relativo quando dentro do `working_dir`, absoluto
 /// quando fora ou sem `working_dir` (o modelo ja o escolheu).
 #[test]
