@@ -258,6 +258,16 @@ pub enum MotivoDaPolitica {
 }
 
 impl MotivoDaPolitica {
+    /// Todas as variantes, na ordem da declaracao. Quem consome os codigos
+    /// fora do Rust (o console admin) testa a paridade contra esta lista.
+    pub const TODOS: [Self; 5] = [
+        Self::SemFerramentas,
+        Self::NegadaPorNome,
+        Self::ClasseNegada,
+        Self::SemClasse,
+        Self::ForaDaLista,
+    ];
+
     /// Codigo estavel, legivel por maquina.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -282,6 +292,10 @@ pub enum CamadaDaRecusa {
 }
 
 impl CamadaDaRecusa {
+    /// Todas as variantes, na ordem da declaracao (ver
+    /// [`MotivoDaPolitica::TODOS`]).
+    pub const TODOS: [Self; 3] = [Self::Modo, Self::Teto, Self::ModoETeto];
+
     /// Codigo estavel, legivel por maquina.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -3186,5 +3200,51 @@ mod recusa_por_camada_tests {
         assert_eq!(MotivoDaPolitica::ClasseNegada.as_str(), "denied_capability");
         assert_eq!(MotivoDaPolitica::SemClasse.as_str(), "unclassified");
         assert_eq!(MotivoDaPolitica::ForaDaLista.as_str(), "not_in_allowlist");
+    }
+
+    /// `TODOS` cobre toda variante. O `match` e exaustivo de proposito:
+    /// variante nova nao compila aqui ate entrar nele, e entao a asserção
+    /// cobra a entrada em `TODOS` — e, por tabela, o rotulo no console
+    /// (`garraia-gateway/tests/console_rotulos_da_recusa.rs`).
+    #[test]
+    fn todos_cobre_toda_variante() {
+        fn motivo(m: MotivoDaPolitica) -> MotivoDaPolitica {
+            match m {
+                MotivoDaPolitica::SemFerramentas
+                | MotivoDaPolitica::NegadaPorNome
+                | MotivoDaPolitica::ClasseNegada
+                | MotivoDaPolitica::SemClasse
+                | MotivoDaPolitica::ForaDaLista => m,
+            }
+        }
+        fn camada(c: CamadaDaRecusa) -> CamadaDaRecusa {
+            match c {
+                CamadaDaRecusa::Modo | CamadaDaRecusa::Teto | CamadaDaRecusa::ModoETeto => c,
+            }
+        }
+        for m in [
+            MotivoDaPolitica::SemFerramentas,
+            MotivoDaPolitica::NegadaPorNome,
+            MotivoDaPolitica::ClasseNegada,
+            MotivoDaPolitica::SemClasse,
+            MotivoDaPolitica::ForaDaLista,
+        ] {
+            assert!(MotivoDaPolitica::TODOS.contains(&motivo(m)), "{m:?}");
+        }
+        for c in [
+            CamadaDaRecusa::Modo,
+            CamadaDaRecusa::Teto,
+            CamadaDaRecusa::ModoETeto,
+        ] {
+            assert!(CamadaDaRecusa::TODOS.contains(&camada(c)), "{c:?}");
+        }
+        let mut codigos: Vec<&str> = MotivoDaPolitica::TODOS.iter().map(|m| m.as_str()).collect();
+        codigos.sort_unstable();
+        codigos.dedup();
+        assert_eq!(
+            codigos.len(),
+            MotivoDaPolitica::TODOS.len(),
+            "codigo repetido"
+        );
     }
 }
