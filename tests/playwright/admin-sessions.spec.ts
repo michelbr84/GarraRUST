@@ -13,7 +13,8 @@
  *  2. A session exists (seeded through `POST /api/sessions` with mode
  *     `search` when the gateway has none) → its row shows a mode and a
  *     project cell, never a filesystem path
- *  3. "Capabilities" → panel with title, counts and rows; `file_write` is
+ *  3. "Capabilities" on a DEDICATED seeded `search` session (pinned by id,
+ *     not `.first()`, so spec order cannot turn the checks off) → panel with title, counts and rows; `file_write` is
  *     `denied` under `search`; Close hides it
  */
 import { test, expect, Page } from '@playwright/test';
@@ -60,6 +61,21 @@ async function ensureASession(page: Page): Promise<boolean> {
   return (await page.getByTestId('session-row').count()) > 0;
 }
 
+/** Seeds a DEDICATED web session in mode `search` and returns its id, or
+ *  `null` when the environment does not allow seeding. The capabilities test
+ *  pins its row by this id instead of taking `.first()`: with `.first()` the
+ *  #1915 assertions sat behind `if (modo === 'search')` and silently stopped
+ *  running whenever another spec created a session in another mode first. */
+async function seedSearchSession(page: Page): Promise<string | null> {
+  const resp = await page.request.post('/api/sessions', { data: { mode: 'search' } }).catch(() => null);
+  if (!resp || !resp.ok()) return null;
+  const body = await resp.json().catch(() => null);
+  const id = body && typeof body.session_id === 'string' ? body.session_id : null;
+  if (!id) return null;
+  await goToSessions(page);
+  return id;
+}
+
 test.describe('Sessions page: principal, effective mode and capabilities', () => {
   test.beforeEach(async ({ page }) => {
     await login(page);
@@ -90,9 +106,12 @@ test.describe('Sessions page: principal, effective mode and capabilities', () =>
   });
 
   test('Capabilities opens the panel of that conversation, file_write denied under search, Close hides it', async ({ page }) => {
-    if (!(await ensureASession(page))) test.skip(true, 'no session in this environment and seeding is not allowed');
-    const row = page.getByTestId('session-row').first();
-    const sessionId = await row.getAttribute('data-session-id');
+    const sessionId = await seedSearchSession(page);
+    if (!sessionId) test.skip(true, 'seeding a search session is not allowed in this environment');
+    const row = page.locator(`[data-testid="session-row"][data-session-id="${sessionId}"]`);
+    await expect(row).toHaveCount(1);
+    // The seeded session is in `search`: the assertions below are unconditional.
+    await expect(row.getByTestId('session-effective-mode')).toHaveText('search');
     await row.getByTestId('session-capabilities').click();
     const panel = page.getByTestId('session-capabilities-panel');
     await expect(panel).toBeVisible();
@@ -102,15 +121,13 @@ test.describe('Sessions page: principal, effective mode and capabilities', () =>
     await expect
       .poll(async () => await page.getByTestId('session-capability-row').count(), { timeout: 15_000 })
       .toBeGreaterThan(0);
-    // Under `search` (the default floor and the seeded mode) file_write is denied, never "absent".
-    const modo = ((await row.getByTestId('session-effective-mode').textContent()) ?? '').trim();
+    // Under `search` file_write is denied, never "absent".
     const fileWrite = page.locator('[data-testid="session-capability-row"][data-capability="file_write"]');
-    if (modo === 'search' && (await fileWrite.count()) > 0) {
-      await expect(fileWrite).toHaveAttribute('data-state', 'denied');
-      // #1915: the row names the layer that denied it, not just "policy".
-      await expect(fileWrite).toHaveAttribute('data-denied-by', /^(mode|mode_and_principal_ceiling)$/);
-      await expect(fileWrite.getByTestId('session-capability-denied-by')).toContainText('session mode');
-    }
+    await expect(fileWrite).toHaveCount(1);
+    await expect(fileWrite).toHaveAttribute('data-state', 'denied');
+    // #1915: the row names the layer that denied it, not just "policy".
+    await expect(fileWrite).toHaveAttribute('data-denied-by', /^(mode|mode_and_principal_ceiling)$/);
+    await expect(fileWrite.getByTestId('session-capability-denied-by')).toContainText('session mode');
     // The panel never carries a filesystem path or a secret-looking value.
     const html = (await panel.innerHTML()) ?? '';
     expect(html).not.toMatch(/\/home\/|\/Users\/|[A-Za-z]:\\Users/);
