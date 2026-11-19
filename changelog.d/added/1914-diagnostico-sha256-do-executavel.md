@@ -7,7 +7,8 @@
   com "reinicie o gateway" — o caso de um `garra update` sem restart, que a
   versao do crate sozinha nao distingue (rc5 e rc6 saem os dois como
   `0.5.2`). Leitura negada sai `nao_verificado` com motivo fechado
-  (`acesso_negado`, `nao_encontrado`, `falha_de_leitura`) e `iguais: null`:
+  (`acesso_negado`, `nao_encontrado`, `falha_de_leitura`,
+  `caminho_desconhecido`), estado `erro` e `iguais: null`:
   falta de leitura nunca vira igualdade. Plataforma sem handle para a imagem
   carregada (macOS, Windows) sai `nao_suportado`, com so o hash do instalado.
   Nenhum caminho entra no relatorio, e a tool continua so do operador e

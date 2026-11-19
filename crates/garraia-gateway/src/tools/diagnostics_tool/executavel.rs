@@ -21,10 +21,11 @@
 //!
 //! So dois hashes LIDOS e iguais dao `ok`. Leitura negada (procfs bloqueado,
 //! permissao) e `nao_verificado` com o motivo, e `iguais` fica `null`: falta
-//! de leitura nunca e lida como igualdade. Os hashes sao texto que este modulo
-//! mesmo produz (hex do `sha2`), e por isso entram na evidencia DEPOIS do
-//! redator (que mascararia as sequencias de digitos do hex) — com a forma
-//! conferida em [`e_digest`]. Nenhum caminho sai no relatorio.
+//! de leitura nunca e lida como igualdade, e sai `erro` — como toda leitura
+//! que falhou neste relatorio. Os hashes passam pelo redator como o resto da
+//! evidencia: ele isenta hash hexadecimal de proposito
+//! (`garraia_security::mascarar_numeros_longos`), e um teste aqui prova que o
+//! digest sai inteiro. Nenhum caminho sai no relatorio.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -95,10 +96,11 @@ impl Observacao {
         }
     }
 
-    /// A evidencia SEM o hash: o hash entra depois do redator.
     fn evidencia(&self) -> serde_json::Value {
         match self {
-            Self::Verificado { .. } => serde_json::json!({ "estado": "verificado" }),
+            Self::Verificado { sha256 } => {
+                serde_json::json!({ "estado": "verificado", "sha256": sha256 })
+            }
             Self::NaoVerificado { motivo } => {
                 serde_json::json!({ "estado": "nao_verificado", "motivo": motivo })
             }
@@ -175,15 +177,6 @@ pub(crate) fn observar(
     (carregado, instalado)
 }
 
-/// Hex minusculo de 64 caracteres: a unica forma que entra na evidencia sem
-/// passar pelo redator.
-fn e_digest(texto: &str) -> bool {
-    texto.len() == 64
-        && texto
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
-
 /// A entrada `versao.executavel` do relatorio.
 pub(crate) fn verificacao(carregado: &Observacao, instalado: &Observacao) -> Verificacao {
     let iguais = match (carregado.sha256(), instalado.sha256()) {
@@ -207,13 +200,18 @@ pub(crate) fn verificacao(carregado: &Observacao, instalado: &Observacao) -> Ver
             "Esta plataforma nao expoe a imagem carregada do processo: so o arquivo instalado foi \
              lido. Nao ha prova de que o processo roda esse mesmo build.",
         ),
+        (None, Observacao::NaoSuportado, _) => (
+            EstadoDiag::Erro,
+            "Nao verificado: esta plataforma nao expoe a imagem carregada e o arquivo instalado \
+             nao pode ser lido (veja `motivo`).",
+        ),
         (None, _, _) => (
-            EstadoDiag::Degradado,
+            EstadoDiag::Erro,
             "Nao verificado: ao menos um dos lados nao pode ser lido (veja `motivo`). Leitura \
              negada nao prova que os builds sao iguais.",
         ),
     };
-    let mut v = Verificacao::nova(
+    Verificacao::nova(
         "versao.executavel",
         estado,
         serde_json::json!({
@@ -222,16 +220,7 @@ pub(crate) fn verificacao(carregado: &Observacao, instalado: &Observacao) -> Ver
             "iguais": iguais,
         }),
         detalhe,
-    );
-    // Depois do redator, de proposito (ver o docblock do modulo).
-    for (lado, obs) in [("carregado", carregado), ("instalado", instalado)] {
-        if let Some(sha256) = obs.sha256().filter(|s| e_digest(s))
-            && let Some(alvo) = v.evidencia.get_mut(lado).and_then(|l| l.as_object_mut())
-        {
-            alvo.insert("sha256".into(), serde_json::Value::String(sha256.into()));
-        }
-    }
-    v
+    )
 }
 
 #[cfg(test)]
@@ -266,8 +255,6 @@ mod tests {
     #[test]
     fn mesmo_build_e_ok_com_os_dois_hashes_intactos() {
         let dir = tempfile::tempdir().expect("tempdir");
-        // Conteudo cujo hash tem longas sequencias de digitos — o redator
-        // mascararia; o hash tem de sair inteiro.
         let a = gravar(dir.path(), "a", b"abc");
         let b = gravar(dir.path(), "b", b"abc");
         let (c, i) = observar(&fonte(Some(a), b), &OnceLock::new());
@@ -321,7 +308,7 @@ mod tests {
         let ausente = dir.path().join("nao-existe");
         let (c, i) = observar(&fonte(Some(ausente), b), &OnceLock::new());
         let v = verificacao(&c, &i);
-        assert_eq!(v.estado, EstadoDiag::Degradado);
+        assert_eq!(v.estado, EstadoDiag::Erro);
         assert!(v.evidencia["iguais"].is_null());
         assert_eq!(v.evidencia["carregado"]["estado"], "nao_verificado");
         assert_eq!(v.evidencia["carregado"]["motivo"], "nao_encontrado");
@@ -370,7 +357,7 @@ mod tests {
         };
         let (c, i) = observar(&f, &OnceLock::new());
         let v = verificacao(&c, &i);
-        assert_eq!(v.estado, EstadoDiag::Degradado);
+        assert_eq!(v.estado, EstadoDiag::Erro);
         assert_eq!(v.evidencia["instalado"]["motivo"], "caminho_desconhecido");
     }
 
@@ -410,8 +397,48 @@ mod tests {
         let (c, i) = observar(&fonte(Some(a), ausente), &OnceLock::new());
         let v = verificacao(&c, &i);
         let texto = format!("{} {}", v.evidencia, v.detalhe);
-        let raiz = dir.path().to_string_lossy();
-        assert!(!texto.contains(raiz.as_ref()), "{texto}");
+        // O ultimo componente do tempdir: nao depende do escape de `\\` que
+        // o JSON aplica aos caminhos do Windows.
+        let nome = dir
+            .path()
+            .file_name()
+            .expect("tempdir tem nome")
+            .to_string_lossy()
+            .into_owned();
+        assert!(!texto.contains(&nome), "{texto}");
+        assert!(!texto.contains("nao-existe"), "{texto}");
+    }
+
+    /// O hash passa pelo redator do relatorio (`Verificacao::nova`) e sai
+    /// inteiro: o redator isenta hex, inclusive com corrido longo de digitos.
+    #[test]
+    fn redator_nao_altera_o_digest() {
+        let digest = format!("{}{}", "1234567890".repeat(6), "abcd");
+        let obs = Observacao::Verificado {
+            sha256: digest.clone(),
+        };
+        let v = verificacao(&obs, &obs);
+        assert_eq!(v.evidencia["carregado"]["sha256"], digest.as_str());
+        assert_eq!(v.evidencia["instalado"]["sha256"], digest.as_str());
+    }
+
+    #[test]
+    fn sem_imagem_carregada_e_instalado_ilegivel_e_erro() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (c, i) = observar(&fonte(None, dir.path().join("x")), &OnceLock::new());
+        let v = verificacao(&c, &i);
+        assert_eq!(v.estado, EstadoDiag::Erro);
+        assert!(
+            v.detalhe.contains("nao expoe a imagem carregada"),
+            "{}",
+            v.detalhe
+        );
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[test]
+    fn fora_do_linux_nao_ha_imagem_carregada() {
+        assert_eq!(FonteDoExecutavel::deste_processo().carregado, None);
     }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -420,13 +447,5 @@ mod tests {
         let f = FonteDoExecutavel::deste_processo();
         assert_eq!(f.carregado, Some(PathBuf::from("/proc/self/exe")));
         assert!(f.instalado.is_ok());
-    }
-
-    #[test]
-    fn digest_so_aceita_hex_minusculo_de_64() {
-        assert!(e_digest(&"a".repeat(64)));
-        assert!(!e_digest(&"A".repeat(64)));
-        assert!(!e_digest(&"a".repeat(63)));
-        assert!(!e_digest(&format!("{}g", "a".repeat(63))));
     }
 }
