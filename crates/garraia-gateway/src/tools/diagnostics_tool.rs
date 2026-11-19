@@ -60,6 +60,8 @@ use serde::Serialize;
 use crate::push_channels::PushMounted;
 use crate::state::AppState;
 
+mod executavel;
+
 /// Quantas linhas do fim do `garraia.log` o relatorio amostra. Limitado de
 /// proposito: o log cresce sem rotacao e o relatorio viaja dentro de um turno.
 pub(crate) const ULTIMAS_LINHAS_DE_LOG: usize = 40;
@@ -163,6 +165,11 @@ pub struct GarraDiagnosticsTool {
     /// Diretorio de configuracao do produto, capturado no registro da tool:
     /// e a unica raiz de onde o diagnostico le arquivo (o `garraia.log`).
     config_dir: PathBuf,
+    /// De onde `versao.executavel` le o carregado e o instalado (#1914).
+    executavel: executavel::FonteDoExecutavel,
+    /// SHA-256 do executavel carregado, lido uma vez com sucesso: a imagem
+    /// do processo nao muda enquanto ele vive.
+    sha256_carregado: Arc<std::sync::OnceLock<String>>,
 }
 
 impl GarraDiagnosticsTool {
@@ -171,6 +178,8 @@ impl GarraDiagnosticsTool {
             state: Arc::downgrade(state),
             push,
             config_dir,
+            executavel: executavel::FonteDoExecutavel::deste_processo(),
+            sha256_carregado: Arc::new(std::sync::OnceLock::new()),
         }
     }
 }
@@ -183,7 +192,9 @@ impl Tool for GarraDiagnosticsTool {
 
     fn description(&self) -> &str {
         "Runs a read-only, structured diagnostic of THIS Garra installation by native interfaces \
-         (no shell, no arbitrary file reads, no network): installed version, gateway state, every \
+         (no shell, no arbitrary file reads, no network): installed version, whether the running \
+         executable and the installed file are the same build (SHA-256 of each; an unreadable \
+         side is reported as not verified, never as equal), gateway state, every \
          channel with its state, MCP servers, available tools and capabilities, the validated \
          effective config, credential PRESENCE AND ORIGIN (e.g. \"provider X: key from the \
          credential vault\" — never a value), the last sanitized log lines, and relevant \
@@ -220,7 +231,29 @@ impl Tool for GarraDiagnosticsTool {
             )])));
         }
 
-        let verificacoes = relatorio_de_diagnostico(&state, self.push, &self.config_dir).await;
+        let mut verificacoes = relatorio_de_diagnostico(&state, self.push, &self.config_dir).await;
+        // #1914: logo depois de `versao.instalada`. Ler o binario inteiro e
+        // I/O bloqueante de dezenas de MB — fora do executor async.
+        let fonte = self.executavel.clone();
+        let cache = Arc::clone(&self.sha256_carregado);
+        let observado =
+            tokio::task::spawn_blocking(move || executavel::observar(&fonte, &cache)).await;
+        let entrada = match observado {
+            Ok((carregado, instalado)) => executavel::verificacao(&carregado, &instalado),
+            Err(_) => executavel::verificacao(
+                &executavel::Observacao::NaoVerificado {
+                    motivo: "falha_de_leitura",
+                },
+                &executavel::Observacao::NaoVerificado {
+                    motivo: "falha_de_leitura",
+                },
+            ),
+        };
+        let posicao = verificacoes
+            .iter()
+            .position(|v| v.id == "versao.instalada")
+            .map_or(0, |i| i + 1);
+        verificacoes.insert(posicao, entrada);
         Ok(ToolOutput::success(serializar(&verificacoes)))
     }
 }
@@ -1169,8 +1202,18 @@ mod tests {
         state_com(config_no(dir), dir)
     }
 
+    /// Com o executavel apontado para um arquivo pequeno do tempdir: o
+    /// binario de teste em debug tem centenas de MB, e hashea-lo em cada
+    /// teste do relatorio inteiro custaria segundos.
     fn tool(st: &Arc<AppState>, dir: &Path) -> GarraDiagnosticsTool {
-        GarraDiagnosticsTool::new(st, PushMounted::default(), dir.to_path_buf())
+        let exe = dir.join("garraia-exe-de-teste");
+        std::fs::write(&exe, b"build de teste").expect("grava exe de teste");
+        let mut t = GarraDiagnosticsTool::new(st, PushMounted::default(), dir.to_path_buf());
+        t.executavel = executavel::FonteDoExecutavel {
+            carregado: Some(exe.clone()),
+            instalado: Ok(exe),
+        };
+        t
     }
 
     fn ctx_na_sessao(session_id: &str) -> ToolContext {
@@ -1241,6 +1284,7 @@ mod tests {
             "logs",
             "gateway",
             "versao",
+            "sha256",
         ] {
             assert!(
                 !texto.contains(proibido),
@@ -1607,6 +1651,7 @@ mod tests {
             .collect();
         let esperados = [
             "versao.instalada",
+            "versao.executavel",
             "gateway.estado",
             "canais.superficies",
             "canais.telegram",
@@ -1662,6 +1707,10 @@ mod tests {
             );
         }
         assert_eq!(achar(&json, "versao.instalada").expect("v")["estado"], "ok");
+        assert_eq!(
+            achar(&json, "versao.executavel").expect("e")["estado"],
+            "ok"
+        );
         assert_eq!(achar(&json, "gateway.estado").expect("g")["estado"], "ok");
     }
 
