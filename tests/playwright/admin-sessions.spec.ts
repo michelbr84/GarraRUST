@@ -107,6 +107,9 @@ test.describe('Sessions page: principal, effective mode and capabilities', () =>
 
   test('Capabilities opens the panel of that conversation, file_write denied under search, Close hides it', async ({ page }) => {
     const sessionId = await seedSearchSession(page);
+    // In CI the gateway always has a session store, so a failed seed is a bug,
+    // not an environment limit: fail there instead of skipping the #1915 checks.
+    if (process.env.CI) expect(sessionId, 'POST /api/sessions {mode: search} must succeed in CI').not.toBeNull();
     if (!sessionId) test.skip(true, 'seeding a search session is not allowed in this environment');
     const row = page.locator(`[data-testid="session-row"][data-session-id="${sessionId}"]`);
     await expect(row).toHaveCount(1);
