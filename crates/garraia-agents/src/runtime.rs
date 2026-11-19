@@ -3865,16 +3865,6 @@ impl AgentRuntime {
         let mut conteudo_para_o_modelo: Option<String> = None;
         let output = if name == TOOL_PROGRAM_NAME {
             let chamadas_antes = budget.chamadas_na_tarefa();
-            // #1915: como classificar o `Err` do programa no evento de fim.
-            //
-            // O `Err` chega de dois lugares — orcamento da TAREFA esgotado e
-            // loop detectado — e `executar_tool_program` devolve so a
-            // mensagem, sem dizer qual foi. Distinguir alem daqui exigiria
-            // levar a classificacao pelo `Result` do programa E por
-            // `DispatchOutcome::BudgetExceeded`, que atravessa as quatro
-            // copias do laco de turno. Entao o default e o orcamento (o caso
-            // comum) e so o loop que ESTE nivel reconhece corrige a etiqueta.
-            let mut desfecho_do_erro = DesfechoDaChamada::OrcamentoEsgotado;
             let desfecho = self
                 .executar_tool_program(portao, budget, sink, context, id, input)
                 .await;
@@ -3915,8 +3905,7 @@ impl AgentRuntime {
                             });
                         }
                         Some(VereditoDeLoop::Abortar(mensagem)) => {
-                            desfecho_do_erro = DesfechoDaChamada::BloqueadaPorLoop;
-                            Err(mensagem)
+                            Err((DesfechoDaChamada::BloqueadaPorLoop, mensagem))
                         }
                     }
                 }
@@ -3931,7 +3920,7 @@ impl AgentRuntime {
                     conteudo_para_o_modelo = Some(para_o_modelo);
                     ToolOutput::confirmation_request(para_o_humano)
                 }
-                Err(mensagem) => {
+                Err((desfecho_do_erro, mensagem)) => {
                     // Achado de auditoria (F-4, #1226 S-B): sem isto o
                     // `tool_started` de cima ficava sem o `tool_finished`
                     // correspondente — a UI de streaming herdava um
@@ -4167,7 +4156,7 @@ impl AgentRuntime {
         context: &ToolContext,
         id: &str,
         input: &serde_json::Value,
-    ) -> std::result::Result<DesfechoDoPrograma, String> {
+    ) -> std::result::Result<DesfechoDoPrograma, (DesfechoDaChamada, String)> {
         use DesfechoDoPrograma::Saida;
 
         let passos = match interpretar_passos_do_programa(input) {
@@ -4248,9 +4237,12 @@ impl AgentRuntime {
                         .to_string(),
                     )));
                 }
-                return Err(format!(
-                    "execution budget exceeded no passo {i} do tool_program: {}",
-                    budget.status()
+                return Err((
+                    DesfechoDaChamada::OrcamentoEsgotado,
+                    format!(
+                        "execution budget exceeded no passo {i} do tool_program: {}",
+                        budget.status()
+                    ),
                 ));
             }
 
@@ -4449,8 +4441,13 @@ impl AgentRuntime {
                         para_o_humano,
                     });
                 }
+                // #1915: passo nunca e `tool_program` (aninhamento recusado
+                // acima) e o estouro de orcamento de um passo volta como
+                // `Denied` (`desfecho_sem_orcamento`); o unico
+                // `BudgetExceeded` que um passo devolve e o aborto do
+                // detector de loop (`desfecho_de_loop`).
                 DispatchOutcome::BudgetExceeded { mensagem } => {
-                    return Err(mensagem);
+                    return Err((DesfechoDaChamada::BloqueadaPorLoop, mensagem));
                 }
                 DispatchOutcome::Result(_, _)
                 | DispatchOutcome::Denied(_)

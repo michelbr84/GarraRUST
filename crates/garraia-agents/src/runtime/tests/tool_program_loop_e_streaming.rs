@@ -314,6 +314,52 @@ pub(super) async fn tool_program_que_esgota_a_tarefa_casa_todo_inicio_com_fim_no
     );
 }
 
+/// #1915 (revisao do #1953): quando quem aborta e o detector de loop de um
+/// PASSO interno, o fim do envelope diz `BloqueadaPorLoop`, e nao
+/// `OrcamentoEsgotado`. O cenario e o de
+/// [`tool_program_repetido_entre_voltas_cai_no_detector_de_loop`], agora com
+/// sink de eventos.
+#[tokio::test]
+pub(super) async fn loop_de_passo_interno_fecha_o_envelope_como_loop() {
+    let rt = AgentRuntime::new();
+    rt.register_tool(Box::new(ToolQueConta {
+        vezes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    }));
+    rt.register_provider(Arc::new(RepetePrograma {
+        programa: serde_json::json!({
+            "steps": [ { "tool": "conta", "args": { "x": 1 } } ]
+        }),
+        voltas: std::sync::atomic::AtomicUsize::new(0),
+    }));
+
+    let (resultado, eventos) = turno_de_streaming_com_eventos(
+        &rt,
+        "sessao-tp-loop-interno-stream",
+        &ExecContext::default(),
+    )
+    .await;
+    let erro = resultado.expect_err("o mesmo passo repetido em programas seguidos e loop");
+    assert!(erro.to_string().contains("tool loop detected"), "{erro}");
+
+    let fim_do_programa = eventos.iter().rev().find_map(|e| match e {
+        crate::turn_events::TurnEvent::ToolFinished {
+            name,
+            success,
+            outcome,
+            ..
+        } if name == TOOL_PROGRAM_NAME => Some((*success, *outcome)),
+        _ => None,
+    });
+    assert_eq!(
+        fim_do_programa,
+        Some((
+            false,
+            crate::turn_events::DesfechoDaChamada::BloqueadaPorLoop
+        )),
+        "{eventos:?}"
+    );
+}
+
 /// Teto agregado (alem do timeout por passo): 6 passos de 25s cada
 /// somam 150s de trabalho, acima do teto agregado (120s) mas cada
 /// passo, sozinho, fica abaixo do timeout por passo (30s padrao) — e
