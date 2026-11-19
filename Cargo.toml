@@ -159,6 +159,16 @@ jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_r
 # still declares rustc 1.97.0 — `rust-version` and the `MSRV check (1.97)`
 # job stay put. Second lockfile-only bump in a row; the MSRV series break
 # of #1559 holds.
+# 50.0.1→50.0.2 (2026-11-19): security patch — eight advisories of the
+# 50.0.1 line (RUSTSEC-2026-0566..0573), published after main's own CI ran,
+# so `cargo-deny` went red on every PR. wasmtime: guest-triggered host aborts
+# and panics (stale GC heap base pointer; builds without `threads`/`gc`; GC
+# heap reservation not page-aligned; `Caller::get_module_export` outside a
+# Wasm call; component stream/future cancel on the wrong end).
+# wasmtime-wasi / wasi-http: unbounded host memory growth via empty writes.
+# Lockfile-only again (the `"50"` requirements already admit 50.0.2); the
+# 50.0.2 tree (cranelift 0.137.2, pulley/wiggle 50.0.2) still declares rustc
+# 1.97.0, so `rust-version` and `MSRV check (1.97)` stay put.
 #
 # `cache` fica DESLIGADO (RUSTSEC-2026-0391/0395..0406/0410, zstd 0.13 / zstd-safe 7.2 /
 # zstd-sys 2.0.16, publicados em 2026-10-16): `wasmtime-internal-cache` fixa
