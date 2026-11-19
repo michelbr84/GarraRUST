@@ -6,7 +6,7 @@ use crate::exec_context::ExecContext;
 use crate::providers::{
     ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart, StreamEvent,
 };
-use crate::turn_events::TurnEvent;
+use crate::turn_events::{DesfechoDaChamada, TurnEvent};
 use futures::Stream;
 use garraia_common::Result;
 use std::pin::Pin;
@@ -202,8 +202,67 @@ pub(super) async fn tool_program_no_streaming_real_com_passo_negado_casa_os_even
         "{eventos:?}"
     );
     let fim_da_negada = eventos.iter().find_map(|e| match e {
-        TurnEvent::ToolFinished { name, success, .. } if name == "negada" => Some(*success),
+        TurnEvent::ToolFinished {
+            name,
+            success,
+            outcome,
+            ..
+        } if name == "negada" => Some((*success, *outcome)),
         _ => None,
     });
-    assert_eq!(fim_da_negada, Some(false), "{eventos:?}");
+    // #1915: o passo negado diz QUEM barrou. Antes, a recusa do portao e um
+    // erro da ferramenta chegavam ao mesmo `success: false`.
+    assert_eq!(
+        fim_da_negada,
+        Some((false, DesfechoDaChamada::NegadaPelaPolitica)),
+        "{eventos:?}"
+    );
+}
+
+/// #1915: sucesso e erro de EXECUCAO, cada um com o seu desfecho, pelo
+/// caminho de streaming de verdade.
+///
+/// O passo que falha usa um nome que nenhuma ferramenta registrou: o
+/// despacho devolve `unknown tool`, que e falha da chamada — e nao recusa
+/// de politica, nem indisponibilidade, nem loop. Os quatro saiam
+/// identicos como `success: false`.
+#[tokio::test]
+pub(super) async fn sucesso_e_erro_de_execucao_tem_desfechos_distintos() {
+    let rt = AgentRuntime::new();
+    rt.register_tool(Box::new(EcoInteiroTool));
+    let provider = ProgramaEmStreaming::novo(serde_json::json!({
+        "steps": [
+            { "tool": "eco_inteiro", "args": { "n": 1 } },
+            { "tool": "nao_existe", "args": {} }
+        ]
+    }));
+    rt.register_provider(provider.clone());
+
+    let (resultado, eventos) =
+        turno_de_streaming_com_eventos(&rt, "sessao-1915-desfecho", &ExecContext::default()).await;
+    resultado.expect("passo que falha nao derruba o turno");
+
+    let desfechos: Vec<(&str, DesfechoDaChamada)> = eventos
+        .iter()
+        .filter_map(|e| match e {
+            TurnEvent::ToolFinished { name, outcome, .. } => Some((name.as_str(), *outcome)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        desfechos
+            .iter()
+            .find(|(n, _)| *n == "eco_inteiro")
+            .map(|(_, d)| *d),
+        Some(DesfechoDaChamada::Sucesso),
+        "{eventos:?}"
+    );
+    assert_eq!(
+        desfechos
+            .iter()
+            .find(|(n, _)| *n == "nao_existe")
+            .map(|(_, d)| *d),
+        Some(DesfechoDaChamada::Erro),
+        "{eventos:?}"
+    );
 }

@@ -1055,6 +1055,7 @@ fn turn_event_frame(session_id: &str, turn_id: Option<&str>, event: &TurnEvent) 
             name,
             duration,
             success,
+            outcome,
             summary,
             ..
         } => serde_json::json!({
@@ -1062,6 +1063,11 @@ fn turn_event_frame(session_id: &str, turn_id: Option<&str>, event: &TurnEvent) 
             "session_id": session_id,
             "name": name,
             "success": success,
+            // #1915: campo ADITIVO ao lado do `success`, com o codigo
+            // estavel do desfecho (`timeout`, `denied_by_policy`, …). Quem
+            // ja le `success` nao muda; quem precisa saber POR QUE a
+            // chamada nao deu certo passa a ter como.
+            "outcome": outcome.codigo(),
             "summary": summary,
             "duration_ms": duration.as_millis() as u64,
         }),
@@ -1457,6 +1463,7 @@ mod tests {
                 name: "bash".into(),
                 duration: std::time::Duration::from_millis(1500),
                 success: true,
+                outcome: garraia_agents::DesfechoDaChamada::Sucesso,
                 summary: "148 passou".into(),
                 output: "x".repeat(64 * 1024),
             },
@@ -1465,6 +1472,7 @@ mod tests {
         assert_eq!(frame["type"], "tool_finished");
         assert_eq!(frame["name"], "bash");
         assert_eq!(frame["success"], true);
+        assert_eq!(frame["outcome"], "success");
         assert_eq!(frame["summary"], "148 passou");
         assert_eq!(frame["duration_ms"], 1500);
         assert!(
@@ -1559,6 +1567,7 @@ mod tests {
                 name: "eco".into(),
                 duration: std::time::Duration::from_millis(7),
                 success: true,
+                outcome: garraia_agents::DesfechoDaChamada::Sucesso,
                 summary: "ok".into(),
                 output: "saida enorme".into(),
             },

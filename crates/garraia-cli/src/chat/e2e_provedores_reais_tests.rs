@@ -499,6 +499,7 @@ async fn a_drenagem_guarda_os_eventos_que_terminam_no_mesmo_poll_do_turno() {
             name: "file_write".to_string(),
             duration: std::time::Duration::from_millis(1),
             success: false,
+            outcome: garraia_agents::DesfechoDaChamada::Erro,
             summary: "permissao negada".to_string(),
             output: String::new(),
         })

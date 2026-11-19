@@ -362,6 +362,29 @@ pub(super) async fn no_stream_o_lote_para_no_teto_e_todo_inicio_tem_fim() {
         .filter(|e| matches!(e, TurnEvent::ToolFinished { success: false, .. }))
         .count();
     assert_eq!(falhas, 5, "{eventos:?}");
+    // #1915: as 5 recusadas dizem POR QUE — orcamento esgotado, nao erro da
+    // ferramenta (que nem rodou) nem recusa de politica.
+    let desfechos: Vec<crate::turn_events::DesfechoDaChamada> = eventos
+        .iter()
+        .filter_map(|e| match e {
+            TurnEvent::ToolFinished { outcome, .. } => Some(*outcome),
+            _ => None,
+        })
+        .collect();
+    use crate::turn_events::DesfechoDaChamada as D;
+    assert_eq!(
+        desfechos
+            .iter()
+            .filter(|d| **d == D::OrcamentoEsgotado)
+            .count(),
+        5,
+        "{eventos:?}"
+    );
+    assert_eq!(
+        desfechos.iter().filter(|d| **d == D::Sucesso).count(),
+        10,
+        "as 10 que couberam no teto rodaram: {eventos:?}"
+    );
     assert!(provider.sistema(1).contains(NOTA_DA_VOLTA_FINAL));
 }
 

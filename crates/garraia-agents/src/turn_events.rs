@@ -53,6 +53,112 @@ const CAPTURE_MAX_BYTES: usize = 64 * 1024;
 /// o comando que gerou a saida e as primeiras linhas de erro de um build.
 const CAPTURE_HEAD_BYTES: usize = 16 * 1024;
 
+/// Como uma chamada de ferramenta **terminou**, do ponto de vista de quem
+/// observa o turno (#1915).
+///
+/// # Por que nao bastava o `success: bool`
+///
+/// O `ToolFinished.success` responde "deu certo?" e para ai. Mas um `false`
+/// hoje cobre nove coisas diferentes: estourou o tempo, o portao do modo
+/// negou, a ferramenta nao estava operacional, o breaker da sessao recusou, o
+/// detector de loop barrou, o orcamento acabou, ou a chamada esta **esperando
+/// um humano** — que nem e falha. Quem le o evento (CLI, `/ws`, host MCP) nao
+/// tinha como distinguir, e o criterio 4 da #1915 pede exatamente isso:
+/// "result, timeout/cancellation" por chamada.
+///
+/// # Por que um enum proprio, e nao [`crate::observabilidade::Desfecho`]
+///
+/// O `Desfecho` alimenta **label de `/metrics`**: conjunto fechado, de
+/// cardinalidade auditada, com as superficies do gateway amarradas nele.
+/// Variante nova la custa serie nova de Prometheus para toda instalacao.
+/// Aqui a necessidade e de UI e de historico, e ha dois desfechos que o
+/// registro de confiabilidade nao conhece de proposito — loop e orcamento sao
+/// recusas do **runtime**, nao da ferramenta, e nunca chegam a
+/// `observabilidade::Chamada`. Entao este enum e um superconjunto, com
+/// [`From`] na direcao que existe, e `Desfecho` fica intacto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesfechoDaChamada {
+    /// Executou e deu certo.
+    Sucesso,
+    /// Executou e falhou.
+    Erro,
+    /// Estourou o tempo limite do despacho.
+    Timeout,
+    /// O portao do turno (modo, whitelist, teto do principal) negou.
+    NegadaPelaPolitica,
+    /// Permitida, mas nao operacional agora (canal, raiz, MCP caido).
+    Indisponivel,
+    /// O breaker da sessao estava aberto; nao executou.
+    RecusadaPeloBreaker,
+    /// Pediu confirmacao humana — nem sucesso nem falha.
+    AguardandoConfirmacao,
+    /// O detector de loop barrou a chamada; nao executou.
+    BloqueadaPorLoop,
+    /// O orcamento de ferramentas da tarefa acabou; nao executou.
+    OrcamentoEsgotado,
+}
+
+impl DesfechoDaChamada {
+    /// Todos, na ordem em que as superficies os listam.
+    pub const TODOS: [DesfechoDaChamada; 9] = [
+        DesfechoDaChamada::Sucesso,
+        DesfechoDaChamada::Erro,
+        DesfechoDaChamada::Timeout,
+        DesfechoDaChamada::NegadaPelaPolitica,
+        DesfechoDaChamada::Indisponivel,
+        DesfechoDaChamada::RecusadaPeloBreaker,
+        DesfechoDaChamada::AguardandoConfirmacao,
+        DesfechoDaChamada::BloqueadaPorLoop,
+        DesfechoDaChamada::OrcamentoEsgotado,
+    ];
+
+    /// Legivel por maquina. Os sete primeiros codigos sao **os mesmos** de
+    /// [`crate::observabilidade::Desfecho::codigo`], de proposito: o
+    /// vocabulario de desfecho do projeto e um so, e um cliente que ja le o
+    /// `/admin/api/reliability` nao aprende um segundo dicionario para ler o
+    /// evento do turno.
+    pub fn codigo(self) -> &'static str {
+        match self {
+            DesfechoDaChamada::Sucesso => "success",
+            DesfechoDaChamada::Erro => "error",
+            DesfechoDaChamada::Timeout => "timeout",
+            DesfechoDaChamada::NegadaPelaPolitica => "denied_by_policy",
+            DesfechoDaChamada::Indisponivel => "unavailable",
+            DesfechoDaChamada::RecusadaPeloBreaker => "breaker_refused",
+            DesfechoDaChamada::AguardandoConfirmacao => "awaiting_confirmation",
+            DesfechoDaChamada::BloqueadaPorLoop => "loop_blocked",
+            DesfechoDaChamada::OrcamentoEsgotado => "budget_exhausted",
+        }
+    }
+
+    /// O `success: bool` do evento, derivado do desfecho.
+    ///
+    /// So `Sucesso` e sucesso. `AguardandoConfirmacao` fica **falso** porque
+    /// era isso que o runtime emitia antes da #1915 — o
+    /// `ToolOutput::confirmation_request` marca `is_error: true`, e o campo
+    /// vinha de `!is_error`. Preservar o valor que a UI ja desenhava importa
+    /// mais que a pureza semantica: o desfecho classificado e o lugar certo
+    /// de dizer que o pedido nao e falha.
+    pub fn e_sucesso(self) -> bool {
+        matches!(self, DesfechoDaChamada::Sucesso)
+    }
+}
+
+impl From<crate::observabilidade::Desfecho> for DesfechoDaChamada {
+    fn from(d: crate::observabilidade::Desfecho) -> Self {
+        use crate::observabilidade::Desfecho as D;
+        match d {
+            D::Sucesso => Self::Sucesso,
+            D::Erro => Self::Erro,
+            D::Timeout => Self::Timeout,
+            D::NegadaPelaPolitica => Self::NegadaPelaPolitica,
+            D::Indisponivel => Self::Indisponivel,
+            D::RecusadaPeloBreaker => Self::RecusadaPeloBreaker,
+            D::AguardandoConfirmacao => Self::AguardandoConfirmacao,
+        }
+    }
+}
+
 /// Um acontecimento do turno, na linguagem de quem **observa** o agente.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnEvent {
@@ -80,7 +186,14 @@ pub enum TurnEvent {
         name: String,
         /// Tempo de parede da execucao.
         duration: Duration,
+        /// `true` so quando `outcome` e [`DesfechoDaChamada::Sucesso`].
+        /// Mantido por compatibilidade com quem ja le o evento; quem precisa
+        /// saber **por que** nao deu certo le o `outcome`.
         success: bool,
+        /// Como a chamada terminou, classificado (#1915). Nasce junto com o
+        /// `success` em [`TurnSink::tool_finished`], que deriva um do outro —
+        /// os dois nao podem divergir.
+        outcome: DesfechoDaChamada,
         /// Uma linha sobre o resultado, ja redigida e truncada. Em falha, o
         /// trecho mais relevante do erro.
         summary: String,
@@ -140,12 +253,15 @@ impl TurnSink {
         }
     }
 
+    /// Fecha a chamada. O `success` do evento **nao** e parametro: ele sai de
+    /// `outcome.e_sucesso()` aqui dentro, para que nenhum chamador consiga
+    /// emitir um par incoerente (`success: true` com `Timeout`, por exemplo).
     pub async fn tool_finished(
         &self,
         id: &str,
         name: &str,
         duration: Duration,
-        success: bool,
+        outcome: DesfechoDaChamada,
         summary: String,
         output: String,
     ) {
@@ -155,7 +271,8 @@ impl TurnSink {
                     id: id.to_string(),
                     name: name.to_string(),
                     duration,
-                    success,
+                    success: outcome.e_sucesso(),
+                    outcome,
                     summary,
                     output,
                 })
@@ -1087,7 +1204,7 @@ mod tests {
             "call-1",
             "bash",
             Duration::from_secs(1),
-            true,
+            DesfechoDaChamada::Sucesso,
             "ok".into(),
             "saida completa".into(),
         )
@@ -1119,7 +1236,7 @@ mod tests {
             "call-2",
             "bash",
             Duration::from_millis(1500),
-            true,
+            DesfechoDaChamada::Sucesso,
             "148 passed".into(),
             "test result: ok. 148 passed".into(),
         )
@@ -1146,11 +1263,104 @@ mod tests {
                     name: "bash".into(),
                     duration: Duration::from_millis(1500),
                     success: true,
+                    outcome: DesfechoDaChamada::Sucesso,
                     summary: "148 passed".into(),
                     output: "test result: ok. 148 passed".into()
                 },
                 TurnEvent::TextDelta("depois".into()),
             ]
         );
+    }
+
+    /// `TODOS` cobre toda variante. O `match` e exaustivo de proposito:
+    /// variante nova nao compila aqui ate entrar nele, e entao a assercao
+    /// cobra a entrada em `TODOS` — e, por tabela, o codigo estavel.
+    #[test]
+    fn todos_cobre_toda_variante_de_desfecho() {
+        fn identidade(d: DesfechoDaChamada) -> DesfechoDaChamada {
+            match d {
+                DesfechoDaChamada::Sucesso
+                | DesfechoDaChamada::Erro
+                | DesfechoDaChamada::Timeout
+                | DesfechoDaChamada::NegadaPelaPolitica
+                | DesfechoDaChamada::Indisponivel
+                | DesfechoDaChamada::RecusadaPeloBreaker
+                | DesfechoDaChamada::AguardandoConfirmacao
+                | DesfechoDaChamada::BloqueadaPorLoop
+                | DesfechoDaChamada::OrcamentoEsgotado => d,
+            }
+        }
+        for d in [
+            DesfechoDaChamada::Sucesso,
+            DesfechoDaChamada::Erro,
+            DesfechoDaChamada::Timeout,
+            DesfechoDaChamada::NegadaPelaPolitica,
+            DesfechoDaChamada::Indisponivel,
+            DesfechoDaChamada::RecusadaPeloBreaker,
+            DesfechoDaChamada::AguardandoConfirmacao,
+            DesfechoDaChamada::BloqueadaPorLoop,
+            DesfechoDaChamada::OrcamentoEsgotado,
+        ] {
+            assert!(DesfechoDaChamada::TODOS.contains(&identidade(d)), "{d:?}");
+        }
+    }
+
+    /// Codigo e conjunto fechado, sem repeticao: e vocabulario de cliente.
+    #[test]
+    fn todo_codigo_e_unico() {
+        let mut vistos = std::collections::BTreeSet::new();
+        for d in DesfechoDaChamada::TODOS {
+            assert!(vistos.insert(d.codigo()), "codigo repetido: {}", d.codigo());
+        }
+        assert_eq!(vistos.len(), DesfechoDaChamada::TODOS.len());
+    }
+
+    /// Os sete desfechos que o registro de confiabilidade conhece tem de
+    /// chegar aqui com o MESMO codigo. Um dicionario, nao dois: se alguem
+    /// renomear um label do `/metrics`, este teste cobra o espelho.
+    #[test]
+    fn o_codigo_espelha_o_do_registro_de_confiabilidade() {
+        for d in crate::observabilidade::Desfecho::TODOS {
+            let convertido: DesfechoDaChamada = d.into();
+            assert_eq!(
+                convertido.codigo(),
+                d.codigo(),
+                "codigo divergiu para {d:?}"
+            );
+        }
+    }
+
+    /// So `Sucesso` e sucesso — inclusive o pedido de confirmacao, que antes
+    /// da #1915 ja saia com `success: false` porque
+    /// `ToolOutput::confirmation_request` marca `is_error: true`.
+    #[test]
+    fn so_sucesso_e_sucesso() {
+        for d in DesfechoDaChamada::TODOS {
+            assert_eq!(
+                d.e_sucesso(),
+                d == DesfechoDaChamada::Sucesso,
+                "e_sucesso errado para {d:?}"
+            );
+        }
+    }
+
+    /// O `success` do evento nasce do desfecho: nao ha como emitir o par
+    /// incoerente que a #1915 quer impedir.
+    #[tokio::test]
+    async fn success_do_evento_nasce_do_desfecho() {
+        for d in DesfechoDaChamada::TODOS {
+            let (tx, mut rx) = mpsc::channel::<TurnEvent>(2);
+            let sink = TurnSink::Events(tx);
+            sink.tool_finished("c", "bash", Duration::ZERO, d, String::new(), String::new())
+                .await;
+            let Some(TurnEvent::ToolFinished {
+                success, outcome, ..
+            }) = rx.recv().await
+            else {
+                panic!("esperava ToolFinished para {d:?}");
+            };
+            assert_eq!(outcome, d);
+            assert_eq!(success, d.e_sucesso(), "divergiu para {d:?}");
+        }
     }
 }

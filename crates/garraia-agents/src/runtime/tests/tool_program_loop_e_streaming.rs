@@ -294,14 +294,24 @@ pub(super) async fn tool_program_que_esgota_a_tarefa_casa_todo_inicio_com_fim_no
         "1 (envelope) + 4 passos = 5 = teto da tarefa: {eventos:?}"
     );
     let fim_do_programa = eventos.iter().rev().find_map(|e| match e {
-        crate::turn_events::TurnEvent::ToolFinished { name, success, .. }
-            if name == TOOL_PROGRAM_NAME =>
-        {
-            Some(*success)
-        }
+        crate::turn_events::TurnEvent::ToolFinished {
+            name,
+            success,
+            outcome,
+            ..
+        } if name == TOOL_PROGRAM_NAME => Some((*success, *outcome)),
         _ => None,
     });
-    assert_eq!(fim_do_programa, Some(false), "{eventos:?}");
+    // #1915: o fim do envelope diz que o que acabou foi o ORCAMENTO, e nao
+    // que o programa errou.
+    assert_eq!(
+        fim_do_programa,
+        Some((
+            false,
+            crate::turn_events::DesfechoDaChamada::OrcamentoEsgotado
+        )),
+        "{eventos:?}"
+    );
 }
 
 /// Teto agregado (alem do timeout por passo): 6 passos de 25s cada

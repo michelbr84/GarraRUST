@@ -99,7 +99,9 @@ pub use tools::{
     RepoSearchTool, RunTestsTool, ScheduleHeartbeat, ScheduleRecurring, ScheduledTask, TaskStatus,
     Tool, ToolContext, ToolOutput, TriggerRegistry, WebFetchTool, WebSearchTool, WebhookTrigger,
 };
-pub use turn_events::{TurnEvent, TurnSink, summarize_tool_input, summarize_tool_output};
+pub use turn_events::{
+    DesfechoDaChamada, TurnEvent, TurnSink, summarize_tool_input, summarize_tool_output,
+};
 // #1343: o escopo de aprovacao entre turnos, para os canais aderirem.
 pub use tools::pending_approval::ApprovalScope;
 

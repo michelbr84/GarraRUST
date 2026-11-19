@@ -30,7 +30,7 @@ use crate::providers::{
 use crate::tools::approval::{ApprovalFingerprint, ToolApproval};
 use crate::tools::{Tool, ToolContext, ToolOutput};
 use crate::turn_events::{
-    TurnSink, capture_tool_output, summarize_tool_input, summarize_tool_output,
+    DesfechoDaChamada, TurnSink, capture_tool_output, summarize_tool_input, summarize_tool_output,
 };
 
 /// Where a registered tool came from. Issue #924: without this the runtime
@@ -902,7 +902,7 @@ async fn desfecho_de_loop(
             id,
             name,
             std::time::Duration::ZERO,
-            false,
+            DesfechoDaChamada::BloqueadaPorLoop,
             resumo.to_string(),
             capture_tool_output(texto),
         )
@@ -924,7 +924,8 @@ async fn desfecho_de_loop(
 /// rodava inteiro contra um teto de 10. A recusa volta como resultado da
 /// propria chamada (todo `tool_use` precisa do seu), dizendo se ha folga
 /// para pedir de novo na proxima volta. O par de eventos sai como o de
-/// [`desfecho_de_loop`]: a UI ve a chamada, fechada com `success: false`.
+/// [`desfecho_de_loop`]: a UI ve a chamada, fechada com
+/// `DesfechoDaChamada::OrcamentoEsgotado` (e portanto `success: false`).
 async fn desfecho_sem_orcamento(
     sink: Option<&TurnSink>,
     id: &str,
@@ -945,7 +946,7 @@ async fn desfecho_sem_orcamento(
             id,
             name,
             std::time::Duration::ZERO,
-            false,
+            DesfechoDaChamada::OrcamentoEsgotado,
             "bloqueada: orcamento de ferramentas esgotado".to_string(),
             capture_tool_output(&recusa),
         )
@@ -3704,10 +3705,10 @@ impl AgentRuntime {
     /// nao-streaming), que nao emitem `tool_started`/`tool_finished` —
     /// exatamente como antes da extracao. Nos caminhos com sink, todo
     /// `tool_started` tem o seu `tool_finished`, inclusive o de uma tool
-    /// negada pelo gate (fecha com `success: false` e o resumo da recusa —
-    /// #1226, achado de revisao: dentro de um `tool_program` o inicio sem
-    /// fim do passo negado ficava pendurado entre o par do proprio
-    /// programa).
+    /// negada pelo gate (fecha com `DesfechoDaChamada::NegadaPelaPolitica` e
+    /// o resumo da recusa — #1226, achado de revisao: dentro de um
+    /// `tool_program` o inicio sem fim do passo negado ficava pendurado entre
+    /// o par do proprio programa).
     async fn dispatch_tool_call(
         &self,
         portao: &crate::modes::ToolGate,
@@ -3791,7 +3792,7 @@ impl AgentRuntime {
                     id,
                     name,
                     iniciado_em.elapsed(),
-                    false,
+                    DesfechoDaChamada::NegadaPelaPolitica,
                     summarize_tool_output(&recusa, false),
                     String::new(),
                 )
@@ -3817,7 +3818,7 @@ impl AgentRuntime {
                     id,
                     name,
                     iniciado_em.elapsed(),
-                    false,
+                    DesfechoDaChamada::Indisponivel,
                     summarize_tool_output(&recusa, false),
                     String::new(),
                 )
@@ -3845,7 +3846,7 @@ impl AgentRuntime {
                     id,
                     name,
                     iniciado_em.elapsed(),
-                    false,
+                    DesfechoDaChamada::RecusadaPeloBreaker,
                     summarize_tool_output(&recusa, false),
                     String::new(),
                 )
@@ -3864,6 +3865,16 @@ impl AgentRuntime {
         let mut conteudo_para_o_modelo: Option<String> = None;
         let output = if name == TOOL_PROGRAM_NAME {
             let chamadas_antes = budget.chamadas_na_tarefa();
+            // #1915: como classificar o `Err` do programa no evento de fim.
+            //
+            // O `Err` chega de dois lugares — orcamento da TAREFA esgotado e
+            // loop detectado — e `executar_tool_program` devolve so a
+            // mensagem, sem dizer qual foi. Distinguir alem daqui exigiria
+            // levar a classificacao pelo `Result` do programa E por
+            // `DispatchOutcome::BudgetExceeded`, que atravessa as quatro
+            // copias do laco de turno. Entao o default e o orcamento (o caso
+            // comum) e so o loop que ESTE nivel reconhece corrige a etiqueta.
+            let mut desfecho_do_erro = DesfechoDaChamada::OrcamentoEsgotado;
             let desfecho = self
                 .executar_tool_program(portao, budget, sink, context, id, input)
                 .await;
@@ -3892,7 +3903,7 @@ impl AgentRuntime {
                                     id,
                                     name,
                                     iniciado_em.elapsed(),
-                                    false,
+                                    DesfechoDaChamada::BloqueadaPorLoop,
                                     "bloqueada: loop detectado (aviso ao modelo)".to_string(),
                                     capture_tool_output(&aviso),
                                 )
@@ -3903,7 +3914,10 @@ impl AgentRuntime {
                                 content: neutralizar_marcadores(&aviso),
                             });
                         }
-                        Some(VereditoDeLoop::Abortar(mensagem)) => Err(mensagem),
+                        Some(VereditoDeLoop::Abortar(mensagem)) => {
+                            desfecho_do_erro = DesfechoDaChamada::BloqueadaPorLoop;
+                            Err(mensagem)
+                        }
                     }
                 }
                 outro => outro,
@@ -3932,7 +3946,7 @@ impl AgentRuntime {
                             id,
                             name,
                             iniciado_em.elapsed(),
-                            false,
+                            desfecho_do_erro,
                             summarize_tool_output(&mensagem, false),
                             String::new(),
                         )
@@ -4043,13 +4057,30 @@ impl AgentRuntime {
             .then(|| ApprovalFingerprint::strip_marker(&output.content));
 
         if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
+            // #1915: a MESMA classificacao que o registro de confiabilidade
+            // usa (`tools::breaker::classificar`), e nao uma segunda regra
+            // aqui — timeout vem do prefixo do despacho, pedido de
+            // confirmacao e neutro, o resto do `is_error` e erro. Duas
+            // classificacoes do mesmo fato divergem; uma so, nao.
+            //
+            // O `success` do evento continua valendo `!output.is_error`, como
+            // antes: a unica saida com `requires_confirmation` nasce de
+            // `ToolOutput::confirmation_request`, que ja marca `is_error:
+            // true`, entao `AguardandoConfirmacao.e_sucesso() == false` casa
+            // com o valor de antes. Nenhum desenho de UI muda.
+            let desfecho: DesfechoDaChamada = Desfecho::da_saida(&output).into();
             let ok = !output.is_error;
+            debug_assert_eq!(
+                desfecho.e_sucesso(),
+                ok,
+                "o desfecho classificado divergiu do `success` historico"
+            );
             let visivel = pedido_ao_humano.as_deref().unwrap_or(&output.content);
             sink.tool_finished(
                 id,
                 name,
                 iniciado_em.elapsed(),
-                ok,
+                desfecho,
                 summarize_tool_output(visivel, ok),
                 capture_tool_output(visivel),
             )

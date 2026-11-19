@@ -469,6 +469,7 @@ mod tests {
             name: "file_write".into(),
             duration: Duration::from_millis(3),
             success: true,
+            outcome: crate::turn_events::DesfechoDaChamada::Sucesso,
             summary: "ok".into(),
             output: String::new(),
         };
