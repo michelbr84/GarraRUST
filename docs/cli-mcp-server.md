@@ -211,8 +211,10 @@ Mirrors the gateway bootstrap exactly (`garraia-gateway/src/bootstrap/`):
 ### Response shape (`garra.agent.v1`)
 
 Same shape as `garra.ask.v1` plus `session_id` and a `tool_calls`
-summary (each entry: `name`, `duration_ms`, `success`, `summary` —
-redacted and truncated at the source by the runtime):
+summary (each entry: `name`, `duration_ms`, `success`, `outcome`,
+`summary` — redacted and truncated at the source by the runtime;
+`outcome` (#1915) is additive to `success` and comes from a closed set of
+codes such as `success`, `error` or `timeout`):
 
 ```json
 {
@@ -224,7 +226,7 @@ redacted and truncated at the source by the runtime):
   "latency_ms": 15230,
   "session_id": "mcp-0b6c…",
   "tool_calls": [
-    {"name": "bash", "duration_ms": 120, "success": true, "summary": "3 files"}
+    {"name": "bash", "duration_ms": 120, "success": true, "outcome": "success", "summary": "3 files"}
   ]
 }
 ```
