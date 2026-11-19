@@ -4656,6 +4656,7 @@ mod tests {
                 name: "bash".into(),
                 duration: std::time::Duration::from_millis(6300),
                 success: true,
+                outcome: garraia_agents::DesfechoDaChamada::Sucesso,
                 summary: "148 passed".into(),
                 output: String::new(),
             })

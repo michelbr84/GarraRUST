@@ -68,6 +68,7 @@ fn fim_sem_inicio_nao_inventa_chamada() {
         name: "bash".into(),
         duration: std::time::Duration::ZERO,
         success: true,
+        outcome: garraia_agents::DesfechoDaChamada::Sucesso,
         summary: "ok".into(),
         output: "x".into(),
     });

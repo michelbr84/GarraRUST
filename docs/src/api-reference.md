@@ -559,10 +559,14 @@ roda entram numa fila e são processadas na sequência.
 | `resumed` | após um `resume` aceito | `session_id`, `history_length`, `session_token` |
 | `delta` | só com `stream: true` | `session_id`, `content` — um pedaço do texto |
 | `tool_started` | só com `stream: true` | `session_id`, `name`, `detail` |
-| `tool_finished` | só com `stream: true` | `session_id`, `name`, `success`, `summary`, `duration_ms` |
+| `tool_finished` | só com `stream: true` | `session_id`, `name`, `success`, `outcome`, `summary`, `duration_ms` |
 | `message` | sempre, ao fim do turno | `session_id`, `content` — a resposta inteira |
 | `stopped` | após um `stop` aceito | `session_id` |
 | `error` | falha | `session_id`, `code`, `message` |
+
+`outcome` (#1915) é aditivo ao `success` e vem de um conjunto fechado de
+códigos: `success`, `error`, `timeout`, `denied_by_policy`, `unavailable`,
+`breaker_refused`, `awaiting_confirmation`, `loop_blocked`, `budget_exhausted`.
 
 `tool_finished` **não** carrega a saída da ferramenta: ela pode ter dezenas de
 KiB, e o frame existe para dizer que a ferramenta terminou.

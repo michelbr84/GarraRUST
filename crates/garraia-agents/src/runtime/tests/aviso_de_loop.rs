@@ -2,7 +2,7 @@ use super::super::AgentRuntime;
 use super::{ToolQueConta, inicios_casados_com_fins, turno_de_streaming_com_eventos};
 use crate::exec_context::ExecContext;
 use crate::providers::{ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart};
-use crate::turn_events::TurnEvent;
+use crate::turn_events::{DesfechoDaChamada, TurnEvent};
 use garraia_common::Result;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -199,6 +199,12 @@ pub(super) async fn modelo_que_muda_de_abordagem_depois_do_aviso_termina_ok() {
 /// par `tool_started`/`tool_finished(success=false)` com o veredito,
 /// tanto no aviso quanto no aborto. Usa o `EmLoop` (`file_read` com
 /// o mesmo `path` toda volta, via `stream_complete` de verdade).
+///
+/// #1915: e o fim leva o DESFECHO, nao so o `success: false` — senao a
+/// barreira do detector de loop fica indistinguivel de um erro da
+/// ferramenta, que e exatamente o que o criterio 4 da issue pede para
+/// separar. As duas primeiras voltas, que rodaram, provam o outro lado:
+/// execucao que deu certo sai como `Sucesso`.
 #[tokio::test]
 pub(super) async fn chamada_barrada_por_loop_aparece_nos_eventos_de_tool() {
     let rt = AgentRuntime::new();
@@ -211,30 +217,43 @@ pub(super) async fn chamada_barrada_por_loop_aparece_nos_eventos_de_tool() {
     let iniciados = inicios_casados_com_fins(&eventos);
     assert_eq!(iniciados.len(), 4, "{eventos:?}");
 
-    let fins: Vec<(&bool, &String, &String)> = eventos
+    let fins: Vec<(&bool, &DesfechoDaChamada, &String, &String)> = eventos
         .iter()
         .filter_map(|e| match e {
             TurnEvent::ToolFinished {
                 success,
+                outcome,
                 summary,
                 output,
                 ..
-            } => Some((success, summary, output)),
+            } => Some((success, outcome, summary, output)),
             _ => None,
         })
         .collect();
-    let (ok, resumo, saida) = fins[2];
+    let (ok, desfecho, resumo, saida) = fins[2];
     assert!(!ok);
+    assert_eq!(*desfecho, DesfechoDaChamada::BloqueadaPorLoop);
     assert_eq!(resumo, "bloqueada: loop detectado (aviso ao modelo)");
     assert!(
         saida.contains("input repetido: /tmp/alvo-repetido"),
         "{saida}"
     );
-    let (ok, resumo, saida) = fins[3];
+    let (ok, desfecho, resumo, saida) = fins[3];
     assert!(!ok);
+    assert_eq!(*desfecho, DesfechoDaChamada::BloqueadaPorLoop);
     assert_eq!(resumo, "bloqueada: loop detectado (turno abortado)");
     assert!(
         saida.starts_with("tool loop detected: file_read"),
         "{saida}"
     );
+    // As duas primeiras CHEGARAM ao despacho (o `EmLoop` nao registra
+    // `file_read`, entao falham com `unknown tool`) e e exatamente o
+    // contraste que a #1915 quer: falha da chamada e barreira do detector
+    // saiam as duas como `success: false`, indistinguiveis.
+    for i in [0, 1] {
+        let (ok, desfecho, resumo, _) = fins[i];
+        assert!(!ok, "volta {i}: {eventos:?}");
+        assert_eq!(*desfecho, DesfechoDaChamada::Erro, "volta {i}");
+        assert_eq!(resumo, "unknown tool: file_read", "volta {i}");
+    }
 }

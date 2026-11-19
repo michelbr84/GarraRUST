@@ -84,6 +84,11 @@ pub struct ToolCallSummary {
     pub name: String,
     pub duration_ms: u64,
     pub success: bool,
+    /// #1915: o codigo estavel do desfecho (`timeout`, `denied_by_policy`,
+    /// `loop_blocked`, …). Campo ADITIVO ao lado do `success`: um host que
+    /// so le `success` nao muda, e quem precisa saber por que a chamada nao
+    /// deu certo para de ter de adivinhar pelo `summary`.
+    pub outcome: &'static str,
     pub summary: String,
 }
 
@@ -325,12 +330,14 @@ pub fn events_to_summaries(events: &[TurnEvent]) -> Vec<ToolCallSummary> {
                 name,
                 duration,
                 success,
+                outcome,
                 summary,
                 ..
             } => Some(ToolCallSummary {
                 name: name.clone(),
                 duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
                 success: *success,
+                outcome: outcome.codigo(),
                 summary: truncate_chars(summary, TOOL_CALL_SUMMARY_MAX_CHARS),
             }),
             _ => None,
@@ -989,6 +996,7 @@ mod tests {
             name: "bash".into(),
             duration_ms: 120,
             success: true,
+            outcome: "success",
             summary: "3 files".into(),
         }];
         let env = agent_success_envelope(
@@ -1007,6 +1015,9 @@ mod tests {
         assert_eq!(env["session_id"], "mcp-abc");
         assert_eq!(env["tool_calls"][0]["name"], "bash");
         assert_eq!(env["tool_calls"][0]["duration_ms"], 120);
+        // #1915: campo aditivo; o `success` ao lado dele nao mudou.
+        assert_eq!(env["tool_calls"][0]["success"], true);
+        assert_eq!(env["tool_calls"][0]["outcome"], "success");
         assert!(env.get("error").is_none());
     }
 
@@ -1016,6 +1027,7 @@ mod tests {
             name: "bash".into(),
             duration_ms: 4000,
             success: true,
+            outcome: "success",
             summary: "trabalhando".into(),
         }];
         let env = agent_error_envelope(
@@ -1052,11 +1064,17 @@ mod tests {
     // ─── Reducer de eventos ───────────────────────────────────────────
 
     fn finished(name: &str, ms: u64, success: bool, summary: &str) -> TurnEvent {
+        use garraia_agents::DesfechoDaChamada;
         TurnEvent::ToolFinished {
             id: format!("call-{name}"),
             name: name.to_string(),
             duration: Duration::from_millis(ms),
             success,
+            outcome: if success {
+                DesfechoDaChamada::Sucesso
+            } else {
+                DesfechoDaChamada::Erro
+            },
             summary: summary.to_string(),
             output: String::new(),
         }
