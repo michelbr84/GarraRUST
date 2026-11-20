@@ -67,6 +67,7 @@ Rationale curta ("porque sim") é sinal de que a decisão não deveria ser ADR �
 | [0025](0025-classes-de-capacidade-e-politica-de-acesso-v2.md) | Classes de capacidade, teto por principal e Access Policy v2 do WhatsApp | Accepted | 2026-09-26 |
 | [0026](0026-billing-schema-plan-subscription-invoice.md) | Schema de billing: plan / subscription / invoice no workspace (Garra Cloud; so schema) | ✅ accepted | 2026-10-22 | [#1652](https://github.com/michelbr84/GarraRUST/issues/1652) |
 | [0027](0027-natural-voice-conversation.md) | Conversação natural por voz na Web: STT → LLM → TTS por frase, começando pelo runtime existente (caminho C via A) | ✅ accepted | 2026-10-28 | [#1754](https://github.com/michelbr84/GarraRUST/issues/1754) |
+| [0028](0028-saida-do-chrono-unmaintained.md) | Saída do `chrono`/`chrono-tz` unmaintained: o grafo não sai do `chrono` sem `teloxide-core`/`rmcp`/`rrule`; renovar a exceção com evidência e migrar para `jiff` só quando o upstream liberar | 📋 proposed | 2026-11-20 | [#1938](https://github.com/michelbr84/GarraRUST/issues/1938) |
 
 Legenda: ✅ accepted · 📋 proposed (aguardando execução) · 🔒 blocked (issue Linear aguardando este ADR ser escrito).
 
