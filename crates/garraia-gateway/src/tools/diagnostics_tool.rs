@@ -61,6 +61,7 @@ use crate::push_channels::PushMounted;
 use crate::state::AppState;
 
 mod executavel;
+mod processo;
 
 /// Id da entrada `versao.executavel`, para quem aponta para ela (#1914).
 pub(crate) use executavel::ID as ID_DA_ENTRADA_DO_EXECUTAVEL;
@@ -197,7 +198,9 @@ impl Tool for GarraDiagnosticsTool {
         "Runs a read-only, structured diagnostic of THIS Garra installation by native interfaces \
          (no shell, no arbitrary file reads, no network): installed version, whether the running \
          executable and the installed file are the same build (SHA-256 of each; an unreadable \
-         side is reported as not verified, never as equal), gateway state, every \
+         side is reported as not verified, never as equal), the process (PID, start time in \
+         UTC, and the systemd unit supervising it with its user/system scope, read from the \
+         process cgroup), gateway state, every \
          channel with its state, MCP servers, available tools and capabilities, the validated \
          effective config, credential PRESENCE AND ORIGIN (e.g. \"provider X: key from the \
          credential vault\" — never a value), the last sanitized log lines, and relevant \
@@ -288,7 +291,16 @@ async fn relatorio_de_diagnostico(
     config_dir: &Path,
 ) -> Vec<Verificacao> {
     let mut v = Vec::new();
-    v.push(verificacao_versao(state.boot_time.elapsed().as_secs()));
+    let uptime_secs = state.boot_time.elapsed().as_secs();
+    v.push(verificacao_versao(uptime_secs));
+    // #1914: qual processo responde e quem o supervisiona (PID, inicio,
+    // unit systemd por escopo). Ler o cgroup e um arquivo do procfs.
+    v.push(processo::verificacao(
+        std::process::id(),
+        uptime_secs,
+        chrono::Utc::now(),
+        &processo::Cgroup::deste_processo(),
+    ));
     v.push(verificacao_gateway(
         &state.config.gateway.host,
         state.config.gateway.port,
@@ -1655,6 +1667,7 @@ mod tests {
         let esperados = [
             "versao.instalada",
             "versao.executavel",
+            "processo.servico",
             "gateway.estado",
             "canais.superficies",
             "canais.telegram",
@@ -1715,6 +1728,12 @@ mod tests {
             "ok"
         );
         assert_eq!(achar(&json, "gateway.estado").expect("g")["estado"], "ok");
+        let processo = achar(&json, "processo.servico").expect("p");
+        assert_eq!(processo["evidencia"]["pid"], std::process::id());
+        assert!(
+            processo["evidencia"]["iniciado_em"].is_string(),
+            "{processo}"
+        );
     }
 
     // ─── formato + fiação ──────────────────────────────────────────────────

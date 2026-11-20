@@ -11,6 +11,7 @@ pub mod process_hardening;
 pub mod safety_gate;
 #[cfg(feature = "ssrf")]
 pub mod ssrf;
+pub mod systemd;
 pub mod types;
 
 pub use approval_level::ApprovalLevel;
