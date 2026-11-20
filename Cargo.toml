@@ -169,6 +169,12 @@ jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_r
 # Lockfile-only again (the `"50"` requirements already admit 50.0.2); the
 # 50.0.2 tree (cranelift 0.137.2, pulley/wiggle 50.0.2) still declares rustc
 # 1.97.0, so `rust-version` and `MSRV check (1.97)` stay put.
+# 50.0.2→50.0.3 (2026-11-20): security patch — RUSTSEC-2026-0587
+# (GHSA-f2pq-268w-886c), wasmtime-wasi filesystem sandbox escape on Windows
+# through a drive-prefixed path component; published after main's CI ran, so
+# `cargo-deny` went red on every PR again. Lockfile-only (`"50"` admits
+# 50.0.3); cranelift 0.137.3 / pulley+wiggle 50.0.3 still declare rustc
+# 1.97.0, so `rust-version` and `MSRV check (1.97)` stay put.
 #
 # `cache` fica DESLIGADO (RUSTSEC-2026-0391/0395..0406/0410, zstd 0.13 / zstd-safe 7.2 /
 # zstd-sys 2.0.16, publicados em 2026-10-16): `wasmtime-internal-cache` fixa
