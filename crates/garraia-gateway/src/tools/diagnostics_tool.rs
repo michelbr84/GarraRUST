@@ -196,7 +196,9 @@ impl Tool for GarraDiagnosticsTool {
 
     fn description(&self) -> &str {
         "Runs a read-only, structured diagnostic of THIS Garra installation by native interfaces \
-         (no shell, no arbitrary file reads, no network): installed version, whether the running \
+         (no shell, no arbitrary file reads, no network): installed version with its build \
+         provenance (the CI commit and release tag baked in at compile time, or \"local\" when \
+         none was recorded), whether the running \
          executable and the installed file are the same build (SHA-256 of each; an unreadable \
          side is reported as not verified, never as equal), the process (PID, start time in \
          UTC, and the systemd unit supervising it with its user/system scope, read from the \
@@ -328,19 +330,89 @@ fn serializar(verificacoes: &[Verificacao]) -> String {
 // ─── 1. versao instalada ────────────────────────────────────────────────────
 
 fn verificacao_versao(uptime_secs: u64) -> Verificacao {
+    let build = procedencia_do_build(
+        option_env!("GITHUB_SHA"),
+        option_env!("GITHUB_REF_TYPE"),
+        option_env!("GITHUB_REF_NAME"),
+    );
+    let sufixo = match (&build.revisao, &build.tag) {
+        (Some(rev), Some(tag)) => format!(", build {tag} @ {}", &rev[..12]),
+        (Some(rev), None) => format!(", build CI @ {}", &rev[..12]),
+        _ => ", build local sem revisao registrada".to_string(),
+    };
     Verificacao::nova(
         "versao.instalada",
         EstadoDiag::Ok,
         serde_json::json!({
             "versao": env!("CARGO_PKG_VERSION"),
             "uptime_secs": uptime_secs,
+            "build": build.evidencia(),
         }),
         format!(
-            "Garra {} (uptime {}s)",
+            "Garra {} (uptime {}s{sufixo})",
             env!("CARGO_PKG_VERSION"),
             uptime_secs
         ),
     )
+}
+
+/// De onde veio ESTE binario (#1914): a versao do pacote sozinha nao separa
+/// o rc5 de um build posterior com o mesmo `0.5.2`. A revisao e a tag sao as
+/// que o GitHub Actions expoe ao `cargo build` (`GITHUB_SHA`,
+/// `GITHUB_REF_TYPE`/`GITHUB_REF_NAME`), capturadas em tempo de compilacao —
+/// e o cargo recompila quando elas mudam. Build fora do Actions nao tem
+/// nenhuma das duas: `origem: "local"` e a revisao fica AUSENTE, nunca
+/// inventada (nada de `git` no build.rs, que mentiria num checkout sujo).
+#[derive(Debug, PartialEq, Eq)]
+struct ProcedenciaDoBuild {
+    /// 40 hex minusculos, ou `None` quando ausente ou malformado.
+    revisao: Option<String>,
+    /// So quando o build rodou num push de TAG (o caso da release).
+    tag: Option<String>,
+}
+
+impl ProcedenciaDoBuild {
+    fn evidencia(&self) -> serde_json::Value {
+        match (&self.revisao, &self.tag) {
+            (Some(rev), tag) => serde_json::json!({
+                "origem": "ci",
+                "estado": "verificado",
+                "revisao": rev,
+                "tag": tag,
+            }),
+            (None, _) => serde_json::json!({
+                "origem": "local",
+                "estado": "nao_disponivel",
+                "motivo": "compilado fora do GitHub Actions: a revisao nao foi registrada no binario",
+            }),
+        }
+    }
+}
+
+fn procedencia_do_build(
+    sha: Option<&str>,
+    ref_type: Option<&str>,
+    ref_name: Option<&str>,
+) -> ProcedenciaDoBuild {
+    let revisao = sha
+        .filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase);
+    // Tag sem revisao valida nao prova nada; e o nome passa por uma lista
+    // fechada de caracteres de tag de release (`v0.5.2-rc5`).
+    let tag = revisao.as_ref().and_then(|_| {
+        (ref_type == Some("tag"))
+            .then_some(ref_name)
+            .flatten()
+            .filter(|n| {
+                !n.is_empty()
+                    && n.len() <= 64
+                    && n.bytes().all(|b| {
+                        b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+')
+                    })
+            })
+            .map(str::to_string)
+    });
+    ProcedenciaDoBuild { revisao, tag }
 }
 
 // ─── 2. estado do gateway ───────────────────────────────────────────────────
@@ -1162,6 +1234,99 @@ mod tests {
     use garraia_channels::whatsapp_linked::health::LinkHealth;
     use garraia_config::AppConfig;
 
+    // ─── procedencia do build (#1914) ──────────────────────────────────────
+
+    /// Comeca com 7+ digitos de proposito: o redator de numeros longos nao
+    /// pode mascarar o comeco de uma revisao (ele so ancora em digitos).
+    const SHA: &str = "1234567890abcdef1234567890abcdef12345678";
+
+    #[test]
+    fn build_de_release_traz_revisao_e_tag() {
+        let p = procedencia_do_build(Some(SHA), Some("tag"), Some("v0.5.2-rc5"));
+        assert_eq!(p.revisao.as_deref(), Some(SHA));
+        assert_eq!(p.tag.as_deref(), Some("v0.5.2-rc5"));
+        let e = p.evidencia();
+        assert_eq!(e["origem"], "ci");
+        assert_eq!(e["estado"], "verificado");
+    }
+
+    #[test]
+    fn build_de_branch_tem_revisao_mas_nao_finge_tag() {
+        let p = procedencia_do_build(Some(SHA), Some("branch"), Some("main"));
+        assert_eq!(p.revisao.as_deref(), Some(SHA));
+        assert_eq!(p.tag, None);
+        assert!(p.evidencia()["tag"].is_null());
+    }
+
+    #[test]
+    fn build_local_e_nao_disponivel_sem_revisao_inventada() {
+        let p = procedencia_do_build(None, None, None);
+        assert_eq!(
+            p,
+            ProcedenciaDoBuild {
+                revisao: None,
+                tag: None
+            }
+        );
+        let e = p.evidencia();
+        assert_eq!(e["origem"], "local");
+        assert_eq!(e["estado"], "nao_disponivel");
+        assert!(e.get("revisao").is_none());
+    }
+
+    #[test]
+    fn revisao_malformada_e_descartada_e_leva_a_tag_junto() {
+        for ruim in [
+            "abc",
+            "zz34567890abcdef1234567890abcdef12345678",
+            "",
+            &SHA[..39],
+        ] {
+            let p = procedencia_do_build(Some(ruim), Some("tag"), Some("v1.0.0"));
+            assert_eq!(
+                p,
+                ProcedenciaDoBuild {
+                    revisao: None,
+                    tag: None
+                },
+                "{ruim}"
+            );
+        }
+    }
+
+    #[test]
+    fn revisao_maiuscula_vira_minuscula() {
+        let p = procedencia_do_build(Some(&SHA.to_ascii_uppercase()), None, None);
+        assert_eq!(p.revisao.as_deref(), Some(SHA));
+    }
+
+    #[test]
+    fn nome_de_tag_fora_da_lista_fechada_e_descartado() {
+        for ruim in ["v1 0", "v1/../x", "", &"v".repeat(65), "v1;rm"] {
+            let p = procedencia_do_build(Some(SHA), Some("tag"), Some(ruim));
+            assert_eq!(p.tag, None, "{ruim}");
+            assert!(p.revisao.is_some());
+        }
+    }
+
+    #[test]
+    fn revisao_atravessa_o_redator_intacta() {
+        let p = procedencia_do_build(Some(SHA), Some("tag"), Some("v0.5.2"));
+        let v = Verificacao::nova("versao.instalada", EstadoDiag::Ok, p.evidencia(), "x");
+        assert_eq!(v.evidencia["revisao"], SHA, "{:?}", v.evidencia);
+    }
+
+    #[test]
+    fn versao_instalada_sempre_carrega_o_bloco_build() {
+        let v = verificacao_versao(5);
+        let build = &v.evidencia["build"];
+        assert!(
+            build["origem"] == "ci" || build["origem"] == "local",
+            "{build}"
+        );
+        assert_eq!(v.estado, EstadoDiag::Ok, "build local nao degrada a versao");
+    }
+
     fn diag_de_cadencia(rajadas: usize) -> crate::bootstrap::WhatsAppLinkedDiagDeCadencia {
         crate::bootstrap::WhatsAppLinkedDiagDeCadencia {
             turnos_ultima_hora: 12,
@@ -1300,6 +1465,7 @@ mod tests {
             "gateway",
             "versao",
             "sha256",
+            "revisao",
         ] {
             assert!(
                 !texto.contains(proibido),
