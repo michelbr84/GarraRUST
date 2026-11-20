@@ -111,7 +111,7 @@ impl Observacao {
 
 /// Motivo fechado a partir do erro de I/O — nunca o texto do erro, que pode
 /// citar caminho.
-fn motivo_do_erro(erro: &std::io::Error) -> &'static str {
+pub(super) fn motivo_do_erro(erro: &std::io::Error) -> &'static str {
     match erro.kind() {
         std::io::ErrorKind::PermissionDenied => "acesso_negado",
         std::io::ErrorKind::NotFound => "nao_encontrado",

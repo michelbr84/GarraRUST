@@ -17,9 +17,12 @@
 //! ## O que conta como prova
 //!
 //! cgroup lido e sem unit = `nenhum` (processo de terminal / `start -d`,
-//! container sem systemd): sem reinicio automatico, e isso e um fato
-//! observado. cgroup ilegivel e `nao_verificado` com motivo e sai `erro`,
-//! como toda leitura que falhou no relatorio — nunca "sem supervisor". Fora
+//! container sem systemd): nenhuma unit systemd o reinicia, e isso e fato
+//! observado. Um orquestrador de container (restart policy do Docker,
+//! Kubernetes) nao aparece no cgroup, entao o texto nao afirma que NADA
+//! reinicia o processo. cgroup ilegivel e `nao_verificado` com motivo e sai
+//! `erro`, como toda leitura que falhou no relatorio — nunca "sem
+//! supervisor". Fora
 //! do Linux nao ha systemd: `nao_suportado`. Contagem de reinicios da unit
 //! (`NRestarts`) so sai do `systemctl`/D-Bus e fica fora desta entrada.
 
@@ -49,11 +52,8 @@ impl Cgroup {
         }
         match std::fs::read_to_string("/proc/self/cgroup") {
             Ok(c) => Self::Lido(c),
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Self::NaoVerificado {
-                motivo: "acesso_negado",
-            },
-            Err(_) => Self::NaoVerificado {
-                motivo: "falha_de_leitura",
+            Err(e) => Self::NaoVerificado {
+                motivo: super::executavel::motivo_do_erro(&e),
             },
         }
     }
@@ -100,7 +100,8 @@ pub(crate) fn verificacao(
                 serde_json::json!({ "tipo": "nenhum" }),
                 format!(
                     "PID {pid}, fora de qualquer unit systemd (terminal, `start -d` ou \
-                     container): nada o reinicia se cair."
+                     container): nenhuma unit systemd o reinicia se cair (um orquestrador de container, se \
+                     houver, nao aparece no cgroup)."
                 ),
             ),
         },
@@ -193,7 +194,11 @@ mod tests {
         );
         assert_eq!(v.estado, EstadoDiag::Ok);
         assert_eq!(v.evidencia["supervisor"]["tipo"], "nenhum");
-        assert!(v.detalhe.contains("nada o reinicia"), "{}", v.detalhe);
+        assert!(
+            v.detalhe.contains("nenhuma unit systemd o reinicia"),
+            "{}",
+            v.detalhe
+        );
     }
 
     /// Leitura negada nunca vira "sem supervisor".

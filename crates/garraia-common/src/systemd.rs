@@ -3,8 +3,9 @@
 //! Parser puro de `/proc/<pid>/cgroup` mais a leitura do procfs. Mora aqui,
 //! e nao na CLI, porque tem dois consumidores: o `systemd_guard` da
 //! `garraia-cli` (recusa `garra restart` sobre uma unit) e a entrada
-//! `processo.servico` do `garra_diagnostics` no gateway — um parser so, sem
-//! coletor duplicado.
+//! `processo.servico` do `garra_diagnostics` no gateway — um parser so. O
+//! gateway le o procfs por conta propria porque precisa distinguir "leitura
+//! falhou" de "sem unit", que o `Option` de [`unidade_do_processo`] junta.
 //!
 //! A deteccao le o cgroup do processo, nunca o nome do binario: e o cgroup
 //! que diz de quem o processo e filho de verdade.
