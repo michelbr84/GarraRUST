@@ -17,7 +17,7 @@ A pergunta deste ADR é se esse critério é alcançável antes do prazo, e por 
 
 - `chrono` é dependência direta de 9 crates: `agents`, `auth`, `channels`, `cli`, `common`, `db`, `gateway`, `hardware` (opcional, feature `automations`) e `workspace`. O `garraia-media` não a declara, mas liga a feature `chrono` do `lopdf`. `chrono-tz` é direta de `db` e `workspace`.
 - 100 arquivos `.rs` mencionam `chrono` (17 deles em `tests/`); 58 só no `garraia-gateway`.
-- O uso é estreito: `Utc::now` (104 ocorrências), `DateTime<Utc>`, `DateTime::from_timestamp` (28), `parse_from_rfc3339` (10), `to_rfc3339_opts(SecondsFormat::Secs, …)` (12), `Duration::{seconds,days,hours,minutes}`. Fuso horário (`chrono_tz`) aparece só nos dois `recurrence.rs` (`garraia-db` e `garraia-workspace`, ADR 0013).
+- O uso é estreito em variedade, não em volume (ocorrências em `crates/`, qualificadas ou via `use`): `Utc::now` (216), `DateTime<Utc>`, `DateTime::from_timestamp` (46), `parse_from_rfc3339` (18), `to_rfc3339_opts(SecondsFormat::Secs, …)` (14), `Duration::{seconds,days,hours,minutes}`. Fuso horário (`chrono_tz`) aparece só nos dois `recurrence.rs` (`garraia-db` e `garraia-workspace`, ADR 0013).
 - 29 arquivos usam `DateTime<Utc>` junto com `sqlx` — o tipo atravessa a fronteira do Postgres (`TIMESTAMPTZ`) em `FromRow`/`bind`.
 - 22 arquivos do gateway usam `DateTime` em tipos com `utoipa` (feature `chrono` do `utoipa` no `Cargo.toml` do gateway).
 
@@ -26,7 +26,7 @@ A pergunta deste ADR é se esse critério é alcançável antes do prazo, e por 
 | Crate | Como puxa | Dá para desligar? |
 | --- | --- | --- |
 | `teloxide-core 0.13.0` (Telegram) | dependência **obrigatória**; 40 arquivos do fonte usam `chrono` | **Não.** 0.13.0 é a última no crates.io |
-| `rmcp 3.9.0` (MCP) | `schemars` com feature `chrono04` sempre que `schemars` está ligado, e `server` (default) liga `schemars` | **Não** na 3.9. A 3.11.0 existe e não foi inspecionada a fundo |
+| `rmcp 3.9.0` (MCP) | dependência **direta e obrigatória** em todos os alvos (`Cargo.toml:991` wasm e `:1001` não-wasm, sem `optional`); além disso `schemars` com `chrono04` | **Não.** A 3.11.0 mantém os mesmos dois blocos obrigatórios (`:1060`, `:1070`) e o `chrono04` |
 | `rrule 0.14.0` (recorrência do workspace) | `chrono` **e** `chrono-tz` obrigatórios, expostos na API | **Não.** 0.14.0 é a última |
 | `sqlx 0.9.1` | feature `chrono` que nós ligamos | Sim, trocando por `time`. O `sqlx-postgres 0.9.1` tem módulos `chrono` e `time` e **não tem `jiff`** |
 | `croner 4.0.3` | feature `chrono` default | Sim: tem feature `jiff` |
@@ -52,7 +52,7 @@ Mesmo migrando 100% do nosso código, **`chrono` continua no `Cargo.lock` por `t
 | Fuso horário (substituto do `chrono-tz`) | Embutido (tzdb) | Não tem; exige outro crate (`time-tz`/`tzdb`) | `chrono-tz` (unmaintained) |
 | Cron (`croner`) | Feature `jiff` pronta | Não suportado pelo `croner 4` | Atual |
 | `rrule` | Não suporta; continua exigindo `chrono` na fronteira | Idem | Atual |
-| Já no `Cargo.lock` | Sim (0.2.28, via `lopdf`); a 1.0.1 já saiu | Sim (0.3.47, via `bollard`, `serenity`, `tracing-appender`…) | Sim |
+| Já no `Cargo.lock` | Sim (0.2.28, via `lopdf` e `serde_with`); a 1.0.1 já saiu | Sim (0.3.47, via `bollard`, `serenity`, `tracing-appender`…) | Sim |
 | Tamanho da troca | ~100 arquivos + adaptador `sqlx` | ~100 arquivos + crate de tz | Zero |
 
 Nenhum alvo cobre tudo sozinho: `jiff` resolve fuso e cron mas não tem `sqlx`; `time` resolve `sqlx` mas não tem fuso nem cron.
@@ -66,10 +66,10 @@ Nenhum alvo cobre tudo sozinho: `jiff` resolve fuso e cron mas não tem `sqlx`; 
 ## Decisão proposta
 
 1. **Renovar a exceção com prazo, com esta evidência no `reason`** — por exemplo `EXPIRA 2027-06-30` —, mantendo o gate `scripts/security/check_deny_exceptions_expiry.py` e a regra da D27 de reavaliar a cada release upstream. Isso é decisão do dono (R5, exceção de segurança) e **não** é feito neste ADR.
-2. **Não migrar o nosso código agora.** Migrar ~100 arquivos sem tirar o `chrono` do grafo troca risco de regressão em auth/timestamps de auditoria/JWT por ganho nenhum no critério da #1938. A migração só passa a valer quando ao menos `teloxide-core` e `rmcp` tiverem saída.
-3. **Reduzir já a superfície que só nós escolhemos**, em PRs pequenas e independentes, sem trocar tipos públicos: desligar a feature `chrono` do `lopdf` (já usa `jiff`), avaliar a do `poise`/`serenity` e preferir `croner` com `jiff` se a troca ficar restrita a `garraia-hardware`/`garraia-db`. Cada uma remove arestas do grafo, não o pacote.
+2. **Não migrar o nosso código agora.** Migrar ~100 arquivos (centenas de call sites) sem tirar o `chrono` do grafo troca risco de regressão em auth/timestamps de auditoria/JWT por ganho nenhum no critério da #1938. A migração só passa a valer quando ao menos `teloxide-core` e `rmcp` tiverem saída.
+3. **Reduzir já a superfície que só nós escolhemos**, em PRs pequenas e independentes, sem trocar tipos públicos: desligar a feature `chrono` do `lopdf` (já usa `jiff`), avaliar a do `poise`/`serenity` e preferir `croner` com `jiff` se a troca ficar restrita a `garraia-hardware`/`garraia-db` — a feature `jiff` do `croner 4.0.3` exige `jiff >= 0.2.35` e o lock está em 0.2.28, então essa PR leva junto um bump do `jiff`. Cada uma remove arestas do grafo, não o pacote.
 4. **Quando a migração vier, alvo `jiff`** com um newtype único na fronteira do `sqlx` (um módulo em `garraia-common`, testado contra `TIMESTAMPTZ` real), porque fuso e cron — as partes difíceis — já estão prontos nele, e o `chrono-tz` sai junto. `time` exigiria um segundo crate de fuso e não serve ao `croner`.
-5. **Monitorar** `teloxide-core`, `rmcp` (começando pela 3.11, que não foi inspecionada aqui) e `rrule` a cada sonda de dependências, registrando na #1938.
+5. **Monitorar** `teloxide-core`, `rmcp` (a 3.11.0 ainda exige `chrono`) e `rrule` a cada sonda de dependências, registrando na #1938.
 
 ## Consequências
 
