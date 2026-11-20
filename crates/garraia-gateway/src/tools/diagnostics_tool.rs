@@ -9,7 +9,11 @@
 //!
 //! ## Formato de saida
 //!
-//! `{"verificacoes": [{id, estado, evidencia, detalhe}]}`, com `estado`:
+//! `{"observado_em", "verificacoes": [{id, estado, evidencia, detalhe}]}`.
+//! `observado_em` e o instante (UTC ISO 8601 com `Z`, truncado no segundo)
+//! em que ESTA coleta comecou — o "quando" de toda observacao do relatorio,
+//! que e o que permite comparar dois relatorios antes/depois de um update
+//! (#1914). A recusa nao o carrega: ela continua o minimo absoluto. `estado`:
 //!
 //! | estado | significa |
 //! |---|---|
@@ -207,7 +211,8 @@ impl Tool for GarraDiagnosticsTool {
          effective config, credential PRESENCE AND ORIGIN (e.g. \"provider X: key from the \
          credential vault\" — never a value), the last sanitized log lines, and relevant \
          components (WhatsApp Node bridge, database reachability). Output is JSON: \
-         `{\"verificacoes\": [{id, estado, evidencia, detalhe}]}` with `estado` in \
+         `{\"observado_em\", \"verificacoes\": [{id, estado, evidencia, detalhe}]}` where \
+         `observado_em` is when this collection started (UTC, ISO 8601 with Z) and `estado` is in \
          {ok, erro, nao_configurado, bloqueado, degradado, nao_suportado}. Operator-only and \
          fail-closed: any session that is not provably the operator's gets a single refusal entry \
          and nothing else. Takes no input. Use it when the user asks how this Garra is installed, \
@@ -234,12 +239,17 @@ impl Tool for GarraDiagnosticsTool {
         let restrito = garraia_agents::tools::turn_tools::turno_restrito().unwrap_or(true);
         let operador = crate::channels_view::sessao_do_operador(&state, &ctx.session_id).await;
         if restrito || !operador {
-            return Ok(ToolOutput::success(serializar(&[acesso_negado(
-                restrito, operador,
-            )])));
+            return Ok(ToolOutput::success(serializar(
+                &[acesso_negado(restrito, operador)],
+                None,
+            )));
         }
 
-        let mut verificacoes = relatorio_de_diagnostico(&state, self.push, &self.config_dir).await;
+        // #1914: um relogio so para a coleta inteira — o `observado_em` do
+        // relatorio e o "agora" de onde `processo.servico` deriva o inicio.
+        let observado_em = chrono::Utc::now();
+        let mut verificacoes =
+            relatorio_de_diagnostico(&state, self.push, &self.config_dir, observado_em).await;
         // #1914: logo depois de `versao.instalada`. Ler o binario inteiro e
         // I/O bloqueante de dezenas de MB — fora do executor async.
         let fonte = self.executavel.clone();
@@ -262,7 +272,10 @@ impl Tool for GarraDiagnosticsTool {
             .position(|v| v.id == "versao.instalada")
             .map_or(0, |i| i + 1);
         verificacoes.insert(posicao, entrada);
-        Ok(ToolOutput::success(serializar(&verificacoes)))
+        Ok(ToolOutput::success(serializar(
+            &verificacoes,
+            Some(observado_em),
+        )))
     }
 }
 
@@ -291,6 +304,7 @@ async fn relatorio_de_diagnostico(
     state: &AppState,
     push: PushMounted,
     config_dir: &Path,
+    agora: chrono::DateTime<chrono::Utc>,
 ) -> Vec<Verificacao> {
     let mut v = Vec::new();
     let uptime_secs = state.boot_time.elapsed().as_secs();
@@ -300,7 +314,7 @@ async fn relatorio_de_diagnostico(
     v.push(processo::verificacao(
         std::process::id(),
         uptime_secs,
-        chrono::Utc::now(),
+        agora,
         &processo::Cgroup::deste_processo(),
     ));
     v.push(verificacao_gateway(
@@ -322,8 +336,19 @@ async fn relatorio_de_diagnostico(
     v
 }
 
-fn serializar(verificacoes: &[Verificacao]) -> String {
-    let relatorio = serde_json::json!({ "verificacoes": verificacoes });
+/// `observado_em` so existe no relatorio do operador; a recusa passa `None`
+/// e sai com a unica chave `verificacoes` (#1914).
+fn serializar(
+    verificacoes: &[Verificacao],
+    observado_em: Option<chrono::DateTime<chrono::Utc>>,
+) -> String {
+    let relatorio = match observado_em {
+        Some(t) => serde_json::json!({
+            "observado_em": t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "verificacoes": verificacoes,
+        }),
+        None => serde_json::json!({ "verificacoes": verificacoes }),
+    };
     serde_json::to_string_pretty(&relatorio).unwrap_or_else(|_| relatorio.to_string())
 }
 
@@ -1453,6 +1478,9 @@ mod tests {
     fn assert_minimo_absoluto(json: &serde_json::Value, texto: &str) {
         let lista = verificacoes(json);
         assert_eq!(lista.len(), 1, "recusa so pode ter UMA entrada: {json}");
+        // Nem o instante da coleta: a recusa nao coletou nada (#1914).
+        let chaves: Vec<&String> = json.as_object().expect("objeto").keys().collect();
+        assert_eq!(chaves, ["verificacoes"], "{json}");
         assert_eq!(lista[0]["id"], "acesso", "{json}");
         assert_eq!(lista[0]["estado"], "bloqueado", "{json}");
         for proibido in [
@@ -1536,6 +1564,46 @@ mod tests {
         assert!(achar(&json, "versao.instalada").is_some());
         assert!(achar(&json, "config.efetiva").is_some());
         assert!(achar(&json, "logs.recentes").is_some());
+    }
+
+    /// #1914: o relatorio diz QUANDO foi observado, em UTC com `Z`, e e o
+    /// mesmo instante de onde `processo.servico` deriva o inicio.
+    #[tokio::test]
+    async fn relatorio_do_operador_diz_quando_foi_observado() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state(dir.path());
+        sessao_do_web(&st, "sessao-web").await;
+        let tool = tool(&st, dir.path());
+        let antes = chrono::Utc::now() - chrono::Duration::seconds(1);
+        let (json, _) = executar(&tool, &ctx_na_sessao("sessao-web")).await;
+        let depois = chrono::Utc::now();
+
+        let texto = json["observado_em"].as_str().expect("observado_em e texto");
+        assert!(texto.ends_with('Z'), "{texto}");
+        let t = chrono::DateTime::parse_from_rfc3339(texto)
+            .expect("rfc3339")
+            .with_timezone(&chrono::Utc);
+        assert!(
+            antes <= t && t <= depois,
+            "{texto} fora de [{antes}, {depois}]"
+        );
+
+        // Mesmo relogio: inicio = observado_em - uptime, exato no segundo.
+        let processo = achar(&json, "processo.servico").expect("processo");
+        let uptime = processo["evidencia"]["uptime_secs"]
+            .as_i64()
+            .expect("uptime");
+        let inicio = chrono::DateTime::parse_from_rfc3339(
+            processo["evidencia"]["iniciado_em"]
+                .as_str()
+                .expect("inicio"),
+        )
+        .expect("rfc3339")
+        .with_timezone(&chrono::Utc);
+        let derivado = t - chrono::Duration::seconds(uptime);
+        // Os dois truncam o mesmo `agora` no segundo e o uptime e inteiro:
+        // um relogio separado em cada entrada poderia divergir em 1 s.
+        assert_eq!(inicio, derivado, "inicio vs observado_em - uptime");
     }
 
     // ─── sanitizacao (segredos plantados) ──────────────────────────────────
