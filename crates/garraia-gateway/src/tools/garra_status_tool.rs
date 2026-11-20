@@ -89,16 +89,39 @@ const UPSTREAM_RELEASES_ALL_API: &str =
 ///   `0.5.2`. Por isso o relatorio NAO deriva canal (estavel/RC) da versao —
 ///   diria "estavel" para um RC.
 ///
-/// Constante e secret-free: nao interpola nada do estado nem da sessao.
+/// A rota que identifica o build (SHA-256 do executavel) e do
+/// `garra_diagnostics`, que e operator-only e fail-closed: so o relatorio
+/// ABERTO a aponta; o restrito diz que a verificacao nao esta disponivel
+/// aqui, em vez de mandar o modelo chamar uma tool que so devolve recusa.
+/// Nome da tool e id da entrada vem das fontes unicas, nao de literal.
+///
+/// Secret-free: so constantes; nao interpola estado, config nem sessao.
 const SENTIDO_DE_UPSTREAM: &str = "`releases_api` (GitHub /releases/latest) returns only the \
 newest STABLE release; release candidates never appear there. `releases_all_api` lists every \
 release, release candidates included, newest first. `version` cannot tell a release \
 candidate from the stable release: every vX.Y.Z-rcN and the final vX.Y.Z are built with the \
 same version X.Y.Z, and a local build of the same commit reports it too. So never say this \
 Garra is a release candidate, the stable release or an official build from `version` alone; \
-say it is unverified. To identify the build, compare the SHA-256 of the running executable \
-(`garra_diagnostics`, entry `versao.executavel`) with the `.sha256` asset of the candidate \
-release in `releases_all_api`.";
+say it is unverified.";
+
+/// O bloco `means` do `upstream`, com a rota de verificacao so no aberto.
+fn sentido_de_upstream(restrito: bool) -> String {
+    if restrito {
+        format!(
+            "{SENTIDO_DE_UPSTREAM} Verifying which build this is is an operator-only check \
+             that is not available in this conversation."
+        )
+    } else {
+        format!(
+            "{SENTIDO_DE_UPSTREAM} To identify the build, call `{tool}` (operator-only) and \
+             read the entry `{entrada}`: compare its SHA-256 with the `.sha256` asset of the \
+             candidate release in `releases_all_api` — the running executable's hash where the \
+             platform exposes it (Linux/Android), otherwise only the installed file's.",
+            tool = garraia_agents::runtime::GARRA_DIAGNOSTICS_TOOL_NAME,
+            entrada = crate::tools::diagnostics_tool::ID_DA_ENTRADA_DO_EXECUTAVEL,
+        )
+    }
+}
 
 /// Os campos que um turno restrito nao recebe, na ordem em que aparecem em
 /// `withheld`.
@@ -527,7 +550,7 @@ impl Tool for GarraStatusTool {
                 "repo": UPSTREAM_REPO,
                 "releases_api": UPSTREAM_RELEASES_API,
                 "releases_all_api": UPSTREAM_RELEASES_ALL_API,
-                "means": SENTIDO_DE_UPSTREAM,
+                "means": sentido_de_upstream(restrito),
             },
             "uptime_secs": state.boot_time.elapsed().as_secs(),
             "provider": provider,
@@ -1412,9 +1435,18 @@ mod tests {
         assert_eq!(up["releases_all_api"], UPSTREAM_RELEASES_ALL_API);
         assert!(UPSTREAM_RELEASES_ALL_API.ends_with("/releases"));
         assert!(UPSTREAM_RELEASES_ALL_API.contains(UPSTREAM_REPO));
-        assert_eq!(up["means"], SENTIDO_DE_UPSTREAM);
+        // O relatorio de `ctx(None)` sem prova do operador sai restrito.
+        let foi_restrito = !json["withheld"].as_array().expect("lista").is_empty();
+        assert_eq!(up["means"], sentido_de_upstream(foi_restrito));
         assert!(SENTIDO_DE_UPSTREAM.contains("STABLE"));
-        assert!(SENTIDO_DE_UPSTREAM.contains("versao.executavel"));
+        let aberto = sentido_de_upstream(false);
+        assert!(aberto.contains("`garra_diagnostics`"), "{aberto}");
+        assert!(aberto.contains("`versao.executavel`"), "{aberto}");
+        // O restrito nao manda chamar uma tool que so devolveria recusa.
+        let restrito = sentido_de_upstream(true);
+        assert!(restrito.starts_with(SENTIDO_DE_UPSTREAM));
+        assert!(!restrito.contains("garra_diagnostics"), "{restrito}");
+        assert!(!restrito.contains("versao.executavel"), "{restrito}");
         assert!(up.get("release_channel").is_none(), "{up}");
         let mut chaves: Vec<&str> = up
             .as_object()
@@ -1535,8 +1567,9 @@ mod tests {
         let (json2, texto2) = relatorio_no_turno(&tool(&st), &ctx, false).await;
         assert_eq!(json2["version"], versao_curta(), "{json2}");
         assert!(e_restrito(&json2, &texto2), "{json2}");
-        // O aviso do `upstream` e constante: sai igual no turno restrito.
-        assert_eq!(json2["upstream"]["means"], SENTIDO_DE_UPSTREAM);
+        // No turno restrito o aviso fica, sem a rota operator-only.
+        assert_eq!(json2["upstream"]["means"], sentido_de_upstream(true));
+        assert_eq!(json["upstream"]["means"], sentido_de_upstream(false));
     }
 
     /// #1910 (o RED da main, migrado): a autoridade do relatorio aberto nao

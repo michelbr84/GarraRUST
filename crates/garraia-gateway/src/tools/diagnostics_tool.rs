@@ -62,6 +62,9 @@ use crate::state::AppState;
 
 mod executavel;
 
+/// Id da entrada `versao.executavel`, para quem aponta para ela (#1914).
+pub(crate) use executavel::ID as ID_DA_ENTRADA_DO_EXECUTAVEL;
+
 /// Quantas linhas do fim do `garraia.log` o relatorio amostra. Limitado de
 /// proposito: o log cresce sem rotacao e o relatorio viaja dentro de um turno.
 pub(crate) const ULTIMAS_LINHAS_DE_LOG: usize = 40;

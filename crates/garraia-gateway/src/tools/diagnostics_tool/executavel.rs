@@ -177,6 +177,10 @@ pub(crate) fn observar(
     (carregado, instalado)
 }
 
+/// Id da entrada no relatorio. Fonte unica: o `garra_status` aponta para ela
+/// pelo nome (#1914), entao renomear aqui renomeia la.
+pub(crate) const ID: &str = "versao.executavel";
+
 /// A entrada `versao.executavel` do relatorio.
 pub(crate) fn verificacao(carregado: &Observacao, instalado: &Observacao) -> Verificacao {
     let iguais = match (carregado.sha256(), instalado.sha256()) {
@@ -212,7 +216,7 @@ pub(crate) fn verificacao(carregado: &Observacao, instalado: &Observacao) -> Ver
         ),
     };
     Verificacao::nova(
-        "versao.executavel",
+        ID,
         estado,
         serde_json::json!({
             "carregado": carregado.evidencia(),

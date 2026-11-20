@@ -3,6 +3,7 @@
   no proprio relatorio que `/releases/latest` so devolve a estavel mais nova
   e que a `version` nao distingue RC de estavel (os RCs saem com a versao
   pura do Cargo, `0.5.2` do rc1 ao final) nem build local de oficial. O
-  relatorio nao deriva canal da versao; para identificar o build, aponta o
-  SHA-256 do executavel em `garra_diagnostics` (`versao.executavel`) contra
-  o `.sha256` da release candidata.
+  relatorio nao deriva canal da versao. No relatorio aberto, aponta o
+  SHA-256 de `garra_diagnostics` (`versao.executavel`, operator-only) contra
+  o `.sha256` da release candidata; no restrito, diz so que a verificacao e
+  do operador e nao esta disponivel ali.
