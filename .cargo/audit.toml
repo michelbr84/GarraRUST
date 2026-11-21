@@ -188,14 +188,6 @@ ignore = [
     "RUSTSEC-2026-0371",
     "RUSTSEC-2026-0372",
 
-    # --- webpki-roots 0.26.11 (RUSTSEC-2026-0381) — falso positivo do shim ---
-    # 0.26.11 nao carrega raizes proprias: e um shim que reexporta webpki-roots
-    # 1.0.x (Cargo.lock: depende de `webpki-roots 1.0.10`, que remove a raiz
-    # emSign afetada). Nao existe 0.26.x corrigido; tokio-tungstenite 0.29 e 0.30
-    # ainda o puxam. Remover quando o tokio-tungstenite migrar para 1.0.x.
-    # EXPIRA 2026-12-31 (espelho do deny.toml, renovado 2026-10-30). Acompanhamento: #1667.
-    "RUSTSEC-2026-0381",
-
     # --- astral-tokio-tar 0.6.2 (RUSTSEC-2026-0440) — unmaintained, dev-only ---
     # Espelho do deny.toml: via testcontainers (apenas testes de integracao).
     # EXPIRA 2026-12-31. Acompanhamento: #1667.
