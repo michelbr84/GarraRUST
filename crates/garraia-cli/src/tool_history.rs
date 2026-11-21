@@ -136,8 +136,9 @@ impl ToolTrail {
                     // #1915: o runtime fecha com `Cancelada` a chamada cujo
                     // turno caiu no meio. Para o historico e a mesma coisa que
                     // o `fim_do_turno` faz com uma chamada ainda aberta: sem
-                    // resultado observado, nunca erro nem sucesso.
-                    if *outcome == garraia_agents::DesfechoDaChamada::Cancelada {
+                    // resultado observado, nunca erro nem sucesso. O mesmo
+                    // predicado decide o ledger de evidencia do runtime.
+                    if !outcome.resultado_observado() {
                         r.marcar_interrompida();
                     } else {
                         r.status = if *success { Status::Ok } else { Status::Error };

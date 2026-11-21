@@ -32,7 +32,7 @@
 //! contra o ledger do runtime. A alegação e a evidência são tipos distintos: a
 //! primeira não prova o resultado, e somente o ledger é a fonte do resultado real.
 
-use crate::turn_events::{DesfechoDaChamada, TurnEvent};
+use crate::turn_events::TurnEvent;
 
 /// A classe de confiança de uma afirmação sobre um efeito/estado observável.
 ///
@@ -247,25 +247,27 @@ impl AlegacaoOperacional {
 /// forma, `ToolStarted` sozinho é início, não resultado: a evidência de
 /// sucesso/falha nasce do `ToolFinished`.
 ///
-/// Um `ToolFinished` com [`DesfechoDaChamada::Cancelada`] também devolve `None`:
-/// o turno caiu com a chamada em andamento e o resultado **não foi observado**
-/// (#1915). Registrá-lo como `success: false` transformaria ausência de
-/// evidência em evidência de falha — e [`detect_divergencia`] acusaria de
-/// contradição uma alegação de sucesso que o ledger não tem como desmentir.
-/// É a mesma regra da CLI, que projeta a chamada interrompida como
-/// `nao_verificado`.
+/// Um `ToolFinished` cujo desfecho não tem resultado observado
+/// ([`crate::turn_events::DesfechoDaChamada::resultado_observado`] — hoje só
+/// [`crate::turn_events::DesfechoDaChamada::Cancelada`]) também devolve `None`: o turno caiu com a
+/// chamada em andamento e o fim **não foi visto** (#1915). Registrá-lo como
+/// `success: false` transformaria ausência de evidência em evidência de falha —
+/// e [`detect_divergencia`] acusaria de contradição uma alegação de sucesso que
+/// o ledger não tem como desmentir. É a mesma regra da CLI, que projeta a
+/// chamada interrompida como `nao_verificado`.
+///
+/// O `success` da evidência sai do `outcome`, a mesma fonte que decide se há
+/// evidência: o campo `success` do evento é derivado dele em
+/// [`crate::turn_events::TurnSink::tool_finished`], então ler os dois do mesmo
+/// lugar elimina a fonte dupla.
 pub fn evidence_from_event(event: &TurnEvent, turno: u32, ordem: u32) -> Option<EvidenceRef> {
     match event {
         TurnEvent::ToolFinished {
-            outcome: DesfechoDaChamada::Cancelada,
-            ..
-        } => None,
-        TurnEvent::ToolFinished {
-            id, name, success, ..
-        } => Some(EvidenceRef {
+            id, name, outcome, ..
+        } => outcome.resultado_observado().then(|| EvidenceRef {
             tool_call_id: id.clone(),
             tool_name: name.clone(),
-            success: *success,
+            success: outcome.e_sucesso(),
             turno,
             ordem,
         }),
@@ -404,265 +406,8 @@ pub fn detect_divergencia(alegacao: &AlegacaoOperacional, ledger: &[EvidenceRef]
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    fn ev(id: &str, name: &str, success: bool) -> EvidenceRef {
-        EvidenceRef {
-            tool_call_id: id.into(),
-            tool_name: name.into(),
-            success,
-            turno: 1,
-            ordem: 1,
-        }
-    }
-
-    #[test]
-    fn observado_exige_evidencia() {
-        let c = Claim::observada("escrevi pagina.html", ev("c1", "file_write", true));
-        assert_eq!(c.status, VerificationStatus::Observado);
-        assert!(c.validar().is_ok());
-        assert!(c.evidencia.as_ref().unwrap().success);
-    }
-
-    #[test]
-    fn ausencia_de_evidencia_nao_vira_falha_nem_ausencia() {
-        // Sem registro, a classe é NaoVerificado — nunca "não aconteceu".
-        let c = Claim::nao_verificada("não consigo confirmar se escrevi o arquivo");
-        assert_eq!(c.status, VerificationStatus::NaoVerificado);
-        assert!(c.evidencia.is_none());
-        assert!(c.validar().is_ok());
-        // E não é `Falhou` nem `Observado`.
-        assert_ne!(c.status, VerificationStatus::Falhou);
-        assert_ne!(c.status, VerificationStatus::Observado);
-    }
-
-    #[test]
-    fn falha_carrega_mecanismo_e_nao_e_sucesso() {
-        let c = Claim::falhou("file_write bloqueado", ev("c2", "file_write", false));
-        assert_eq!(c.status, VerificationStatus::Falhou);
-        assert!(c.validar().is_ok());
-        assert!(!c.evidencia.as_ref().unwrap().success);
-    }
-
-    #[test]
-    fn observado_sem_evidencia_e_invalido() {
-        let mut c = Claim::inferida("qualquer");
-        c.status = VerificationStatus::Observado; // tentativa inválida
-        assert_eq!(c.validar(), Err(ClaimError::ObservadoSemEvidencia));
-    }
-
-    #[test]
-    fn inferido_e_relatado_nao_podem_carregar_evidencia() {
-        let mut c = Claim::inferida("parece que");
-        c.evidencia = Some(ev("c3", "file_read", true));
-        assert_eq!(c.validar(), Err(ClaimError::EvidenciaEmClasseSemEvidencia));
-
-        let mut r = Claim::relatada("o usuário disse");
-        r.evidencia = Some(ev("c4", "file_read", true));
-        assert_eq!(r.validar(), Err(ClaimError::EvidenciaEmClasseSemEvidencia));
-    }
-
-    #[test]
-    fn texto_do_modelo_nao_e_evidencia() {
-        // TextDelta não prova ação; ToolStarted sozinho não prova resultado.
-        assert!(evidence_from_event(&TurnEvent::TextDelta("x".into()), 1, 1).is_none());
-        let started = TurnEvent::ToolStarted {
-            id: "c5".into(),
-            name: "file_write".into(),
-            detail: String::new(),
-            input: serde_json::Value::Null,
-        };
-        assert!(evidence_from_event(&started, 1, 1).is_none());
-
-        let finished = TurnEvent::ToolFinished {
-            id: "c5".into(),
-            name: "file_write".into(),
-            duration: Duration::from_millis(3),
-            success: true,
-            outcome: crate::turn_events::DesfechoDaChamada::Sucesso,
-            summary: "ok".into(),
-            output: String::new(),
-        };
-        let e = evidence_from_event(&finished, 1, 1).expect("ToolFinished produz evidência");
-        assert_eq!(e.tool_call_id, "c5");
-        assert!(e.success);
-    }
-
-    #[test]
-    fn chamada_cancelada_nao_vira_evidencia_de_falha() {
-        // #1915: o turno caiu com a chamada em andamento. O resultado não foi
-        // observado — ausência de evidência, não evidência de falha.
-        let cancelada = TurnEvent::ToolFinished {
-            id: "c9".into(),
-            name: "bash".into(),
-            duration: Duration::from_millis(40),
-            success: false,
-            outcome: crate::turn_events::DesfechoDaChamada::Cancelada,
-            summary: "cancelada".into(),
-            output: String::new(),
-        };
-        assert!(evidence_from_event(&cancelada, 2, 1).is_none());
-
-        // Sem entrada no ledger, a alegação de sucesso fica desconhecida em
-        // vez de ser acusada de contradizer uma "falha" que não aconteceu.
-        let ledger: Vec<EvidenceRef> = evidence_from_event(&cancelada, 2, 1).into_iter().collect();
-        let alegacao = AlegacaoOperacional::sucesso("c9", "bash");
-        assert_eq!(
-            detect_divergencia(&alegacao, &ledger),
-            Divergencia::SemEvidenciaNoLedger
-        );
-
-        // Os demais desfechos sem sucesso continuam sendo falha registrada.
-        for outcome in crate::turn_events::DesfechoDaChamada::TODOS {
-            if matches!(
-                outcome,
-                crate::turn_events::DesfechoDaChamada::Sucesso
-                    | crate::turn_events::DesfechoDaChamada::Cancelada
-            ) {
-                continue;
-            }
-            let ev = TurnEvent::ToolFinished {
-                id: "c10".into(),
-                name: "bash".into(),
-                duration: Duration::from_millis(1),
-                success: outcome.e_sucesso(),
-                outcome,
-                summary: String::new(),
-                output: String::new(),
-            };
-            let e = evidence_from_event(&ev, 1, 1).expect("desfecho observado vira evidência");
-            assert!(!e.success, "{outcome:?} não é sucesso");
-        }
-    }
-
-    #[test]
-    fn tabela_das_cinco_classes_tem_nome_estavel() {
-        let esperado = [
-            (VerificationStatus::Observado, "observado"),
-            (VerificationStatus::Inferido, "inferido"),
-            (VerificationStatus::Relatado, "relatado"),
-            (VerificationStatus::NaoVerificado, "nao_verificado"),
-            (VerificationStatus::Falhou, "falhou"),
-        ];
-        for (status, nome) in esperado {
-            assert_eq!(status.as_str(), nome);
-        }
-    }
-
-    // ─── Fatia 2: projeção de superfície ─────────────────────────────────
-
-    #[test]
-    fn surface_summary_projeta_classe_e_referencia() {
-        let claims = vec![
-            Claim::observada("escrevi pagina.html", ev("c1", "file_write", true)),
-            Claim::nao_verificada("não sei se editei TESTE.md"),
-            Claim::falhou("file_write bloqueado", ev("c2", "file_write", false)),
-        ];
-        let s = SurfaceSummary::de_claims(&claims);
-        assert_eq!(s.len(), 3);
-        let linhas = s.para_exibicao();
-        // Observado: classe + ferramenta + id da execução.
-        assert!(linhas[0].contains("[observado]"));
-        assert!(linhas[0].contains("file_write"));
-        assert!(linhas[0].contains("#c1"));
-        // NaoVerificado: sem execução comprovada — nunca "não aconteceu".
-        assert!(linhas[1].contains("[nao_verificado]"));
-        assert!(linhas[1].contains("sem execucao comprovada"));
-        // Falhou: classe + ferramenta + id, para o mecanismo ser rastreável.
-        assert!(linhas[2].contains("[falhou]"));
-        assert!(linhas[2].contains("#c2"));
-    }
-
-    #[test]
-    fn surface_summary_nao_expoem_payload_nem_caminho() {
-        // O texto da afirmação é o que o modelo disse; o sumário não deve
-        // acrescentar nada que não esteja na Claim.
-        let c = Claim::observada("escrevi pagina.html", ev("c1", "file_write", true));
-        let s = SurfaceSummary::de_claims(&[c]);
-        let linha = &s.para_exibicao()[0];
-        assert!(!linha.contains("/home/"));
-        assert!(!linha.contains("output"));
-        assert!(!linha.contains("input"));
-    }
-
-    #[test]
-    fn surface_summary_vazia_e_is_empty() {
-        let s = SurfaceSummary::de_claims(&[]);
-        assert!(s.is_empty());
-        assert_eq!(s.len(), 0);
-        assert!(s.para_exibicao().is_empty());
-    }
-
-    // ─── Fatia 2: detecção de divergência ────────────────────────────────
-
-    #[test]
-    fn divergencia_sustentada_quando_ledger_confirma() {
-        let alegacao = AlegacaoOperacional::sucesso("c1", "file_write");
-        let ledger = vec![ev("c1", "file_write", true)];
-        assert_eq!(
-            detect_divergencia(&alegacao, &ledger),
-            Divergencia::Sustentada
-        );
-    }
-
-    #[test]
-    fn divergencia_quando_modelo_afirma_sucesso_mas_ledger_falhou() {
-        let alegacao = AlegacaoOperacional::sucesso("c1", "file_write");
-        let ledger = vec![ev("c1", "file_write", false)];
-        assert_eq!(
-            detect_divergencia(&alegacao, &ledger),
-            Divergencia::AfirmaSucessoMasLedgerFalhou {
-                tool_call_id: "c1".into(),
-                tool_name: "file_write".into(),
-            }
-        );
-    }
-
-    #[test]
-    fn divergencia_sem_correspondencia_no_ledger_permanece_desconhecida() {
-        let alegacao = AlegacaoOperacional::sucesso("c9", "file_write");
-        let ledger = vec![ev("c1", "file_write", true)];
-        assert_eq!(
-            detect_divergencia(&alegacao, &ledger),
-            Divergencia::SemEvidenciaNoLedger
-        );
-    }
-
-    #[test]
-    fn polaridade_nao_classificada_permanece_desconhecida() {
-        let alegacao = AlegacaoOperacional::sem_polaridade("c1", "file_write");
-        let ledger = vec![ev("c1", "file_write", true)];
-        assert_eq!(
-            detect_divergencia(&alegacao, &ledger),
-            Divergencia::SemEvidenciaNoLedger
-        );
-    }
-
-    #[test]
-    fn alegacao_de_falha_bate_com_falha_do_ledger() {
-        let alegacao = AlegacaoOperacional::falha("c1", "file_write");
-        let ledger = vec![ev("c1", "file_write", false)];
-        assert_eq!(
-            detect_divergencia(&alegacao, &ledger),
-            Divergencia::Sustentada
-        );
-    }
-
-    #[test]
-    fn divergencia_quando_modelo_afirma_falha_mas_ledger_confirma_sucesso() {
-        let alegacao = AlegacaoOperacional::falha("c1", "file_write");
-        let ledger = vec![ev("c1", "file_write", true)];
-        assert_eq!(
-            detect_divergencia(&alegacao, &ledger),
-            Divergencia::AfirmaFalhaMasLedgerSucesso {
-                tool_call_id: "c1".into(),
-                tool_name: "file_write".into(),
-            }
-        );
-    }
-}
+#[path = "evidence/tests.rs"]
+mod tests;
 
 #[cfg(test)]
 #[path = "evidence/evaluation_tests.rs"]
