@@ -27,12 +27,14 @@
 #     rand) PLUS 19 `unmaintained-only` advisories that `cargo audit`
 #     auto-classifies as "allowed warnings" and does NOT require
 #     explicit ignore here.
-#   * **Mandatory sync (remaining mirrored IDs): os 4 unmaintained do
-#     #1667 (zbus x3, webpki-roots) sao espelhados, assim como
+#   * **Mandatory sync (remaining mirrored IDs): os 3 unmaintained do
+#     #1667 (zbus x3) sao espelhados, assim como
 #     RUSTSEC-2026-0543/-0555 (#1938, chrono e chrono-tz unmaintained,
 #     EXPIRA 2026-12-31). libsqlite3-sys RUSTSEC-2026-0459 (#1850) REMOVIDO
 #     2026-11-18 (sqlx 0.9.1 subiu o teto; lock em libsqlite3-sys 0.40.0). rsa
 #     RUSTSEC-2023-0071 (GAR-456) REMOVIDO 2026-10-30 (fora do Cargo.lock desde #1703).
+#     webpki-roots RUSTSEC-2026-0381 (#1961) REMOVIDO 2026-11-21: o advisory
+#     lista 0.26.11 como `unaffected` e o lock ja esta em 1.0.10 (patched).
 #     Closed history: wasmtime ×15 (GAR-454),
 #     webpki ×4 (GAR-455 / PR #295), lru ×1 (GAR-593 / this PR),
 #     lru ×1 (GAR-896 / RUSTSEC-2026-0253, 2026-09-12 — aws-sdk-s3 1.146.1),
