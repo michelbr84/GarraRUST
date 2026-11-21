@@ -162,12 +162,6 @@ ignore = [
     { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification (declares zbus ^5 in 2.8.0, 2.8.1 and 3.0.0-alpha.3) and notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-12-31 (reavaliado 2026-11-15: notify-rust 4.19.0 already uses zbus ^6, so the remaining blocker is tauri-plugin-notification pinning zbus ^5; bumping notify-rust alone would not drop these crates). Acompanhamento: #1667." },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6.0.0); no vulnerability. Chain: tauri-plugin-notification (declares zbus ^5 in 2.8.0, 2.8.1 and 3.0.0-alpha.3) and notify-rust 4.18.2 -> zbus 5. EXPIRA 2026-12-31 (reavaliado 2026-11-15: notify-rust 4.19.0 already uses zbus ^6, so the remaining blocker is tauri-plugin-notification pinning zbus ^5; bumping notify-rust alone would not drop these crates). Acompanhamento: #1667." },
 
-    # --- webpki-roots 0.26.11 (RUSTSEC-2026-0381): falso positivo do shim ---
-    # 0.26.11 so reexporta webpki-roots 1.0.x (lock: `webpki-roots 1.0.10`, que
-    # ja remove a raiz emSign). Sem 0.26.x corrigido; tokio-tungstenite 0.29/0.30
-    # ainda o puxam. Remover quando migrarem para 1.0.x.
-    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26.11 is a shim re-exporting webpki-roots 1.0.10 (patched); no unpatched 0.26.x exists; pulled by tokio-tungstenite 0.29/0.30. EXPIRA 2026-12-31 (renovado 2026-10-30: tokio-tungstenite 0.29/0.30 ainda puxam 0.26.11; sem 0.26.x corrigido). Acompanhamento: #1667." },
-
     # --- astral-tokio-tar 0.6.2 (RUSTSEC-2026-0440): unmaintained, SO dev-dependency ---
     # Astral encerrou a manutencao em 2026-11-03; nao e vulnerabilidade nem unsound.
     # Cadeia: testcontainers 0.27.3 (e 0.28.0, que ainda pede ^0.6.1) -> astral-tokio-tar,
