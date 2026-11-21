@@ -152,6 +152,39 @@ impl DesfechoDaChamada {
     pub fn e_sucesso(self) -> bool {
         matches!(self, DesfechoDaChamada::Sucesso)
     }
+
+    /// O resultado da chamada foi **observado** pelo runtime?
+    ///
+    /// `false` quer dizer "nao sabemos como terminou" — nao "falhou". Hoje so
+    /// [`DesfechoDaChamada::Cancelada`] cai aqui: o turno caiu com a chamada
+    /// em andamento e o fim nunca foi visto. Quem projeta o desfecho em
+    /// evidencia (`evidence_from_event`) ou em historico (CLI) consulta este
+    /// predicado em vez de casar a variante, para que um desfecho "nao
+    /// observado" futuro nao volte a virar falha registrada (#1915).
+    ///
+    /// [`DesfechoDaChamada::AguardandoConfirmacao`] e **observado**: a
+    /// ferramenta respondeu, e o que ela respondeu foi "preciso de um humano".
+    /// A acao pedida nao aconteceu, e isso e fato visto — por isso, como
+    /// evidencia, ela segue `success: false`, embora nao seja falha da
+    /// ferramenta. O mesmo vale para as recusas (politica, breaker, loop,
+    /// orcamento): o runtime viu que a chamada nao executou.
+    ///
+    /// O `match` e exaustivo de proposito: variante nova nao compila ate
+    /// alguem decidir de que lado ela fica.
+    pub fn resultado_observado(self) -> bool {
+        match self {
+            DesfechoDaChamada::Sucesso
+            | DesfechoDaChamada::Erro
+            | DesfechoDaChamada::Timeout
+            | DesfechoDaChamada::NegadaPelaPolitica
+            | DesfechoDaChamada::Indisponivel
+            | DesfechoDaChamada::RecusadaPeloBreaker
+            | DesfechoDaChamada::AguardandoConfirmacao
+            | DesfechoDaChamada::BloqueadaPorLoop
+            | DesfechoDaChamada::OrcamentoEsgotado => true,
+            DesfechoDaChamada::Cancelada => false,
+        }
+    }
 }
 
 impl From<crate::observabilidade::Desfecho> for DesfechoDaChamada {
@@ -1325,6 +1358,22 @@ mod tests {
             DesfechoDaChamada::Cancelada,
         ] {
             assert!(DesfechoDaChamada::TODOS.contains(&identidade(d)), "{d:?}");
+        }
+    }
+
+    /// So a chamada cancelada fica sem resultado observado; todo o resto,
+    /// inclusive o pedido de confirmacao e as recusas, foi visto terminar.
+    #[test]
+    fn so_a_cancelada_nao_tem_resultado_observado() {
+        for d in DesfechoDaChamada::TODOS {
+            let esperado = d != DesfechoDaChamada::Cancelada;
+            assert_eq!(d.resultado_observado(), esperado, "{d:?}");
+        }
+        // Nao observado nunca e sucesso: a CLI e o ledger contam com isso.
+        for d in DesfechoDaChamada::TODOS {
+            if !d.resultado_observado() {
+                assert!(!d.e_sucesso(), "{d:?}");
+            }
         }
     }
 

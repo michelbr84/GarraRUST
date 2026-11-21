@@ -32,7 +32,7 @@
 //! contra o ledger do runtime. A alegação e a evidência são tipos distintos: a
 //! primeira não prova o resultado, e somente o ledger é a fonte do resultado real.
 
-use crate::turn_events::{DesfechoDaChamada, TurnEvent};
+use crate::turn_events::TurnEvent;
 
 /// A classe de confiança de uma afirmação sobre um efeito/estado observável.
 ///
@@ -247,25 +247,27 @@ impl AlegacaoOperacional {
 /// forma, `ToolStarted` sozinho é início, não resultado: a evidência de
 /// sucesso/falha nasce do `ToolFinished`.
 ///
-/// Um `ToolFinished` com [`DesfechoDaChamada::Cancelada`] também devolve `None`:
-/// o turno caiu com a chamada em andamento e o resultado **não foi observado**
-/// (#1915). Registrá-lo como `success: false` transformaria ausência de
-/// evidência em evidência de falha — e [`detect_divergencia`] acusaria de
-/// contradição uma alegação de sucesso que o ledger não tem como desmentir.
-/// É a mesma regra da CLI, que projeta a chamada interrompida como
-/// `nao_verificado`.
+/// Um `ToolFinished` cujo desfecho não tem resultado observado
+/// ([`crate::turn_events::DesfechoDaChamada::resultado_observado`] — hoje só
+/// [`crate::turn_events::DesfechoDaChamada::Cancelada`]) também devolve `None`: o turno caiu com a
+/// chamada em andamento e o fim **não foi visto** (#1915). Registrá-lo como
+/// `success: false` transformaria ausência de evidência em evidência de falha —
+/// e [`detect_divergencia`] acusaria de contradição uma alegação de sucesso que
+/// o ledger não tem como desmentir. É a mesma regra da CLI, que projeta a
+/// chamada interrompida como `nao_verificado`.
+///
+/// O `success` da evidência sai do `outcome`, a mesma fonte que decide se há
+/// evidência: o campo `success` do evento é derivado dele em
+/// [`crate::turn_events::TurnSink::tool_finished`], então ler os dois do mesmo
+/// lugar elimina a fonte dupla.
 pub fn evidence_from_event(event: &TurnEvent, turno: u32, ordem: u32) -> Option<EvidenceRef> {
     match event {
         TurnEvent::ToolFinished {
-            outcome: DesfechoDaChamada::Cancelada,
-            ..
-        } => None,
-        TurnEvent::ToolFinished {
-            id, name, success, ..
-        } => Some(EvidenceRef {
+            id, name, outcome, ..
+        } => outcome.resultado_observado().then(|| EvidenceRef {
             tool_call_id: id.clone(),
             tool_name: name.clone(),
-            success: *success,
+            success: outcome.e_sucesso(),
             turno,
             ordem,
         }),
@@ -406,6 +408,7 @@ pub fn detect_divergencia(alegacao: &AlegacaoOperacional, ledger: &[EvidenceRef]
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::turn_events::DesfechoDaChamada;
     use std::time::Duration;
 
     fn ev(id: &str, name: &str, success: bool) -> EvidenceRef {
@@ -505,13 +508,46 @@ mod tests {
         };
         assert!(evidence_from_event(&cancelada, 2, 1).is_none());
 
+        // Ledger montado de um fluxo real: início da cancelada, o fim
+        // `Cancelada`, e uma segunda chamada que terminou com sucesso. Só a
+        // segunda entra — a cancelada não deixa rastro nenhum.
+        let fluxo = [
+            TurnEvent::ToolStarted {
+                id: "c9".into(),
+                name: "bash".into(),
+                detail: String::new(),
+                input: serde_json::Value::Null,
+            },
+            cancelada,
+            TurnEvent::ToolFinished {
+                id: "c11".into(),
+                name: "file_read".into(),
+                duration: Duration::from_millis(2),
+                success: true,
+                outcome: DesfechoDaChamada::Sucesso,
+                summary: "ok".into(),
+                output: String::new(),
+            },
+        ];
+        let ledger: Vec<EvidenceRef> = fluxo
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| evidence_from_event(e, 2, i as u32))
+            .collect();
+        assert_eq!(ledger.len(), 1, "{ledger:?}");
+        assert_eq!(ledger[0].tool_call_id, "c11");
+        assert!(ledger.iter().all(|e| e.tool_call_id != "c9"));
+
         // Sem entrada no ledger, a alegação de sucesso fica desconhecida em
-        // vez de ser acusada de contradizer uma "falha" que não aconteceu.
-        let ledger: Vec<EvidenceRef> = evidence_from_event(&cancelada, 2, 1).into_iter().collect();
-        let alegacao = AlegacaoOperacional::sucesso("c9", "bash");
+        // vez de ser acusada de contradizer uma "falha" que não aconteceu —
+        // e a alegação sobre a outra chamada segue sustentada.
         assert_eq!(
-            detect_divergencia(&alegacao, &ledger),
+            detect_divergencia(&AlegacaoOperacional::sucesso("c9", "bash"), &ledger),
             Divergencia::SemEvidenciaNoLedger
+        );
+        assert_eq!(
+            detect_divergencia(&AlegacaoOperacional::sucesso("c11", "file_read"), &ledger),
+            Divergencia::Sustentada
         );
 
         // Os demais desfechos sem sucesso continuam sendo falha registrada.
@@ -534,6 +570,32 @@ mod tests {
             };
             let e = evidence_from_event(&ev, 1, 1).expect("desfecho observado vira evidência");
             assert!(!e.success, "{outcome:?} não é sucesso");
+        }
+    }
+
+    /// A evidência segue o `outcome`, não o `success` do evento: um evento
+    /// montado à mão com os dois em desacordo não consegue fabricar sucesso
+    /// (nem esconder um). Em produção eles não divergem — o `TurnSink` deriva
+    /// um do outro —, mas a fonte da evidência fica sendo uma só.
+    #[test]
+    fn evidencia_deriva_sucesso_do_outcome() {
+        for outcome in DesfechoDaChamada::TODOS {
+            let ev = TurnEvent::ToolFinished {
+                id: "c12".into(),
+                name: "bash".into(),
+                duration: Duration::from_millis(1),
+                success: !outcome.e_sucesso(),
+                outcome,
+                summary: String::new(),
+                output: String::new(),
+            };
+            match evidence_from_event(&ev, 1, 1) {
+                Some(e) => {
+                    assert!(outcome.resultado_observado(), "{outcome:?}");
+                    assert_eq!(e.success, outcome.e_sucesso(), "{outcome:?}");
+                }
+                None => assert!(!outcome.resultado_observado(), "{outcome:?}"),
+            }
         }
     }
 
