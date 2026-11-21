@@ -898,6 +898,8 @@ async fn desfecho_de_loop(
     if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
         sink.tool_started(id, name, summarize_tool_input(name, input), input)
             .await;
+        // #1915: um drop entre o inicio e o fim fecha com `Cancelada`.
+        let mut vigia = sink.vigiar_chamada(id, name);
         sink.tool_finished(
             id,
             name,
@@ -907,6 +909,7 @@ async fn desfecho_de_loop(
             capture_tool_output(texto),
         )
         .await;
+        vigia.desarmar();
     }
     match veredito {
         VereditoDeLoop::Avisar(aviso) => DispatchOutcome::LoopWarning(ContentBlock::ToolResult {
@@ -942,6 +945,8 @@ async fn desfecho_sem_orcamento(
     if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
         sink.tool_started(id, name, summarize_tool_input(name, input), input)
             .await;
+        // #1915: um drop entre o inicio e o fim fecha com `Cancelada`.
+        let mut vigia = sink.vigiar_chamada(id, name);
         sink.tool_finished(
             id,
             name,
@@ -951,6 +956,7 @@ async fn desfecho_sem_orcamento(
             capture_tool_output(&recusa),
         )
         .await;
+        vigia.desarmar();
     }
     DispatchOutcome::Denied(ContentBlock::ToolResult {
         tool_use_id: id.to_string(),
