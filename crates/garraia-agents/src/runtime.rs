@@ -898,6 +898,8 @@ async fn desfecho_de_loop(
     if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
         sink.tool_started(id, name, summarize_tool_input(name, input), input)
             .await;
+        // #1915: um drop entre o inicio e o fim fecha com `Cancelada`.
+        let mut vigia = sink.vigiar_chamada(id, name);
         sink.tool_finished(
             id,
             name,
@@ -907,6 +909,7 @@ async fn desfecho_de_loop(
             capture_tool_output(texto),
         )
         .await;
+        vigia.desarmar();
     }
     match veredito {
         VereditoDeLoop::Avisar(aviso) => DispatchOutcome::LoopWarning(ContentBlock::ToolResult {
@@ -942,6 +945,8 @@ async fn desfecho_sem_orcamento(
     if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
         sink.tool_started(id, name, summarize_tool_input(name, input), input)
             .await;
+        // #1915: um drop entre o inicio e o fim fecha com `Cancelada`.
+        let mut vigia = sink.vigiar_chamada(id, name);
         sink.tool_finished(
             id,
             name,
@@ -951,6 +956,7 @@ async fn desfecho_sem_orcamento(
             capture_tool_output(&recusa),
         )
         .await;
+        vigia.desarmar();
     }
     DispatchOutcome::Denied(ContentBlock::ToolResult {
         tool_use_id: id.to_string(),
@@ -3752,10 +3758,17 @@ impl AgentRuntime {
 
         // #937: o resumo do input so e montado quando alguem vai desenha-lo.
         // `summarize_tool_input` ja redige segredo na origem.
-        if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
-            sink.tool_started(id, name, summarize_tool_input(name, input), input)
-                .await;
-        }
+        // #1915: o vigia fecha esta chamada com `Cancelada` se o futuro do
+        // turno for descartado antes de um `tool_finished` abaixo. Todo
+        // `tool_finished` desta funcao desarma depois do proprio `.await`.
+        let mut vigia = match sink.filter(|s| s.wants_tool_events()) {
+            Some(sink) => {
+                sink.tool_started(id, name, summarize_tool_input(name, input), input)
+                    .await;
+                Some(sink.vigiar_chamada(id, name))
+            }
+            None => None,
+        };
         let iniciado_em = std::time::Instant::now();
 
         // executa com timeout
@@ -3797,6 +3810,9 @@ impl AgentRuntime {
                     String::new(),
                 )
                 .await;
+                if let Some(v) = vigia.as_mut() {
+                    v.desarmar();
+                }
             }
             return DispatchOutcome::Denied(ContentBlock::ToolResult {
                 tool_use_id: id.to_string(),
@@ -3823,6 +3839,9 @@ impl AgentRuntime {
                     String::new(),
                 )
                 .await;
+                if let Some(v) = vigia.as_mut() {
+                    v.desarmar();
+                }
             }
             return DispatchOutcome::Denied(ContentBlock::ToolResult {
                 tool_use_id: id.to_string(),
@@ -3851,6 +3870,9 @@ impl AgentRuntime {
                     String::new(),
                 )
                 .await;
+                if let Some(v) = vigia.as_mut() {
+                    v.desarmar();
+                }
             }
             return DispatchOutcome::Denied(ContentBlock::ToolResult {
                 tool_use_id: id.to_string(),
@@ -3898,6 +3920,9 @@ impl AgentRuntime {
                                     capture_tool_output(&aviso),
                                 )
                                 .await;
+                                if let Some(v) = vigia.as_mut() {
+                                    v.desarmar();
+                                }
                             }
                             return DispatchOutcome::LoopWarning(ContentBlock::ToolResult {
                                 tool_use_id: id.to_string(),
@@ -3940,6 +3965,9 @@ impl AgentRuntime {
                             String::new(),
                         )
                         .await;
+                        if let Some(v) = vigia.as_mut() {
+                            v.desarmar();
+                        }
                     }
                     return DispatchOutcome::BudgetExceeded { mensagem };
                 }
@@ -4074,6 +4102,9 @@ impl AgentRuntime {
                 capture_tool_output(visivel),
             )
             .await;
+            if let Some(v) = vigia.as_mut() {
+                v.desarmar();
+            }
         }
 
         // GAR-187: pause agent loop if tool requires user confirmation.

@@ -75,6 +75,34 @@ fn fim_sem_inicio_nao_inventa_chamada() {
     assert!(trail.fim_do_turno().is_empty());
 }
 
+/// #1915: o fim `Cancelada` que o runtime emite quando o turno cai no meio
+/// da chamada vira `Interrupted` — igual a chamada que ficou aberta —, e
+/// nunca `Error` com saida vazia.
+#[test]
+fn fim_cancelado_vira_interrompida() {
+    let mut trail = ToolTrail::default();
+    trail.iniciar_turno();
+    trail.observar(&garraia_agents::TurnEvent::ToolStarted {
+        id: "c1".into(),
+        name: "bash".into(),
+        detail: String::new(),
+        input: serde_json::json!({}),
+    });
+    trail.observar(&garraia_agents::TurnEvent::ToolFinished {
+        id: "c1".into(),
+        name: "bash".into(),
+        duration: std::time::Duration::ZERO,
+        success: false,
+        outcome: garraia_agents::DesfechoDaChamada::Cancelada,
+        summary: "cancelada".into(),
+        output: String::new(),
+    });
+    let registros = trail.fim_do_turno();
+    assert_eq!(registros.len(), 1);
+    assert_eq!(registros[0].status, Status::Interrupted);
+    assert_eq!(registros[0].output, "[interrompido: sem resultado]");
+}
+
 #[test]
 fn ordem_de_ciclos_sequenciais_e_preservada() {
     let mut a = registro("call-a", "file_write", Status::Ok);

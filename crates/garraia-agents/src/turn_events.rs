@@ -35,6 +35,9 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
+mod vigia;
+pub use vigia::VigiaDaChamada;
+
 /// Quanto de um resumo de ferramenta cabe numa linha de terminal.
 const SUMMARY_MAX_CHARS: usize = 72;
 
@@ -96,11 +99,16 @@ pub enum DesfechoDaChamada {
     BloqueadaPorLoop,
     /// O orcamento de ferramentas da tarefa acabou; nao executou.
     OrcamentoEsgotado,
+    /// O turno foi descartado com a chamada em andamento (Ctrl+C, teto de
+    /// parede do turno, cliente que desistiu): o futuro caiu antes do fim.
+    /// Nao diz se a ferramenta chegou a ter efeito — so que o resultado nao
+    /// foi observado. Emitido pelo [`VigiaDaChamada`], nunca pelo despacho.
+    Cancelada,
 }
 
 impl DesfechoDaChamada {
     /// Todos, na ordem em que as superficies os listam.
-    pub const TODOS: [DesfechoDaChamada; 9] = [
+    pub const TODOS: [DesfechoDaChamada; 10] = [
         DesfechoDaChamada::Sucesso,
         DesfechoDaChamada::Erro,
         DesfechoDaChamada::Timeout,
@@ -110,6 +118,7 @@ impl DesfechoDaChamada {
         DesfechoDaChamada::AguardandoConfirmacao,
         DesfechoDaChamada::BloqueadaPorLoop,
         DesfechoDaChamada::OrcamentoEsgotado,
+        DesfechoDaChamada::Cancelada,
     ];
 
     /// Legivel por maquina. Os sete primeiros codigos sao **os mesmos** de
@@ -128,6 +137,7 @@ impl DesfechoDaChamada {
             DesfechoDaChamada::AguardandoConfirmacao => "awaiting_confirmation",
             DesfechoDaChamada::BloqueadaPorLoop => "loop_blocked",
             DesfechoDaChamada::OrcamentoEsgotado => "budget_exhausted",
+            DesfechoDaChamada::Cancelada => "cancelled",
         }
     }
 
@@ -278,6 +288,17 @@ impl TurnSink {
                 })
                 .await;
         }
+    }
+
+    /// Arma o vigia de uma chamada cujo `ToolStarted` acabou de sair.
+    ///
+    /// Num sink de texto o vigia e inerte, como o resto do ciclo de vida de
+    /// ferramenta. Ver [`VigiaDaChamada`].
+    pub fn vigiar_chamada(&self, id: &str, name: &str) -> VigiaDaChamada {
+        VigiaDaChamada::novo(match self {
+            Self::Events(tx) => Some((tx.clone(), id.to_string(), name.to_string())),
+            Self::Text(_) => None,
+        })
     }
 
     /// Este sink se importa com eventos de ferramenta? O runtime usa para nao
@@ -1287,7 +1308,8 @@ mod tests {
                 | DesfechoDaChamada::RecusadaPeloBreaker
                 | DesfechoDaChamada::AguardandoConfirmacao
                 | DesfechoDaChamada::BloqueadaPorLoop
-                | DesfechoDaChamada::OrcamentoEsgotado => d,
+                | DesfechoDaChamada::OrcamentoEsgotado
+                | DesfechoDaChamada::Cancelada => d,
             }
         }
         for d in [
@@ -1300,6 +1322,7 @@ mod tests {
             DesfechoDaChamada::AguardandoConfirmacao,
             DesfechoDaChamada::BloqueadaPorLoop,
             DesfechoDaChamada::OrcamentoEsgotado,
+            DesfechoDaChamada::Cancelada,
         ] {
             assert!(DesfechoDaChamada::TODOS.contains(&identidade(d)), "{d:?}");
         }

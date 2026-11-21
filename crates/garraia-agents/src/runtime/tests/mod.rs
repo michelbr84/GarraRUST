@@ -49,6 +49,7 @@ mod aprovacao_vinculada;
 mod aprovacao_workspace;
 mod aviso_de_loop;
 mod breaker;
+mod cancelamento_do_turno;
 /// #1725: data e hora do turno no system prompt.
 mod contexto_temporal;
 /// Snapshot de permissao de turno so para ferramentas nativas confiaveis.
