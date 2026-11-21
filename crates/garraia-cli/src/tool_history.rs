@@ -68,6 +68,15 @@ pub struct ToolRecord {
     pub ordem: u32,
 }
 
+impl ToolRecord {
+    /// Sem resultado observado: o turno caiu com a chamada em andamento.
+    fn marcar_interrompida(&mut self) {
+        self.status = Status::Interrupted;
+        self.summary = "[interrompido]".to_string();
+        self.output = "[interrompido: sem resultado]".to_string();
+    }
+}
+
 /// Trilha viva da sessão. `observar` é chamado no dreno de eventos do turno.
 #[derive(Debug, Default)]
 pub struct ToolTrail {
@@ -113,6 +122,7 @@ impl ToolTrail {
             garraia_agents::TurnEvent::ToolFinished {
                 id,
                 success,
+                outcome,
                 summary,
                 output,
                 ..
@@ -123,9 +133,17 @@ impl ToolTrail {
                     .rev()
                     .find(|r| r.call_id == *id && r.status == Status::Running)
                 {
-                    r.status = if *success { Status::Ok } else { Status::Error };
-                    r.summary = summary.clone();
-                    r.output = output.clone();
+                    // #1915: o runtime fecha com `Cancelada` a chamada cujo
+                    // turno caiu no meio. Para o historico e a mesma coisa que
+                    // o `fim_do_turno` faz com uma chamada ainda aberta: sem
+                    // resultado observado, nunca erro nem sucesso.
+                    if *outcome == garraia_agents::DesfechoDaChamada::Cancelada {
+                        r.marcar_interrompida();
+                    } else {
+                        r.status = if *success { Status::Ok } else { Status::Error };
+                        r.summary = summary.clone();
+                        r.output = output.clone();
+                    }
                 }
             }
             _ => {}
@@ -137,9 +155,7 @@ impl ToolTrail {
     pub fn fim_do_turno(&mut self) -> Vec<ToolRecord> {
         for r in self.registros.iter_mut() {
             if r.turno == self.turno && r.status == Status::Running {
-                r.status = Status::Interrupted;
-                r.summary = "[interrompido]".to_string();
-                r.output = "[interrompido: sem resultado]".to_string();
+                r.marcar_interrompida();
             }
         }
         self.registros

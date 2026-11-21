@@ -566,7 +566,10 @@ roda entram numa fila e são processadas na sequência.
 
 `outcome` (#1915) é aditivo ao `success` e vem de um conjunto fechado de
 códigos: `success`, `error`, `timeout`, `denied_by_policy`, `unavailable`,
-`breaker_refused`, `awaiting_confirmation`, `loop_blocked`, `budget_exhausted`.
+`breaker_refused`, `awaiting_confirmation`, `loop_blocked`, `budget_exhausted`,
+`cancelled`. `cancelled` fecha uma chamada cujo turno foi descartado com ela em
+andamento; diz que o resultado nao foi observado, nao que a ferramenta deixou de
+ter efeito.
 
 `tool_finished` **não** carrega a saída da ferramenta: ela pode ter dezenas de
 KiB, e o frame existe para dizer que a ferramenta terminou.
