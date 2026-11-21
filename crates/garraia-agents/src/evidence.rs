@@ -32,7 +32,7 @@
 //! contra o ledger do runtime. A alegação e a evidência são tipos distintos: a
 //! primeira não prova o resultado, e somente o ledger é a fonte do resultado real.
 
-use crate::turn_events::TurnEvent;
+use crate::turn_events::{DesfechoDaChamada, TurnEvent};
 
 /// A classe de confiança de uma afirmação sobre um efeito/estado observável.
 ///
@@ -246,8 +246,20 @@ impl AlegacaoOperacional {
 /// prova ação nenhuma (é o que o modelo disse) e devolve `None` — da mesma
 /// forma, `ToolStarted` sozinho é início, não resultado: a evidência de
 /// sucesso/falha nasce do `ToolFinished`.
+///
+/// Um `ToolFinished` com [`DesfechoDaChamada::Cancelada`] também devolve `None`:
+/// o turno caiu com a chamada em andamento e o resultado **não foi observado**
+/// (#1915). Registrá-lo como `success: false` transformaria ausência de
+/// evidência em evidência de falha — e [`detect_divergencia`] acusaria de
+/// contradição uma alegação de sucesso que o ledger não tem como desmentir.
+/// É a mesma regra da CLI, que projeta a chamada interrompida como
+/// `nao_verificado`.
 pub fn evidence_from_event(event: &TurnEvent, turno: u32, ordem: u32) -> Option<EvidenceRef> {
     match event {
+        TurnEvent::ToolFinished {
+            outcome: DesfechoDaChamada::Cancelada,
+            ..
+        } => None,
         TurnEvent::ToolFinished {
             id, name, success, ..
         } => Some(EvidenceRef {
@@ -476,6 +488,53 @@ mod tests {
         let e = evidence_from_event(&finished, 1, 1).expect("ToolFinished produz evidência");
         assert_eq!(e.tool_call_id, "c5");
         assert!(e.success);
+    }
+
+    #[test]
+    fn chamada_cancelada_nao_vira_evidencia_de_falha() {
+        // #1915: o turno caiu com a chamada em andamento. O resultado não foi
+        // observado — ausência de evidência, não evidência de falha.
+        let cancelada = TurnEvent::ToolFinished {
+            id: "c9".into(),
+            name: "bash".into(),
+            duration: Duration::from_millis(40),
+            success: false,
+            outcome: crate::turn_events::DesfechoDaChamada::Cancelada,
+            summary: "cancelada".into(),
+            output: String::new(),
+        };
+        assert!(evidence_from_event(&cancelada, 2, 1).is_none());
+
+        // Sem entrada no ledger, a alegação de sucesso fica desconhecida em
+        // vez de ser acusada de contradizer uma "falha" que não aconteceu.
+        let ledger: Vec<EvidenceRef> = evidence_from_event(&cancelada, 2, 1).into_iter().collect();
+        let alegacao = AlegacaoOperacional::sucesso("c9", "bash");
+        assert_eq!(
+            detect_divergencia(&alegacao, &ledger),
+            Divergencia::SemEvidenciaNoLedger
+        );
+
+        // Os demais desfechos sem sucesso continuam sendo falha registrada.
+        for outcome in crate::turn_events::DesfechoDaChamada::TODOS {
+            if matches!(
+                outcome,
+                crate::turn_events::DesfechoDaChamada::Sucesso
+                    | crate::turn_events::DesfechoDaChamada::Cancelada
+            ) {
+                continue;
+            }
+            let ev = TurnEvent::ToolFinished {
+                id: "c10".into(),
+                name: "bash".into(),
+                duration: Duration::from_millis(1),
+                success: outcome.e_sucesso(),
+                outcome,
+                summary: String::new(),
+                output: String::new(),
+            };
+            let e = evidence_from_event(&ev, 1, 1).expect("desfecho observado vira evidência");
+            assert!(!e.success, "{outcome:?} não é sucesso");
+        }
     }
 
     #[test]
