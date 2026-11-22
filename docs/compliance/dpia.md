@@ -235,7 +235,7 @@ Tabelas de metadados não-pessoais **por si só**. `groups.settings_jsonb` pode 
 - **Risco**: alto impacto legal, baixa likelihood.
 - **Mitigação atual**: ADR 0004 §Versionamento explicita que erasure tem flag `--include-origin`; audit_events separado do user pode ser mantido pseudonimizado via tokenização.
 - **Mitigação planejada**: `POST /v1/me:anonymize` endpoint (GAR-400) que substitui PII por tokens sem apagar histórico do grupo.
-  - **Status 2026-10-07: IMPLEMENTADO** como `POST /v1/me/anonymize` (rota com `/`, plan 0343/GAR-884; ver `crates/garraia-gateway/src/rest_v1/me.rs`). Executa em transação: anonimiza o login (`user_identities.provider_sub` via `anonymize_identity`), troca `users.email` por token (`garraia_auth::anon_token`), `display_name` → `Usuário Anônimo`, `status='anonymized'`, revoga sessões ativas, limpa `group_invites` e emite evento de auditoria; 409 em conta já deletada/anonimizada; guarda `FOR UPDATE` contra duplo-anonimização concorrente.
+  - **Status 2026-10-07: IMPLEMENTADO** como `POST /v1/me/anonymize` (rota com `/`, plan 0343/GAR-884; ver `crates/garraia-gateway/src/rest_v1/me/anonymize.rs`). Executa em transação: anonimiza o login (`user_identities.provider_sub` via `anonymize_identity`), troca `users.email` por token (`garraia_auth::anon_token`), `display_name` → `Usuário Anônimo`, `status='anonymized'`, revoga sessões ativas, limpa `group_invites` e emite evento de auditoria; 409 em conta já deletada/anonimizada; guarda `FOR UPDATE` contra duplo-anonimização concorrente.
 
 ### 4.5 Secrets em log / debug output (I)
 
