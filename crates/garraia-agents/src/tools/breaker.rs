@@ -50,7 +50,7 @@
 //! texto constante do modulo — nunca a saida crua da ferramenta, nunca
 //! caminho.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -297,6 +297,13 @@ struct Registro {
     no_turno: Option<Motivo>,
     /// Erros genericos deste turno, por assinatura.
     genericas_no_turno: HashMap<String, u32>,
+    /// Assinaturas de [`Self::genericas_no_turno`] que sao a recusa de
+    /// diretorio de sessao ausente (#1909): a ferramenta nao esta em
+    /// [`SEM_DIRETORIO_COM_QUALQUER_INPUT`], entao a recusa conta como
+    /// generica e a pausa chega por `Repetida`, sem carregar a causa. Vive
+    /// no registro para morrer junto com ele (troca de contexto, sucesso da
+    /// propria ferramenta) e zera a cada turno.
+    assinaturas_de_diretorio: HashSet<String>,
     /// Timeouts seguidos; zera no sucesso e na troca de contexto.
     timeouts_seguidos: u32,
     /// Fim do cooldown vigente, se ha um.
@@ -329,6 +336,7 @@ impl Breaker {
         for r in self.por_tool.values_mut() {
             r.no_turno = None;
             r.genericas_no_turno.clear();
+            r.assinaturas_de_diretorio.clear();
         }
         self.por_tool.retain(|_, r| r.timeouts_seguidos > 0);
     }
@@ -348,8 +356,17 @@ impl Breaker {
             Veredito::Falha(Classe::Deterministica(Deterministica::SemDiretorioDaSessao))
                 if !SEM_DIRETORIO_COM_QUALQUER_INPUT.contains(&tool) =>
             {
-                let generica = Classe::Generica(assinatura(saida.content.as_str()));
-                self.registrar_falha(tool, generica, agora);
+                // A contagem em si e igual para qualquer erro generico: o
+                // que marca a causa e a ASSINATURA desta frase, nao a
+                // ferramenta — outro erro repetido na mesma ferramenta
+                // continua sendo outro erro.
+                let assinatura = assinatura(saida.content.as_str());
+                self.por_tool
+                    .entry(tool.to_string())
+                    .or_default()
+                    .assinaturas_de_diretorio
+                    .insert(assinatura.clone());
+                self.registrar_falha(tool, Classe::Generica(assinatura), agora);
             }
             Veredito::Falha(classe) => self.registrar_falha(tool, classe, agora),
             Veredito::Neutro => {}
@@ -371,6 +388,27 @@ impl Breaker {
             for r in self.por_tool.values_mut() {
                 if r.no_turno.as_ref() == Some(&ausente) {
                     r.no_turno = None;
+                }
+            }
+            // A recusa de diretorio contada como generica (`Repetida`, em
+            // quem nao esta em SEM_DIRETORIO_COM_QUALQUER_INPUT) tem a mesma
+            // causa: as contagens DELA zeram, e a pausa so fecha se nenhum
+            // outro erro da mesma ferramenta ainda sustenta a repeticao.
+            for r in self.por_tool.values_mut() {
+                if r.assinaturas_de_diretorio.is_empty() {
+                    continue;
+                }
+                for a in r.assinaturas_de_diretorio.drain() {
+                    r.genericas_no_turno.remove(&a);
+                }
+                if matches!(r.no_turno, Some(Motivo::Repetida { .. })) {
+                    r.no_turno = r
+                        .genericas_no_turno
+                        .values()
+                        .copied()
+                        .filter(|n| *n >= REPETICOES_PARA_ABRIR)
+                        .max()
+                        .map(|vezes| Motivo::Repetida { vezes });
                 }
             }
         }
