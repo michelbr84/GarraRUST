@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+
+## [0.5.2-rc7] - 2026-11-22
+
+Sétimo candidato da v0.5.2, publicado como pré-lançamento: é a rc6 mais o
+trabalho integrado na `main` depois dela. Não é servido por
+`/releases/latest`, não é oferecido pelo `garraia update` nem pelo
+atualizador do app desktop, e a imagem Docker sai só com a tag `0.5.2-rc7`
+(sem `latest` e sem `0.5`). O binário se identifica como `garra 0.5.2` (o
+`-rc7` vive só na tag).
+
+O que entra desde a rc6:
+
+- **Modularização do `rest_v1/me` do gateway (#1966, #1968):** o módulo
+  monolítico foi dividido por área (`inbox/`, `export/`, `api_keys/`,
+  `invites/`, etc.) sem mudança de comportamento ou de rota.
+- **Circuit breaker (#1909, #1915):** a pausa por diretório de sessão morto
+  solta no mesmo turno em que o diretório volta; chamada cancelada não vira
+  evidência de falha; resultado observado decide a evidência.
+- **Segurança de dependências:** wasmtime 50.0.2/50.0.3 (#1952, #1957),
+  SQLite 3.54 e limpeza de exceções RUSTSEC (#1850, #1961).
+- **Diagnóstico (`garraia doctor`/`status`):** SHA-256 do executável,
+  instante da observação, processo e serviço, revisão do build e o canal da
+  release (#1914); recusas do console nomeiam a camada (#1915).
+
+Instalação com versão fixa (o caminho normal de teste de um RC): no Windows,
+`$env:GARRAIA_VERSION='v0.5.2-rc7'; irm https://github.com/michelbr84/GarraRUST/releases/download/v0.5.2-rc7/install.ps1 | iex`;
+no Linux/macOS,
+`curl -fsSL https://github.com/michelbr84/GarraRUST/releases/download/v0.5.2-rc7/install.sh | sh -s -- --version v0.5.2-rc7`.
+
+Cobertura de gate (§1.5): D1/D9-linux automatizáveis pelo dispatch do
+dogfood no branch; D2/D5/D6/D10 e o trecho WhatsApp de D1 ficam manuais a
+critério do dono — aceito publicar com a cobertura do CI + dogfood de Linux,
+falha achada vira rc8 (tag nova, nunca reuso da antiga).
+
 ### Added
 - O motor de QR do canal `whatsapp_linked` ganha rasterização para janela: `qr::png(payload, scale)` devolve um PNG em tons de cinza (8 bits, sem alfa, margem de 4 módulos conforme a norma) pronto para `<img>`/`drawImage` do app desktop, sem terminal.
 - Sem dependência nova: o PNG é escrito à mão (chunks + CRC32 + zlib com blocos *stored*), então a crate `qrcode` segue com `default-features = false` e `image`/`svg` continuam fora do grafo.
