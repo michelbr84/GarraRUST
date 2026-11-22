@@ -50,7 +50,7 @@
 //! texto constante do modulo — nunca a saida crua da ferramenta, nunca
 //! caminho.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -309,6 +309,14 @@ struct Registro {
 pub struct Breaker {
     contexto: Option<String>,
     por_tool: HashMap<String, Registro>,
+    /// Ferramenta pausada neste turno por diretorio de sessao ausente, via
+    /// contagem de erros genericos iguais (`Motivo::Repetida`). Se o
+    /// `working_dir` da sessao MORRE no meio do turno, a recusa de uma tool
+    /// de caminho relativo e identica a do `repo_search`, mas a tool nao
+    /// esta em [`SEM_DIRETORIO_COM_QUALQUER_INPUT`] — a pausa dela chega por
+    /// `Repetida`, e `registrar_sucesso` nao enxergaria a causa. Marca-se
+    /// aqui para o sucesso de [`PODEM_CRIAR_DIRETORIO`] libera-la tambem.
+    pausas_por_diretorio: HashSet<String>,
 }
 
 impl Breaker {
@@ -331,6 +339,7 @@ impl Breaker {
             r.genericas_no_turno.clear();
         }
         self.por_tool.retain(|_, r| r.timeouts_seguidos > 0);
+        self.pausas_por_diretorio.clear();
     }
 
     /// Alimenta o breaker com a saida da ferramenta, ja classificada.
@@ -348,6 +357,11 @@ impl Breaker {
             Veredito::Falha(Classe::Deterministica(Deterministica::SemDiretorioDaSessao))
                 if !SEM_DIRETORIO_COM_QUALQUER_INPUT.contains(&tool) =>
             {
+                // A contagem em si e igual para qualquer erro generico: o
+                // que marca a causa e a FRASE, nao a abertura. Marca antes
+                // de registrar, e so ferramentas que emitem esta recusa
+                // passam por aqui — nunca uma `Repetida` de outro erro.
+                self.pausas_por_diretorio.insert(tool.to_string());
                 let generica = Classe::Generica(assinatura(saida.content.as_str()));
                 self.registrar_falha(tool, generica, agora);
             }
@@ -370,6 +384,18 @@ impl Breaker {
             let ausente = Motivo::Deterministica(Deterministica::SemDiretorioDaSessao);
             for r in self.por_tool.values_mut() {
                 if r.no_turno.as_ref() == Some(&ausente) {
+                    r.no_turno = None;
+                }
+            }
+            // As pausas pela MESMA frase que chegaram por contagem de
+            // genericas (`Repetida`, em quem nao esta em
+            // SEM_DIRETORIO_COM_QUALQUER_INPUT) tem a mesma causa e a
+            // mesma saida: se o diretorio pode ter voltado, elas tambem
+            // fecham. So as ferramentas marcadas pela frase — nunca uma
+            // `Repetida` de outro erro.
+            self.pausas_por_diretorio.remove(tool);
+            for ferramenta in std::mem::take(&mut self.pausas_por_diretorio) {
+                if let Some(r) = self.por_tool.get_mut(&ferramenta) {
                     r.no_turno = None;
                 }
             }

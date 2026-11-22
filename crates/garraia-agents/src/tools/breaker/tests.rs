@@ -486,3 +486,59 @@ fn sucesso_de_quem_cria_diretorio_fecha_so_a_pausa_por_diretorio_ausente() {
         );
     }
 }
+
+/// #1909, o outro lado da mesma causa: quando o diretorio da sessao MORRE no
+/// meio do turno, `file_read`/`list_dir` acumulam a recusa como generica e o
+/// breaker delas abre por `Repetida` — causa diretorio ausente, mas o motivo
+/// registrado nao diz. `registrar_sucesso` nao enxergava essa pausa: o
+/// `file_write` que recriava o diretorio nao soltava `file_read`, que ficava
+/// barrado ate o proximo turno. A marca pela FRASE fecha tambem essa pausa;
+/// uma `Repetida` de outro erro continua intacta.
+#[test]
+fn sucesso_de_quem_cria_diretorio_tambem_solta_a_pausa_por_repeticao_da_mesma_recusa() {
+    let t = t0();
+    for criadora in PODEM_CRIAR_DIRETORIO {
+        let mut b = Breaker::new();
+        b.abrir_turno(Some("/projeto/que-morreu"));
+        let saida = recusa_de_diretorio_morto("nothing was read", "read again");
+        let outra_saida = recusa_de_diretorio_morto("nothing was listed", "list again");
+        assert!(!b.registrar("file_read", &saida, t));
+        assert!(!b.registrar("file_read", &saida, t));
+        assert!(
+            b.registrar("file_read", &saida, t),
+            "{criadora}: a terceira abre"
+        );
+        match b.estado("file_read", t) {
+            Estado::Aberto {
+                motivo: Motivo::Repetida { .. },
+                ..
+            } => {}
+            outro => panic!("{criadora}: {outro:?}"),
+        }
+
+        // Erro generico de OUTRA ferramenta que tambem abre por repeticao:
+        // nao e a frase do diretorio, nao pode ser solta.
+        let alheio = ToolOutput::error("deu ruim do mesmo jeito");
+        assert!(!b.registrar("web_fetch", &alheio, t));
+        assert!(!b.registrar("web_fetch", &alheio, t));
+        assert!(b.registrar("web_fetch", &alheio, t));
+
+        b.registrar(criadora, &ToolOutput::success("ok"), t);
+        assert_eq!(
+            b.estado("file_read", t),
+            Estado::Fechado,
+            "{criadora}: a pausa pela recusa de diretorio fecha"
+        );
+        assert!(
+            b.estado("web_fetch", t).esta_aberto(),
+            "{criadora}: Repetida de outro erro nao fecha"
+        );
+        // A marca nao e perene: depois de solta, a recusa volta a contar do
+        // zero (a sonda do proximo fluxo).
+        assert!(!b.registrar("list_dir", &outra_saida, t));
+        assert!(!b.registrar("list_dir", &outra_saida, t));
+        assert!(b.registrar("list_dir", &outra_saida, t));
+        b.registrar(criadora, &ToolOutput::success("ok"), t);
+        assert_eq!(b.estado("list_dir", t), Estado::Fechado, "{criadora}");
+    }
+}
