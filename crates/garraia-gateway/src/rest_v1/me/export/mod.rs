@@ -13,15 +13,16 @@ use uuid::Uuid;
 use crate::rest_v1::RestV1FullState;
 use crate::rest_v1::problem::RestError;
 
+mod group_content;
 pub mod types;
 
+use self::group_content::GroupContent;
 use self::types::{
     EXPORT_MAX_AUDIT_EVENTS, EXPORT_MAX_FILES, EXPORT_MAX_MEMORY, EXPORT_MAX_MENTIONS,
-    EXPORT_MAX_MESSAGES, EXPORT_MAX_TASKS, EXPORT_MENTION_EXCERPT_CHARS, ExportMeApiKey,
-    ExportMeAuditEvent, ExportMeDeletionRequest, ExportMeEmailChangeRequest, ExportMeFile,
-    ExportMeGroupMembership, ExportMeMemoryItem, ExportMeMentionReceived, ExportMeMessage,
-    ExportMeProfile, ExportMeResponse, ExportMeSession, ExportMeTask, ExportMemoryRow, cap_section,
-    export_exclusions, map_memory_row,
+    EXPORT_MAX_MESSAGES, EXPORT_MAX_TASKS, ExportMeApiKey, ExportMeAuditEvent,
+    ExportMeDeletionRequest, ExportMeEmailChangeRequest, ExportMeGroupMembership,
+    ExportMeMemoryItem, ExportMeProfile, ExportMeResponse, ExportMeSession, ExportMemoryRow,
+    cap_section, export_exclusions, map_memory_row,
 };
 
 /// `GET /v1/me/export` — LGPD art. 20 / GDPR arts. 15 & 20 personal data export.
@@ -188,7 +189,7 @@ pub async fn export_me(
     .bind(principal.user_id)
     .bind(nil_uuid)
     // cap + 1: the sentinel row tells "exactly the cap, nothing cut" from
-    // "more existed". See the cap constants block above.
+    // "more existed". See the cap constants in `types.rs`.
     .bind(EXPORT_MAX_AUDIT_EVENTS + 1)
     .fetch_all(&mut *tx)
     .await
@@ -311,7 +312,7 @@ pub async fn export_me(
          LIMIT $2",
     )
     .bind(principal.user_id)
-    // cap + 1: sentinel row, see the cap constants block above.
+    // cap + 1: sentinel row, see the cap constants in `types.rs`.
     .bind(EXPORT_MAX_MEMORY + 1)
     .fetch_all(&mut *tx)
     .await
@@ -319,284 +320,23 @@ pub async fn export_me(
 
     memory_items.extend(personal_memory.into_iter().map(map_memory_row));
 
-    // ── Content, group by group ──────────────────────────────────────────
-    //
-    // `set_config(..., true)` is transaction-local, so re-issuing it per
-    // group re-points RLS for the remainder of this transaction. Only groups
-    // with an active membership are visited (that is what `group_memberships`
-    // above already filtered on), and every query additionally pins the
-    // subject's own id — belt and braces, because a bug in either layer
-    // alone must not leak another tenant.
-    let mut messages: Vec<ExportMeMessage> = Vec::new();
-    let mut mentions_received: Vec<ExportMeMentionReceived> = Vec::new();
-    let mut files: Vec<ExportMeFile> = Vec::new();
-    let mut tasks: Vec<ExportMeTask> = Vec::new();
-
-    for membership in &group_memberships {
-        let gid = membership.group_id;
-
-        sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
-            .bind(gid.to_string())
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
-
-        // Messages the subject WROTE. Full body: their own content.
-        // cap + 1: sentinel row, see the cap constants block above.
-        let budget = EXPORT_MAX_MESSAGES + 1 - messages.len() as i64;
-        if budget > 0 {
-            type MsgRow = (
-                Uuid,
-                Uuid,
-                Uuid,
-                String,
-                String,
-                DateTime<Utc>,
-                Option<DateTime<Utc>>,
-                Option<DateTime<Utc>>,
-            );
-            let rows: Vec<MsgRow> = sqlx::query_as(
-                "SELECT m.id, m.chat_id, m.group_id, c.name, m.body, \
-                        m.created_at, m.edited_at, m.deleted_at \
-                 FROM messages m \
-                 JOIN chats c ON c.id = m.chat_id \
-                 WHERE m.sender_user_id = $1 AND m.group_id = $2 \
-                 ORDER BY m.created_at DESC, m.id DESC \
-                 LIMIT $3",
-            )
-            .bind(principal.user_id)
-            .bind(gid)
-            .bind(budget)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
-
-            messages.extend(rows.into_iter().map(
-                |(
-                    message_id,
-                    chat_id,
-                    group_id,
-                    chat_name,
-                    body,
-                    created_at,
-                    edited_at,
-                    deleted_at,
-                )| ExportMeMessage {
-                    message_id,
-                    chat_id,
-                    group_id,
-                    chat_name,
-                    body,
-                    created_at,
-                    edited_at,
-                    deleted_at,
-                },
-            ));
-        }
-
-        // @mentions the subject RECEIVED — data about them, authored by
-        // someone else, so excerpt only.
-        // cap + 1: sentinel row, see the cap constants block above.
-        let budget = EXPORT_MAX_MENTIONS + 1 - mentions_received.len() as i64;
-        if budget > 0 {
-            type MentionRow = (Uuid, Uuid, Uuid, Uuid, String, String, DateTime<Utc>);
-            let rows: Vec<MentionRow> = sqlx::query_as(
-                "SELECT mm.message_id, m.chat_id, mm.group_id, \
-                        m.sender_user_id, m.sender_label, \
-                        LEFT(m.body, $4::int) AS body_excerpt, mm.created_at \
-                 FROM message_mentions mm \
-                 JOIN messages m ON mm.message_id = m.id \
-                 WHERE mm.mentioned_user_id = $1 AND mm.group_id = $2 \
-                 ORDER BY mm.created_at DESC, mm.message_id DESC \
-                 LIMIT $3",
-            )
-            .bind(principal.user_id)
-            .bind(gid)
-            .bind(budget)
-            .bind(EXPORT_MENTION_EXCERPT_CHARS)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
-
-            mentions_received.extend(rows.into_iter().map(
-                |(
-                    message_id,
-                    chat_id,
-                    group_id,
-                    sender_user_id,
-                    sender_label,
-                    body_excerpt,
-                    created_at,
-                )| ExportMeMentionReceived {
-                    message_id,
-                    chat_id,
-                    group_id,
-                    sender_user_id,
-                    sender_label,
-                    body_excerpt,
-                    created_at,
-                },
-            ));
-        }
-
-        // Files the subject uploaded. Metadata only — see `exclusions`.
-        // cap + 1: sentinel row, see the cap constants block above.
-        let budget = EXPORT_MAX_FILES + 1 - files.len() as i64;
-        if budget > 0 {
-            type FileExportRow = (
-                Uuid,
-                Uuid,
-                String,
-                String,
-                i64,
-                Option<Uuid>,
-                DateTime<Utc>,
-                Option<DateTime<Utc>>,
-            );
-            let rows: Vec<FileExportRow> = sqlx::query_as(
-                "SELECT id, group_id, name, mime_type, size_bytes, folder_id, \
-                        created_at, deleted_at \
-                 FROM files \
-                 WHERE created_by = $1 AND group_id = $2 \
-                 ORDER BY created_at DESC, id DESC \
-                 LIMIT $3",
-            )
-            .bind(principal.user_id)
-            .bind(gid)
-            .bind(budget)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
-
-            files.extend(rows.into_iter().map(
-                |(
-                    file_id,
-                    group_id,
-                    name,
-                    mime_type,
-                    size_bytes,
-                    folder_id,
-                    created_at,
-                    deleted_at,
-                )| ExportMeFile {
-                    file_id,
-                    group_id,
-                    name,
-                    mime_type,
-                    size_bytes,
-                    folder_id,
-                    created_at,
-                    deleted_at,
-                },
-            ));
-        }
-
-        // Group-scoped memory the subject created (branch 1 of the dual
-        // policy, which needs the real group GUC set above).
-        // cap + 1: sentinel row (already spent on the personal slice if that
-        // one filled up), see the cap constants block above.
-        let budget = EXPORT_MAX_MEMORY + 1 - memory_items.len() as i64;
-        if budget > 0 {
-            let rows: Vec<ExportMemoryRow> = sqlx::query_as(
-                "SELECT id, scope_type, group_id, kind, sensitivity, content, \
-                        ttl_expires_at, created_at, deleted_at \
-                 FROM memory_items \
-                 WHERE created_by = $1 AND group_id = $2 \
-                 ORDER BY created_at DESC, id DESC \
-                 LIMIT $3",
-            )
-            .bind(principal.user_id)
-            .bind(gid)
-            .bind(budget)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
-
-            memory_items.extend(rows.into_iter().map(map_memory_row));
-        }
-
-        // Tasks the subject created OR is assigned to. `authored` /
-        // `assigned` tell the two apart, because a task someone else created
-        // and assigned to the subject is shared work-tracking, not their
-        // authored content.
-        // cap + 1: sentinel row, see the cap constants block above.
-        let budget = EXPORT_MAX_TASKS + 1 - tasks.len() as i64;
-        if budget > 0 {
-            type TaskExportRow = (
-                Uuid,
-                Uuid,
-                Uuid,
-                String,
-                String,
-                String,
-                bool,
-                bool,
-                Option<DateTime<Utc>>,
-                DateTime<Utc>,
-                Option<DateTime<Utc>>,
-            );
-            let rows: Vec<TaskExportRow> = sqlx::query_as(
-                "SELECT t.id, t.list_id, t.group_id, t.title, t.status, t.priority, \
-                        (t.created_by = $1) AS authored, \
-                        EXISTS ( \
-                            SELECT 1 FROM task_assignees ta \
-                            WHERE ta.task_id = t.id AND ta.user_id = $1 \
-                        ) AS assigned, \
-                        t.due_at, t.created_at, t.deleted_at \
-                 FROM tasks t \
-                 WHERE t.group_id = $2 \
-                   AND (t.created_by = $1 OR EXISTS ( \
-                        SELECT 1 FROM task_assignees ta2 \
-                        WHERE ta2.task_id = t.id AND ta2.user_id = $1 \
-                   )) \
-                 ORDER BY t.created_at DESC, t.id DESC \
-                 LIMIT $3",
-            )
-            .bind(principal.user_id)
-            .bind(gid)
-            .bind(budget)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
-
-            tasks.extend(rows.into_iter().map(
-                |(
-                    task_id,
-                    list_id,
-                    group_id,
-                    title,
-                    status,
-                    priority,
-                    authored,
-                    assigned,
-                    due_at,
-                    created_at,
-                    deleted_at,
-                )| ExportMeTask {
-                    task_id,
-                    list_id,
-                    group_id,
-                    title,
-                    status,
-                    priority,
-                    authored,
-                    assigned,
-                    due_at,
-                    created_at,
-                    deleted_at,
-                },
-            ));
-        }
-    }
-
-    // Back to the nil uuid: the audit INSERT below is a user-scoped event and
-    // its RLS branch matches `group_id = app.current_group_id`. Leaving the
-    // GUC on the last visited group would file the event under that group.
-    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
-        .bind(nil_uuid.to_string())
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| RestError::Internal(e.into()))?;
+    // Content, group by group — see `group_content`. It returns with
+    // `app.current_group_id` back on the nil uuid: the audit INSERT below is
+    // a user-scoped event and its RLS branch matches
+    // `group_id = app.current_group_id`.
+    let GroupContent {
+        mut messages,
+        mut mentions_received,
+        mut files,
+        mut memory_items,
+        mut tasks,
+    } = group_content::collect_group_content(
+        &mut tx,
+        principal.user_id,
+        &group_memberships,
+        memory_items,
+    )
+    .await?;
 
     // A section that reached its cap is declared, never silently trimmed.
     // `> cap` (not `>=`): each query fetched one sentinel row past the cap,
