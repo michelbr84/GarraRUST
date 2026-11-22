@@ -542,3 +542,71 @@ fn sucesso_de_quem_cria_diretorio_tambem_solta_a_pausa_por_repeticao_da_mesma_re
         assert_eq!(b.estado("list_dir", t), Estado::Fechado, "{criadora}");
     }
 }
+
+/// #1967, revisao: soltar a pausa da recusa de diretorio zera a contagem
+/// DELA — se o diretorio continua morto, a recusa volta a contar do zero em
+/// vez de reabrir na primeira.
+#[test]
+fn soltar_a_pausa_por_diretorio_zera_a_contagem_da_recusa() {
+    let t = t0();
+    for criadora in PODEM_CRIAR_DIRETORIO {
+        let mut b = Breaker::new();
+        b.abrir_turno(Some("/projeto"));
+        let s = recusa_de_diretorio_morto("nothing was read", "read again");
+        for _ in 0..3 {
+            b.registrar("file_read", &s, t);
+        }
+        b.registrar(criadora, &ToolOutput::success("ok"), t);
+        assert_eq!(b.estado("file_read", t), Estado::Fechado, "{criadora}");
+        assert!(
+            !b.registrar("file_read", &s, t),
+            "{criadora}: 1a apos soltar"
+        );
+        assert!(
+            !b.registrar("file_read", &s, t),
+            "{criadora}: 2a apos soltar"
+        );
+        assert!(b.registrar("file_read", &s, t), "{criadora}: 3a reabre");
+    }
+}
+
+/// #1967, revisao: a marca e da ASSINATURA, nao da ferramenta. Se a mesma
+/// ferramenta ja emitiu a recusa de diretorio mas a pausa vem de OUTRO erro
+/// repetido, o sucesso de quem cria diretorio nao a solta.
+#[test]
+fn repetida_de_outro_erro_na_ferramenta_marcada_nao_e_solta() {
+    let t = t0();
+    for criadora in PODEM_CRIAR_DIRETORIO {
+        let mut b = Breaker::new();
+        b.abrir_turno(Some("/projeto"));
+        let s = recusa_de_diretorio_morto("nothing was read", "read again");
+        b.registrar("file_read", &s, t);
+        let outro = ToolOutput::error("arquivo grande demais");
+        for _ in 0..3 {
+            b.registrar("file_read", &outro, t);
+        }
+        b.registrar(criadora, &ToolOutput::success("ok"), t);
+        assert!(
+            b.estado("file_read", t).esta_aberto(),
+            "{criadora}: Repetida de outro erro nao fecha"
+        );
+    }
+}
+
+/// #1967, revisao: a marca nao atravessa a troca de contexto — uma recusa
+/// de diretorio do contexto anterior nao solta pausa nenhuma do novo.
+#[test]
+fn marca_de_diretorio_nao_sobrevive_a_troca_de_contexto() {
+    let t = t0();
+    let mut b = Breaker::new();
+    b.abrir_turno(Some("/antigo"));
+    let s = recusa_de_diretorio_morto("nothing was read", "read again");
+    b.registrar("file_read", &s, t);
+    b.abrir_turno(Some("/novo"));
+    let outro = ToolOutput::error("arquivo grande demais");
+    for _ in 0..3 {
+        b.registrar("file_read", &outro, t);
+    }
+    b.registrar("file_write", &ToolOutput::success("ok"), t);
+    assert!(b.estado("file_read", t).esta_aberto());
+}
