@@ -713,9 +713,10 @@ Todos conferidos contra o código em 2026-09-07:
   `#[cfg(test)]`, então nenhum é de teste. Regra absoluta 4.
 - **`/ws/parrot` sem auth** e as **5 rotas A2A do router sem auth** — loopback é
   a única proteção.
-- **Arquivos grandes** (Quality Ratchet, report-only): `me.rs` 6366,
-  `chat.rs` 2653, `server.rs` 1572, `memory_cmd.rs` 1579 linhas. O
-  `memory_cmd.rs` cruzou 1500 no #1017, desta sessão.
+- **Arquivos grandes** (Quality Ratchet, report-only): `chat.rs` 2653,
+  `server.rs` 1572, `memory_cmd.rs` 1579 linhas. O `memory_cmd.rs` cruzou
+  1500 no #1017, desta sessão. O `me.rs` (7510 em 2026-11-21) foi dividido
+  em `rest_v1/me/` no #1966.
 - ~~**`garra about`** escreve ANSI incondicional em saída redirecionada~~ —
   resolvido: `about_text(style)` deriva cor e desenho do mesmo dono do #942
   (`ui::Capabilities::detect()`), com testes afirmando o caminho plain.
