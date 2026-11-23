@@ -2,11 +2,103 @@
 //! Synthetic gateway/descendants only: no live config, ports or services.
 use super::*;
 use std::io::{BufRead, BufReader};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::process::{Child, Command, Stdio};
+
+/// The synthetic descendant, held by a pidfd instead of a bare PID (#1913).
+///
+/// The descendant is not our child: once it exits and something else reaps
+/// it, its PID can be recycled. A bare PID would then make `vivo()` report an
+/// unrelated process as the surviving descendant, and the cleanup in
+/// [`Fixture::drop`] would `SIGKILL` that unrelated process. A pidfd keeps
+/// naming the original process for as long as the handle is open.
+struct Descendente {
+    pid: u32,
+    pidfd: OwnedFd,
+}
+
+impl Descendente {
+    fn abrir(pid: u32) -> Self {
+        // SAFETY: plain syscall; the result is checked before it becomes an fd.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+        assert!(
+            fd >= 0,
+            "pidfd_open({pid}) failed: {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: `fd` is a fresh descriptor owned by nobody else.
+        let pidfd = unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) };
+        Self { pid, pidfd }
+    }
+
+    /// A pidfd becomes readable when its process exits, so "alive" means "not
+    /// readable yet". An exited-but-unreaped descendant counts as gone, as in
+    /// [`is_process_running`].
+    fn vivo(&self) -> bool {
+        let mut pfd = libc::pollfd {
+            fd: self.pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            // SAFETY: one valid pollfd, zero timeout.
+            let n = unsafe { libc::poll(&mut pfd, 1, 0) };
+            if n >= 0 {
+                return n == 0;
+            }
+            let erro = std::io::Error::last_os_error();
+            assert_eq!(
+                erro.kind(),
+                std::io::ErrorKind::Interrupted,
+                "poll(pidfd of {}) failed: {erro}",
+                self.pid
+            );
+        }
+    }
+
+    /// Kills exactly this process; a no-op (ESRCH) when it is already gone.
+    fn matar(&self) {
+        // SAFETY: plain syscall on a pidfd we own; the result is ignored on
+        // purpose (best-effort cleanup).
+        unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                self.pidfd.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            );
+        }
+    }
+}
+
+/// Owns the synthetic gateway from the moment it is spawned, so a readiness
+/// read that fails (fixture crashed, malformed line) still kills and reaps it
+/// instead of leaking it past the test (#1913).
+struct GatewayGuard(Option<Child>);
+
+impl GatewayGuard {
+    fn child(&mut self) -> &mut Child {
+        self.0.as_mut().expect("gateway still owned by the guard")
+    }
+
+    fn into_inner(mut self) -> Child {
+        self.0.take().expect("gateway still owned by the guard")
+    }
+}
+
+impl Drop for GatewayGuard {
+    fn drop(&mut self) {
+        if let Some(mut gateway) = self.0.take() {
+            let _ = gateway.kill();
+            let _ = gateway.wait();
+        }
+    }
+}
 
 struct Fixture {
     gateway: Child,
-    descendant: u32,
+    descendant: Descendente,
 }
 
 impl Drop for Fixture {
@@ -16,20 +108,19 @@ impl Drop for Fixture {
         if self.gateway.try_wait().ok().flatten().is_none() {
             let _ = kill_and_wait_with_grace(self.gateway.id(), std::time::Duration::from_secs(1));
         }
-        if is_process_running(self.descendant) {
-            unsafe { libc::kill(self.descendant as libc::pid_t, libc::SIGKILL) };
-        }
+        self.descendant.matar();
         let _ = self.gateway.kill();
         let _ = self.gateway.wait();
     }
 }
 
 fn fixture(delay: &str) -> Fixture {
-    let mut gateway = Command::new("python3")
-        .args([
-            "-u",
-            "-c",
-            r#"
+    let mut gateway = GatewayGuard(Some(
+        Command::new("python3")
+            .args([
+                "-u",
+                "-c",
+                r#"
 import os, signal, subprocess, sys, time
 os.setsid()
 child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'], start_new_session=True)
@@ -44,39 +135,94 @@ child.terminate()
 child.wait(timeout=5)
 sys.exit(0)
 "#,
-            delay,
+                delay,
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("python3 process fixture"),
+    ));
+    let mut line = String::new();
+    BufReader::new(gateway.child().stdout.take().expect("stdout"))
+        .read_line(&mut line)
+        .expect("fixture ready");
+    let pid: u32 = line.trim().parse().expect("descendant PID");
+    // The descendant sleeps for 120 s and nothing signals it before the test
+    // acts, so the PID just printed still names it here. If readiness failed
+    // above, the guard reaps the gateway; an orphaned descendant (own session)
+    // is bounded by its 120 s sleep.
+    let descendant = Descendente::abrir(pid);
+    Fixture {
+        gateway: gateway.into_inner(),
+        descendant,
+    }
+}
+
+/// The pidfd handle tracks exit of the exact process and never resolves to a
+/// different one: after kill + exit it reports gone, and killing again is a
+/// harmless no-op.
+#[test]
+fn descendant_handle_tracks_the_exact_process() {
+    let mut proprio = Command::new("sleep").arg("30").spawn().expect("sleep");
+    let alvo = Descendente::abrir(proprio.id());
+    assert!(alvo.vivo());
+    alvo.matar();
+    let status = proprio.wait().expect("reap");
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(status.signal(), Some(libc::SIGKILL));
+    assert!(!alvo.vivo(), "exited process must not read as alive");
+    alvo.matar();
+}
+
+/// A fixture whose readiness line is unusable must not leak its gateway: the
+/// guard kills and reaps it while the panic unwinds.
+#[test]
+fn failed_readiness_does_not_leak_the_gateway() {
+    let child = Command::new("python3")
+        .args([
+            "-u",
+            "-c",
+            "import time; print('not-a-pid', flush=True); time.sleep(120)",
         ])
         .stdout(Stdio::piped())
         .spawn()
-        .expect("python3 process fixture");
-    let mut line = String::new();
-    BufReader::new(gateway.stdout.take().expect("stdout"))
-        .read_line(&mut line)
-        .expect("fixture ready");
-    let descendant = line.trim().parse().expect("descendant PID");
-    Fixture {
-        gateway,
-        descendant,
-    }
+        .expect("python3");
+    let pid = child.id();
+    let identidade = identidade_do_processo(pid).expect("start time of the fixture");
+    let resultado = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let mut gateway = GatewayGuard(Some(child));
+        let mut line = String::new();
+        BufReader::new(gateway.child().stdout.take().expect("stdout"))
+            .read_line(&mut line)
+            .expect("fixture ready");
+        let _: u32 = line.trim().parse().expect("descendant PID");
+    }));
+    assert!(
+        resultado.is_err(),
+        "malformed readiness must fail the fixture"
+    );
+    // Reaped by the guard: the PID either no longer exists or (recycled)
+    // belongs to a process with another start time.
+    assert_ne!(
+        identidade_do_processo(pid),
+        Some(identidade),
+        "gateway {pid} survived a failed readiness read"
+    );
 }
 
 #[test]
 fn stop_waits_for_cleanup_past_the_old_five_second_limit() {
     let mut target = fixture("6");
     let unrelated = fixture("0");
-    assert!(is_process_running(target.descendant));
+    assert!(target.descendant.vivo());
     assert!(kill_and_wait(target.gateway.id()));
     let status = target.gateway.wait().expect("reap gateway");
     assert!(is_process_running(unrelated.gateway.id()));
-    assert!(is_process_running(unrelated.descendant));
+    assert!(unrelated.descendant.vivo());
     assert!(
         status.success(),
         "cleanup was interrupted by force kill: {status}"
     );
-    assert!(
-        !is_process_running(target.descendant),
-        "descendant survived cleanup"
-    );
+    assert!(!target.descendant.vivo(), "descendant survived cleanup");
 }
 
 #[test]
@@ -93,7 +239,7 @@ fn stop_still_escalates_when_the_grace_expires() {
     );
     // The forced path cannot guarantee descendant cleanup: keep that limitation
     // explicit, and let Fixture::drop clean up this synthetic process.
-    assert!(is_process_running(target.descendant));
+    assert!(target.descendant.vivo());
 }
 
 #[test]
@@ -102,7 +248,7 @@ fn stop_returns_promptly_when_cleanup_finishes() {
     let start = std::time::Instant::now();
     assert!(kill_and_wait(target.gateway.id()));
     assert!(target.gateway.wait().expect("reap gateway").success());
-    assert!(!is_process_running(target.descendant));
+    assert!(!target.descendant.vivo());
     assert!(start.elapsed() < std::time::Duration::from_secs(5));
 }
 
@@ -134,8 +280,8 @@ fn collective_stop_spends_one_budget_for_every_target() {
     );
     assert!(primeiro.gateway.wait().expect("reap primeiro").success());
     assert!(segundo.gateway.wait().expect("reap segundo").success());
-    assert!(!is_process_running(primeiro.descendant));
-    assert!(!is_process_running(segundo.descendant));
+    assert!(!primeiro.descendant.vivo());
+    assert!(!segundo.descendant.vivo());
 
     // Sequencial seriam ~6 s; o orçamento único fica perto dos 3 s de cada
     // limpeza. A folga cobre a fila do runner sem deixar passar o caso N × grace.
@@ -146,7 +292,7 @@ fn collective_stop_spends_one_budget_for_every_target() {
 
     // Um processo alheio não faz parte do pedido e continua vivo.
     assert!(is_process_running(unrelated.gateway.id()));
-    assert!(is_process_running(unrelated.descendant));
+    assert!(unrelated.descendant.vivo());
 }
 
 /// A escalada para `SIGKILL` só atinge o processo que recebeu o `SIGTERM`.
