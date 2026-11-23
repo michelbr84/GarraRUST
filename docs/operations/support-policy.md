@@ -12,15 +12,10 @@
 | Dúvida / ideia | GitHub Discussions · Discord |
 | Bug / feature | Issue com template |
 | Segurança | `SECURITY.md` (privado; nunca issue pública) |
-| Cliente Garra Cloud (beta) — atendimento prioritário | Canal privado do painel do cliente e/ou canal oficial do projeto — `[PENDENTE: confirmar operação do canal/caixa antes de anunciar]` |
 | Pedido de titular de dados (LGPD/GDPR) | Canal privado próprio — `[PENDENTE: caixa/fluxo de pedidos de titulares a confirmar antes de anunciar]`; nunca issue pública |
 | Contribuição | `CONTRIBUTING.md` |
 
-**Regra de atendimento transversal:** incidentes de segurança e pedidos de
-titulares de dados são tratados **por gravidade, independentemente do plano**
-do solicitante — inclusive self-host/comunidade e Free Beta. Prioridade de
-Pro/Studio (quando os planos cloud existirem) é **comercial** (ordem de
-atendimento), e não muda essa regra nem cria SLA.
+**Regra de atendimento:** incidentes de segurança e pedidos de titulares de dados são tratados por gravidade.
 
 ## Alvos de resposta (comunidade — não contractual)
 
@@ -31,14 +26,7 @@ atendimento), e não muda essa regra nem cria SLA.
 | Questão/Discussion | Melhor esforço; resposta comunitária |
 | Regressão de release | Prioridade alta; correção na release seguinte |
 
-Esses alvos valem para a **comunidade ativa do projeto**. Eles **não criam
-SLA**: suporte comunitário é best-effort por natureza. Oferta de suporte com
-contrato/SLA é decisão comercial do maintainer (issue de negócio); quando
-existir, será documento próprio. Para o futuro Garra Cloud (planejado), a
-posição registrada é de **SLA de melhor esforço sem percentual contratual no
-lançamento**, comunicando disponibilidade de forma clara; SLA numérico só em
-contrato enterprise específico (ver `sla-decision-brief.md` e
-`docs/legal/tos-draft.md` §6).
+Esses alvos são de melhor esforço e não criam SLA contratual.
 
 ## O que é coberto
 

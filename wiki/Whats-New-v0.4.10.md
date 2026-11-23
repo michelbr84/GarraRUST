@@ -19,9 +19,7 @@ gains a native read-only diagnostic (`garra_diagnostics`), and the project
 publishes a **Docusaurus documentation site** on GitHub Pages, generated from
 the markdown that already lives in the repository.
 
-The third points toward the **Garra Cloud**: the foundation of the billing
-schema lands (plans, subscriptions and invoices per tenant, ADR 0026 — no
-pricing is defined in this MIT repository) and the D1/D3a/D9 dogfood gate
+The third area is installation validation: the D1/D3a/D9 dogfood gate
 becomes a CI job (`dogfood-linux.yml`).
 
 Rounding it off: a wide band of fixes — installers no longer fall onto a
@@ -127,17 +125,8 @@ crates from the RustCrypto chain in the lockfile.
   on every push to `main` (https://michelbr84.github.io/GarraRUST/). It does
   not touch `ci.yml` nor the garraia.org site.
 
-## Toward the Garra Cloud
+## Installation validation
 
-- **Billing schema foundation: plan/subscription/invoice (#1652, ADR 0026).**
-  `plans` is a global catalog seeded only with the `free` plan at no price
-  (pricing is not set in this MIT repository); `subscriptions` and `invoices`
-  are per-tenant under FORCE RLS (fail-closed), money as integer cents +
-  ISO 4217, the invoice as an immutable ledger, provider payment IDs optional
-  and UNIQUE, never card PII. Every group without a live subscription
-  resolves to Free, so a new tenant is born Free without touching anyone.
-  Schema only: the Stripe/Pix webhook, entitlements, metering and the signup
-  page are the next issues.
 - **The D1/D3a/D9 dogfood gate runs in CI.** `dogfood-linux.yml`
   (`workflow_dispatch`) installs the version-pinned, SHA-256-verified Ollama,
   starts the server, pulls the model and runs

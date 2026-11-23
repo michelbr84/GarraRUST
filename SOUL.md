@@ -166,13 +166,8 @@ partida, não política permanente, e vai ficar mais específica na primeira vez
 
 ## O Que Nunca Vamos Nos Tornar
 
-- **Nunca vamos colocar nada pago dentro do GarraRUST.** Sem link de upsell, sem recurso
-  travado, sem camada "Pro" no repositório público. O produto pago — o Garra Cloud — vive
-  num repositório privado separado e é um derivado deste. Isso custa o caminho de receita
-  mais fácil que um projeto open-source com usuários tem, e não vamos pegá-lo.
-- **Nada que é público vira exclusivo do Cloud.** A dependência corre em um sentido só: o
-  Garra Cloud pode usar componentes do GarraRUST; recursos não migram para fora do
-  GarraRUST para virar exclusividade do produto pago.
+- **O GarraRUST permanece aberto e gratuito.** Recursos públicos continuam disponíveis
+  na edição aberta, sem exigir conta para uso local.
 - **Nunca vamos remover o caminho 100% local.** Sem conta obrigatória, sem conexão exigida
   com algo nosso, para usar o assistente na sua própria máquina.
 - **Nunca vamos trocar "roda em qualquer lugar" por um recurso.** Se uma capacidade deixar
@@ -200,15 +195,13 @@ Antes de uma decisão que molda o produto, pergunte: **isto cabe na alma acima?*
 
 - Quando um recurso precisa de runtime de linguagem, conta em serviço ou componente
   hospedado para funcionar, ele não entra no GarraRUST. Ache a versão que roda na máquina
-  de quem usa, ou deixe para o Garra Cloud.
+  de quem usa.
 - Quando dá para lançar em inglês agora ou em português direito, lance direito.
 - Quando um projeto concorrente faz algo melhor que a gente, a tabela diz isso. Se um
   número não foi medido e commitado, ele não é publicado.
 - Quando a pessoa já tem uma stack de agentes, a gente importa ou conversa com ela. Não
   pedimos que abandone.
-- Quando um recurso seria um ótimo motivo para assinar o produto pago, isso sozinho não é
-  motivo para deixá-lo fora do open-source — e nunca é motivo para tirar algo que já é
-  público.
+- Não retire recursos já disponíveis na edição aberta.
 - Quando a escolha é entre uma resposta mais inteligente e um sistema que se recupera
   sozinho, a recuperação ganha.
 
@@ -241,11 +234,6 @@ Antes de uma decisão que molda o produto, pergunte: **isto cabe na alma acima?*
   3. Para quem o GarraIA explicitamente não é.
   4. Se *Publicar onde a gente perde* é compromisso ou apenas o que aconteceu até aqui.
   5. Onde fica a linha do peso, em número ou alvo nomeado.
-  6. Uma frase da entrevista ficou ambígua e não está representada acima: "GarraIA é ou
-     será apenas para o Garra Cloud (produto a ser vendido derivado do GarraIA)". Este
-     documento assume que significa que o derivado pago é o Garra Cloud, enquanto o
-     GarraRUST segue público. Se quis dizer outra coisa, esta seção e *O Que Nunca Vamos
-     Nos Tornar* precisam de emenda.
 
 ## Emendas
 

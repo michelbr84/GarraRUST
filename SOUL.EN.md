@@ -107,12 +107,9 @@ when an amendment would read better by quietly replacing the old text, we keep t
 text — verbatim, dated, with the reason — and accept a longer, uglier document in exchange
 for one that can be trusted years later.
 
-### The essential is never behind a paywall
+### The essentials stay available locally
 
-Writing your project's soul is the thing this exists to do, and it stays free of charge
-and free of an account. So when a revenue path would require putting `SOUL.md` creation
-behind a payment or a login, we close that path, even though it is the most obvious way
-this could ever make money.
+Writing your project’s soul remains free and does not require an account.
 
 ### Useful to the author beats principled in the abstract
 
@@ -153,8 +150,7 @@ spite of the README.
   document it writes worthless, so it is the one we do not build.
 - **A rewriter of history.** We will never silently delete or overwrite what an earlier
   version of a soul document said.
-- **A paywall around the essential.** We will never put the creation of a `SOUL.md` behind
-  payment or a mandatory account.
+- **Mandatory accounts.** Writing a `SOUL.md` does not require an account.
 
 ## The Long-Term Dream
 
@@ -171,8 +167,6 @@ their own document?**
   ship — however much faster it would be.
 - If a change would make an earlier version of someone's document unrecoverable, it does
   not ship.
-- If a revenue idea touches the writing of `SOUL.md` itself, it is closed. Revenue has to
-  come from somewhere else or not at all.
 - When a rule here gets in the way of genuinely helping an author, do not quietly break
   it — change it, in the open, and record what changed.
 - When the answer is "the author decides," the job is to make sure the author is actually
