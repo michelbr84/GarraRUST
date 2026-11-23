@@ -19,9 +19,7 @@ ganha diagnóstico nativo somente leitura (`garra_diagnostics`) e o projeto
 publica um **site de documentação Docusaurus** no GitHub Pages, gerado do
 markdown que já existe no repositório.
 
-A terceira aponta para o **Garra Cloud**: entra a fundação do schema de
-billing (planos, assinaturas e faturas por tenant, ADR 0026 — sem preço
-definido neste repositório MIT) e o gate de dogfood D1/D3a/D9 vira job de CI
+A terceira frente é o gate de dogfood D1/D3a/D9, agora executado no CI
 (`dogfood-linux.yml`).
 
 Fechando: banda larga de correções — instaladores que não caem mais num
@@ -125,17 +123,8 @@ lote de segurança: revoke dos privilégios que a migration 007 vazava,
   `main` (https://michelbr84.github.io/GarraRUST/). Não altera o `ci.yml` nem
   o site garraia.org.
 
-## Rumo ao Garra Cloud
+## Validação de instalação
 
-- **Fundação de schema de billing: plan/subscription/invoice (#1652, ADR
-  0026).** `plans` é catálogo global semeado só com o plano `free` sem preço
-  (preço não se fixa neste repositório MIT); `subscriptions` e `invoices` são
-  por tenant sob FORCE RLS (fail-closed), dinheiro em centavos inteiros +
-  ISO 4217, fatura como ledger imutável, ids de provedor de pagamento
-  opcionais e UNIQUE, nunca PII de cartão. Todo grupo sem assinatura viva
-  resolve para o Free, então um tenant novo nasce Free sem intervir em
-  ninguém. Só o schema: webhook Stripe/Pix, entitlements, metering e a página
-  de signup ficam para as próximas issues.
 - **O gate de dogfood D1/D3a/D9 roda no CI.** O `dogfood-linux.yml`
   (`workflow_dispatch`) instala o Ollama pinado por versão + SHA-256
   verificado, sobe o servidor, puxa o modelo e roda

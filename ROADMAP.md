@@ -587,7 +587,7 @@ Novo crate: `garraia-auth` (separado de `garraia-security`).
 - [x] Papéis: `Owner`, `Admin`, `Member`, `Guest`, `Child` — `Role` enum tipado com tier numérico (100/80/50/20/10) batendo com `roles` seed. ✅
 - [x] **Capabilities (22 variants):** `files.*`, `chats.*`, `memory.*`, `tasks.*`, `docs.*`, `members.manage`, `group.{settings,delete}`, `export.{self,group}` — `Action` enum mapeado via `fn can()`. ✅
 - [ ] `enum Scope { User(Uuid), Group(Uuid), Chat(Uuid) }` com regra de resolução `Chat > Group > User`. *(Parcial: `Scope { User, Group, Chat }` tipado existe em `garraia-embeddings::Scope` e no `ValidatedScopeType` da busca; a regra de resolução ainda não.)*
-- [x] **Defense-in-depth**: Postgres RLS (`CREATE POLICY`) em `messages`, `chats`, `chat_members`, `message_threads`, `memory_items`, `memory_embeddings`, `audit_events`, `sessions`, `api_keys`, `user_identities`, `task_lists`, `tasks`, `task_assignees`, `task_labels`, `task_label_assignments`, `task_comments`, `task_subscriptions`, `task_activity` — hoje 36 tabelas com FORCE RLS + NULLIF fail-closed (migrations 003, 006, 007, 014, 017, 018, 020-022, 026-029, 034, 035); só `users`, `roles`, `permissions`, `role_permissions`, `group_invites` e `plans` (catalogo global de billing) ficam fora. ✅
+- [x] **Defense-in-depth**: Postgres RLS (`CREATE POLICY`) em `messages`, `chats`, `chat_members`, `message_threads`, `memory_items`, `memory_embeddings`, `audit_events`, `sessions`, `api_keys`, `user_identities`, `task_lists`, `tasks`, `task_assignees`, `task_labels`, `task_label_assignments`, `task_comments`, `task_subscriptions`, `task_activity` — hoje 36 tabelas com FORCE RLS + NULLIF fail-closed (migrations 003, 006, 007, 014, 017, 018, 020-022, 026-029, 034, 035); só `users`, `roles`, `permissions`, `role_permissions`, `group_invites` e `plans` (catálogo global) ficam fora. ✅
 - [x] **FORCE RLS em `groups` + `group_members`** — migration 018, plan 0106 / GAR-589, merged 2026-05-12 via PR #294 (`36b2b72`). `groups_member_access` + `group_members_visible` policies; fixes `get_group` FIXME (missing SET LOCAL) e `list_members` (missing `app.current_group_id`). ✅
 - [x] **Identity provider decision:** [ADR 0005](docs/adr/0005-identity-provider.md) — BYPASSRLS dedicated role (`garraia_login` NOLOGIN BYPASSRLS) + Argon2id (m=64MiB, t=3, p=4) + HS256 JWT + PBKDF2→Argon2id lazy upgrade dual-verify + `IdentityProvider` trait shape congelada. ✅
 - [ ] **Guardrails Child/Dependent**: sem export, sem share externo, content filter aplicado pré-LLM.
@@ -1212,7 +1212,7 @@ Related: GAR-333 (provisionar `api.garraia.org` com gateway cloud — em aberto 
 - [ ] **Beta program** com feature flags por grupo.
 - [ ] **Cutover gradual**: 1% → 10% → 50% → 100%.
 - [ ] **Docs**: `https://docs.garraia.org`. *(Parcial: scaffold mdBook em `docs/book.toml` + `docs/src/`, e `wiki/` sincronizado com o GitHub Wiki via `wiki-sync.yml`; site hospedado pendente.)*
-- [ ] **Marketing site**: landing + demo + pricing. *(Parcial: a landing `garraia.org` vive no repo `michelbr84/garraia-74c335d5` (Lovable) e serve os instaladores; demo/pricing pendentes.)*
+- [ ] **Site do projeto**: documentação e demonstração da instalação.
 
 **Estimativa fase 6:** 4 / 5 / 7 semanas.
 

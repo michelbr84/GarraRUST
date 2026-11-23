@@ -191,11 +191,7 @@ daemon pertence a uma unit systemd, e com exit 64 num pipe sem `--yes`.
 
 ## Documentos: limpeza e contribuição
 
-- **Rascunhos legais e de precificação saem do repositório público (#1616).**
-  Uma auditoria de exposição encontrou documentos marcados "RASCUNHO — NÃO
-  PUBLICAR" e o modelo financeiro interno na `main`. Os arquivos deixam de ser
-  versionados (agora cobertos pelo `.gitignore`); versões finais revisadas
-  publicam em garraia.org. Histórico git e forks existentes não são afetados.
+- Rascunhos internos deixaram de integrar a documentação de uso.
 - **Domínio de contato corrigido para `garraia.org` (#1574).** Alguns caminhos
   apontavam para `garraia.cloud`, que não resolve. O domínio real do projeto é
   `garraia.org`, e o e-mail de segurança é `security@garraia.org`.

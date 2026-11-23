@@ -88,4 +88,3 @@ discussions, e a ratificação é do maintainer:
 | [Política de suporte](support-policy.md) | Proposta |
 | [Versões suportadas](version-support-policy.md) | Proposta |
 | [Depreciação](deprecation-policy.md) | Proposta |
-| [SLA — decisão registrada](sla-decision-brief.md) | Decisão registrada: self-host distribuído **sem SLA** (com justificativa e opções) |

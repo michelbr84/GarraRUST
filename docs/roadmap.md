@@ -320,17 +320,10 @@
 
 #### 8.3 Marketing
 - [x] Benchmarks documentados (docs/src/benchmarks.md)
-- [x] Pricing page (docs/src/pricing.md)
 - [ ] Landing page (garraia.org)
 - [ ] Blog com posts tecnicos
 - [ ] Case studies
 - [ ] Presenca em Hacker News, Reddit
-
-#### 8.4 Monetizacao (Opcional)
-- [~] Docs de planos (Free/Pro/Enterprise) criados
-- [ ] GarraIA Cloud (hosted version)
-- [ ] Marketplace de plugins premium
-- [ ] Suporte prioritario enterprise
 
 ---
 

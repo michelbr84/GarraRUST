@@ -26,7 +26,7 @@ Em uma linha: **as 4 camadas de prova de tenant isolation (auth, RBAC, RLS SQL, 
 ## Próximos passos (Fase 3 → beta)
 
 - Fechado GAR-391d → epic GAR-391 fecha → Fase 3 entra em beta candidate.
-- Fase 3.5 (quota enforcement, billing rails opcional, plan limits).
+- Fase 3.5: limites de uso.
 - Documentação pública de migração: como subir um GarraIA self-hosted para um time brasileiro, com checklist LGPD.
 
 ---

@@ -4,7 +4,7 @@
 - **Data:** 2026-10-28, America/New_York.
 - **Base auditada:** `7c9cdc29`; conferir o relatório de execução para o commit final implementado.
 - **Issue de execução:** [#1754](https://github.com/michelbr84/GarraRUST/issues/1754).
-- **Escopo:** recurso aberto e self-hosted no gateway existente; assinaturas, pagamentos e infraestrutura comercial pertencem ao repositório privado `GarraIA/GarraIA`.
+- **Escopo:** recurso aberto e self-hosted no gateway existente.
 
 ## Problema e evidências locais
 

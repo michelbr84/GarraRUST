@@ -49,9 +49,8 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
   verificado por GPG + SHA-256, com smoke de instalador nas três plataformas no
   CI; o produto passa a se explicar — catálogo de funcionalidades embutido
   (`garra_capabilities`), diagnóstico nativo (`garra_diagnostics`) e site de
-  documentação Docusaurus no GitHub Pages (#1639); entra a fundação do schema
-  de billing do Garra Cloud (ADR 0026) e o dogfood D1/D3a/D9 vira job de CI; no
-  lote de segurança, revoke dos privilégios vazados pela migration 007,
+  documentação Docusaurus no GitHub Pages (#1639); o dogfood D1/D3a/D9 vira
+  job de CI; no lote de segurança, revoke dos privilégios vazados pela migration 007,
   wasmtime 49.0.4 e `jsonwebtoken` migrando para `aws_lc_rs` (vinte crates a
   menos no lockfile).
 - **[v0.4.9 — Novidades](Novidades-v0.4.9)** · **[What's New in v0.4.9 (English)](Whats-New-v0.4.9)**

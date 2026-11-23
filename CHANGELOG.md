@@ -1346,20 +1346,6 @@ Instalacao: `irm https://garraia.org/install.ps1 | iex` (Windows) ou
   (`url`/`baseUrl` configuraveis por env). Nao altera o `ci.yml` nem o site
   `garraia.org`.
 - Canal WhatsApp linked: guarda de cadencia entre turnos por chat (#1650). Passando de 20 turnos admitidos em 60s no mesmo chat, o turno e cortado com log `possivel loop entre agentes`, com um unico aviso por rajada; turno cortado nao conta na janela, entao o chat volta sozinho quando o outro lado cala. Teto ainda fixo (configuravel e contador em `doctor` ficam como follow-up).
-- **Fundacao de schema de billing do Garra Cloud: plan/subscription/invoice (#1652).**
-  Migration 035 do `garraia-workspace` adiciona tres entidades. `plans` e um
-  catalogo global (sem RLS, mesma classe de roles/permissions), semeado apenas
-  com o plano `free` sem preco (price/currency NULL = preco nao fixado neste
-  repositorio MIT). `subscriptions` e `invoices` sao por tenant sob FORCE RLS
-  (isolamento por `group_id`, fail-closed via NULLIF, WITH CHECK identico ao
-  USING). Dinheiro e sempre inteiro de centavos + ISO 4217; ids de provedor de
-  pagamento sao opcionais e UNIQUE por provedor; nunca ha PII de cartao. A
-  fatura e ledger imutavel (garraia_app so SELECT/INSERT). Todo grupo sem
-  assinatura viva resolve para o plano Free pela funcao
-  `garraia_effective_plan_id` (sem trigger nem backfill; respeita RLS), entao
-  um tenant novo nasce Free sem intervir ninguem. So o schema: webhook
-  Stripe/Pix (#1653), entitlements (#1654), metering (#1655) e a pagina de
-  signup (#1656) ficam para as proximas issues. ADR 0026.
 - **Diagnostico nativo e seguro da instalacao do Garra (#1669).** Nova tool de
   agente `garra_diagnostics` no `garraia-gateway`: relatorio estruturado e
   somente leitura da propria instalacao — versao instalada, estado do gateway,
@@ -1500,9 +1486,9 @@ Instalacao: `irm https://garraia.org/install.ps1 | iex` (Windows) ou
 
 **Segundo pre-lancamento da 0.4.10, nao e a versao estavel.** O rc1 publicou a Release como devia (prerelease, sem `latest`, canal estavel intacto: `/releases/latest`, `latest.json`, `garra update` e os instaladores sem versao fixada seguem na v0.4.9), mas o Deploy da imagem Docker falhou: o Dockerfile nao copiava os forks vendorizados de `third_party/` que o `[patch.crates-io]` usa desde #1668, e a imagem `0.4.10-rc1` nao existe. O rc2 corrige o Dockerfile e passa a construir a imagem (sem push) em todo PR que mexe no Dockerfile, no `Cargo.toml`/`Cargo.lock` da raiz ou em `third_party/` (#1694). A validacao do rc1 achou tambem um falso amarelo no diagnostico de uma instalacao nova: `tools.capabilities` contava `device_read` e `device_execute` como indisponiveis quando nenhum adapter de hardware estava configurado, e o certo e "nao configurado"; o rc2 corrige isso, e adapter configurado sem dispositivo continua acusando (#1695). E, numa maquina sem Node.js (a CLI num Linux limpo, ou o desktop num Windows sem Node global, ja que o Node privado do instalador e so da ponte do WhatsApp), o boot deixa de provisionar um MCP `filesystem` via `npx` que nunca subia e deixava o diagnostico amarelo; o diagnostico, o `garra doctor mcp` e a tool `garra_diagnostics` passam a dizer que falta o `npx`, e o primeiro boot depois de instalar o Node provisiona sozinho (#1696). No Windows, o diagnostico deixa de dizer que o workspace esta "fora do data_dir" quando ele esta dentro: o `data_dir` canonico (`\\?\C:\...`) nao casava com a raiz crua do `mcp.json` (#1698). Fora essas quatro correcoes, o codigo e o mesmo do rc1. Os testes que falham no Windows e que o CI Windows nao executa (ele so compila os testes) estao documentados, com evidencia, na #1697. Como o rc1, este RC sai como *prerelease* e nao e oferecido a quem esta na v0.4.9.
 
-**Destaques.** Os instaladores desktop (MSI/NSIS no Windows, `.deb`/AppImage no Linux, DMG no macOS Apple Silicon) passam a levar um Node.js v24.22.1 LTS privado, com procedencia verificada por GPG (chaves do release team do Node fixadas por fingerprint) e integridade por SHA-256, junto com as dependencias da ponte do WhatsApp ja instaladas: parear o WhatsApp deixa de exigir Node, npm ou terminal, e o runtime e chamado por caminho explicito, sem mexer no PATH nem em instalacoes existentes (#1683, #1685, #1689). No primeiro uso, o desktop abre um assistente com o QR do WhatsApp, a persona e o modo de acesso, e o modo dedicado ja autoriza o numero pessoal do dono para ele nao ficar trancado do lado de fora (#1690). A ponte e o sidecar nao deixam mais processos orfaos (Job Object no Windows, grupo de processos no Unix, `garra start --exit-with-parent`; #1687), e a ponte volta a subir no Windows, onde faltava `SystemRoot` no ambiente do processo filho (#1685). Seguranca: a migration 036 revoga privilegios que o `ALTER DEFAULT PRIVILEGES` da 007 concedia em nove tabelas (#1682); o jail do MCP filesystem passa a ser fail-closed, com o servidor fixado em 2.0.0 (#1684); RUSTSEC-2026-0379, 0381, 0382, 0383 e 0385 e os advisories do `zip` fechados; teto de superficie para sessoes nao-operador (#1665) e jail e workdir por orquestrador no MCP HTTP (#1642). Tambem nesta versao: schema de billing com o plano Free efetivo, sem cobranca ainda (#1652); diagnostico nativo sem shell, `garra_diagnostics` (#1669); catalogo versionado de funcionalidades (#1670); cadencia entre turnos no WhatsApp (#1650); cliente Chatterbox que segue a assinatura do endpoint Gradio; sonda do Whisper no boot; e o seletor de provedores do Web Console listando as instancias reais.
+**Destaques.** Os instaladores desktop (MSI/NSIS no Windows, `.deb`/AppImage no Linux, DMG no macOS Apple Silicon) passam a levar um Node.js v24.22.1 LTS privado, com procedencia verificada por GPG (chaves do release team do Node fixadas por fingerprint) e integridade por SHA-256, junto com as dependencias da ponte do WhatsApp ja instaladas: parear o WhatsApp deixa de exigir Node, npm ou terminal, e o runtime e chamado por caminho explicito, sem mexer no PATH nem em instalacoes existentes (#1683, #1685, #1689). No primeiro uso, o desktop abre um assistente com o QR do WhatsApp, a persona e o modo de acesso, e o modo dedicado ja autoriza o numero pessoal do dono para ele nao ficar trancado do lado de fora (#1690). A ponte e o sidecar nao deixam mais processos orfaos (Job Object no Windows, grupo de processos no Unix, `garra start --exit-with-parent`; #1687), e a ponte volta a subir no Windows, onde faltava `SystemRoot` no ambiente do processo filho (#1685). Seguranca: a migration 036 revoga privilegios que o `ALTER DEFAULT PRIVILEGES` da 007 concedia em nove tabelas (#1682); o jail do MCP filesystem passa a ser fail-closed, com o servidor fixado em 2.0.0 (#1684); RUSTSEC-2026-0379, 0381, 0382, 0383 e 0385 e os advisories do `zip` fechados; teto de superficie para sessoes nao-operador (#1665) e jail e workdir por orquestrador no MCP HTTP (#1642). Tambem nesta versao: diagnostico nativo sem shell, `garra_diagnostics` (#1669); catalogo versionado de funcionalidades (#1670); cadencia entre turnos no WhatsApp (#1650); cliente Chatterbox que segue a assinatura do endpoint Gradio; sonda do Whisper no boot; e o seletor de provedores do Web Console listando as instancias reais.
 
-**Compatibilidade.** Sem breaking change de config ou de API. As migrations 035 (billing) e 036 (revoke) sao forward-only. O instalador desktop cresce de 31 a 58 MB, conforme a plataforma, por causa do runtime Node embutido.
+**Compatibilidade.** Sem breaking change de config ou de API. As migrations 035 e 036 (revoke) sao forward-only. O instalador desktop cresce de 31 a 58 MB, conforme a plataforma, por causa do runtime Node embutido.
 
 **Como testar.** CLI no Windows: `$env:GARRAIA_VERSION='v0.4.10-rc2'; irm https://github.com/michelbr84/GarraRUST/releases/download/v0.4.10-rc2/install.ps1 | iex`. CLI no Linux/macOS: `curl -fsSL https://github.com/michelbr84/GarraRUST/releases/download/v0.4.10-rc2/install.sh | sh -s -- --version v0.4.10-rc2`. Docker: `docker pull ghcr.io/michelbr84/garraia:0.4.10-rc2`. Desktop: baixar o `.msi`, o `.deb`, o AppImage ou o `.dmg` desta pagina e instalar numa maquina sem Node nem npm globais.
 
@@ -1512,9 +1498,9 @@ Instalacao: `irm https://garraia.org/install.ps1 | iex` (Windows) ou
 
 **Pre-lancamento para validacao, nao e a versao estavel.** Este RC existe para provar no mundo real, antes da v0.4.10, o Assistente de Primeiro Uso do desktop e o runtime Node.js privado embutido nos instaladores (#1636). Ele sai como *prerelease*: nao vira `latest`, nao e oferecido pelo `garra update`, pelo `install.sh`/`install.ps1` sem versao fixada nem pelo auto-updater do desktop. Quem esta na v0.4.9 continua na v0.4.9.
 
-**Destaques.** Os instaladores desktop (MSI/NSIS no Windows, `.deb`/AppImage no Linux, DMG no macOS Apple Silicon) passam a levar um Node.js v24.22.1 LTS privado, com procedencia verificada por GPG (chaves do release team do Node fixadas por fingerprint) e integridade por SHA-256, junto com as dependencias da ponte do WhatsApp ja instaladas: parear o WhatsApp deixa de exigir Node, npm ou terminal, e o runtime e chamado por caminho explicito, sem mexer no PATH nem em instalacoes existentes (#1683, #1685, #1689). No primeiro uso, o desktop abre um assistente com o QR do WhatsApp, a persona e o modo de acesso, e o modo dedicado ja autoriza o numero pessoal do dono para ele nao ficar trancado do lado de fora (#1690). A ponte e o sidecar nao deixam mais processos orfaos (Job Object no Windows, grupo de processos no Unix, `garra start --exit-with-parent`; #1687), e a ponte volta a subir no Windows, onde faltava `SystemRoot` no ambiente do processo filho (#1685). Seguranca: a migration 036 revoga privilegios que o `ALTER DEFAULT PRIVILEGES` da 007 concedia em nove tabelas (#1682); o jail do MCP filesystem passa a ser fail-closed, com o servidor fixado em 2.0.0 (#1684); RUSTSEC-2026-0379, 0381, 0382, 0383 e 0385 e os advisories do `zip` fechados; teto de superficie para sessoes nao-operador (#1665) e jail e workdir por orquestrador no MCP HTTP (#1642). Tambem nesta versao: schema de billing com o plano Free efetivo, sem cobranca ainda (#1652); diagnostico nativo sem shell, `garra_diagnostics` (#1669); catalogo versionado de funcionalidades (#1670); cadencia entre turnos no WhatsApp (#1650); cliente Chatterbox que segue a assinatura do endpoint Gradio; sonda do Whisper no boot; e o seletor de provedores do Web Console listando as instancias reais.
+**Destaques.** Os instaladores desktop (MSI/NSIS no Windows, `.deb`/AppImage no Linux, DMG no macOS Apple Silicon) passam a levar um Node.js v24.22.1 LTS privado, com procedencia verificada por GPG (chaves do release team do Node fixadas por fingerprint) e integridade por SHA-256, junto com as dependencias da ponte do WhatsApp ja instaladas: parear o WhatsApp deixa de exigir Node, npm ou terminal, e o runtime e chamado por caminho explicito, sem mexer no PATH nem em instalacoes existentes (#1683, #1685, #1689). No primeiro uso, o desktop abre um assistente com o QR do WhatsApp, a persona e o modo de acesso, e o modo dedicado ja autoriza o numero pessoal do dono para ele nao ficar trancado do lado de fora (#1690). A ponte e o sidecar nao deixam mais processos orfaos (Job Object no Windows, grupo de processos no Unix, `garra start --exit-with-parent`; #1687), e a ponte volta a subir no Windows, onde faltava `SystemRoot` no ambiente do processo filho (#1685). Seguranca: a migration 036 revoga privilegios que o `ALTER DEFAULT PRIVILEGES` da 007 concedia em nove tabelas (#1682); o jail do MCP filesystem passa a ser fail-closed, com o servidor fixado em 2.0.0 (#1684); RUSTSEC-2026-0379, 0381, 0382, 0383 e 0385 e os advisories do `zip` fechados; teto de superficie para sessoes nao-operador (#1665) e jail e workdir por orquestrador no MCP HTTP (#1642). Tambem nesta versao: diagnostico nativo sem shell, `garra_diagnostics` (#1669); catalogo versionado de funcionalidades (#1670); cadencia entre turnos no WhatsApp (#1650); cliente Chatterbox que segue a assinatura do endpoint Gradio; sonda do Whisper no boot; e o seletor de provedores do Web Console listando as instancias reais.
 
-**Compatibilidade.** Sem breaking change de config ou de API. As migrations 035 (billing) e 036 (revoke) sao forward-only. O instalador desktop cresce de 31 a 58 MB, conforme a plataforma, por causa do runtime Node embutido.
+**Compatibilidade.** Sem breaking change de config ou de API. As migrations 035 e 036 (revoke) sao forward-only. O instalador desktop cresce de 31 a 58 MB, conforme a plataforma, por causa do runtime Node embutido.
 
 **Como testar.** CLI no Windows: `$env:GARRAIA_VERSION='v0.4.10-rc1'; irm https://github.com/michelbr84/GarraRUST/releases/download/v0.4.10-rc1/install.ps1 | iex`. CLI no Linux/macOS: `curl -fsSL https://github.com/michelbr84/GarraRUST/releases/download/v0.4.10-rc1/install.sh | sh -s -- --version v0.4.10-rc1`. Desktop: baixar o `.msi`, o `.deb`, o AppImage ou o `.dmg` desta pagina e instalar numa maquina sem Node nem npm globais.
 
@@ -1616,26 +1602,7 @@ Refs #1595
   comportamento em producao.
 
 ### Changed
-- **Decisoes do dono entram nos rascunhos GA de negocio e legal (#1565, #1574, #1575, #1576).**
-  Segunda leva dos documentos de GA, agora com as decisoes registradas — tudo
-  continua marcado como rascunho/proposta e nada vale sem a revisao humana
-  indicada em cada arquivo. `docs/legal/tos-draft.md` ganha os tres contextos
-  (Community MIT self-host vigente, Garra Cloud planejado, distribuicao via
-  site), divisao de responsabilidades BYOK, suspensao com criterios objetivos
-  e proporcionalidade, forum brasileiro preservado e identificacao da entidade
-  como pre-requisito; `docs/legal/privacy-policy-draft.md` ganha a tabela de
-  retencao proposta da cloud (mensagens 90d com opcoes 7/30d, logs 30d,
-  auditoria 90d, backups ≤30d) e registra a divergencia doc-vs-codigo do
-  retention_days de 730 dias; `docs/legal/dpa-template.md` passa a classificar
-  controlador/operador por fluxo com inventario de suboperadores;
-  `docs/compliance/lia.md` nasce (LIA das sessions condicionado a revisao
-  legal externa) e o DPIA o referencia; `docs/compliance/incident-response.md`
-  alinha a notificacao ANPD a orientacao de 3 dias uteis e ganha anexo de
-  tabletop de 1h (execucao pendente); `docs/src/pricing.md` recebe a grades
-  Community/Beta/Pro R$39/Studio R$149 com quotas e regras de franquia LLM;
-  `SUPPORT.md` e `docs/operations/` ganham canais de cloud e de titulares com
-  marcadores PENDENTE e a regra de atendimento por gravidade independente de
-  plano.
+- **Documentação de conformidade:** atualização do DPIA e do procedimento de resposta a incidentes.
 - **Request-path do gateway nega `unwrap()`/`expect()` (#1569, primeira leva).** Dez
   modulos que recebem input externo (`rest_v1/{me,search,chats,groups,uploads,tasks/labels}`,
   `api`, `admin/store`, `diagnostics_handler`, `runs_handler`) ganham
@@ -1678,14 +1645,7 @@ Refs #1595
 - **Dependencias de outubro atualizadas em bloco (#1631, #1632, #1633, #1634).** `tokio` 1.53.3, `serde_json` 1.0.154, `uuid` 1.28.0, `libc` 0.2.190, `zeroize` 1.9.1, `aws-sdk-s3` 1.152.0, a familia `opentelemetry` 0.33.1, o Tauri 2.12.2 com os plugins `global-shortcut` 2.4.1, `shell` 2.5.0, `notification` 2.7.0, `dialog` 2.8.3 e `updater` 2.14.0 (o desktop deixa de arrastar `sigchld`, o `signal-hook` 0.3 e a arvore `windows` 0.61), `@playwright/test` 1.64 nos testes E2E e a imagem base do `Dockerfile` em `rust:1.99-slim`. Substitui os quatro PRs do Dependabot abertos com o mesmo conteudo, que ficavam vermelhos no `cargo-deny` por causa do #1630.
 
 ### Removed
-- **Rascunhos legais e precificacao saem do repositorio publico (#1616).**
-  `docs/legal/` (ToS, Privacy, DPA, direitos do titular), `docs/src/pricing.md`
-  e `docs/business/cost-model-inputs.md` deixam de ser versionados apos a
-  auditoria de exposicao de 2026-10-09 ter encontrado documentos marcados
-  "RASCUNHO — NAO PUBLICAR" e o modelo financeiro interno (precos propostos,
-  margens, breakeven) na main. Os arquivos continuam no disco local, agora
-  cobertos pelo .gitignore como privados por padrao; versoes finais revisadas
-  publicam em garraia.org. Historico git e forks existentes nao sao afetados.
+- Removidos rascunhos internos que não fazem parte da documentação de uso.
 
 ### Fixed
 - **1568 — Desktop: DMG no macOS, artefactos de updater assinados e `latest.json` publicado.** O desktop nao e vendavel como distribuicao empacotada: nao havia DMG no macOS,
@@ -1701,26 +1661,7 @@ rastreado na propria issue.
 
 Refs #1568
 - fix(release): latest.json sem a tag "v" duplicada (`vv0.4.8`), DMG do macOS entra na release e assinaturas do updater Windows estagiadas — o gerador normaliza a versão, o glob do DMG cobre o nome real do bundler Tauri e o `build-installer.ps1` estagia o `.sig` vizinho do `.msi`/`-setup.exe` que o Tauri 2.x emite (#1568)
-- **Domínio dos caminhos de contato e compra corrigido para `garraia.org` (#1574).** O
-  `docs/src/pricing.md` e o `CONTRIBUTING.md` apontavam para `garraia.cloud`, que
-  **não resolve** (NXDOMAIN): link de compra, demo, política de privacidade e os
-  e-mails `enterprise@` e `security@` estavam num domínio morto. O domínio real do
-  projeto é `garraia.org` — resolve, `/pricing`, `/demo` e `/privacy` respondem 200,
-  e o MX existe (`mailserver.purelymail.com`). O `SECURITY.md` já dizia
-  `security@garraia.org`; o `CONTRIBUTING.md` contradizia. Correção estritamente
-  factual, decidida pelo maintainer em 2026-10-07. Os termos comerciais anunciados na
-  página de preços (SLA, SOC 2, janelas de suporte) **não foram tocados** — publicar
-  ou retratar termos continua sendo decisão comercial, rastreada na #1574.
-- **1574/1576 — `docs/src/pricing.md` deixa de afirmar como fatos coisas que não existem.** A página de preços anunciava como **existentes** cinco coisas que o repositório não tem: certificação SOC 2, SLA de 99,5%/99,99%, hospedagem gerenciada, backups automáticos e cobrança por cartão. Cliente empresarial que lesse a página compraria algo que não pode ser vendido — e o produto sequer tem os serviços que a página descreve.
-
-- Banner de status no topo: **rascunho interno, não publicado, não vigente**, com o inventário do que não existe e as issues que rastreiam cada lacuna (#1576 para decisão de negócio, #1575 para revisão jurídica, #1565 para conformidade).
-- Plano Pro e Enterprise reescritos: cada item marcado como proposto e, quando não operacional, dizendo isso explicitamente. SLA vira "propsto, não contratual"; conformidade vira "nenhuma certificação, conformidade em aberto".
-- Tabela comparativa ganha a coluna de status por célula — nenhum "Sim" sobrevive sem a marca de que não existe.
-- FAQ reescrita sobre o estado real: self-hosted é o único modo, não há cobrança nem dashboard de uso, e a política de privacidade **ainda não foi publicada** (o link antigo apontava para uma página que não existe, num domínio que não resolve).
-
-Nada foi inventado no sentido inverso: os números da proposta continuam lá, rotulados como hipótese para decisão do maintainer. Corrigir afirmação falsa não é tomar decisão comercial.
-
-Refs #1574, #1576, #1575, #1565
+- Corrigido o domínio de contato em `CONTRIBUTING.md`.
 - fix(agents/gateway): erro de execução (exit 126/EACCES) no Termux ganha diagnóstico do contexto restrito do launcher — a restrição W^X do Android veta `execve` em /data por filhos de processos lançados via `linker64`; o bash tool e o `npm ci` do bootstrap agora explicam a causa e apontam o lançamento pelo shell do Termux (#1591)
 - **Allowlist do bash avalia encadeamento segmento a segmento (#1592).** A allowlist
   do `bash` negava QUALQUER comando com `|`, `&&`, `||` ou `;` — era a opcao
@@ -9407,7 +9348,7 @@ The key was on disk, encrypted, and unreadable by the server that needed it.
 ### Fase 4: Advanced Integrations
 
 #### Added
-- **Admin Console** - Full-featured web admin panel with user management, RBAC, audit logs, and billing
+- **Admin Console** - Full-featured web admin panel with user management, RBAC, and audit logs
 - **A2A Protocol** - Agent-to-agent communication with agent cards (`/.well-known/agent.json`) and task endpoints
 - **Multi-agent routing** - Named agent registry with priority-based routing and session continuity
 - **Media processing** - PDF extraction and image processing capabilities
