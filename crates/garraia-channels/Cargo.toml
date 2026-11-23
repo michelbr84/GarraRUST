@@ -58,7 +58,7 @@ zeroize = { version = "1.8", features = ["zeroize_derive"], optional = true }
 # Renderizador de QR no terminal. MIT OR Apache-2.0 (ambas ja na allowlist do
 # deny.toml). `default-features = false` derruba `image` e `svg`: so
 # precisamos da matriz de modulos, o desenho e nosso (qr.rs).
-qrcode = { version = "0.14", default-features = false, optional = true }
+qrcode = { version = "0.15", default-features = false, optional = true }
 
 [features]
 default = []
