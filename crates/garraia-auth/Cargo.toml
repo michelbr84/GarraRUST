@@ -142,6 +142,13 @@ name = "app_pool_role_guard"
 path = "tests/app_pool_role_guard.rs"
 required-features = ["test-support"]
 
+# cargo-mutants 2026-11-23: kills the 2 missed mutants in purge_pool.rs
+# (role guard `!=` -> `==` and `Debug for PurgePool` -> empty output).
+[[test]]
+name = "purge_pool_guard"
+path = "tests/purge_pool_guard.rs"
+required-features = ["test-support"]
+
 [[test]]
 name = "extractor"
 path = "tests/extractor.rs"
