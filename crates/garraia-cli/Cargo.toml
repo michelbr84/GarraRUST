@@ -132,7 +132,7 @@ libc = "0.2"
 # terminal antes do REPL e os devolve antes do `exit(130)`, para um `kill -INT`
 # recebido com o editor de linha em raw mode nao deixar o shell mudo. O
 # rustyline ja liga essa feature no `nix`, entao nao entra crate nova.
-nix = { version = "0.31", features = ["process", "term"] }
+nix = { version = "0.32", features = ["process", "term"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
