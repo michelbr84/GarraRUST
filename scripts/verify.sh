@@ -42,13 +42,32 @@ import json
 s = json.load(open('.claude/settings.json'))
 hooks = s.get('hooks', {})
 assert 'SessionStart' in hooks, 'SessionStart missing'
-assert 'PreToolUse' in hooks, 'PreToolUse missing'
 assert 'PostToolUse' in hooks, 'PostToolUse missing'
 assert 'Stop' in hooks, 'Stop missing'
 " 2>/dev/null; then
-    pass "4 hooks configurados em settings.json"
+    pass "3 hooks configurados em settings.json"
   else
     fail "hooks incompletos em settings.json"
+  fi
+
+  # O hook PreToolUse de Bash saiu do settings.json do projeto por decisão do
+  # dono: com um hook PreToolUse/PermissionRequest sobre Bash versionado aqui,
+  # o `/ship` do Claude Code recusa commit, push e a vigília do PR e só revisa.
+  # O script segue em .claude/hooks/pre-tool-use.sh (e o harness dele em
+  # scripts/test-hooks.sh) para quem quiser ligá-lo nas próprias configurações
+  # de usuário. Religá-lo aqui devolve o `/ship` ao modo só-revisão.
+  if python3 -c "
+import json
+s = json.load(open('.claude/settings.json'))
+hooks = s.get('hooks', {})
+for evento in ('PreToolUse', 'PermissionRequest'):
+    for entrada in hooks.get(evento, []):
+        matcher = entrada.get('matcher', '')
+        assert matcher not in ('', '*') and 'Bash' not in matcher, evento
+" 2>/dev/null; then
+    pass "nenhum hook PreToolUse/PermissionRequest sobre Bash (o /ship roda completo)"
+  else
+    warn "hook PreToolUse/PermissionRequest sobre Bash em settings.json — o /ship fica só-revisão"
   fi
 fi
 
@@ -74,9 +93,20 @@ done
 
 echo ""
 echo -e "${CYAN}[5/5] Skills${NC}"
-for skill in review-pr tdd-loop fix-issue pre-commit refactor-module assemble-team generate-docs code-review git-assist shell-explain summarize translate web-lookup; do
+for skill in review-pr tdd-loop fix-issue pre-commit refactor-module assemble-team generate-docs review-inline git-assist shell-explain summarize translate web-lookup; do
   FILE="skills/$skill.md"
   [ -f "$FILE" ] && pass "$skill" || warn "$skill não encontrado"
+done
+
+# Nomes de skill que pertencem ao Claude Code: uma skill do projeto com o mesmo
+# nome toma o lugar da embutida (a `code-review` local respondia no lugar da
+# revisão do `/ship`). A lista espelha a de `.claude/hooks/session-start.sh`.
+for reservada in code-review; do
+  if [ -f "skills/$reservada.md" ] || [ -f ".claude/skills/$reservada/SKILL.md" ]; then
+    fail "skill '$reservada' colide com a embutida do Claude Code — renomeie"
+  else
+    pass "nome '$reservada' livre para a embutida"
+  fi
 done
 
 # ── 5. Autenticação ──────────────────────────────────────────────────────
