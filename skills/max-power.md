@@ -253,7 +253,8 @@ Agente dirigidor de PR (lê sozinho, sem slash): steward
 
 Hooks de governança (disparam sozinhos, sem invocação):
   - session-start hook       contexto + estado anterior + sync skills/*.md → .claude/skills/
-  - pre-tool-use hook        bloqueia comandos perigosos, audit log
+  - pre-tool-use hook        DESLIGADO no settings.json do projeto (com ele o /ship só revisa);
+                             o script segue em .claude/hooks/ para ligar nas configurações de usuário
   - post-tool-use hook       testes automáticos em edições
   - stop hook                persiste .garra-estado.md
 
