@@ -292,7 +292,7 @@ n8n sends the token as `Authorization: Bearer <token>` to `POST /mcp`, then:
 ```
 
 The answer is a `garra.agent.v1` envelope: `ok`, `answer`, `provider`, `model`,
-`latency_ms`, `session_id` and `tool_calls` (name, duration, success, the
+`latency_ms`, `session_id` and `tool_calls` (call id, name, duration, success, the
 classified `outcome` and a short summary per tool). A refusal is the same envelope with `ok: false` and a stable
 `error.kind`.
 

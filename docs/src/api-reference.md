@@ -558,8 +558,8 @@ roda entram numa fila e são processadas na sequência.
 | `connected` | ao abrir a conexão | `session_id`, `session_token` |
 | `resumed` | após um `resume` aceito | `session_id`, `history_length`, `session_token` |
 | `delta` | só com `stream: true` | `session_id`, `content` — um pedaço do texto |
-| `tool_started` | só com `stream: true` | `session_id`, `name`, `detail` |
-| `tool_finished` | só com `stream: true` | `session_id`, `name`, `success`, `outcome`, `summary`, `duration_ms` |
+| `tool_started` | só com `stream: true` | `session_id`, `call_id`, `name`, `detail` |
+| `tool_finished` | só com `stream: true` | `session_id`, `call_id`, `name`, `success`, `outcome`, `summary`, `duration_ms` |
 | `message` | sempre, ao fim do turno | `session_id`, `content` — a resposta inteira |
 | `stopped` | após um `stop` aceito | `session_id` |
 | `error` | falha | `session_id`, `code`, `message` |
@@ -570,6 +570,31 @@ códigos: `success`, `error`, `timeout`, `denied_by_policy`, `unavailable`,
 `cancelled`. `cancelled` fecha uma chamada cujo turno foi descartado com ela em
 andamento; diz que o resultado nao foi observado, nao que a ferramenta deixou de
 ter efeito.
+
+`call_id` (#1915) é o id da chamada e é o mesmo no `tool_started` e no
+`tool_finished` que a fecha: é o que permite parear início e fim quando a mesma
+ferramenta roda mais de uma vez no turno. É um valor opaco, sem formato
+garantido e limitado a 128 caracteres: um id mais longo sai como o começo dele
+mais uma impressão do id inteiro, e um id com cara de credencial sai como
+`redacted-<impressão>`. Nos dois casos o valor é estável e ids diferentes
+continuam diferentes. De onde ele vem:
+
+- Do provedor do modelo, como ele emitiu. O Ollama é a exceção: a API dele não
+  tem id de chamada, então o Garra gera um UUID.
+- De um `tool_program`, para os passos: cada passo leva o id do programa mais
+  `#<n>` (`abc#0`, `abc#1`), e os frames do passo saem entre o `tool_started` e
+  o `tool_finished` do próprio programa.
+
+O gateway repassa o id e **não** garante que ele seja único no turno. Um
+endpoint que devolva o id vazio (ou, no formato Anthropic, que o omita) deixa o
+campo vazio, e um que repita ids entre respostas repete o `call_id`. Nesses
+casos pareie pela ordem dos frames: o despacho é sequencial, então o
+`tool_finished` de uma chamada sai antes do `tool_started` da seguinte, salvo
+os passos de um `tool_program`, que ficam dentro do par dele.
+
+Depois de um `stop` aceito o servidor não envia mais frames do turno. Uma
+chamada que estava em andamento fica sem o `tool_finished` dela: o `stopped`
+fecha toda chamada ainda aberta.
 
 `tool_finished` **não** carrega a saída da ferramenta: ela pode ter dezenas de
 KiB, e o frame existe para dizer que a ferramenta terminou.

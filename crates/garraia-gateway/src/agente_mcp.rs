@@ -39,6 +39,7 @@ use garraia_agents::{
 use garraia_ask::{AskError, sanitize_provider_error};
 use garraia_config::AppConfig;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::bootstrap::{ExposicaoDoBash, exposicao_do_bash, sandbox_policy_from};
 
@@ -59,6 +60,56 @@ pub const AGENT_TIMEOUT_SECS_DEFAULT: u64 = 300;
 /// Teto do resumo de cada tool no envelope. O runtime já corta em 72 caracteres
 /// na origem (`turn_events::SUMMARY_MAX_CHARS`); isto só guarda a invariante.
 const TOOL_CALL_SUMMARY_MAX_CHARS: usize = 160;
+
+/// Teto do `call_id` no fio (#1915), no envelope e nos frames do `/ws`. O id
+/// vem do provedor do modelo e nao tem tamanho garantido; os reais ficam bem
+/// abaixo disto (`call_` + 24, `toolu_` + 24, UUID de 36, mais o `#<n>` de um
+/// passo de `tool_program`).
+pub(crate) const CALL_ID_MAX_CHARS: usize = 128;
+
+/// Digitos hex da impressao que entra no lugar do que o teto ou a redacao
+/// tiram de um `call_id`: 8 bytes do SHA-256 do id inteiro.
+const CALL_ID_IMPRESSAO_HEX: usize = 16;
+
+/// O id da chamada como ele sai do processo (#1915). Um ponto so para o
+/// envelope e para os frames do `/ws`, com duas garantias que valem juntas:
+///
+/// - **nada com cara de credencial sai.** O id e texto que o provedor do
+///   modelo escolhe; `detail` e `summary` ja chegam redigidos pelo runtime, e
+///   este era o unico campo sem redacao. Um id que `redact_secrets` alcanca
+///   vira [`pseudonimo_do_call_id`].
+/// - **ids distintos continuam distintos, e o mesmo id da sempre o mesmo
+///   valor** — e para isso que o campo existe. Por isso o que entra no lugar
+///   e uma impressao do id INTEIRO, nunca o texto redigido (dois ids que
+///   casam com o mesmo padrao virariam o mesmo marcador) nem so o comeco (o
+///   `#<n>` que distingue os passos de um `tool_program` fica no fim).
+///
+/// Um id sem padrao nenhum e dentro do teto passa byte a byte.
+pub(crate) fn call_id_no_fio(id: &str) -> String {
+    if garraia_security::redact_secrets(id) != id {
+        return pseudonimo_do_call_id(id);
+    }
+    if id.chars().count() <= CALL_ID_MAX_CHARS {
+        return id.to_string();
+    }
+    let prefixo: String = id
+        .chars()
+        .take(CALL_ID_MAX_CHARS - 1 - CALL_ID_IMPRESSAO_HEX)
+        .collect();
+    format!("{prefixo}…{}", impressao_do_call_id(id))
+}
+
+/// O que sai no lugar de um `call_id` que a redacao alcanca: um rotulo fixo
+/// mais a impressao do id inteiro. Estavel e distinto por id, sem trazer
+/// nenhum pedaco dele.
+pub(crate) fn pseudonimo_do_call_id(id: &str) -> String {
+    format!("redacted-{}", impressao_do_call_id(id))
+}
+
+fn impressao_do_call_id(id: &str) -> String {
+    let digest = Sha256::digest(id.as_bytes());
+    hex::encode(&digest[..CALL_ID_IMPRESSAO_HEX / 2])
+}
 
 /// Quanto tempo drenar o canal de eventos depois que o turno termina (ou estoura
 /// o timeout). Normalmente volta na hora; o limite só pesa se alguma tarefa de
@@ -81,6 +132,14 @@ pub struct AgentOptions {
 /// Uma execução de tool, como vai no envelope para o host MCP.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ToolCallSummary {
+    /// #1915: o id da chamada (o `tool_use_id` do provedor; num passo de
+    /// `tool_program`, o id do programa mais `#<n>`), para o host distinguir
+    /// duas execucoes da mesma tool no mesmo turno. Aditivo.
+    ///
+    /// Opaco e sem garantia de unicidade: o gateway repassa o que o provedor
+    /// emitiu, entao um endpoint que devolva o id vazio, ou que repita ids
+    /// entre respostas, repete o valor aqui. Sai por [`call_id_no_fio`].
+    pub call_id: String,
     pub name: String,
     pub duration_ms: u64,
     pub success: bool,
@@ -327,6 +386,7 @@ pub fn events_to_summaries(events: &[TurnEvent]) -> Vec<ToolCallSummary> {
         .iter()
         .filter_map(|e| match e {
             TurnEvent::ToolFinished {
+                id,
                 name,
                 duration,
                 success,
@@ -334,6 +394,7 @@ pub fn events_to_summaries(events: &[TurnEvent]) -> Vec<ToolCallSummary> {
                 summary,
                 ..
             } => Some(ToolCallSummary {
+                call_id: call_id_no_fio(id),
                 name: name.clone(),
                 duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
                 success: *success,
@@ -993,6 +1054,7 @@ mod tests {
     #[test]
     fn agent_success_envelope_shape() {
         let calls = vec![ToolCallSummary {
+            call_id: "call-1".into(),
             name: "bash".into(),
             duration_ms: 120,
             success: true,
@@ -1013,6 +1075,7 @@ mod tests {
         assert_eq!(env["provider"], "openrouter");
         assert_eq!(env["model"], "openrouter/free");
         assert_eq!(env["session_id"], "mcp-abc");
+        assert_eq!(env["tool_calls"][0]["call_id"], "call-1");
         assert_eq!(env["tool_calls"][0]["name"], "bash");
         assert_eq!(env["tool_calls"][0]["duration_ms"], 120);
         // #1915: campo aditivo; o `success` ao lado dele nao mudou.
@@ -1024,6 +1087,7 @@ mod tests {
     #[test]
     fn agent_error_envelope_carries_tool_calls_and_kind() {
         let calls = vec![ToolCallSummary {
+            call_id: "call-1".into(),
             name: "bash".into(),
             duration_ms: 4000,
             success: true,
@@ -1095,6 +1159,10 @@ mod tests {
         ];
         let got = events_to_summaries(&events);
         assert_eq!(got.len(), 2);
+        // #1915: o id do `ToolFinished` chega ao resumo, sem ser trocado
+        // pelo de outro evento.
+        assert_eq!(got[0].call_id, "call-bash");
+        assert_eq!(got[1].call_id, "call-file_read");
         assert_eq!(got[0].name, "bash");
         assert_eq!(got[0].duration_ms, 120);
         assert!(got[0].success);
@@ -1108,6 +1176,69 @@ mod tests {
         let got = events_to_summaries(&events);
         assert!(got[0].summary.chars().count() <= TOOL_CALL_SUMMARY_MAX_CHARS);
         assert!(got[0].summary.ends_with('…'));
+    }
+
+    /// #1915: o `call_id` vem do provedor e nao tem tamanho garantido. No
+    /// envelope ele sai com teto, como o resumo; um id normal passa intacto
+    /// (`events_to_summaries_keeps_only_tool_finished_in_order`).
+    #[test]
+    fn events_to_summaries_caps_long_call_id() {
+        let mut evento = finished("bash", 1, true, "ok");
+        if let TurnEvent::ToolFinished { id, .. } = &mut evento {
+            *id = "x".repeat(CALL_ID_MAX_CHARS * 4);
+        }
+        let got = events_to_summaries(&[evento]);
+        assert_eq!(got[0].call_id.chars().count(), CALL_ID_MAX_CHARS);
+    }
+
+    /// #1915 (achado de revisao): o que distingue um passo de `tool_program`
+    /// fica no FIM do id (`<id>#<n>`). Um teto que so cortava o fim deixava o
+    /// programa e os passos dele com o mesmo `call_id` quando o id e longo —
+    /// e quem pareia inicio e fim pelo campo trocava um pelo outro.
+    #[test]
+    fn call_id_no_fio_keeps_long_ids_distinct() {
+        let programa = "p".repeat(CALL_ID_MAX_CHARS * 2);
+        let ids = [
+            programa.clone(),
+            format!("{programa}#0"),
+            format!("{programa}#1"),
+        ];
+        let no_fio: Vec<String> = ids.iter().map(|id| call_id_no_fio(id)).collect();
+        for (id, saida) in ids.iter().zip(&no_fio) {
+            assert_eq!(saida.chars().count(), CALL_ID_MAX_CHARS);
+            assert_eq!(*saida, call_id_no_fio(id), "o mesmo id da o mesmo valor");
+        }
+        assert_ne!(no_fio[0], no_fio[1]);
+        assert_ne!(no_fio[1], no_fio[2]);
+        assert_ne!(no_fio[0], no_fio[2]);
+    }
+
+    /// #1915 (achado de revisao): um id com cara de credencial nao sai, e o
+    /// que sai no lugar e um pseudonimo estavel do id inteiro, nunca o texto
+    /// redigido — dois ids que casam com o mesmo padrao (o `sk-` dentro de
+    /// `task-`, num provedor que deriva o id do nome da tool) continuam
+    /// distintos. Id que nao casa com padrao nenhum passa byte a byte.
+    #[test]
+    fn call_id_no_fio_swaps_credential_shaped_ids_for_a_stable_pseudonym() {
+        let chave = "sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789";
+        let saida = call_id_no_fio(chave);
+        assert!(!saida.contains("sk-or-v1-"), "{saida}");
+        assert_eq!(saida, call_id_no_fio(chave));
+
+        let a = call_id_no_fio("functions.mcp_task-manager_create_task:0");
+        let b = call_id_no_fio("functions.mcp_task-manager_create_task:1");
+        assert_ne!(a, b);
+        assert!(!a.contains("manager_create_task"), "{a}");
+
+        for id in [
+            "call_abc123DEF456ghi789JKL0",
+            "toolu_01A2b3C4d5E6f7G8h9J0kLmN",
+            "0b6c1d2e-3f40-4a5b-8c6d-7e8f90a1b2c3",
+            "call_abc123#0",
+            "",
+        ] {
+            assert_eq!(call_id_no_fio(id), id);
+        }
     }
 
     #[test]

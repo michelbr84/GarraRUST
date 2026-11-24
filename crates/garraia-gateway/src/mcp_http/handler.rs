@@ -784,8 +784,11 @@ fn recusa_do_agente(provider: &str, modelo: &str, recusa: RecusaAgent) -> JsonVa
 }
 
 /// Redige o texto livre de um envelope `garra.agent.v1` (#1615): a resposta, a
-/// mensagem de erro e o resumo de cada tool. O resumo sai do runtime, mas um
-/// `bash` que ecoe um token deixaria esse token no resumo, e ele nao sai daqui.
+/// mensagem de erro e, de cada tool, o resumo e o `call_id`. O resumo sai do
+/// runtime, mas um `bash` que ecoe um token deixaria esse token no resumo, e
+/// ele nao sai daqui. O `call_id` (#1915) e texto que o provedor do modelo
+/// escolhe: o que a redacao daqui alcanca (os padroes do operador inclusive)
+/// sai como pseudonimo, e o resto passa intacto.
 fn redigir_envelope_do_agente(mut envelope: JsonValue, extras: &[regex::Regex]) -> JsonValue {
     if let Some(resposta) = envelope.get("answer").and_then(JsonValue::as_str) {
         let redigida = redacao::redigir_com(resposta, extras);
@@ -807,6 +810,16 @@ fn redigir_envelope_do_agente(mut envelope: JsonValue, extras: &[regex::Regex]) 
                 .map(|r| redacao::redigir_com(r, extras))
             {
                 chamada["summary"] = json!(resumo);
+            }
+            // O `call_id` nao recebe o texto redigido: dois ids que casam com
+            // o mesmo padrao virariam o mesmo marcador, e o host perderia o
+            // pareamento que o campo existe para dar. Sai o pseudonimo.
+            let pseudonimo = chamada["call_id"]
+                .as_str()
+                .filter(|id| redacao::redigir_com(id, extras) != *id)
+                .map(agente_mcp::pseudonimo_do_call_id);
+            if let Some(pseudonimo) = pseudonimo {
+                chamada["call_id"] = json!(pseudonimo);
             }
         }
     }
@@ -1063,6 +1076,80 @@ mod tests {
         let mensagem = saida["error"]["message"].as_str().unwrap_or_default();
         assert!(!mensagem.contains("sk-or-v1-"), "{mensagem}");
         assert_eq!(saida["error"]["kind"], "provider_error");
+    }
+
+    /// #1915: o `call_id` de cada tool vem do provedor do modelo, e o envelope
+    /// e servido a um orquestrador externo. Um id com cara de credencial sai
+    /// redigido como o resumo; os ids de verdade passam byte a byte, senao a
+    /// redacao tiraria do host o pareamento que o campo existe para dar.
+    #[test]
+    fn envelope_do_agente_redige_o_call_id_e_preserva_os_ids_normais() {
+        let chamada =
+            |call_id: &str| json!({ "call_id": call_id, "name": "bash", "summary": "ok" });
+        let normais = [
+            "call_abc123DEF456ghi789JKL0",
+            "toolu_01A2b3C4d5E6f7G8h9J0kLmN",
+            "0b6c1d2e-3f40-4a5b-8c6d-7e8f90a1b2c3",
+            "call_abc123#0",
+            "",
+        ];
+        let mut chamadas: Vec<JsonValue> = normais.iter().map(|id| chamada(id)).collect();
+        chamadas.push(chamada("sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789"));
+        let envelope = json!({
+            "schema": "garra.agent.v1",
+            "ok": true,
+            "answer": "fim",
+            "tool_calls": chamadas,
+        });
+
+        let saida = redigir_envelope_do_agente(envelope, &[]);
+
+        for (i, id) in normais.iter().enumerate() {
+            assert_eq!(saida["tool_calls"][i]["call_id"], *id);
+        }
+        let vazado = saida["tool_calls"][normais.len()]["call_id"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(!vazado.contains("sk-or-v1-"), "{vazado}");
+    }
+
+    /// #1915 (achado de revisao): a redacao nao pode fundir ids distintos.
+    /// Um padrao do operador que case com todo UUID trocava cada id do
+    /// Ollama pelo mesmo marcador, e o host perdia o pareamento. O que sai no
+    /// lugar e um pseudonimo do id inteiro: estavel, distinto e sob o teto.
+    #[test]
+    fn envelope_do_agente_nao_funde_call_ids_que_a_redacao_alcanca() {
+        let uuid =
+            regex::Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+                .expect("regex valida");
+        let ids = [
+            "0b6c1d2e-3f40-4a5b-8c6d-7e8f90a1b2c3",
+            "1c7d2e3f-4051-4b6c-9d7e-8f90a1b2c3d4",
+        ];
+        let envelope = json!({
+            "schema": "garra.agent.v1",
+            "ok": true,
+            "answer": "fim",
+            "tool_calls": [
+                { "call_id": ids[0], "name": "bash", "summary": "ok" },
+                { "call_id": ids[1], "name": "bash", "summary": "ok" },
+            ],
+        });
+
+        let extras = [uuid];
+        let saida = redigir_envelope_do_agente(envelope.clone(), &extras);
+        let de_novo = redigir_envelope_do_agente(envelope, &extras);
+
+        let a = saida["tool_calls"][0]["call_id"]
+            .as_str()
+            .unwrap_or_default();
+        let b = saida["tool_calls"][1]["call_id"]
+            .as_str()
+            .unwrap_or_default();
+        assert_ne!(a, b, "ids distintos viraram o mesmo valor");
+        assert!(!a.contains(ids[0]) && !b.contains(ids[1]), "{a} {b}");
+        assert!(a.chars().count() <= agente_mcp::CALL_ID_MAX_CHARS, "{a}");
+        assert_eq!(saida, de_novo, "o pseudonimo tem de ser estavel");
     }
 
     /// O pseudonimo e estavel para o mesmo destino, diferente para outro, e
