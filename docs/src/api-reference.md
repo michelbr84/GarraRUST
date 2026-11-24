@@ -573,8 +573,10 @@ ter efeito.
 
 `call_id` (#1915) é o id da chamada e é o mesmo no `tool_started` e no
 `tool_finished` que a fecha: é o que permite parear início e fim quando a mesma
-ferramenta roda mais de uma vez no turno. É um valor opaco, emitido pelo
-provedor do modelo; não tem formato garantido.
+ferramenta roda mais de uma vez no turno. É um valor opaco, sem formato
+garantido: normalmente vem do provedor do modelo, e é gerado localmente quando
+o provedor não devolve um. Um endpoint que omita o id deixa o campo vazio, e
+nesse caso o pareamento não é possível.
 
 `tool_finished` **não** carrega a saída da ferramenta: ela pode ter dezenas de
 KiB, e o frame existe para dizer que a ferramenta terminou.
