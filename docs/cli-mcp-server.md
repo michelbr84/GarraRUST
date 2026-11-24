@@ -216,10 +216,12 @@ summary (each entry: `call_id`, `name`, `duration_ms`, `success`, `outcome`,
 `outcome` (#1915) is additive to `success` and comes from a closed set of
 codes such as `success`, `error` or `timeout`; `call_id` (#1915) is the
 opaque id of the tool call, there to tell apart two runs of the same tool
-in one turn — no format is guaranteed, it is capped at 128 characters, and
-it is relayed as the model provider emitted it, so it is empty or repeated
-when the provider sends it that way; a `tool_program` step carries the
-program's id plus `#<n>`):
+in one turn — no format is guaranteed, and it is relayed as the model
+provider emitted it, so it is empty or repeated when the provider sends it
+that way; a `tool_program` step carries the program's id plus `#<n>`. It is
+capped at 128 characters: a longer id comes out as its start plus a
+fingerprint of the whole id, and an id that looks like a credential comes
+out as `redacted-<fingerprint>`, stable and distinct per id either way):
 
 ```json
 {

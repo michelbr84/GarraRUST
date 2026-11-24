@@ -1565,6 +1565,43 @@ mod tests {
         assert_eq!(inicio["call_id"], fim["call_id"]);
     }
 
+    /// #1915 (achado de revisao): `detail` e `summary` chegam redigidos pelo
+    /// runtime; o `call_id` e texto que o provedor escolhe e era o unico campo
+    /// do frame que nao passava por redacao nenhuma. Um id com cara de
+    /// credencial sai como pseudonimo — o mesmo no inicio e no fim.
+    #[test]
+    fn call_id_com_cara_de_credencial_nao_sai_no_frame() {
+        let chave = "sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789";
+        let inicio = turn_event_frame(
+            "s1",
+            None,
+            &TurnEvent::ToolStarted {
+                id: chave.into(),
+                name: "bash".into(),
+                detail: String::new(),
+                input: serde_json::Value::Null,
+            },
+        );
+        let fim = turn_event_frame(
+            "s1",
+            None,
+            &TurnEvent::ToolFinished {
+                id: chave.into(),
+                name: "bash".into(),
+                duration: std::time::Duration::ZERO,
+                success: true,
+                outcome: garraia_agents::DesfechoDaChamada::Sucesso,
+                summary: String::new(),
+                output: String::new(),
+            },
+        );
+        assert!(!inicio.contains("sk-or-v1-"), "{inicio}");
+        assert!(!fim.contains("sk-or-v1-"), "{fim}");
+        let inicio: serde_json::Value = serde_json::from_str(&inicio).expect("frame valido");
+        let fim: serde_json::Value = serde_json::from_str(&fim).expect("frame valido");
+        assert_eq!(inicio["call_id"], fim["call_id"]);
+    }
+
     /// `output` fica fora do frame de proposito: e a saida inteira da
     /// ferramenta, ate dezenas de KiB, e o frame existe para dizer que ela
     /// terminou — nao para transportar o resultado.

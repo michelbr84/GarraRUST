@@ -39,6 +39,7 @@ use garraia_agents::{
 use garraia_ask::{AskError, sanitize_provider_error};
 use garraia_config::AppConfig;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::bootstrap::{ExposicaoDoBash, exposicao_do_bash, sandbox_policy_from};
 
@@ -66,12 +67,48 @@ const TOOL_CALL_SUMMARY_MAX_CHARS: usize = 160;
 /// passo de `tool_program`).
 pub(crate) const CALL_ID_MAX_CHARS: usize = 128;
 
-/// O id da chamada como ele sai do processo (#1915): o valor do `TurnEvent`,
-/// com o teto de [`CALL_ID_MAX_CHARS`]. Um ponto so para o envelope e para os
-/// frames do `/ws`, e o corte e deterministico — o mesmo id da o mesmo valor
-/// no inicio e no fim da chamada, entao o teto nao desfaz o pareamento.
+/// Digitos hex da impressao que entra no lugar do que o teto ou a redacao
+/// tiram de um `call_id`: 8 bytes do SHA-256 do id inteiro.
+const CALL_ID_IMPRESSAO_HEX: usize = 16;
+
+/// O id da chamada como ele sai do processo (#1915). Um ponto so para o
+/// envelope e para os frames do `/ws`, com duas garantias que valem juntas:
+///
+/// - **nada com cara de credencial sai.** O id e texto que o provedor do
+///   modelo escolhe; `detail` e `summary` ja chegam redigidos pelo runtime, e
+///   este era o unico campo sem redacao. Um id que `redact_secrets` alcanca
+///   vira [`pseudonimo_do_call_id`].
+/// - **ids distintos continuam distintos, e o mesmo id da sempre o mesmo
+///   valor** — e para isso que o campo existe. Por isso o que entra no lugar
+///   e uma impressao do id INTEIRO, nunca o texto redigido (dois ids que
+///   casam com o mesmo padrao virariam o mesmo marcador) nem so o comeco (o
+///   `#<n>` que distingue os passos de um `tool_program` fica no fim).
+///
+/// Um id sem padrao nenhum e dentro do teto passa byte a byte.
 pub(crate) fn call_id_no_fio(id: &str) -> String {
-    truncate_chars(id, CALL_ID_MAX_CHARS)
+    if garraia_security::redact_secrets(id) != id {
+        return pseudonimo_do_call_id(id);
+    }
+    if id.chars().count() <= CALL_ID_MAX_CHARS {
+        return id.to_string();
+    }
+    let prefixo: String = id
+        .chars()
+        .take(CALL_ID_MAX_CHARS - 1 - CALL_ID_IMPRESSAO_HEX)
+        .collect();
+    format!("{prefixo}…{}", impressao_do_call_id(id))
+}
+
+/// O que sai no lugar de um `call_id` que a redacao alcanca: um rotulo fixo
+/// mais a impressao do id inteiro. Estavel e distinto por id, sem trazer
+/// nenhum pedaco dele.
+pub(crate) fn pseudonimo_do_call_id(id: &str) -> String {
+    format!("redacted-{}", impressao_do_call_id(id))
+}
+
+fn impressao_do_call_id(id: &str) -> String {
+    let digest = Sha256::digest(id.as_bytes());
+    hex::encode(&digest[..CALL_ID_IMPRESSAO_HEX / 2])
 }
 
 /// Quanto tempo drenar o canal de eventos depois que o turno termina (ou estoura
@@ -1152,6 +1189,56 @@ mod tests {
         }
         let got = events_to_summaries(&[evento]);
         assert_eq!(got[0].call_id.chars().count(), CALL_ID_MAX_CHARS);
+    }
+
+    /// #1915 (achado de revisao): o que distingue um passo de `tool_program`
+    /// fica no FIM do id (`<id>#<n>`). Um teto que so cortava o fim deixava o
+    /// programa e os passos dele com o mesmo `call_id` quando o id e longo —
+    /// e quem pareia inicio e fim pelo campo trocava um pelo outro.
+    #[test]
+    fn call_id_no_fio_keeps_long_ids_distinct() {
+        let programa = "p".repeat(CALL_ID_MAX_CHARS * 2);
+        let ids = [
+            programa.clone(),
+            format!("{programa}#0"),
+            format!("{programa}#1"),
+        ];
+        let no_fio: Vec<String> = ids.iter().map(|id| call_id_no_fio(id)).collect();
+        for (id, saida) in ids.iter().zip(&no_fio) {
+            assert_eq!(saida.chars().count(), CALL_ID_MAX_CHARS);
+            assert_eq!(*saida, call_id_no_fio(id), "o mesmo id da o mesmo valor");
+        }
+        assert_ne!(no_fio[0], no_fio[1]);
+        assert_ne!(no_fio[1], no_fio[2]);
+        assert_ne!(no_fio[0], no_fio[2]);
+    }
+
+    /// #1915 (achado de revisao): um id com cara de credencial nao sai, e o
+    /// que sai no lugar e um pseudonimo estavel do id inteiro, nunca o texto
+    /// redigido — dois ids que casam com o mesmo padrao (o `sk-` dentro de
+    /// `task-`, num provedor que deriva o id do nome da tool) continuam
+    /// distintos. Id que nao casa com padrao nenhum passa byte a byte.
+    #[test]
+    fn call_id_no_fio_swaps_credential_shaped_ids_for_a_stable_pseudonym() {
+        let chave = "sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789";
+        let saida = call_id_no_fio(chave);
+        assert!(!saida.contains("sk-or-v1-"), "{saida}");
+        assert_eq!(saida, call_id_no_fio(chave));
+
+        let a = call_id_no_fio("functions.mcp_task-manager_create_task:0");
+        let b = call_id_no_fio("functions.mcp_task-manager_create_task:1");
+        assert_ne!(a, b);
+        assert!(!a.contains("manager_create_task"), "{a}");
+
+        for id in [
+            "call_abc123DEF456ghi789JKL0",
+            "toolu_01A2b3C4d5E6f7G8h9J0kLmN",
+            "0b6c1d2e-3f40-4a5b-8c6d-7e8f90a1b2c3",
+            "call_abc123#0",
+            "",
+        ] {
+            assert_eq!(call_id_no_fio(id), id);
+        }
     }
 
     #[test]

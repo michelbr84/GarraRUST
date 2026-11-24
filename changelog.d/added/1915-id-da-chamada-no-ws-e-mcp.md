@@ -4,5 +4,6 @@
   e no fim da chamada. Antes so o nome da ferramenta ia no frame, entao duas
   execucoes da mesma ferramenta no mesmo turno nao tinham como ser pareadas por
   quem lia o stream. Campo aditivo: quem nao o le nao muda. O valor e o que o
-  provedor do modelo emitiu, limitado a 128 caracteres; na ponte MCP HTTP ele
-  passa pela mesma redacao do resumo.
+  provedor do modelo emitiu, limitado a 128 caracteres. Um id mais longo, ou
+  com cara de credencial, sai com uma impressao do id inteiro no lugar do que
+  foi tirado, entao ids distintos continuam distintos.
