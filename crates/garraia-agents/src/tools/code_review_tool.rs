@@ -8,6 +8,10 @@ use garraia_common::Result;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::git_diff_tool::{
+    PONTA_NAO_RESOLVIDA, linha_do_intervalo_da_arvore, linha_do_intervalo_entre_commits,
+    nome_da_revisao, revisao_do_output,
+};
 use super::repo_dir::RepoDir;
 use super::{Tool, ToolContext, ToolOutput};
 use crate::providers::{ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, MessagePart};
@@ -24,6 +28,95 @@ const LLM_TIMEOUT_SECS: u64 = 180;
 
 /// Maximum diff lines to send to LLM
 const MAX_DIFF_LINES: usize = 1000;
+
+/// O que um `commit_range` pede ao `git diff`, ja separado em pontas (#1909).
+///
+/// O `commit_range` e texto livre do modelo e chega ao git como UM argumento.
+/// As formas que um unico argumento de revisao tem no `git diff`:
+///
+/// | pedido   | o git compara                                  |
+/// |----------|------------------------------------------------|
+/// | (nenhum) | indice .. arvore de trabalho                   |
+/// | `A`      | `A` .. arvore de trabalho                      |
+/// | `A..B`   | `A` .. `B`                                     |
+/// | `A...B`  | base comum de `A` e `B` .. `B`                 |
+/// | `A^!`    | pai de `A` .. `A` (o mesmo que `A^..A`)        |
+///
+/// Ponta vazia vale `HEAD`, como no git (`main..` e `main..HEAD`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PedidoDeIntervalo {
+    /// Sem `commit_range`.
+    Arvore,
+    /// `A`: uma revisao contra a arvore de trabalho.
+    ContraArvore(String),
+    /// `A..B` (e `A^!`).
+    Entre(String, String),
+    /// `A...B`.
+    DesdeABaseComum(String, String),
+}
+
+/// Separa o `commit_range` nas pontas. Funcao pura: nao valida nem resolve
+/// nada — quem resolve e [`CodeReviewTool::resolver_intervalo`], e uma ponta
+/// que nao e commit deste repositorio simplesmente nao resolve.
+///
+/// O `...` e procurado antes do `..`, senao `a...b` sairia como `a` e `.b`.
+fn interpretar_commit_range(range: Option<&str>) -> PedidoDeIntervalo {
+    let Some(range) = range else {
+        return PedidoDeIntervalo::Arvore;
+    };
+    let ou_head = |ponta: &str| {
+        if ponta.is_empty() {
+            "HEAD".to_string()
+        } else {
+            ponta.to_string()
+        }
+    };
+    if let Some((de, ate)) = range.split_once("...") {
+        PedidoDeIntervalo::DesdeABaseComum(ou_head(de), ou_head(ate))
+    } else if let Some((de, ate)) = range.split_once("..") {
+        PedidoDeIntervalo::Entre(ou_head(de), ou_head(ate))
+    } else if let Some(revisao) = range.strip_suffix("^!").filter(|r| !r.is_empty()) {
+        PedidoDeIntervalo::Entre(format!("{revisao}^"), revisao.to_string())
+    } else {
+        PedidoDeIntervalo::ContraArvore(range.to_string())
+    }
+}
+
+/// Um intervalo com as pontas ja resolvidas: a linha que o nomeia e o
+/// argumento de revisao que o `git diff` recebe — SHAs, nunca os nomes.
+#[derive(Debug)]
+struct IntervaloResolvido {
+    linha: String,
+    /// `None` no diff sem commits (indice contra arvore de trabalho).
+    argumento: Option<String>,
+}
+
+/// A linha do intervalo de `git diff A`: uma revisao contra a arvore de
+/// trabalho — o que inclui o que ja esta no indice.
+fn linha_do_intervalo_contra_a_arvore(revisao: &str, sha: Option<&str>) -> String {
+    format!(
+        "Intervalo: {} ({}) .. árvore de trabalho (inclui o que está no índice)",
+        nome_da_revisao(revisao),
+        sha.unwrap_or(PONTA_NAO_RESOLVIDA),
+    )
+}
+
+/// A linha do intervalo de `git diff A...B`: o lado de partida e a base
+/// comum das duas pontas, que o git calcula; a linha nomeia as pontas de que
+/// ela sai (com SHA) e nao finge um SHA de base que a tool nao leu.
+fn linha_do_intervalo_desde_a_base_comum(
+    de: &str,
+    sha_de: Option<&str>,
+    ate: &str,
+    sha_ate: Option<&str>,
+) -> String {
+    let (nome_de, nome_ate) = (nome_da_revisao(de), nome_da_revisao(ate));
+    let sha_ate = sha_ate.unwrap_or(PONTA_NAO_RESOLVIDA);
+    format!(
+        "Intervalo: base comum de {nome_de} ({}) e {nome_ate} ({sha_ate}) .. {nome_ate} ({sha_ate})",
+        sha_de.unwrap_or(PONTA_NAO_RESOLVIDA),
+    )
+}
 
 /// Automated code review tool that analyzes git diffs using an LLM.
 /// Returns structured review with issues, suggestions, and severity ratings.
@@ -78,50 +171,19 @@ impl CodeReviewTool {
         self
     }
 
-    /// Get git diff output, **from the repository in `repo`**
-    async fn get_diff(
+    /// Roda UM git no repositorio de `repo`, com o prefixo endurecido ja
+    /// calculado. #1258: o git roda no `working_dir` da sessão quando há um —
+    /// ver [`RepoDir`]. #1225 S2: spawn por `sandbox_spawn::executar` (env
+    /// reduzido, stdin nulo, container quando `agent.sandbox` se aplica).
+    async fn rodar_git(
         &self,
         repo: &RepoDir,
-        commit_range: Option<&str>,
-        file_path: Option<&str>,
-    ) -> std::result::Result<String, String> {
-        // --no-ext-diff: .git/config plantado (diff.external) não transforma
-        // o code_review em execução arbitraria (#1075 — auditoria).
-        // #1272 S3: e `--no-textconv`, pelo mesmo motivo.
-        let mut args = vec!["diff".to_string()];
-        args.extend(
-            crate::git_endurecido::OPCOES_DO_DIFF
-                .iter()
-                .map(|s| s.to_string()),
-        );
-
-        if let Some(range) = commit_range {
-            // #1269 (paridade com o `git_diff`): o `commit_range` vem do modelo
-            // e é um argumento argv — começando com `-` ele vira flag do git
-            // (`--output=…` escreve arquivo, `-O…`, `--stdin`). Recusado antes
-            // de entrar na linha de comando.
-            if range.starts_with('-') {
-                return Err(format!(
-                    "commit_range '{range}' recusado: revisão não pode começar com '-'"
-                ));
-            }
-            args.push(range.to_string());
-        }
-
-        if let Some(path) = file_path {
-            args.push("--".to_string());
-            args.push(path.to_string());
-        }
-
-        // #1272 S3: mesmo prefixo endurecido do `git_diff`.
-        let prefixo = crate::git_endurecido::prefixo(repo.cwd_do_git(), self.timeout).await?;
-        // #1258 (mesmo defeito raiz do `git_diff`): o git roda no
-        // `working_dir` da sessão quando há um — ver [`RepoDir`].
-        // #1225 S2: spawn por `sandbox_spawn::executar` (env reduzido, stdin
-        // nulo, container quando `agent.sandbox` se aplica).
-        let mut argv: Vec<String> = prefixo;
+        prefixo: &[String],
+        args: Vec<String>,
+    ) -> crate::sandbox_spawn::Desfecho {
+        let mut argv: Vec<String> = prefixo.to_vec();
         argv.extend(args);
-        let result = crate::sandbox_spawn::executar(
+        crate::sandbox_spawn::executar(
             &self.sandbox,
             crate::sandbox_spawn::Pedido {
                 tool: "code_review",
@@ -132,25 +194,225 @@ impl CodeReviewTool {
                 timeout: self.timeout,
             },
         )
-        .await;
+        .await
+    }
 
-        match result {
+    /// O SHA completo do commit que `revisao` nomeia, ou `None` quando o git
+    /// nao a resolve para UM commit deste repositorio (#1909).
+    ///
+    /// `--verify` com `^{commit}`: uma arvore, um blob ou um nome que nao
+    /// existe nao viram ponta de intervalo. So conta a saida de um git que
+    /// terminou com sucesso, com exatamente uma linha em forma de SHA.
+    async fn revisao_de(
+        &self,
+        repo: &RepoDir,
+        prefixo: &[String],
+        revisao: &str,
+    ) -> Option<String> {
+        // Uma revisao so nao contem `..` (regra do `git check-ref-format`):
+        // o que sobrou com `..` depois da separacao e intervalo dentro de
+        // ponta, e nem chega ao git. O `-` inicial ja foi recusado antes.
+        if revisao.contains("..") || revisao.starts_with('-') {
+            return None;
+        }
+        let args = vec![
+            "rev-parse".to_string(),
+            "--verify".to_string(),
+            format!("{revisao}^{{commit}}"),
+        ];
+        let crate::sandbox_spawn::Desfecho::Saida(output) =
+            self.rodar_git(repo, prefixo, args).await
+        else {
+            return None;
+        };
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut linhas = stdout.lines().filter(|l| !l.trim().is_empty());
+        let unica = linhas.next()?;
+        if linhas.next().is_some() {
+            return None;
+        }
+        revisao_do_output(unica).map(str::to_string)
+    }
+
+    /// Resolve as pontas do pedido ANTES do diff (#1909, paridade com o
+    /// `git_diff`). O diff roda sobre os SHAs resolvidos, entao a linha
+    /// `Intervalo:` nomeia exatamente o que foi revisado: um ramo que se mova
+    /// entre as chamadas nao rotula a revisao com um SHA que nao e o do diff.
+    ///
+    /// `Err` carrega a recusa pronta: sem todas as pontas resolvidas o diff
+    /// nao roda — e nada vai para o LLM.
+    async fn resolver_intervalo(
+        &self,
+        repo: &RepoDir,
+        prefixo: &[String],
+        pedido: &PedidoDeIntervalo,
+    ) -> std::result::Result<IntervaloResolvido, String> {
+        let recusa = |linha: String| {
+            format!(
+                "{linha}\n\nO diff não foi executado e nada foi revisado: cada ponta do \
+                 commit_range precisa ser um commit deste repositório. Formas aceitas: \
+                 'A', 'A..B', 'A...B' e 'A^!'."
+            )
+        };
+        match pedido {
+            // Sem intervalo o `git diff` compara o indice com a arvore de
+            // trabalho. O `HEAD` nao e uma das pontas, mas diz EM QUAL
+            // checkout a comparacao foi feita; sem commit legivel a linha
+            // diz isso e o diff segue.
+            PedidoDeIntervalo::Arvore => Ok(IntervaloResolvido {
+                linha: linha_do_intervalo_da_arvore(
+                    self.revisao_de(repo, prefixo, "HEAD").await.as_deref(),
+                ),
+                argumento: None,
+            }),
+            PedidoDeIntervalo::ContraArvore(revisao) => {
+                let sha = self.revisao_de(repo, prefixo, revisao).await;
+                let linha = linha_do_intervalo_contra_a_arvore(revisao, sha.as_deref());
+                match sha {
+                    Some(sha) => Ok(IntervaloResolvido {
+                        linha,
+                        argumento: Some(sha),
+                    }),
+                    None => Err(recusa(linha)),
+                }
+            }
+            PedidoDeIntervalo::Entre(de, ate) => {
+                let (sha_de, sha_ate) = tokio::join!(
+                    self.revisao_de(repo, prefixo, de),
+                    self.revisao_de(repo, prefixo, ate),
+                );
+                let linha = linha_do_intervalo_entre_commits(
+                    de,
+                    sha_de.as_deref(),
+                    ate,
+                    sha_ate.as_deref(),
+                );
+                match (sha_de, sha_ate) {
+                    (Some(sha_de), Some(sha_ate)) => Ok(IntervaloResolvido {
+                        linha,
+                        argumento: Some(format!("{sha_de}..{sha_ate}")),
+                    }),
+                    _ => Err(recusa(linha)),
+                }
+            }
+            PedidoDeIntervalo::DesdeABaseComum(de, ate) => {
+                let (sha_de, sha_ate) = tokio::join!(
+                    self.revisao_de(repo, prefixo, de),
+                    self.revisao_de(repo, prefixo, ate),
+                );
+                let linha = linha_do_intervalo_desde_a_base_comum(
+                    de,
+                    sha_de.as_deref(),
+                    ate,
+                    sha_ate.as_deref(),
+                );
+                match (sha_de, sha_ate) {
+                    (Some(sha_de), Some(sha_ate)) => Ok(IntervaloResolvido {
+                        linha,
+                        argumento: Some(format!("{sha_de}...{sha_ate}")),
+                    }),
+                    _ => Err(recusa(linha)),
+                }
+            }
+        }
+    }
+
+    /// Get git diff output, **from the repository in `repo`**, junto da linha
+    /// que nomeia o intervalo exato comparado (#1909).
+    ///
+    /// No erro a linha do intervalo vem no proprio texto quando ja era
+    /// conhecida: "nada mudou" e "o git falhou" dizem ENTRE O QUE.
+    async fn get_diff(
+        &self,
+        repo: &RepoDir,
+        commit_range: Option<&str>,
+        file_path: Option<&str>,
+    ) -> std::result::Result<(String, String), String> {
+        // #1269 (paridade com o `git_diff`): o `commit_range` vem do modelo
+        // e é um argumento argv — começando com `-` ele vira flag do git
+        // (`--output=…` escreve arquivo, `-O…`, `--stdin`). Recusado antes
+        // de qualquer spawn, e vale para CADA ponta: a segunda de `a..-x`
+        // chegaria ao `rev-parse` em posicao de opcao.
+        if let Some(range) = commit_range
+            && range.starts_with('-')
+        {
+            return Err(format!(
+                "commit_range '{range}' recusado: revisão não pode começar com '-'"
+            ));
+        }
+        let pedido = interpretar_commit_range(commit_range);
+        let pontas: &[&String] = match &pedido {
+            PedidoDeIntervalo::Arvore => &[],
+            PedidoDeIntervalo::ContraArvore(a) => &[a],
+            PedidoDeIntervalo::Entre(a, b) | PedidoDeIntervalo::DesdeABaseComum(a, b) => &[a, b],
+        };
+        if let Some(ponta) = pontas.iter().find(|p| p.starts_with('-')) {
+            return Err(format!(
+                "commit_range recusado: a revisão '{}' não pode começar com '-'",
+                nome_da_revisao(ponta)
+            ));
+        }
+
+        // #1272 S3: mesmo prefixo endurecido do `git_diff`, calculado uma vez
+        // para a resolucao das pontas e para o diff.
+        let prefixo = crate::git_endurecido::prefixo(repo.cwd_do_git(), self.timeout).await?;
+        let intervalo = self.resolver_intervalo(repo, &prefixo, &pedido).await?;
+        let linha = intervalo.linha;
+
+        // --no-ext-diff: .git/config plantado (diff.external) não transforma
+        // o code_review em execução arbitraria (#1075 — auditoria).
+        // #1272 S3: e `--no-textconv`, pelo mesmo motivo.
+        let mut args = vec!["diff".to_string()];
+        args.extend(
+            crate::git_endurecido::OPCOES_DO_DIFF
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        args.extend(intervalo.argumento);
+        if let Some(path) = file_path {
+            args.push("--".to_string());
+            args.push(path.to_string());
+        }
+
+        match self.rodar_git(repo, &prefixo, args).await {
             crate::sandbox_spawn::Desfecho::Saida(output) => {
+                // #1909: um git que falhou nao e "nenhuma mudanca". Sem
+                // `--exit-code` o `git diff` sai com 0 havendo ou nao
+                // diferenca, entao codigo diferente de zero e falha (duas
+                // pontas sem base comum num `A...B`, objeto corrompido) — e
+                // antes saia como "No diff output (no changes found)".
+                if !output.status.success() {
+                    let stderr = crate::git_endurecido::stderr_para_o_turno(
+                        &String::from_utf8_lossy(&output.stderr),
+                        repo.cwd_do_git(),
+                    );
+                    return Err(format!(
+                        "{linha}\n\ngit diff failed (exit code {}), nothing was reviewed: {}",
+                        output.status.code().unwrap_or(-1),
+                        stderr.trim()
+                    ));
+                }
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 if stdout.is_empty() {
-                    Err("No diff output (no changes found)".to_string())
+                    Err(format!("{linha}\n\nNo diff output (no changes found)"))
                 } else {
                     // Limit diff size
                     let lines: Vec<&str> = stdout.lines().collect();
                     if lines.len() > MAX_DIFF_LINES {
                         let truncated: String = lines[..MAX_DIFF_LINES].join("\n");
-                        Ok(format!(
-                            "{}\n\n... (diff truncated, {} lines total)",
-                            truncated,
-                            lines.len()
+                        Ok((
+                            linha,
+                            format!(
+                                "{}\n\n... (diff truncated, {} lines total)",
+                                truncated,
+                                lines.len()
+                            ),
                         ))
                     } else {
-                        Ok(stdout)
+                        Ok((linha, stdout))
                     }
                 }
             }
@@ -272,7 +534,7 @@ impl Tool for CodeReviewTool {
             "properties": {
                 "commit_range": {
                     "type": "string",
-                    "description": "Git commit range for diff (e.g., 'HEAD~3..HEAD', 'main..feature')"
+                    "description": "Git commit range for diff: 'A..B' (e.g., 'HEAD~3..HEAD', 'main..feature'), 'A...B' (changes on B since its common base with A), 'A^!' (one commit) or a single revision 'A' (A against the working tree). Each end must be a commit of this repository; the review names the exact SHAs compared."
                 },
                 "file_path": {
                     "type": "string",
@@ -282,13 +544,15 @@ impl Tool for CodeReviewTool {
         })
     }
 
-    /// #1780: o bound total da revisão — diff (`timeout`) + LLM
-    /// (`timeout_de_llm`) somados. O wrap externo do runtime usa o maior
+    /// #1780: o bound total da revisão — git (`timeout`) + LLM
+    /// (`timeout_de_llm`) somados. #1909: o git conta DUAS vezes: as pontas
+    /// do intervalo sao resolvidas (em paralelo) antes do diff, cada etapa
+    /// com o seu `timeout`. O wrap externo do runtime usa o maior
     /// entre este e o teto do modo, então a revisão deixa de morrer no 20s
     /// do modo `review` enquanto o LLM ainda trabalha dentro do teto que a
     /// própria tool respeita.
     fn teto_proprio(&self) -> Option<std::time::Duration> {
-        Some(self.timeout + self.timeout_de_llm)
+        Some(self.timeout * 2 + self.timeout_de_llm)
     }
 
     async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
@@ -299,8 +563,8 @@ impl Tool for CodeReviewTool {
         let repo = RepoDir::decidir(context.working_dir.as_deref());
 
         // Get the diff
-        let diff = match self.get_diff(&repo, commit_range, file_path).await {
-            Ok(d) => d,
+        let (intervalo, diff) = match self.get_diff(&repo, commit_range, file_path).await {
+            Ok(par) => par,
             Err(e) => return Ok(ToolOutput::error(repo.com_contexto(&e))),
         };
 
@@ -318,6 +582,10 @@ impl Tool for CodeReviewTool {
                 if let Some(range) = commit_range {
                     output.push_str(&format!("**Commit range:** {}\n", range));
                 }
+                // #1909: o intervalo EXATO que foi revisado, com os SHAs que
+                // os nomes valiam na hora. Mesma linha do `git_diff`.
+                output.push_str(&intervalo);
+                output.push('\n');
                 if let Some(path) = file_path {
                     output.push_str(&format!("**File:** {}\n", path));
                 }
@@ -436,14 +704,15 @@ mod tests {
         );
     }
 
-    /// #1780: o teto declarado cobre o diff **e** o LLM — o wrap externo usa
-    /// o maior entre este e o teto do modo.
+    /// #1780: o teto declarado cobre o git **e** o LLM — o wrap externo usa
+    /// o maior entre este e o teto do modo. #1909: o git conta duas vezes
+    /// (resolucao das pontas, depois o diff).
     #[test]
     fn teto_proprio_cobre_diff_mais_llm() {
         let tool = tool_com_eco();
         assert_eq!(
             tool.teto_proprio(),
-            Some(Duration::from_secs(15 + LLM_TIMEOUT_SECS))
+            Some(Duration::from_secs(15 * 2 + LLM_TIMEOUT_SECS))
         );
         // O default (sem override) é o const; o override de teste muda o
         // bound declarado na mesma medida.
@@ -451,7 +720,7 @@ mod tests {
             CodeReviewTool::new(Arc::new(ProvedorQueEcoa), "m", None).com_timeout_de_llm(7);
         assert_eq!(
             custom.teto_proprio(),
-            Some(Duration::from_secs(DEFAULT_TIMEOUT_SECS + 7))
+            Some(Duration::from_secs(DEFAULT_TIMEOUT_SECS * 2 + 7))
         );
     }
 
@@ -661,6 +930,380 @@ mod tests {
         );
         assert!(
             saida.content.contains("alvo-range-valido"),
+            "{}",
+            saida.content
+        );
+    }
+
+    fn git_no_repo(dir: &std::path::Path, args: &[&str]) -> String {
+        let saida = std::process::Command::new("git")
+            .current_dir(dir)
+            .args([
+                "-c",
+                "user.email=test@test",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .expect("git precisa estar no PATH para este teste");
+        assert!(
+            saida.status.success(),
+            "git {args:?} falhou: {}",
+            String::from_utf8_lossy(&saida.stderr)
+        );
+        String::from_utf8_lossy(&saida.stdout).trim().to_string()
+    }
+
+    /// A linha `Intervalo:` da resposta — a do cabecalho, que vem antes do
+    /// `---`; o corpo e o prompt ecoado pelo provedor de teste.
+    fn linha_do_intervalo(conteudo: &str) -> &str {
+        conteudo
+            .lines()
+            .take_while(|l| *l != "---")
+            .find(|l| l.starts_with("Intervalo:"))
+            .unwrap_or_default()
+    }
+
+    /// #1909: as formas que UM argumento de revisao tem no `git diff`, e a
+    /// ponta vazia valendo `HEAD`. O `...` e lido antes do `..`.
+    #[test]
+    fn interpretar_commit_range_separa_as_formas_do_git() {
+        use PedidoDeIntervalo::{Arvore, ContraArvore, DesdeABaseComum, Entre};
+        let s = str::to_string;
+        assert_eq!(interpretar_commit_range(None), Arvore);
+        assert_eq!(
+            interpretar_commit_range(Some("HEAD")),
+            ContraArvore(s("HEAD"))
+        );
+        assert_eq!(
+            interpretar_commit_range(Some("main..feature")),
+            Entre(s("main"), s("feature"))
+        );
+        assert_eq!(
+            interpretar_commit_range(Some("main...feature")),
+            DesdeABaseComum(s("main"), s("feature"))
+        );
+        assert_eq!(
+            interpretar_commit_range(Some("HEAD~3..")),
+            Entre(s("HEAD~3"), s("HEAD"))
+        );
+        assert_eq!(
+            interpretar_commit_range(Some("..feature")),
+            Entre(s("HEAD"), s("feature"))
+        );
+        assert_eq!(
+            interpretar_commit_range(Some("main...")),
+            DesdeABaseComum(s("main"), s("HEAD"))
+        );
+        assert_eq!(
+            interpretar_commit_range(Some("abc^!")),
+            Entre(s("abc^"), s("abc"))
+        );
+        // Sobra de ponto fica DENTRO da ponta, que depois nao resolve.
+        assert_eq!(
+            interpretar_commit_range(Some("a....b")),
+            DesdeABaseComum(s("a"), s(".b"))
+        );
+        assert_eq!(
+            interpretar_commit_range(Some("a..b..c")),
+            Entre(s("a"), s("b..c"))
+        );
+    }
+
+    /// #1909: sem `commit_range` a revisao diz que comparou indice com
+    /// arvore de trabalho, e em qual `HEAD`.
+    #[tokio::test]
+    async fn sem_commit_range_a_revisao_nomeia_arvore_e_head() {
+        let repo = repo_git_temporario("alvo-review-arvore", "ramo-review-arvore");
+        let head = git_no_repo(repo.path(), &["rev-parse", "HEAD"]);
+        let wd = repo.path().to_string_lossy().into_owned();
+
+        let saida = tool_com_eco()
+            .execute(&ctx(Some(&wd)), serde_json::json!({}))
+            .await
+            .expect("execute");
+
+        assert!(!saida.is_error, "{}", saida.content);
+        assert_eq!(
+            linha_do_intervalo(&saida.content),
+            format!(
+                "Intervalo: índice .. árvore de trabalho (mudanças ainda fora do índice; \
+                 HEAD em {head})"
+            ),
+            "{}",
+            saida.content
+        );
+    }
+
+    /// #1909: `A..B` — cada ponta sai com o nome pedido e o SHA que ele
+    /// valia. O nome do ramo e movel; e por isso que a revisao precisa do SHA.
+    ///
+    /// **Mutação que este teste pega**: passe o `range` cru ao `git diff` e
+    /// tire a linha do cabecalho — a asserção da linha fica vermelha.
+    #[tokio::test]
+    async fn commit_range_entre_commits_nomeia_o_sha_de_cada_ponta() {
+        let repo = repo_git_temporario("alvo-review-entre", "ramo-review-entre");
+        git_no_repo(repo.path(), &["commit", "-q", "-am", "segundo"]);
+        let de = git_no_repo(repo.path(), &["rev-parse", "HEAD~1"]);
+        let ate = git_no_repo(repo.path(), &["rev-parse", "HEAD"]);
+        assert_ne!(de, ate);
+        let wd = repo.path().to_string_lossy().into_owned();
+
+        for (range, esperado) in [
+            (
+                "HEAD~1..ramo-review-entre",
+                format!("Intervalo: HEAD~1 ({de}) .. ramo-review-entre ({ate})"),
+            ),
+            // Ponta vazia vale HEAD, e a linha diz `HEAD` em vez de calar.
+            (
+                "HEAD~1..",
+                format!("Intervalo: HEAD~1 ({de}) .. HEAD ({ate})"),
+            ),
+            // `A^!` e o commit sozinho: pai de A .. A.
+            ("HEAD^!", format!("Intervalo: HEAD^ ({de}) .. HEAD ({ate})")),
+        ] {
+            let saida = tool_com_eco()
+                .execute(&ctx(Some(&wd)), serde_json::json!({"commit_range": range}))
+                .await
+                .expect("execute");
+            assert!(!saida.is_error, "{range}: {}", saida.content);
+            assert_eq!(
+                linha_do_intervalo(&saida.content),
+                esperado,
+                "{range}: {}",
+                saida.content
+            );
+            // O diff revisado e o desse intervalo: o do segundo commit.
+            assert!(
+                saida.content.contains("+linha alterada"),
+                "{range}: {}",
+                saida.content
+            );
+        }
+    }
+
+    /// #1909: `A` sozinho compara A com a arvore de trabalho.
+    #[tokio::test]
+    async fn commit_range_de_uma_revisao_nomeia_a_arvore_de_trabalho() {
+        let repo = repo_git_temporario("alvo-review-uma", "ramo-review-uma");
+        let head = git_no_repo(repo.path(), &["rev-parse", "HEAD"]);
+        let wd = repo.path().to_string_lossy().into_owned();
+
+        let saida = tool_com_eco()
+            .execute(
+                &ctx(Some(&wd)),
+                serde_json::json!({"commit_range": "ramo-review-uma"}),
+            )
+            .await
+            .expect("execute");
+
+        assert!(!saida.is_error, "{}", saida.content);
+        assert_eq!(
+            linha_do_intervalo(&saida.content),
+            format!(
+                "Intervalo: ramo-review-uma ({head}) .. árvore de trabalho (inclui o que está \
+                 no índice)"
+            ),
+            "{}",
+            saida.content
+        );
+    }
+
+    /// #1909: `A...B` — o diff e o de B desde a base comum com A. A linha
+    /// nomeia as duas pontas com SHA, e o que o ramo A fez depois da base
+    /// NAO entra no diff revisado.
+    #[tokio::test]
+    async fn commit_range_de_tres_pontos_revisa_desde_a_base_comum() {
+        let repo = repo_git_temporario("alvo-review-base", "tronco");
+        let dir = repo.path();
+        git_no_repo(dir, &["commit", "-q", "-am", "base"]);
+        git_no_repo(dir, &["checkout", "-q", "-b", "ramo"]);
+        std::fs::write(dir.join("so-no-ramo.txt"), "do ramo\n").expect("write");
+        git_no_repo(dir, &["add", "."]);
+        git_no_repo(dir, &["commit", "-q", "-m", "ramo"]);
+        git_no_repo(dir, &["checkout", "-q", "tronco"]);
+        std::fs::write(dir.join("so-no-tronco.txt"), "do tronco\n").expect("write");
+        git_no_repo(dir, &["add", "."]);
+        git_no_repo(dir, &["commit", "-q", "-m", "tronco"]);
+        let tronco = git_no_repo(dir, &["rev-parse", "tronco"]);
+        let ramo = git_no_repo(dir, &["rev-parse", "ramo"]);
+        let wd = dir.to_string_lossy().into_owned();
+
+        let saida = tool_com_eco()
+            .execute(
+                &ctx(Some(&wd)),
+                serde_json::json!({"commit_range": "tronco...ramo"}),
+            )
+            .await
+            .expect("execute");
+
+        assert!(!saida.is_error, "{}", saida.content);
+        assert_eq!(
+            linha_do_intervalo(&saida.content),
+            format!("Intervalo: base comum de tronco ({tronco}) e ramo ({ramo}) .. ramo ({ramo})"),
+            "{}",
+            saida.content
+        );
+        assert!(
+            saida.content.contains("so-no-ramo.txt"),
+            "{}",
+            saida.content
+        );
+        assert!(
+            !saida.content.contains("so-no-tronco.txt"),
+            "o `...` virou `..` — o lado do tronco entrou no diff:\n{}",
+            saida.content
+        );
+    }
+
+    /// #1909: ponta que nao e commit do repositorio — o diff NAO roda, nada
+    /// vai para o LLM, e a recusa diz qual ponta faltou sem emprestar SHA.
+    /// Antes o git falhava calado e a tool respondia "No diff output (no
+    /// changes found)": um alvo que nao existe lido como "nada mudou".
+    #[tokio::test]
+    async fn ponta_que_nao_resolve_recusa_a_revisao_e_diz_qual() {
+        let repo = repo_git_temporario("alvo-review-ponta", "ramo-review-ponta");
+        let head = git_no_repo(repo.path(), &["rev-parse", "HEAD"]);
+        let wd = repo.path().to_string_lossy().into_owned();
+
+        for (range, esperado) in [
+            (
+                "sumiu..HEAD",
+                format!("Intervalo: sumiu (revisão não resolvida) .. HEAD ({head})"),
+            ),
+            (
+                "HEAD..a..b",
+                format!("Intervalo: HEAD ({head}) .. a..b (revisão não resolvida)"),
+            ),
+            (
+                "nao-existe",
+                "Intervalo: nao-existe (revisão não resolvida) .. árvore de trabalho (inclui o \
+                 que está no índice)"
+                    .to_string(),
+            ),
+            // Uma arvore nao e ponta de intervalo de revisao.
+            (
+                "HEAD^{tree}..HEAD",
+                format!("Intervalo: HEAD^{{tree}} (revisão não resolvida) .. HEAD ({head})"),
+            ),
+        ] {
+            let saida = tool_com_eco()
+                .execute(&ctx(Some(&wd)), serde_json::json!({"commit_range": range}))
+                .await
+                .expect("execute");
+            assert!(saida.is_error, "{range}: {}", saida.content);
+            assert!(
+                saida.content.lines().any(|l| l == esperado),
+                "{range}: faltou `{esperado}` em:\n{}",
+                saida.content
+            );
+            assert!(
+                saida.content.contains("O diff não foi executado"),
+                "{range}: {}",
+                saida.content
+            );
+            assert!(
+                !saida.content.contains("no changes found"),
+                "{range}: ponta inexistente lida como \"nada mudou\":\n{}",
+                saida.content
+            );
+        }
+    }
+
+    /// #1269 + #1909: o `-` inicial e recusado em CADA ponta, nao so no
+    /// comeco do `commit_range` — a segunda ponta de `HEAD..--output=x`
+    /// chegaria ao `rev-parse` em posicao de opcao.
+    #[tokio::test]
+    async fn ponta_comecando_com_hifen_e_recusada_antes_de_qualquer_git() {
+        let repo = repo_git_temporario("alvo-review-hifen", "ramo-review-hifen");
+        let wd = repo.path().to_string_lossy().into_owned();
+        let vazou = repo.path().join("vazou.diff");
+
+        for range in [
+            format!("HEAD..--output={}", vazou.display()),
+            format!("HEAD...--output={}", vazou.display()),
+        ] {
+            let saida = tool_com_eco()
+                .execute(&ctx(Some(&wd)), serde_json::json!({"commit_range": range}))
+                .await
+                .expect("execute");
+            assert!(saida.is_error, "{range}: {}", saida.content);
+            assert!(
+                saida.content.contains("recusado"),
+                "{range}: {}",
+                saida.content
+            );
+            assert!(!vazou.exists(), "{range}: o git escreveu o arquivo");
+        }
+    }
+
+    /// #1909: intervalo sem diferenca continua sendo "No diff output", mas
+    /// agora dizendo ENTRE O QUE nao havia diferenca.
+    #[tokio::test]
+    async fn intervalo_sem_mudanca_diz_entre_o_que() {
+        let repo = repo_git_temporario("alvo-review-vazio", "ramo-review-vazio");
+        let head = git_no_repo(repo.path(), &["rev-parse", "HEAD"]);
+        let wd = repo.path().to_string_lossy().into_owned();
+
+        let saida = tool_com_eco()
+            .execute(
+                &ctx(Some(&wd)),
+                serde_json::json!({"commit_range": "HEAD..HEAD"}),
+            )
+            .await
+            .expect("execute");
+
+        assert!(saida.is_error, "{}", saida.content);
+        assert!(
+            saida
+                .content
+                .contains(&format!("Intervalo: HEAD ({head}) .. HEAD ({head})")),
+            "{}",
+            saida.content
+        );
+        assert!(
+            saida.content.contains("No diff output (no changes found)"),
+            "{}",
+            saida.content
+        );
+    }
+
+    /// #1909: um `git diff` que FALHA nao e "nenhuma mudanca". Duas pontas
+    /// sem historia comum num `A...B` resolvem (sao commits), mas o diff
+    /// morre sem base comum — e antes isso saia como "no changes found".
+    #[tokio::test]
+    async fn git_diff_que_falha_nao_vira_nenhuma_mudanca() {
+        let repo = repo_git_temporario("alvo-review-orfao", "tronco");
+        let dir = repo.path();
+        git_no_repo(dir, &["commit", "-q", "-am", "base"]);
+        git_no_repo(dir, &["checkout", "-q", "--orphan", "orfao"]);
+        git_no_repo(dir, &["commit", "-q", "-m", "sem historia comum"]);
+        let wd = dir.to_string_lossy().into_owned();
+
+        let saida = tool_com_eco()
+            .execute(
+                &ctx(Some(&wd)),
+                serde_json::json!({"commit_range": "tronco...orfao"}),
+            )
+            .await
+            .expect("execute");
+
+        assert!(saida.is_error, "{}", saida.content);
+        assert!(
+            saida.content.contains("git diff failed"),
+            "{}",
+            saida.content
+        );
+        assert!(
+            saida.content.contains("Intervalo: base comum de tronco ("),
+            "{}",
+            saida.content
+        );
+        assert!(
+            !saida.content.contains("no changes found"),
             "{}",
             saida.content
         );
