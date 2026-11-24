@@ -273,11 +273,50 @@ impl GitDiffTool {
         context_lines: i32,
         from_commit: Option<&str>,
         to_commit: Option<&str>,
-    ) -> Result<String> {
+    ) -> Result<std::result::Result<String, String>> {
         // #1269: os valores que vêm da tool call do modelo nunca caem em
-        // posição de flag — ver `git_diff_args`.
+        // posição de flag — ver `git_diff_args`. Validado ANTES de qualquer
+        // spawn, inclusive o da resolucao das pontas.
         let args = git_diff_args(file_path, context_lines, from_commit, to_commit)
             .map_err(Error::Agent)?;
+
+        // #1909: o intervalo e resolvido ANTES do diff, e o diff roda sobre
+        // os SHAs resolvidos. Assim a linha `Intervalo:` nomeia exatamente o
+        // que foi comparado: um ramo que se mova entre as duas chamadas nao
+        // rotula a resposta com um SHA que nao e o do diff, e uma ponta que o
+        // git aceitaria de outro jeito (`HEAD~1..` com a outra vazia, ou um
+        // `a...b` montado pela concatenacao) nunca devolve diff sem intervalo
+        // nomeado — sem as duas pontas resolvidas, o diff nao roda.
+        let (intervalo, args) = match (from_commit, to_commit) {
+            (Some(from), Some(to)) => {
+                let (rev_de, rev_ate) = (format!("{from}^{{commit}}"), format!("{to}^{{commit}}"));
+                let (de, ate) = tokio::join!(
+                    self.revisao_de(repo, &rev_de),
+                    self.revisao_de(repo, &rev_ate),
+                );
+                let linha =
+                    linha_do_intervalo_entre_commits(from, de.as_deref(), to, ate.as_deref());
+                let (Some(de), Some(ate)) = (de, ate) else {
+                    // Recusa da TOOL, nao erro do agente: sai como texto
+                    // puro, com a linha do intervalo no lugar de sempre.
+                    return Ok(Err(format!(
+                        "{linha}\n\nO diff não foi executado: cada ponta do intervalo precisa \
+                         ser um commit deste repositório. Confira o nome com \
+                         operation \"status\" ou use o SHA completo."
+                    )));
+                };
+                let args = git_diff_args(file_path, context_lines, Some(&de), Some(&ate))
+                    .map_err(Error::Agent)?;
+                (linha, args)
+            }
+            // Sem intervalo o `git diff` compara o indice com a arvore de
+            // trabalho. O `HEAD` nao e uma das pontas, mas e o que diz EM QUAL
+            // checkout essa comparacao foi feita.
+            _ => (
+                linha_do_intervalo_da_arvore(self.revisao_exata(repo).await.as_deref()),
+                args,
+            ),
+        };
 
         // Executa git diff
         let output = self.run_git_command(&args, repo).await?;
@@ -286,7 +325,9 @@ impl GitDiffTool {
         let filtered = self.filter_secrets(&output);
         let limited = self.limit_lines(&filtered);
 
-        Ok(limited)
+        // A linha do intervalo entra DEPOIS do filtro e do corte de linhas,
+        // para nunca ser a linha que o limite esconde.
+        Ok(Ok(format!("{intervalo}\n\n{limited}")))
     }
 
     /// Obtém o status do repositório de `repo`
@@ -328,12 +369,121 @@ impl GitDiffTool {
     /// recém-criado, sem commit, não pode derrubar o `status` inteiro: o
     /// estado do checkout (branch, arquivos) continua sendo a resposta útil.
     async fn revisao_exata(&self, repo: &RepoDir) -> Option<String> {
-        let args: Vec<String> = ["rev-parse", "--verify", "HEAD"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        self.revisao_de(repo, "HEAD").await
+    }
+
+    /// O SHA completo de UMA revisao, ou `None` quando o git nao a resolve.
+    ///
+    /// Quem chama com valor vindo do modelo ja recusou o que comeca com `-`
+    /// (`git_diff_args`), e mesmo assim o que volta so vira "revisao" quando a
+    /// saida e a de um `--verify` que deu certo ([`revisao_unica_do_output`]).
+    async fn revisao_de(&self, repo: &RepoDir, revisao: &str) -> Option<String> {
+        // Uma revisao so nao contem `..`: nome de ref nao pode ter (regra do
+        // `git check-ref-format`), e `a..b` / `a...b` sao INTERVALOS. Nem
+        // chega ao git — ver [`revisao_unica_do_output`] para o porque.
+        if revisao.contains("..") {
+            return None;
+        }
+        let args = vec![
+            "rev-parse".to_string(),
+            "--verify".to_string(),
+            revisao.to_string(),
+        ];
         let saida = self.run_git_command(&args, repo).await.ok()?;
-        revisao_do_output(&saida).map(str::to_string)
+        revisao_unica_do_output(&saida).map(str::to_string)
+    }
+}
+
+/// Separa o que o git imprimiu no stdout do bloco `STDERR:` que
+/// `run_git_command` anexa. O cabecalho so conta no comeco de uma linha.
+fn separar_stderr(output: &str) -> (&str, Option<&str>) {
+    match output.find("STDERR:\n") {
+        Some(i) if i == 0 || output[..i].ends_with('\n') => (&output[..i], Some(&output[i..])),
+        _ => (output, None),
+    }
+}
+
+/// O SHA de um `rev-parse --verify <revisao>` que DEU CERTO, e so dele.
+///
+/// `run_git_command` devolve `Ok` com o codigo de saida descartado, entao o
+/// sucesso tem de ser lido da forma da saida. E a forma engana: para um
+/// intervalo (`a..b`), o git 2.43 imprime os dois SHAs no stdout e SO DEPOIS
+/// morre com `fatal: Needed a single revision` — a primeira linha tem cara de
+/// SHA e e a revisao ERRADA (a ponta `b`, nao a pedida). Por isso: exatamente
+/// uma linha no stdout, com forma de SHA, e nenhum `fatal:` no stderr. Aviso
+/// que nao e `fatal:` (o pull do docker no sandbox) nao derruba a leitura.
+fn revisao_unica_do_output(saida: &str) -> Option<&str> {
+    let (stdout, stderr) = separar_stderr(saida);
+    if stderr.is_some_and(|bloco| bloco.lines().any(|l| l.trim_start().starts_with("fatal:"))) {
+        return None;
+    }
+    let mut linhas = stdout.lines().filter(|l| !l.trim().is_empty());
+    let unica = linhas.next()?;
+    if linhas.next().is_some() {
+        return None;
+    }
+    revisao_do_output(unica)
+}
+
+/// O que dizer no lugar do SHA de uma ponta que o git nao resolveu.
+const PONTA_NAO_RESOLVIDA: &str = "revisão não resolvida";
+
+/// O nome de uma revisao como o modelo o escreveu, pronto para UMA linha.
+///
+/// O valor vem da tool call. Caractere de controle (uma quebra de linha,
+/// sobretudo) deixaria o modelo escrever linhas inteiras na resposta com a
+/// cara de saida da tool; vira `?`, como os parenteses
+/// ([`caractere_que_forja_linha`]). O tamanho e cortado pelo mesmo motivo que
+/// qualquer eco de entrada: a linha e contexto, nao transporte.
+fn nome_da_revisao(revisao: &str) -> String {
+    const TETO: usize = 120;
+    let limpo: String = revisao
+        .chars()
+        .map(|c| if caractere_que_forja_linha(c) { '?' } else { c })
+        .take(TETO)
+        .collect();
+    if revisao.chars().count() > TETO {
+        format!("{limpo}…")
+    } else {
+        limpo
+    }
+}
+
+/// O que nao pode sair cru no nome de uma revisao: controle e separadores
+/// de linha/paragrafo Unicode (abririam uma "linha" nova para quem le), e os
+/// parenteses, que na linha do intervalo delimitam o SHA — com eles o nome
+/// `x) y (0000…` desenharia um par `nome (sha)` que a tool nao resolveu.
+fn caractere_que_forja_linha(c: char) -> bool {
+    c.is_control() || matches!(c, '(' | ')' | '\u{2028}' | '\u{2029}')
+}
+
+/// A linha do intervalo de um diff entre commits: cada ponta com o nome que
+/// foi pedido e o SHA que ele valia na hora — ou a falta dele, dita.
+fn linha_do_intervalo_entre_commits(
+    from: &str,
+    sha_de: Option<&str>,
+    to: &str,
+    sha_ate: Option<&str>,
+) -> String {
+    format!(
+        "Intervalo: {} ({}) .. {} ({})",
+        nome_da_revisao(from),
+        sha_de.unwrap_or(PONTA_NAO_RESOLVIDA),
+        nome_da_revisao(to),
+        sha_ate.unwrap_or(PONTA_NAO_RESOLVIDA),
+    )
+}
+
+/// A linha do intervalo de um diff sem commits: indice contra arvore de
+/// trabalho, com o `HEAD` do checkout em que isso foi medido.
+fn linha_do_intervalo_da_arvore(head: Option<&str>) -> String {
+    match head {
+        Some(sha) => format!(
+            "Intervalo: índice .. árvore de trabalho (mudanças ainda fora do índice; HEAD em {sha})"
+        ),
+        None => "Intervalo: índice .. árvore de trabalho (mudanças ainda fora do índice; \
+                 HEAD indisponível — repositório sem commit legível)"
+            .to_string(),
     }
 }
 
@@ -383,10 +533,7 @@ fn anexar_revisao(status: &str, revisao: Option<&str>) -> String {
 /// sandbox tornavam o `&line[..2]` antigo um panic de rotina (review da
 /// #1225, SANDBOX-7). O que vem depois de `STDERR:` e anexado sem parse.
 fn format_status(output: &str) -> String {
-    let (stdout, stderr) = match output.find("STDERR:\n") {
-        Some(i) if i == 0 || output[..i].ends_with('\n') => (&output[..i], Some(&output[i..])),
-        _ => (output, None),
-    };
+    let (stdout, stderr) = separar_stderr(output);
     let mut result = String::new();
 
     for line in stdout.lines() {
@@ -440,6 +587,7 @@ impl Tool for GitDiffTool {
         "Retorna diferenças do repositório git (diff) e status.\n\
          Use 'operation' para escolher entre 'diff' ou 'status'.\n\
          - diff: retorna as mudanças (aceita file_path, context_lines, from_commit, to_commit)\n\
+           e o intervalo exato comparado (SHA completo de cada ponta)\n\
          - status: retorna arquivos modificados, adicionados, deletados, branch atual\n\
            e a revisão exata do checkout (SHA completo do HEAD)\n\
          Limites de segurança: máximo de linhas retornadas, timeout de 15s"
@@ -524,7 +672,8 @@ impl Tool for GitDiffTool {
                     .get_diff(&repo, file_path, context_lines, from_commit, to_commit)
                     .await
                 {
-                    Ok(output) => Ok(ToolOutput::success(repo.com_contexto(&output))),
+                    Ok(Ok(output)) => Ok(ToolOutput::success(repo.com_contexto(&output))),
+                    Ok(Err(recusa)) => Ok(ToolOutput::error(repo.com_contexto(&recusa))),
                     Err(e) => Ok(ToolOutput::error(repo.com_contexto(&e.to_string()))),
                 }
             }
@@ -541,754 +690,4 @@ impl Tool for GitDiffTool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Review da #1225 (SANDBOX-7): nenhuma entrada derruba o
-    /// `format_status` — linha vazia, curta, multibyte no corte, o bloco
-    /// `STDERR:` que `run_git_command` anexa, e combinacoes geradas.
-    #[test]
-    fn format_status_nao_entra_em_panico_com_linha_curta_ou_estranha() {
-        let pecas = [
-            "",
-            "\n",
-            "a",
-            "ab",
-            "abc",
-            "é",
-            "aé",
-            "éé",
-            "a\u{1F600}b",
-            " M",
-            " M ",
-            "??",
-            "## main",
-            "##",
-            "STDERR:",
-            "STDERR:\n",
-            "x\n\n",
-            "\r\n",
-            " M arquivo.rs",
-        ];
-        for a in pecas {
-            for b in pecas {
-                let entrada = format!("{a}\n{b}");
-                let _ = format_status(&entrada);
-                let _ = format_status(&format!("{a}{b}"));
-            }
-        }
-        // O caso real: stdout com `\n` final + o separador + stderr do docker.
-        let real = "## main\n M a.rs\n\nSTDERR:\nUnable to find image 'x' locally\nab\n";
-        let saida = format_status(real);
-        assert!(saida.contains("Branch: main"), "{saida}");
-        assert!(saida.contains("Modificado: a.rs"), "{saida}");
-        assert!(saida.contains("STDERR:\nUnable to find image"), "{saida}");
-        assert!(!saida.contains("Desconhecido: nable"), "{saida}");
-    }
-    use crate::tools::repo_dir::{contexto_de_teste as ctx, repo_git_temporario};
-
-    // ─── #1909: revisao exata no status ────────────────────────────────────
-
-    /// So a FORMA de SHA passa por `revisao_do_output`. Num repositorio sem
-    /// commit o git imprime `HEAD` e o `fatal:` atras de `STDERR:`; nenhum dos
-    /// dois pode virar "Revisão:" na resposta ao operador.
-    #[test]
-    fn revisao_do_output_so_aceita_sha() {
-        let sha1 = "5483327950f3aed7a5897cb5eefcf782e46d18e8";
-        let sha256 = "b".repeat(64);
-        assert_eq!(revisao_do_output(&format!("{sha1}\n")), Some(sha1));
-        assert_eq!(revisao_do_output(&sha256), Some(sha256.as_str()));
-        // A forma REAL do repo sem commit: stdout vazio, `STDERR:` primeiro.
-        assert_eq!(
-            revisao_do_output("STDERR:\nfatal: Needed a single revision\n"),
-            None
-        );
-        assert_eq!(revisao_do_output(""), None);
-        assert_eq!(revisao_do_output(&"a".repeat(39)), None);
-        assert_eq!(revisao_do_output(&"a".repeat(65)), None);
-        assert_eq!(revisao_do_output(&"g".repeat(40)), None);
-    }
-
-    /// A revisao entra logo depois de `Branch:` — e, quando o git recusou o
-    /// diretorio (nao ha linha de branch), no topo, sem engolir o texto que o
-    /// git devolveu.
-    #[test]
-    fn revisao_entra_depois_do_branch() {
-        let saida = anexar_revisao("Branch: main\nModificado: a.rs\n", Some("abc123"));
-        let linhas: Vec<&str> = saida.lines().collect();
-        assert_eq!(
-            linhas,
-            vec!["Branch: main", "Revisão: abc123", "Modificado: a.rs"]
-        );
-
-        let recusado =
-            "Working tree limpo (nenhuma modificação)\n\nSTDERR:\nfatal: not a git repository\n";
-        let saida = anexar_revisao(recusado, None);
-        // O texto do git fica INTEIRO embaixo: nem o cabeçalho `STDERR:` nem
-        // a linha em branco podem ser engolidos pela inserção.
-        assert_eq!(
-            saida.lines().collect::<Vec<_>>(),
-            vec![
-                "Revisão: (indisponível — repositório sem commit legível)",
-                "Working tree limpo (nenhuma modificação)",
-                "",
-                "STDERR:",
-                "fatal: not a git repository",
-            ]
-        );
-    }
-
-    /// O caminho real do agente: dois repositorios temporarios, cada um com a
-    /// SUA revisao, e o status nomeia o SHA que `git rev-parse HEAD` le
-    /// NAQUELE diretorio. **Mutacao**: apontar `revisao_exata` para o CWD do
-    /// processo em vez de `repo.cwd_do_git()` (o mesmo defeito que a #1258
-    /// fechou no diff) e o SHA deixa de casar.
-    #[tokio::test]
-    async fn status_traz_a_revisao_exata_do_checkout() {
-        let tool = GitDiffTool::new(Some(15), Some(500));
-        for marcador in ["alvo-da-revisao-a", "alvo-da-revisao-b"] {
-            let repo = repo_git_temporario(marcador, "ramo-da-revisao");
-            let saida_git = std::process::Command::new("git")
-                .current_dir(repo.path())
-                .args(["rev-parse", "HEAD"])
-                .output()
-                .expect("git");
-            let sha = String::from_utf8_lossy(&saida_git.stdout)
-                .trim()
-                .to_string();
-            // SHA-1 por padrão, SHA-256 numa máquina com GIT_DEFAULT_HASH: a
-            // produção aceita as duas formas, o teste também.
-            assert!(
-                (40..=64).contains(&sha.len()),
-                "revisao fora das formas aceitas: {sha}"
-            );
-
-            let wd = repo.path().to_string_lossy().into_owned();
-            let saida = tool
-                .execute(
-                    &ctx(Some(&wd)),
-                    serde_json::json!({ "operation": "status" }),
-                )
-                .await
-                .expect("execute");
-            assert!(!saida.is_error, "{}", saida.content);
-            assert!(
-                saida.content.contains(&format!("Revisão: {sha}")),
-                "o status nao nomeou a revisao {sha}:\n{}",
-                saida.content
-            );
-            assert!(
-                saida.content.contains("Branch: ramo-da-revisao"),
-                "{}",
-                saida.content
-            );
-        }
-    }
-
-    /// Repositorio sem commit nenhum: o `status` continua respondendo (branch
-    /// e arquivos sao a informacao util) e diz por que a revisao falta, em vez
-    /// de a tool inteira falhar.
-    #[tokio::test]
-    async fn status_sem_commit_diz_que_a_revisao_falta() {
-        let dir = tempfile::tempdir().expect("tmp");
-        let ok = std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init", "-b", "ramo-vazio", "-q", "."])
-            .status()
-            .expect("git")
-            .success();
-        assert!(ok);
-
-        let tool = GitDiffTool::new(Some(15), Some(500));
-        let wd = dir.path().to_string_lossy().into_owned();
-        let saida = tool
-            .execute(
-                &ctx(Some(&wd)),
-                serde_json::json!({ "operation": "status" }),
-            )
-            .await
-            .expect("execute");
-        assert!(!saida.is_error, "{}", saida.content);
-        assert!(
-            saida.content.contains("Revisão: (indisponível"),
-            "{}",
-            saida.content
-        );
-        // O git nomeia o ramo sem commit como "No commits yet on <ramo>";
-        // o que importa aqui e a revisao faltar com motivo, sem derrubar
-        // branch nem estado.
-        assert!(saida.content.contains("ramo-vazio"), "{}", saida.content);
-    }
-
-    // ─── #1272 S3: config plantada nao executa nada no host ────────────────
-
-    /// Um repo com `core.fsmonitor`, `diff.x.textconv` e `filter.x.clean`
-    /// plantados: `diff` e `status` pela tool nao criam marcador nenhum e o
-    /// diff continua vindo. Gemeo: o argv ANTIGO (`git diff --no-ext-diff`)
-    /// cria os tres — prova que o teste nao passa por vacuidade e prende as
-    /// flags.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn config_plantada_no_repo_nao_roda_programa_nenhum() {
-        let repo = repo_git_temporario("alvo-1272", "ramo-1272");
-        let marcas = tempfile::tempdir().expect("tmp");
-        let [fsm, tc, clean] =
-            crate::git_endurecido::planta_programas_no_repo(repo.path(), marcas.path());
-        let tool = GitDiffTool::new(Some(15), Some(500));
-        let wd = repo.path().to_string_lossy().into_owned();
-        for op in ["diff", "status"] {
-            let saida = tool
-                .execute(&ctx(Some(&wd)), serde_json::json!({"operation": op}))
-                .await
-                .expect("execute");
-            assert!(!saida.is_error, "{op}: {}", saida.content);
-            if op == "diff" {
-                assert!(
-                    saida.content.contains("linha alterada"),
-                    "{}",
-                    saida.content
-                );
-            }
-            for m in [&fsm, &tc, &clean] {
-                assert!(!m.exists(), "{op} executou {}", m.display());
-            }
-        }
-
-        // Gemeo: sem o endurecimento, o mesmo repo executa os tres.
-        let ok = std::process::Command::new("git")
-            .current_dir(repo.path())
-            .args(["diff", "--no-ext-diff"])
-            .output()
-            .expect("git")
-            .status
-            .success();
-        assert!(ok);
-        for m in [&fsm, &tc, &clean] {
-            assert!(m.exists(), "o gemeo nao reproduziu {}", m.display());
-        }
-    }
-
-    /// Um submodulo cuja config PROPRIA declara `filter.evil.clean`, com o
-    /// superprojeto em `diff.submodule=diff`: `diff` e `status` pela tool nao
-    /// descem nele, entao o filtro nao roda. Gemeo: o prefixo antigo (sem as
-    /// chaves de submodulo) roda o filtro — prova que o teste nao e vazio.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn filtro_declarado_em_submodulo_nao_roda() {
-        let repo = repo_git_temporario("alvo-sub", "ramo-sub");
-        let marcas = tempfile::tempdir().expect("tmp");
-        let marca = crate::git_endurecido::planta_filtro_em_submodulo(repo.path(), marcas.path());
-        let tool = GitDiffTool::new(Some(15), Some(500));
-        let wd = repo.path().to_string_lossy().into_owned();
-        for op in ["diff", "status"] {
-            let saida = tool
-                .execute(&ctx(Some(&wd)), serde_json::json!({"operation": op}))
-                .await
-                .expect("execute");
-            assert!(!saida.is_error, "{op}: {}", saida.content);
-            assert!(!marca.exists(), "{op} rodou o filtro do submodulo");
-        }
-
-        // Gemeo: o endurecimento de antes (fsmonitor/bare/hooks, sem as
-        // chaves de submodulo) roda o filtro do submodulo.
-        let ok = std::process::Command::new("git")
-            .current_dir(repo.path())
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .args([
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                "safe.bareRepository=explicit",
-                "-c",
-                "core.hooksPath=/dev/null",
-                "diff",
-                "--no-ext-diff",
-                "--no-textconv",
-            ])
-            .output()
-            .expect("git")
-            .status
-            .success();
-        assert!(ok);
-        assert!(
-            marca.exists(),
-            "o gemeo nao reproduziu o filtro do submodulo"
-        );
-    }
-
-    /// `safe.bareRepository=explicit`: um repositorio bare implicito como
-    /// working_dir e recusado pelo git em vez de lido.
-    #[tokio::test]
-    async fn repositorio_bare_implicito_e_recusado() {
-        let dir = tempfile::tempdir().expect("tmp");
-        let ok = std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init", "--bare", "-q", "."])
-            .status()
-            .expect("git")
-            .success();
-        assert!(ok);
-        let tool = GitDiffTool::new(Some(15), Some(500));
-        let wd = dir.path().to_string_lossy().into_owned();
-        let saida = tool
-            .execute(&ctx(Some(&wd)), serde_json::json!({"operation": "status"}))
-            .await
-            .expect("execute");
-        // O git recusa o diretorio (a tool devolve a saida de erro dele).
-        assert!(
-            saida.content.contains("safe.bareRepository"),
-            "bare implicito foi lido: {}",
-            saida.content
-        );
-    }
-
-    /// #1909: a recusa do git cita o diretorio por extenso, e ela sai no
-    /// corpo da resposta. Num turno restrito o caminho do host nao sai — a
-    /// causa (`safe.bareRepository`) continua dita; no aberto, sai como antes.
-    ///
-    /// So unix, como os vizinhos que dependem da forma do caminho: no Windows
-    /// o git imprime `C:/...` e o `canonicalize` devolve a forma verbatim, entao
-    /// comparar com o caminho do tempdir nao provaria nada. A logica de
-    /// redacao (incluindo as formas do Windows) e coberta, em toda
-    /// plataforma, pelos testes puros de `git_endurecido`.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn recusa_do_git_no_turno_restrito_nao_nomeia_o_host() {
-        let dir = tempfile::tempdir().expect("tmp");
-        let ok = std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init", "--bare", "-q", "."])
-            .status()
-            .expect("git")
-            .success();
-        assert!(ok);
-        let tool = GitDiffTool::new(Some(15), Some(500));
-        let wd = dir.path().to_string_lossy().into_owned();
-        // O git imprime o caminho canonico (no macOS, `/private/var/...`).
-        let canonico = std::fs::canonicalize(dir.path())
-            .expect("canonicalize")
-            .to_string_lossy()
-            .into_owned();
-
-        for operacao in ["status", "diff"] {
-            let restrito = crate::tools::turn_tools::com_restricao_do_turno(true, async {
-                tool.execute(
-                    &ctx(Some(&wd)),
-                    serde_json::json!({ "operation": operacao }),
-                )
-                .await
-            })
-            .await;
-            let texto = match restrito {
-                Ok(saida) => saida.content,
-                Err(e) => e.to_string(),
-            };
-            assert!(
-                !texto.contains(&wd) && !texto.contains(&canonico),
-                "{operacao}: o caminho do host saiu no turno restrito:\n{texto}"
-            );
-            // So o `status` recebe a recusa que cita o diretorio; o `diff`
-            // num bare cai no uso do `--no-index`, que nao nomeia caminho.
-            if operacao == "status" {
-                assert!(texto.contains("safe.bareRepository"), "{texto}");
-                // O diretorio citado e o proprio working_dir da sessao: sai
-                // relativo, nao como "fora do diretorio da sessao".
-                assert!(texto.contains("cannot use bare repository '.'"), "{texto}");
-            }
-        }
-
-        // Turno aberto (operador local): o texto do git sai inteiro.
-        let aberto = crate::tools::turn_tools::com_restricao_do_turno(false, async {
-            tool.execute(
-                &ctx(Some(&wd)),
-                serde_json::json!({ "operation": "status" }),
-            )
-            .await
-        })
-        .await;
-        let texto = match aberto {
-            Ok(saida) => saida.content,
-            Err(e) => e.to_string(),
-        };
-        assert!(
-            texto.contains(&wd) || texto.contains(&canonico),
-            "o turno aberto perdeu o caminho:\n{texto}"
-        );
-    }
-
-    // ─── #1258: o git roda no repositório da sessão ────────────────────────
-    //
-    // Os quatro testes abaixo exercitam a tool pelo **caminho do agente**
-    // (`execute` com `ToolContext`), não por `run_git_command`. A issue pede
-    // esse formato de propósito: um teste que afirma a função interna deixa o
-    // ponto de chamada de produção descoberto, e foi assim que o
-    // `current_dir` ausente sobreviveu a duas rodadas de hardening desta
-    // mesma tool (#1075, #1269).
-
-    /// #1258: o `git diff` vem do `working_dir` da sessão.
-    ///
-    /// Dois repositórios temporários, cada um com um arquivo modificado de
-    /// nome único. Cada chamada cita o marcador do **seu** repositório e não o
-    /// do outro — o que só é possível se o `current_dir` daquela chamada valeu.
-    ///
-    /// **Mutação que este teste pega**: comente o `cmd.current_dir(dir)` de
-    /// `run_git_command` e ele fica vermelho. Sem ele o git roda no CWD do
-    /// processo de teste — a própria árvore do GarraRUST, que é outro
-    /// repositório e cujo diff nunca menciona esses marcadores.
-    #[tokio::test]
-    async fn diff_vem_do_working_dir_da_sessao() {
-        let repo_a = repo_git_temporario("alvo-do-repo-a", "ramo-a");
-        let repo_b = repo_git_temporario("alvo-do-repo-b", "ramo-b");
-        let tool = GitDiffTool::new(Some(15), Some(500));
-
-        for (repo, meu, do_outro) in [
-            (&repo_a, "alvo-do-repo-a", "alvo-do-repo-b"),
-            (&repo_b, "alvo-do-repo-b", "alvo-do-repo-a"),
-        ] {
-            let wd = repo.path().to_string_lossy().into_owned();
-            let saida = tool
-                .execute(&ctx(Some(&wd)), serde_json::json!({"operation": "diff"}))
-                .await
-                .expect("execute");
-
-            assert!(!saida.is_error, "{}", saida.content);
-            assert!(
-                saida.content.contains(meu),
-                "o diff tinha de vir de {wd}:\n{}",
-                saida.content
-            );
-            assert!(
-                !saida.content.contains(do_outro),
-                "o diff veio do repositório errado:\n{}",
-                saida.content
-            );
-        }
-    }
-
-    /// #1258: a mesma prova para `operation: "status"`, que passa pelo mesmo
-    /// `run_git_command`. Aqui o marcador é o **nome do ramo**, que não depende
-    /// do estado sujo da árvore de quem roda a suite.
-    #[tokio::test]
-    async fn status_vem_do_working_dir_da_sessao() {
-        let repo = repo_git_temporario("alvo-do-status", "ramo-so-deste-repo");
-        let tool = GitDiffTool::new(Some(15), Some(500));
-        let wd = repo.path().to_string_lossy().into_owned();
-
-        let saida = tool
-            .execute(&ctx(Some(&wd)), serde_json::json!({"operation": "status"}))
-            .await
-            .expect("execute");
-
-        assert!(!saida.is_error, "{}", saida.content);
-        assert!(
-            saida.content.contains("Branch: ramo-so-deste-repo"),
-            "{}",
-            saida.content
-        );
-        // #1258: a procedência é nomeada. #1626: sem o caminho absoluto, que
-        // vazaria o dir por-orquestrador no envelope servido pela ponte.
-        assert_eq!(
-            saida.content.lines().next().unwrap_or_default(),
-            "Repositório: o working_dir da sessão"
-        );
-        assert!(
-            !saida.content.contains(&wd),
-            "o caminho absoluto do working_dir vazou na resposta:\n{}",
-            saida.content
-        );
-    }
-
-    /// #1258, caso 2 — sessão **sem** `working_dir`, que no gateway é o comum
-    /// (um prompt de Telegram não traz projeto). O CWD do processo é mantido,
-    /// como antes, mas a resposta passa a dizer de qual repositório ela falou:
-    /// a resposta errada *silenciosa* era o defeito. Turno ABERTO (operador
-    /// local), onde o caminho é acionável; no restrito ele não sai (#1909).
-    #[tokio::test]
-    async fn sem_working_dir_a_resposta_nomeia_o_repositorio_do_cwd() {
-        let tool = GitDiffTool::new(Some(15), Some(500));
-        let cwd = std::env::current_dir().expect("CWD do processo de teste");
-
-        for operacao in ["diff", "status"] {
-            let saida = crate::tools::turn_tools::com_restricao_do_turno(false, async {
-                tool.execute(&ctx(None), serde_json::json!({ "operation": operacao }))
-                    .await
-                    .expect("execute")
-            })
-            .await;
-
-            let primeira = saida.content.lines().next().unwrap_or_default();
-            assert!(
-                primeira.starts_with("Repositório: "),
-                "{operacao}: {primeira}"
-            );
-            assert!(
-                primeira.contains(&cwd.display().to_string()),
-                "{operacao}: a resposta tem de nomear o CWD do processo: {primeira}"
-            );
-            assert!(
-                primeira.contains("a sessão não tem working_dir"),
-                "{operacao}: {primeira}"
-            );
-        }
-    }
-
-    /// #1909: a mesma resposta de sessão sem `working_dir`, agora num turno
-    /// restrito — o CWD do processo do gateway é caminho do HOST. A
-    /// procedência continua dita (é o que desfaz a confusão silenciosa da
-    /// #1258); o lugar do caminho é o marcador das outras tools.
-    #[tokio::test]
-    async fn sem_working_dir_no_turno_restrito_a_resposta_nao_nomeia_o_cwd() {
-        let tool = GitDiffTool::new(Some(15), Some(500));
-        let cwd = std::env::current_dir().expect("CWD do processo de teste");
-
-        let saida = crate::tools::turn_tools::com_restricao_do_turno(true, async {
-            tool.execute(&ctx(None), serde_json::json!({ "operation": "status" }))
-                .await
-                .expect("execute")
-        })
-        .await;
-
-        let primeira = saida.content.lines().next().unwrap_or_default();
-        assert!(primeira.starts_with("Repositório: "), "{primeira}");
-        assert!(
-            primeira.contains(crate::tools::tool_context::CAMINHO_FORA_DO_TURNO),
-            "o lugar do caminho deveria ser o marcador: {primeira}"
-        );
-        assert!(
-            !saida.content.contains(&cwd.display().to_string()),
-            "o CWD do host saiu no turno restrito:\n{}",
-            saida.content
-        );
-    }
-
-    /// #1258: `working_dir` que não existe falha **nomeando a procedência** (o
-    /// working_dir da sessão), e não cai de volta no CWD do processo — era a
-    /// confusão silenciosa que a issue descreve. #1626: a procedência é nomeada
-    /// sem o caminho absoluto, que vazaria o dir por-orquestrador no envelope
-    /// servido pela ponte (a #1258 segue distinguindo working_dir de CWD, que é
-    /// o que resolve a confusão).
-    #[tokio::test]
-    async fn working_dir_inexistente_nomeia_a_procedencia_sem_o_caminho() {
-        let tool = GitDiffTool::new(Some(15), Some(500));
-        let inexistente = "/nao/existe/em/lugar/nenhum-1258";
-
-        let saida = tool
-            .execute(
-                &ctx(Some(inexistente)),
-                serde_json::json!({"operation": "diff"}),
-            )
-            .await
-            .expect("execute");
-
-        assert!(saida.is_error, "{}", saida.content);
-        // Nomeia o working_dir da sessão (não cai no CWD), mas sem o caminho.
-        assert!(
-            saida.content.contains("working_dir da sessão"),
-            "{}",
-            saida.content
-        );
-        assert!(
-            !saida.content.contains(inexistente),
-            "o caminho absoluto do working_dir vazou:\n{}",
-            saida.content
-        );
-    }
-
-    #[tokio::test]
-    async fn test_git_status() {
-        let tool = GitDiffTool::new(Some(10), Some(100));
-
-        let ctx = ToolContext {
-            session_id: "test".into(),
-            user_id: None,
-            is_heartbeat: false,
-            approval: crate::tools::approval::ToolApproval::None,
-            working_dir: None,
-            project_id: None,
-        };
-
-        let output = tool
-            .execute(&ctx, serde_json::json!({"operation": "status"}))
-            .await
-            .unwrap();
-
-        // Status should work even if there's no git repo
-        println!("Status output: {}", output.content);
-    }
-
-    #[tokio::test]
-    async fn test_git_diff_no_args() {
-        let tool = GitDiffTool::new(Some(10), Some(100));
-
-        let ctx = ToolContext {
-            session_id: "test".into(),
-            user_id: None,
-            is_heartbeat: false,
-            approval: crate::tools::approval::ToolApproval::None,
-            working_dir: None,
-            project_id: None,
-        };
-
-        let output = tool
-            .execute(&ctx, serde_json::json!({"operation": "diff"}))
-            .await
-            .unwrap();
-
-        // Diff should work even if there are no changes
-        println!("Diff output: {}", output.content);
-    }
-
-    #[tokio::test]
-    async fn test_git_diff_with_file() {
-        let tool = GitDiffTool::new(Some(10), Some(100));
-
-        let ctx = ToolContext {
-            session_id: "test".into(),
-            user_id: None,
-            is_heartbeat: false,
-            approval: crate::tools::approval::ToolApproval::None,
-            working_dir: None,
-            project_id: None,
-        };
-
-        // Try diff on a non-existent file
-        let output = tool
-            .execute(
-                &ctx,
-                serde_json::json!({
-                    "operation": "diff",
-                    "file_path": "Cargo.toml"
-                }),
-            )
-            .await
-            .unwrap();
-
-        println!("Diff file output: {}", output.content);
-    }
-
-    #[tokio::test]
-    async fn test_invalid_operation() {
-        let tool = GitDiffTool::new(Some(10), Some(100));
-
-        let ctx = ToolContext {
-            session_id: "test".into(),
-            user_id: None,
-            is_heartbeat: false,
-            approval: crate::tools::approval::ToolApproval::None,
-            working_dir: None,
-            project_id: None,
-        };
-
-        let output = tool
-            .execute(&ctx, serde_json::json!({"operation": "invalid"}))
-            .await
-            .unwrap();
-
-        assert!(output.is_error);
-    }
-
-    /// #1296: operação ausente é observação soft (`Ok` + `is_error`), não
-    /// `Err` — a mensagem nomeia o parâmetro e o schema esperado.
-    #[tokio::test]
-    async fn test_missing_operation() {
-        let tool = GitDiffTool::new(Some(10), Some(100));
-
-        let ctx = ToolContext {
-            session_id: "test".into(),
-            user_id: None,
-            is_heartbeat: false,
-            approval: crate::tools::approval::ToolApproval::None,
-            working_dir: None,
-            project_id: None,
-        };
-
-        let output = tool
-            .execute(&ctx, serde_json::json!({}))
-            .await
-            .expect("parâmetro ausente é soft-error, não Err");
-
-        assert!(output.is_error);
-        assert!(output.content.contains("'operation'"), "{}", output.content);
-    }
-
-    /// #1269: file_path adversarial igual a uma flag do git fica DEPOIS do
-    /// `--` — pathspec, nunca opção. O `--no-ext-diff` deixa de ser desfeito
-    /// pela última ocorrência da flag.
-    #[test]
-    fn file_path_adversarial_vai_depois_do_terminador() {
-        let args =
-            git_diff_args(Some("--ext-diff"), 3, None, None).expect("file_path é sempre válido");
-        assert_eq!(
-            args,
-            vec![
-                "diff".to_string(),
-                "--no-ext-diff".to_string(),
-                "--no-textconv".to_string(),
-                "--ignore-submodules=all".to_string(),
-                "-U3".to_string(),
-                "--".to_string(),
-                "--ext-diff".to_string(),
-            ]
-        );
-    }
-
-    /// #1269: range de commits preserva a semântica de revisões (antes do
-    /// `--`) e o file_path, quando junto, fica depois.
-    #[test]
-    fn range_e_file_path_ficam_nos_lados_certos_do_terminador() {
-        let args = git_diff_args(Some("src/main.rs"), 3, Some("abc123"), Some("def456"))
-            .expect("revisões válidas");
-        assert_eq!(
-            args,
-            vec![
-                "diff".to_string(),
-                "--no-ext-diff".to_string(),
-                "--no-textconv".to_string(),
-                "--ignore-submodules=all".to_string(),
-                "-U3".to_string(),
-                "abc123..def456".to_string(),
-                "--".to_string(),
-                "src/main.rs".to_string(),
-            ]
-        );
-    }
-
-    /// #1269 (segundo achado): `from` começando com `-` põe o token inteiro
-    /// em posição de opção — `--output=/tmp/../alvo` escreve o diff onde o
-    /// modelo escolher. Recusa controlada, sem subir o git.
-    #[test]
-    fn from_commit_adversarial_e_recusado() {
-        let err = git_diff_args(None, 3, Some("--output=/tmp/"), Some("alvo"))
-            .expect_err("from começando com '-' é recusado");
-        assert!(
-            err.contains("'--output=/tmp/'"),
-            "mensagem cita a revisão: {err}"
-        );
-    }
-
-    /// #1269: `to` adversarial recebe a mesma recusa.
-    #[test]
-    fn to_commit_adversarial_e_recusado() {
-        let err = git_diff_args(None, 3, Some("abc123"), Some("-O"))
-            .expect_err("to começando com '-' é recusado");
-        assert!(err.contains("'-O'"), "mensagem cita a revisão: {err}");
-    }
-
-    /// Caso sem nada do modelo: o `--` termina a lista de opções e não muda
-    /// a semântica do diff inteiro do working tree.
-    #[test]
-    fn sem_valores_do_modelo_termina_na_posicao_de_pathspec() {
-        let args = git_diff_args(None, 3, None, None).expect("nada a recusar");
-        assert_eq!(
-            args,
-            vec![
-                "diff".to_string(),
-                "--no-ext-diff".to_string(),
-                "--no-textconv".to_string(),
-                "--ignore-submodules=all".to_string(),
-                "-U3".to_string(),
-                "--".to_string(),
-            ]
-        );
-    }
-}
+mod tests;
