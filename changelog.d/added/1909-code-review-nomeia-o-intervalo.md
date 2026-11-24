@@ -10,6 +10,7 @@
   um `git diff` que termina com erro (duas pontas sem base comum) sai como
   falha — antes os dois casos voltavam como "No diff output (no changes
   found)". O `-` inicial passa a ser recusado em cada ponta, nao so no comeco
-  do `commit_range`. O teto declarado da tool sobe de um para dois timeouts de
-  git mais o do LLM. So leitura (`git rev-parse --verify`, mesmo endurecimento
+  do `commit_range`. O `commit_range` e o `file_path` ecoados no cabecalho saem em
+  uma linha so. O teto declarado da tool sobe de um para tres timeouts de git
+  mais o do LLM. So leitura (`git rev-parse --verify`, mesmo endurecimento
   do diff); nenhuma raiz, jail ou modo mudou.
