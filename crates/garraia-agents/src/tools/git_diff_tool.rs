@@ -286,7 +286,47 @@ impl GitDiffTool {
         let filtered = self.filter_secrets(&output);
         let limited = self.limit_lines(&filtered);
 
-        Ok(limited)
+        // #1909: o intervalo exato entra na resposta DEPOIS do filtro e do
+        // corte de linhas, para nunca ser a linha que o limite esconde. So
+        // chega aqui com as revisoes ja validadas por `git_diff_args`.
+        let intervalo = self.intervalo_do_diff(repo, from_commit, to_commit).await;
+
+        Ok(format!("{intervalo}\n\n{limited}"))
+    }
+
+    /// De QUAIS revisoes o `diff` desta chamada fala (#1909).
+    ///
+    /// O `status` ja nomeava a revisao do checkout (#1934); o `diff` devolvia
+    /// as mudancas sem dizer entre o que e o que. `main..feature` e nome
+    /// movel: o mesmo pedido, feito duas vezes, pode falar de commits
+    /// diferentes, e quem le o resultado remotamente nao tinha como saber de
+    /// qual. A issue pede "revisao exata, estado do checkout e intervalo do
+    /// diff" sem shell generico — este e o terceiro.
+    ///
+    /// Cada ponta e resolvida por um `rev-parse --verify` proprio, e so vale
+    /// quando a saida e UMA revisao ([`revisao_unica_do_output`]): resolver as
+    /// duas numa chamada so deixaria uma ponta como `a..b` deslocar a posicao
+    /// da outra e rotular um SHA com o nome errado.
+    async fn intervalo_do_diff(
+        &self,
+        repo: &RepoDir,
+        from_commit: Option<&str>,
+        to_commit: Option<&str>,
+    ) -> String {
+        match (from_commit, to_commit) {
+            (Some(from), Some(to)) => {
+                let (rev_de, rev_ate) = (format!("{from}^{{commit}}"), format!("{to}^{{commit}}"));
+                let (de, ate) = tokio::join!(
+                    self.revisao_de(repo, &rev_de),
+                    self.revisao_de(repo, &rev_ate),
+                );
+                linha_do_intervalo_entre_commits(from, de.as_deref(), to, ate.as_deref())
+            }
+            // Sem intervalo o `git diff` compara o indice com a arvore de
+            // trabalho. O `HEAD` nao e uma das pontas, mas e o que diz EM QUAL
+            // checkout essa comparacao foi feita.
+            _ => linha_do_intervalo_da_arvore(self.revisao_exata(repo).await.as_deref()),
+        }
     }
 
     /// Obtém o status do repositório de `repo`
@@ -328,12 +368,112 @@ impl GitDiffTool {
     /// recém-criado, sem commit, não pode derrubar o `status` inteiro: o
     /// estado do checkout (branch, arquivos) continua sendo a resposta útil.
     async fn revisao_exata(&self, repo: &RepoDir) -> Option<String> {
-        let args: Vec<String> = ["rev-parse", "--verify", "HEAD"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        self.revisao_de(repo, "HEAD").await
+    }
+
+    /// O SHA completo de UMA revisao, ou `None` quando o git nao a resolve.
+    ///
+    /// Quem chama com valor vindo do modelo ja recusou o que comeca com `-`
+    /// (`git_diff_args`), e mesmo assim o que volta so vira "revisao" quando a
+    /// saida e a de um `--verify` que deu certo ([`revisao_unica_do_output`]).
+    async fn revisao_de(&self, repo: &RepoDir, revisao: &str) -> Option<String> {
+        // Uma revisao so nao contem `..`: nome de ref nao pode ter (regra do
+        // `git check-ref-format`), e `a..b` / `a...b` sao INTERVALOS. Nem
+        // chega ao git — ver [`revisao_unica_do_output`] para o porque.
+        if revisao.contains("..") {
+            return None;
+        }
+        let args = vec![
+            "rev-parse".to_string(),
+            "--verify".to_string(),
+            revisao.to_string(),
+        ];
         let saida = self.run_git_command(&args, repo).await.ok()?;
-        revisao_do_output(&saida).map(str::to_string)
+        revisao_unica_do_output(&saida).map(str::to_string)
+    }
+}
+
+/// Separa o que o git imprimiu no stdout do bloco `STDERR:` que
+/// `run_git_command` anexa. O cabecalho so conta no comeco de uma linha.
+fn separar_stderr(output: &str) -> (&str, Option<&str>) {
+    match output.find("STDERR:\n") {
+        Some(i) if i == 0 || output[..i].ends_with('\n') => (&output[..i], Some(&output[i..])),
+        _ => (output, None),
+    }
+}
+
+/// O SHA de um `rev-parse --verify <revisao>` que DEU CERTO, e so dele.
+///
+/// `run_git_command` devolve `Ok` com o codigo de saida descartado, entao o
+/// sucesso tem de ser lido da forma da saida. E a forma engana: para um
+/// intervalo (`a..b`), o git 2.43 imprime os dois SHAs no stdout e SO DEPOIS
+/// morre com `fatal: Needed a single revision` — a primeira linha tem cara de
+/// SHA e e a revisao ERRADA (a ponta `b`, nao a pedida). Por isso: exatamente
+/// uma linha no stdout, com forma de SHA, e nenhum `fatal:` no stderr. Aviso
+/// que nao e `fatal:` (o pull do docker no sandbox) nao derruba a leitura.
+fn revisao_unica_do_output(saida: &str) -> Option<&str> {
+    let (stdout, stderr) = separar_stderr(saida);
+    if stderr.is_some_and(|bloco| bloco.lines().any(|l| l.trim_start().starts_with("fatal:"))) {
+        return None;
+    }
+    let mut linhas = stdout.lines().filter(|l| !l.trim().is_empty());
+    let unica = linhas.next()?;
+    if linhas.next().is_some() {
+        return None;
+    }
+    revisao_do_output(unica)
+}
+
+/// O que dizer no lugar do SHA de uma ponta que o git nao resolveu.
+const PONTA_NAO_RESOLVIDA: &str = "revisão não resolvida";
+
+/// O nome de uma revisao como o modelo o escreveu, pronto para UMA linha.
+///
+/// O valor vem da tool call. Caractere de controle (uma quebra de linha,
+/// sobretudo) deixaria o modelo escrever linhas inteiras na resposta com a
+/// cara de saida da tool; vira `?`. O tamanho e cortado pelo mesmo motivo que
+/// qualquer eco de entrada: a linha e contexto, nao transporte.
+fn nome_da_revisao(revisao: &str) -> String {
+    const TETO: usize = 120;
+    let limpo: String = revisao
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .take(TETO)
+        .collect();
+    if revisao.chars().count() > TETO {
+        format!("{limpo}…")
+    } else {
+        limpo
+    }
+}
+
+/// A linha do intervalo de um diff entre commits: cada ponta com o nome que
+/// foi pedido e o SHA que ele valia na hora — ou a falta dele, dita.
+fn linha_do_intervalo_entre_commits(
+    from: &str,
+    sha_de: Option<&str>,
+    to: &str,
+    sha_ate: Option<&str>,
+) -> String {
+    format!(
+        "Intervalo: {} ({}) .. {} ({})",
+        nome_da_revisao(from),
+        sha_de.unwrap_or(PONTA_NAO_RESOLVIDA),
+        nome_da_revisao(to),
+        sha_ate.unwrap_or(PONTA_NAO_RESOLVIDA),
+    )
+}
+
+/// A linha do intervalo de um diff sem commits: indice contra arvore de
+/// trabalho, com o `HEAD` do checkout em que isso foi medido.
+fn linha_do_intervalo_da_arvore(head: Option<&str>) -> String {
+    match head {
+        Some(sha) => format!(
+            "Intervalo: índice .. árvore de trabalho (mudanças ainda fora do índice; HEAD em {sha})"
+        ),
+        None => "Intervalo: índice .. árvore de trabalho (mudanças ainda fora do índice; \
+                 HEAD indisponível — repositório sem commit legível)"
+            .to_string(),
     }
 }
 
@@ -383,10 +523,7 @@ fn anexar_revisao(status: &str, revisao: Option<&str>) -> String {
 /// sandbox tornavam o `&line[..2]` antigo um panic de rotina (review da
 /// #1225, SANDBOX-7). O que vem depois de `STDERR:` e anexado sem parse.
 fn format_status(output: &str) -> String {
-    let (stdout, stderr) = match output.find("STDERR:\n") {
-        Some(i) if i == 0 || output[..i].ends_with('\n') => (&output[..i], Some(&output[i..])),
-        _ => (output, None),
-    };
+    let (stdout, stderr) = separar_stderr(output);
     let mut result = String::new();
 
     for line in stdout.lines() {
@@ -440,6 +577,7 @@ impl Tool for GitDiffTool {
         "Retorna diferenças do repositório git (diff) e status.\n\
          Use 'operation' para escolher entre 'diff' ou 'status'.\n\
          - diff: retorna as mudanças (aceita file_path, context_lines, from_commit, to_commit)\n\
+           e o intervalo exato comparado (SHA completo de cada ponta)\n\
          - status: retorna arquivos modificados, adicionados, deletados, branch atual\n\
            e a revisão exata do checkout (SHA completo do HEAD)\n\
          Limites de segurança: máximo de linhas retornadas, timeout de 15s"
@@ -718,6 +856,273 @@ mod tests {
         // o que importa aqui e a revisao faltar com motivo, sem derrubar
         // branch nem estado.
         assert!(saida.content.contains("ramo-vazio"), "{}", saida.content);
+    }
+
+    // ─── #1909: intervalo exato no diff ────────────────────────────────────
+
+    /// `git rev-parse <revisao>` no repositorio do teste — a fonte
+    /// independente contra a qual a resposta da tool e conferida.
+    fn sha_de(dir: &std::path::Path, revisao: &str) -> String {
+        let saida = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["rev-parse", "--verify", revisao])
+            .output()
+            .expect("git");
+        assert!(saida.status.success(), "rev-parse {revisao} falhou");
+        String::from_utf8_lossy(&saida.stdout).trim().to_string()
+    }
+
+    /// Commita o que estiver sujo na arvore, com a mesma identidade por `-c`
+    /// do `repo_git_temporario` (CI nao tem `user.name`).
+    fn commitar_tudo(dir: &std::path::Path, mensagem: &str) {
+        let ok = std::process::Command::new("git")
+            .current_dir(dir)
+            .args([
+                "-c",
+                "user.email=test@test",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-am",
+                mensagem,
+            ])
+            .status()
+            .expect("git")
+            .success();
+        assert!(ok, "commit de teste falhou");
+    }
+
+    /// A saida REAL do git 2.43 para `rev-parse --verify 'a..b^{commit}'`:
+    /// dois SHAs no stdout e o `fatal:` depois. A primeira linha tem forma de
+    /// SHA — e e a ponta errada. So uma linha unica, sem `fatal:`, e revisao.
+    #[test]
+    fn revisao_unica_recusa_saida_de_intervalo_e_de_falha() {
+        let a = "9da1032b668ecfc3312f13e3556c69f9f0a71c99";
+        let b = "c50aff60f75c1997a17800949f662e3d5b01869c";
+        assert_eq!(revisao_unica_do_output(&format!("{a}\n")), Some(a));
+        assert_eq!(
+            revisao_unica_do_output(&format!(
+                "{a}\n^{b}\n\nSTDERR:\nfatal: Needed a single revision\n"
+            )),
+            None
+        );
+        // Uma linha so, mas o git morreu: nao e revisao.
+        assert_eq!(
+            revisao_unica_do_output(&format!("{a}\n\nSTDERR:\nfatal: qualquer\n")),
+            None
+        );
+        // Aviso que nao e `fatal:` (pull do docker no sandbox) nao derruba.
+        assert_eq!(
+            revisao_unica_do_output(&format!("{a}\n\nSTDERR:\nUnable to find image\n")),
+            Some(a)
+        );
+        assert_eq!(revisao_unica_do_output(&format!("{a}\n{b}\n")), None);
+        assert_eq!(
+            revisao_unica_do_output("STDERR:\nfatal: Needed a single revision\n"),
+            None
+        );
+        assert_eq!(revisao_unica_do_output(""), None);
+    }
+
+    /// As duas formas da linha, sem subir processo: ponta resolvida leva o
+    /// SHA, ponta nao resolvida DIZ que nao foi resolvida — nunca some.
+    #[test]
+    fn linha_do_intervalo_nomeia_cada_ponta() {
+        assert_eq!(
+            linha_do_intervalo_entre_commits("main", Some("aaa"), "feature", Some("bbb")),
+            "Intervalo: main (aaa) .. feature (bbb)"
+        );
+        assert_eq!(
+            linha_do_intervalo_entre_commits("sumiu", None, "HEAD", Some("bbb")),
+            "Intervalo: sumiu (revisão não resolvida) .. HEAD (bbb)"
+        );
+        assert_eq!(
+            linha_do_intervalo_da_arvore(Some("ccc")),
+            "Intervalo: índice .. árvore de trabalho (mudanças ainda fora do índice; HEAD em ccc)"
+        );
+        assert!(linha_do_intervalo_da_arvore(None).contains("HEAD indisponível"));
+    }
+
+    /// O nome da revisao vem da tool call do modelo e entra numa linha da
+    /// resposta: quebra de linha nao pode abrir uma linha nova com cara de
+    /// saida da tool, e um nome gigante nao vira a resposta inteira.
+    #[test]
+    fn nome_da_revisao_fica_em_uma_linha_e_tem_teto() {
+        let forjado = nome_da_revisao("main\nRevisão: 0000\r\tfim");
+        assert_eq!(forjado, "main?Revisão: 0000??fim");
+        assert_eq!(forjado.lines().count(), 1);
+
+        let longo = nome_da_revisao(&"a".repeat(500));
+        assert_eq!(longo.chars().count(), 121, "120 do nome + reticencias");
+        assert!(longo.ends_with('…'));
+        // Multibyte no corte nao pode entrar em panico nem partir caractere.
+        assert_eq!(nome_da_revisao(&"é".repeat(121)).chars().count(), 121);
+        assert_eq!(nome_da_revisao("HEAD~3"), "HEAD~3");
+    }
+
+    /// Sem commits no pedido: o diff e indice contra arvore de trabalho, e a
+    /// resposta diz em qual `HEAD` isso foi medido — logo abaixo da
+    /// procedencia, antes do diff. **Mutacao**: resolver o `HEAD` no CWD do
+    /// processo em vez de `repo.cwd_do_git()` e o SHA deixa de casar.
+    #[tokio::test]
+    async fn diff_sem_commits_nomeia_o_head_do_checkout() {
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        for marcador in ["alvo-do-intervalo-a", "alvo-do-intervalo-b"] {
+            let repo = repo_git_temporario(marcador, "ramo-do-intervalo");
+            let sha = sha_de(repo.path(), "HEAD");
+            let wd = repo.path().to_string_lossy().into_owned();
+            let saida = tool
+                .execute(&ctx(Some(&wd)), serde_json::json!({ "operation": "diff" }))
+                .await
+                .expect("execute");
+            assert!(!saida.is_error, "{}", saida.content);
+            let linhas: Vec<&str> = saida.content.lines().collect();
+            assert_eq!(linhas[0], "Repositório: o working_dir da sessão");
+            assert_eq!(
+                linhas[2],
+                format!(
+                    "Intervalo: índice .. árvore de trabalho (mudanças ainda fora do índice; \
+                     HEAD em {sha})"
+                ),
+                "{}",
+                saida.content
+            );
+            // O diff em si continua vindo, depois da linha do intervalo.
+            assert!(saida.content.contains(marcador), "{}", saida.content);
+        }
+    }
+
+    /// Diff entre commits: cada ponta sai com o nome pedido e o SHA que o
+    /// `git rev-parse` le NAQUELE repositorio. O nome do ramo e movel — e
+    /// exatamente por isso que a resposta precisa do SHA.
+    #[tokio::test]
+    async fn diff_entre_commits_nomeia_o_sha_de_cada_ponta() {
+        let repo = repo_git_temporario("alvo-entre-commits", "ramo-entre-commits");
+        commitar_tudo(repo.path(), "segundo");
+        let de = sha_de(repo.path(), "HEAD~1");
+        let ate = sha_de(repo.path(), "HEAD");
+        assert_ne!(de, ate);
+
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let wd = repo.path().to_string_lossy().into_owned();
+        let saida = tool
+            .execute(
+                &ctx(Some(&wd)),
+                serde_json::json!({
+                    "operation": "diff",
+                    "from_commit": "HEAD~1",
+                    "to_commit": "ramo-entre-commits",
+                }),
+            )
+            .await
+            .expect("execute");
+        assert!(!saida.is_error, "{}", saida.content);
+        assert_eq!(
+            saida.content.lines().nth(2).unwrap_or_default(),
+            format!("Intervalo: HEAD~1 ({de}) .. ramo-entre-commits ({ate})"),
+            "{}",
+            saida.content
+        );
+        // E o diff desse intervalo e o do segundo commit.
+        assert!(
+            saida.content.contains("+linha alterada"),
+            "{}",
+            saida.content
+        );
+    }
+
+    /// Ponta que o git nao resolve: a linha DIZ isso, em vez de sumir ou de
+    /// emprestar um SHA que nao e dela. O caso `a..b` numa ponta so pegou um
+    /// defeito real na primeira versao: mesmo com `--verify` o git imprime os
+    /// SHAs do intervalo antes de falhar, e a ponta saia rotulada com o SHA
+    /// de `HEAD` (ver `revisao_unica_do_output`).
+    #[tokio::test]
+    async fn ponta_nao_resolvida_e_dita_sem_contaminar_a_outra() {
+        let repo = repo_git_temporario("alvo-ponta-ruim", "ramo-ponta-ruim");
+        commitar_tudo(repo.path(), "segundo");
+        let head = sha_de(repo.path(), "HEAD");
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let wd = repo.path().to_string_lossy().into_owned();
+
+        for ponta_ruim in ["ramo-que-nao-existe", "HEAD~1..HEAD", "HEAD~1...HEAD"] {
+            let saida = tool
+                .execute(
+                    &ctx(Some(&wd)),
+                    serde_json::json!({
+                        "operation": "diff",
+                        "from_commit": ponta_ruim,
+                        "to_commit": "HEAD",
+                    }),
+                )
+                .await
+                .expect("execute");
+            assert_eq!(
+                saida.content.lines().nth(2).unwrap_or_default(),
+                format!("Intervalo: {ponta_ruim} (revisão não resolvida) .. HEAD ({head})"),
+                "{}",
+                saida.content
+            );
+        }
+    }
+
+    /// Repositorio sem commit: o diff continua respondendo e a linha do
+    /// intervalo diz por que o `HEAD` falta.
+    #[tokio::test]
+    async fn diff_sem_commit_diz_que_o_head_falta() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let ok = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["init", "-b", "ramo-vazio", "-q", "."])
+            .status()
+            .expect("git")
+            .success();
+        assert!(ok);
+
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let wd = dir.path().to_string_lossy().into_owned();
+        let saida = tool
+            .execute(&ctx(Some(&wd)), serde_json::json!({ "operation": "diff" }))
+            .await
+            .expect("execute");
+        assert!(!saida.is_error, "{}", saida.content);
+        assert!(
+            saida
+                .content
+                .lines()
+                .nth(2)
+                .unwrap_or_default()
+                .contains("HEAD indisponível"),
+            "{}",
+            saida.content
+        );
+    }
+
+    /// O limite de linhas corta o DIFF, nunca a linha do intervalo: ela entra
+    /// depois do corte.
+    #[tokio::test]
+    async fn limite_de_linhas_nao_esconde_o_intervalo() {
+        let repo = repo_git_temporario("alvo-do-limite", "ramo-do-limite");
+        let tool = GitDiffTool::new(Some(15), Some(1));
+        let wd = repo.path().to_string_lossy().into_owned();
+        let saida = tool
+            .execute(&ctx(Some(&wd)), serde_json::json!({ "operation": "diff" }))
+            .await
+            .expect("execute");
+        assert!(
+            saida
+                .content
+                .contains("Intervalo: índice .. árvore de trabalho"),
+            "{}",
+            saida.content
+        );
+        assert!(
+            saida.content.contains("ocultas por limite"),
+            "{}",
+            saida.content
+        );
     }
 
     // ─── #1272 S3: config plantada nao executa nada no host ────────────────
