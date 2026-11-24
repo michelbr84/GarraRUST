@@ -195,7 +195,8 @@ case-insensitive):
 | docs, documentação, README, CHANGELOG | `/generate-docs` |
 | commit, segredos, "valida antes de commitar" | `/pre-commit` |
 | git, branch, merge, workflow de PR | `/git-assist` |
-| revisão inline de código, "revisa este diff" | `/code-review` |
+| revisão de branch ou PR, "revisa este diff" | `/code-review` (embutida do Claude Code) |
+| checklist num arquivo ou trecho inline | `/review-inline` |
 | traduzir, "translate" | `/translate` |
 | explicar comando, shell | `/shell-explain` |
 | resumir, "summarize", sessão | `/summarize` |
@@ -238,7 +239,7 @@ Pontos de entrada nativos do GarraIA SuperPowers:
   /fix-issue --issue <N>                                Corrige issue via TDD
   /review-pr --pr <N>                                   Revisão de PR (reviewer + security)
   /refactor-module --file <path> --goal "..."           Refactoring seguro com testes
-  /code-review                                          Revisão inline de código
+  /review-inline                                        Checklist de revisão inline
   /tdd-loop                                             Red-Green-Refactor
   /pre-commit                                           Validação pré-commit (segredos, debug, lint)
   /generate-docs                                        Documentação automática
@@ -252,7 +253,8 @@ Agente dirigidor de PR (lê sozinho, sem slash): steward
 
 Hooks de governança (disparam sozinhos, sem invocação):
   - session-start hook       contexto + estado anterior + sync skills/*.md → .claude/skills/
-  - pre-tool-use hook        bloqueia comandos perigosos, audit log
+  - pre-tool-use hook        DESLIGADO no settings.json do projeto (com ele o /ship só revisa);
+                             o script segue em .claude/hooks/ para ligar nas configurações de usuário
   - post-tool-use hook       testes automáticos em edições
   - stop hook                persiste .garra-estado.md
 
