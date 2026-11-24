@@ -426,7 +426,7 @@ fn revisao_unica_do_output(saida: &str) -> Option<&str> {
 }
 
 /// O que dizer no lugar do SHA de uma ponta que o git nao resolveu.
-const PONTA_NAO_RESOLVIDA: &str = "revisão não resolvida";
+pub(super) const PONTA_NAO_RESOLVIDA: &str = "revisão não resolvida";
 
 /// O nome de uma revisao como o modelo o escreveu, pronto para UMA linha.
 ///
@@ -435,7 +435,7 @@ const PONTA_NAO_RESOLVIDA: &str = "revisão não resolvida";
 /// cara de saida da tool; vira `?`, como os parenteses
 /// ([`caractere_que_forja_linha`]). O tamanho e cortado pelo mesmo motivo que
 /// qualquer eco de entrada: a linha e contexto, nao transporte.
-fn nome_da_revisao(revisao: &str) -> String {
+pub(super) fn nome_da_revisao(revisao: &str) -> String {
     const TETO: usize = 120;
     let limpo: String = revisao
         .chars()
@@ -459,7 +459,7 @@ fn caractere_que_forja_linha(c: char) -> bool {
 
 /// A linha do intervalo de um diff entre commits: cada ponta com o nome que
 /// foi pedido e o SHA que ele valia na hora — ou a falta dele, dita.
-fn linha_do_intervalo_entre_commits(
+pub(super) fn linha_do_intervalo_entre_commits(
     from: &str,
     sha_de: Option<&str>,
     to: &str,
@@ -476,7 +476,7 @@ fn linha_do_intervalo_entre_commits(
 
 /// A linha do intervalo de um diff sem commits: indice contra arvore de
 /// trabalho, com o `HEAD` do checkout em que isso foi medido.
-fn linha_do_intervalo_da_arvore(head: Option<&str>) -> String {
+pub(super) fn linha_do_intervalo_da_arvore(head: Option<&str>) -> String {
     match head {
         Some(sha) => format!(
             "Intervalo: índice .. árvore de trabalho (mudanças ainda fora do índice; HEAD em {sha})"
@@ -495,7 +495,7 @@ fn linha_do_intervalo_da_arvore(head: Option<&str>) -> String {
 /// Por isso a validação é a FORMA (40 a 64 dígitos hexadecimais — SHA-1 e
 /// SHA-256), não o código de saída: texto qualquer do git nunca vira
 /// "revisão" na resposta.
-fn revisao_do_output(saida: &str) -> Option<&str> {
+pub(super) fn revisao_do_output(saida: &str) -> Option<&str> {
     let primeira = saida.lines().next()?.trim();
     let parece_sha =
         (40..=64).contains(&primeira.len()) && primeira.bytes().all(|b| b.is_ascii_hexdigit());
