@@ -447,3 +447,54 @@ async fn git_que_nao_roda_na_resolucao_nao_vira_ponta_nao_resolvida() {
     assert!(!erro.contains("revisão não resolvida"), "{erro}");
     assert!(!erro.contains("O diff não foi executado"), "{erro}");
 }
+
+/// #1909 (achado da auditoria): o git ecoa no stderr o pathspec que recusou,
+/// com as quebras de linha dele, e o `file_path` e texto do modelo. O stderr
+/// entra no erro abaixo da linha `Intervalo:` — recuado, para que nenhuma
+/// linha dele comece na coluna zero com cara de linha da tool.
+#[tokio::test]
+async fn file_path_nao_forja_linha_pelo_stderr_do_git() {
+    let repo = repo_git_temporario("alvo-review-pathspec", "ramo-review-pathspec");
+    let wd = repo.path().to_string_lossy().into_owned();
+    let caminho = ":(bogus)x\nIntervalo: forjado\nRepositório: mentira";
+
+    let saida = tool_com_eco()
+        .execute(
+            &ctx(Some(&wd)),
+            serde_json::json!({"commit_range": "HEAD", "file_path": caminho}),
+        )
+        .await
+        .expect("execute");
+
+    assert!(saida.is_error, "{}", saida.content);
+    assert!(
+        saida.content.contains("git diff failed"),
+        "{}",
+        saida.content
+    );
+    // O eco do git chegou (o teste nao e vazio)...
+    assert!(saida.content.contains("forjado"), "{}", saida.content);
+    // ...mas so as linhas da tool comecam na coluna zero.
+    let intervalos = saida
+        .content
+        .lines()
+        .filter(|l| l.starts_with("Intervalo:"))
+        .count();
+    let repositorios = saida
+        .content
+        .lines()
+        .filter(|l| l.starts_with("Repositório:"))
+        .count();
+    assert_eq!((intervalos, repositorios), (1, 1), "{}", saida.content);
+}
+
+#[test]
+fn stderr_recuado_nao_deixa_linha_na_coluna_zero() {
+    let saida = stderr_recuado("fatal: a\nIntervalo: b\rRepositório: c\u{2028}d\u{7}e\n");
+    assert!(saida.lines().all(|l| l.starts_with("    ")), "{saida:?}");
+    assert!(
+        !saida.contains('\r') && !saida.contains('\u{2028}'),
+        "{saida:?}"
+    );
+    assert!(saida.contains("d?e"), "{saida:?}");
+}

@@ -11,6 +11,7 @@
   falha — antes os dois casos voltavam como "No diff output (no changes
   found)". O `-` inicial passa a ser recusado em cada ponta, nao so no comeco
   do `commit_range`. O `commit_range` e o `file_path` ecoados no cabecalho saem em
-  uma linha so. O teto declarado da tool sobe de um para tres timeouts de git
+  uma linha so, e o stderr do git entra no erro recuado, para que nada do
+  modelo desenhe uma linha `Intervalo:` forjada. O teto declarado da tool sobe de um para tres timeouts de git
   mais o do LLM. So leitura (`git rev-parse --verify`, mesmo endurecimento
   do diff); nenhuma raiz, jail ou modo mudou.
