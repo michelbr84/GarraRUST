@@ -60,6 +60,20 @@ pub const AGENT_TIMEOUT_SECS_DEFAULT: u64 = 300;
 /// na origem (`turn_events::SUMMARY_MAX_CHARS`); isto só guarda a invariante.
 const TOOL_CALL_SUMMARY_MAX_CHARS: usize = 160;
 
+/// Teto do `call_id` no fio (#1915), no envelope e nos frames do `/ws`. O id
+/// vem do provedor do modelo e nao tem tamanho garantido; os reais ficam bem
+/// abaixo disto (`call_` + 24, `toolu_` + 24, UUID de 36, mais o `#<n>` de um
+/// passo de `tool_program`).
+pub(crate) const CALL_ID_MAX_CHARS: usize = 128;
+
+/// O id da chamada como ele sai do processo (#1915): o valor do `TurnEvent`,
+/// com o teto de [`CALL_ID_MAX_CHARS`]. Um ponto so para o envelope e para os
+/// frames do `/ws`, e o corte e deterministico — o mesmo id da o mesmo valor
+/// no inicio e no fim da chamada, entao o teto nao desfaz o pareamento.
+pub(crate) fn call_id_no_fio(id: &str) -> String {
+    truncate_chars(id, CALL_ID_MAX_CHARS)
+}
+
 /// Quanto tempo drenar o canal de eventos depois que o turno termina (ou estoura
 /// o timeout). Normalmente volta na hora; o limite só pesa se alguma tarefa de
 /// fundo ainda segurar um clone do emissor.
@@ -81,8 +95,13 @@ pub struct AgentOptions {
 /// Uma execução de tool, como vai no envelope para o host MCP.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ToolCallSummary {
-    /// #1915: o id da chamada (o `tool_use_id` do provedor), para o host
-    /// distinguir duas execucoes da mesma tool no mesmo turno. Aditivo.
+    /// #1915: o id da chamada (o `tool_use_id` do provedor; num passo de
+    /// `tool_program`, o id do programa mais `#<n>`), para o host distinguir
+    /// duas execucoes da mesma tool no mesmo turno. Aditivo.
+    ///
+    /// Opaco e sem garantia de unicidade: o gateway repassa o que o provedor
+    /// emitiu, entao um endpoint que devolva o id vazio, ou que repita ids
+    /// entre respostas, repete o valor aqui. Sai por [`call_id_no_fio`].
     pub call_id: String,
     pub name: String,
     pub duration_ms: u64,
@@ -338,7 +357,7 @@ pub fn events_to_summaries(events: &[TurnEvent]) -> Vec<ToolCallSummary> {
                 summary,
                 ..
             } => Some(ToolCallSummary {
-                call_id: id.clone(),
+                call_id: call_id_no_fio(id),
                 name: name.clone(),
                 duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
                 success: *success,
@@ -1120,6 +1139,19 @@ mod tests {
         let got = events_to_summaries(&events);
         assert!(got[0].summary.chars().count() <= TOOL_CALL_SUMMARY_MAX_CHARS);
         assert!(got[0].summary.ends_with('…'));
+    }
+
+    /// #1915: o `call_id` vem do provedor e nao tem tamanho garantido. No
+    /// envelope ele sai com teto, como o resumo; um id normal passa intacto
+    /// (`events_to_summaries_keeps_only_tool_finished_in_order`).
+    #[test]
+    fn events_to_summaries_caps_long_call_id() {
+        let mut evento = finished("bash", 1, true, "ok");
+        if let TurnEvent::ToolFinished { id, .. } = &mut evento {
+            *id = "x".repeat(CALL_ID_MAX_CHARS * 4);
+        }
+        let got = events_to_summaries(&[evento]);
+        assert_eq!(got[0].call_id.chars().count(), CALL_ID_MAX_CHARS);
     }
 
     #[test]

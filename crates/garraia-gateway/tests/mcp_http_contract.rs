@@ -1910,6 +1910,9 @@ async fn garra_agent_bash_executa_o_comando_e_devolve_a_saida_ao_modelo() {
     assert_eq!(env["answer"], "fim", "{env}");
     assert_eq!(env["tool_calls"][0]["name"], "bash", "{env}");
     assert_eq!(env["tool_calls"][0]["success"], true, "{env}");
+    // #1915: o id que o provedor emitiu (`PedeBash`) chega ao envelope servido
+    // ao orquestrador, pela ponte inteira e depois da redacao.
+    assert_eq!(env["tool_calls"][0]["call_id"], "call_bash_1", "{env}");
 
     let recebidas = falso.received_requests().await.unwrap_or_default();
     let devolveu_saida = recebidas.iter().any(|req| {

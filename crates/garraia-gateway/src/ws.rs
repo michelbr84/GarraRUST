@@ -1052,8 +1052,9 @@ fn turn_event_frame(session_id: &str, turn_id: Option<&str>, event: &TurnEvent) 
             "session_id": session_id,
             // #1915: o id da chamada, o mesmo no `tool_finished` que a
             // fecha. Sem ele, duas chamadas da mesma ferramenta no mesmo
-            // turno nao tem como ser pareadas por quem le o `/ws`.
-            "call_id": id,
+            // turno nao tem como ser pareadas por quem le o `/ws`. Sai com
+            // o mesmo teto nos dois frames (`call_id_no_fio`).
+            "call_id": crate::agente_mcp::call_id_no_fio(id),
             "name": name,
             "detail": detail,
         }),
@@ -1068,7 +1069,7 @@ fn turn_event_frame(session_id: &str, turn_id: Option<&str>, event: &TurnEvent) 
         } => serde_json::json!({
             "type": "tool_finished",
             "session_id": session_id,
-            "call_id": id,
+            "call_id": crate::agente_mcp::call_id_no_fio(id),
             "name": name,
             "success": success,
             // #1915: campo ADITIVO ao lado do `success`, com o codigo
@@ -1459,31 +1460,50 @@ mod tests {
         assert_eq!(frame["detail"], "cargo test");
     }
 
-    /// #1915, criterio 4: duas chamadas da MESMA ferramenta em andamento ao
-    /// mesmo tempo, terminando fora de ordem. So pelo `name` os frames sao
-    /// indistinguiveis; o `call_id` e o que liga cada fim ao seu inicio.
+    /// #1915, criterio 4: a sobreposicao que o runtime produz de verdade e a
+    /// de um `tool_program` — o despacho e sequencial, mas o par do programa
+    /// fica aberto enquanto os passos rodam, e cada passo leva o id do
+    /// programa mais `#<n>` (`executar_tool_program`). Aqui os dois passos
+    /// sao a MESMA ferramenta: so pelo `name` os frames deles sao
+    /// indistinguiveis, e o `call_id` e o que liga cada fim ao seu inicio.
     #[test]
     fn call_id_pareia_inicio_e_fim_de_chamadas_sobrepostas() {
-        let inicio = |id: &str, detail: &str| TurnEvent::ToolStarted {
+        let inicio = |id: &str, name: &str, detail: &str| TurnEvent::ToolStarted {
             id: id.into(),
-            name: "bash".into(),
+            name: name.into(),
             detail: detail.into(),
             input: serde_json::Value::Null,
         };
-        let fim = |id: &str, outcome: garraia_agents::DesfechoDaChamada| TurnEvent::ToolFinished {
-            id: id.into(),
-            name: "bash".into(),
-            duration: std::time::Duration::from_millis(10),
-            success: outcome.e_sucesso(),
-            outcome,
-            summary: String::new(),
-            output: String::new(),
+        let fim = |id: &str, name: &str, outcome: garraia_agents::DesfechoDaChamada| {
+            TurnEvent::ToolFinished {
+                id: id.into(),
+                name: name.into(),
+                duration: std::time::Duration::from_millis(10),
+                success: outcome.e_sucesso(),
+                outcome,
+                summary: String::new(),
+                output: String::new(),
+            }
         };
         let eventos = [
-            inicio("call-a", "sleep 60"),
-            inicio("call-b", "cargo test"),
-            fim("call-b", garraia_agents::DesfechoDaChamada::Sucesso),
-            fim("call-a", garraia_agents::DesfechoDaChamada::Timeout),
+            inicio("call-p", "tool_program", "2 passos"),
+            inicio("call-p#0", "bash", "cargo test"),
+            fim(
+                "call-p#0",
+                "bash",
+                garraia_agents::DesfechoDaChamada::Sucesso,
+            ),
+            inicio("call-p#1", "bash", "sleep 60"),
+            fim(
+                "call-p#1",
+                "bash",
+                garraia_agents::DesfechoDaChamada::Timeout,
+            ),
+            fim(
+                "call-p",
+                "tool_program",
+                garraia_agents::DesfechoDaChamada::Erro,
+            ),
         ];
         let frames: Vec<serde_json::Value> = eventos
             .iter()
@@ -1505,8 +1525,44 @@ mod tests {
         }
         assert_eq!(
             pares,
-            vec![("cargo test", "success"), ("sleep 60", "timeout")]
+            vec![
+                ("cargo test", "success"),
+                ("sleep 60", "timeout"),
+                ("2 passos", "error"),
+            ]
         );
+    }
+
+    /// #1915: o `call_id` vem do provedor do modelo e nao tem tamanho
+    /// garantido. No frame ele sai com teto — e o MESMO corte no inicio e no
+    /// fim, senao o teto quebraria o pareamento que o campo existe para dar.
+    #[test]
+    fn call_id_sai_com_teto_e_igual_no_inicio_e_no_fim() {
+        let enorme = "x".repeat(crate::agente_mcp::CALL_ID_MAX_CHARS * 4);
+        let frame_de = |evento: &TurnEvent| -> serde_json::Value {
+            serde_json::from_str(&turn_event_frame("s1", None, evento)).expect("frame valido")
+        };
+        let inicio = frame_de(&TurnEvent::ToolStarted {
+            id: enorme.clone(),
+            name: "bash".into(),
+            detail: String::new(),
+            input: serde_json::Value::Null,
+        });
+        let fim = frame_de(&TurnEvent::ToolFinished {
+            id: enorme,
+            name: "bash".into(),
+            duration: std::time::Duration::ZERO,
+            success: true,
+            outcome: garraia_agents::DesfechoDaChamada::Sucesso,
+            summary: String::new(),
+            output: String::new(),
+        });
+        let no_inicio = inicio["call_id"].as_str().expect("call_id no inicio");
+        assert_eq!(
+            no_inicio.chars().count(),
+            crate::agente_mcp::CALL_ID_MAX_CHARS
+        );
+        assert_eq!(inicio["call_id"], fim["call_id"]);
     }
 
     /// `output` fica fora do frame de proposito: e a saida inteira da

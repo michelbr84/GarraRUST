@@ -574,9 +574,20 @@ ter efeito.
 `call_id` (#1915) é o id da chamada e é o mesmo no `tool_started` e no
 `tool_finished` que a fecha: é o que permite parear início e fim quando a mesma
 ferramenta roda mais de uma vez no turno. É um valor opaco, sem formato
-garantido: normalmente vem do provedor do modelo, e é gerado localmente quando
-o provedor não devolve um. Um endpoint que omita o id deixa o campo vazio, e
-nesse caso o pareamento não é possível.
+garantido e limitado a 128 caracteres. De onde ele vem:
+
+- Do provedor do modelo, como ele emitiu. O Ollama é a exceção: a API dele não
+  tem id de chamada, então o Garra gera um UUID.
+- De um `tool_program`, para os passos: cada passo leva o id do programa mais
+  `#<n>` (`abc#0`, `abc#1`), e os frames do passo saem entre o `tool_started` e
+  o `tool_finished` do próprio programa.
+
+O gateway repassa o id e **não** garante que ele seja único no turno. Um
+endpoint que devolva o id vazio (ou, no formato Anthropic, que o omita) deixa o
+campo vazio, e um que repita ids entre respostas repete o `call_id`. Nesses
+casos pareie pela ordem dos frames: o despacho é sequencial, então o
+`tool_finished` de uma chamada sai antes do `tool_started` da seguinte, salvo
+os passos de um `tool_program`, que ficam dentro do par dele.
 
 `tool_finished` **não** carrega a saída da ferramenta: ela pode ter dezenas de
 KiB, e o frame existe para dizer que a ferramenta terminou.

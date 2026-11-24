@@ -3,4 +3,6 @@
   de `tool_calls` no envelope `garra.agent.v1` tambem. E o mesmo valor no inicio
   e no fim da chamada. Antes so o nome da ferramenta ia no frame, entao duas
   execucoes da mesma ferramenta no mesmo turno nao tinham como ser pareadas por
-  quem lia o stream. Campo aditivo: quem nao o le nao muda.
+  quem lia o stream. Campo aditivo: quem nao o le nao muda. O valor e o que o
+  provedor do modelo emitiu, limitado a 128 caracteres; na ponte MCP HTTP ele
+  passa pela mesma redacao do resumo.
