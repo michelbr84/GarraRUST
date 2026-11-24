@@ -421,7 +421,7 @@ O projeto utiliza [Superpowers](https://github.com/obra/superpowers) como framew
 | `/assemble-team` | Monta equipe de agentes coordenados, selecionada por risco R0-R5 |
 | `/repo-autopilot` | Varredura autonoma: triagem de issues/PRs, correcoes e relatorio de saude |
 | `/generate-docs` | Gera documentação automática |
-| `/code-review` | Revisão de código inline |
+| `/review-inline` | Checklist de revisão de um arquivo ou trecho inline. **Não** se chama `code-review`: esse nome é da skill embutida do Claude Code (a revisão que o `/ship` pede com nível de esforço), e uma skill do projeto com o mesmo nome toma o lugar dela — `session-start.sh` e `scripts/verify.sh` recusam o nome |
 | `/git-assist` | Ajuda com git workflow |
 | `steward` | Guia para dirigir PR até o verde — quais falhas de CI são ambientais e quais são suas. Não é slash command: é lida automaticamente por um agente ao reagir a evento de CI/review num PR. |
 

@@ -27,7 +27,7 @@ Este skill define como as skills locais do GarraRUST se integram com o framework
 | Skill Local | Equivalente Superpowers | Quem usar |
 |-------------|------------------------|-----------|
 | `/tdd-loop` | `test-driven-development` | **Superpowers** — mais rigoroso (RED-GREEN-REFACTOR com deleção de código sem teste) |
-| `/code-review` | `requesting-code-review` | **Superpowers** — review em 2 estágios (spec compliance + code quality) |
+| `/review-inline` | `requesting-code-review` | **Superpowers** — review em 2 estágios (spec compliance + code quality) |
 | `/review-pr` | `requesting-code-review` + `receiving-code-review` | **Superpowers** — complementar com security-auditor local |
 | `/git-assist` | `using-git-worktrees` + `finishing-a-development-branch` | **Superpowers** — worktrees para branches paralelas |
 | `/fix-issue` | `systematic-debugging` + `verification-before-completion` | **Superpowers** — 4-phase root cause process |

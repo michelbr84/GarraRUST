@@ -1,6 +1,6 @@
 ---
-name: code-review
-description: Revisar código em busca de bugs, falhas de segurança, problemas de performance e questões de estilo. Funciona com arquivos ou trechos inline.
+name: review-inline
+description: Checklist rápido do GarraRUST para revisar um arquivo ou trecho inline em busca de bugs, falhas de segurança, problemas de performance e questões de estilo. Para revisar uma branch ou PR com nível de esforço, use a `/code-review` embutida do Claude Code.
 triggers:
   - revisar
   - revisão de código

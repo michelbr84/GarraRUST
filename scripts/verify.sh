@@ -74,9 +74,20 @@ done
 
 echo ""
 echo -e "${CYAN}[5/5] Skills${NC}"
-for skill in review-pr tdd-loop fix-issue pre-commit refactor-module assemble-team generate-docs code-review git-assist shell-explain summarize translate web-lookup; do
+for skill in review-pr tdd-loop fix-issue pre-commit refactor-module assemble-team generate-docs review-inline git-assist shell-explain summarize translate web-lookup; do
   FILE="skills/$skill.md"
   [ -f "$FILE" ] && pass "$skill" || warn "$skill não encontrado"
+done
+
+# Nomes de skill que pertencem ao Claude Code: uma skill do projeto com o mesmo
+# nome toma o lugar da embutida (a `code-review` local respondia no lugar da
+# revisão do `/ship`). A lista espelha a de `.claude/hooks/session-start.sh`.
+for reservada in code-review; do
+  if [ -f "skills/$reservada.md" ] || [ -f ".claude/skills/$reservada/SKILL.md" ]; then
+    fail "skill '$reservada' colide com a embutida do Claude Code — renomeie"
+  else
+    pass "nome '$reservada' livre para a embutida"
+  fi
 done
 
 # ── 5. Autenticação ──────────────────────────────────────────────────────

@@ -52,10 +52,35 @@ fi
 SKILLS_SRC="skills"
 SKILLS_DST=".claude/skills"
 SKILLS_SYNCED=0
+
+# Nomes de skill que pertencem ao Claude Code. Uma skill do projeto com o
+# mesmo nome toma o lugar da embutida: a `code-review` local (um checklist sem
+# níveis de esforço) respondia no lugar da revisão que o `/ship` pede com
+# `high`, e o esforço pedido não tinha efeito. A local virou `review-inline`.
+# Um nome daqui nunca é gerado, e a cópia gerada que sobrou de antes da
+# renomeação sai — só ela: um diretório versionado ou com outros arquivos fica.
+SKILLS_RESERVADAS="code-review"
+for reservada in $SKILLS_RESERVADAS; do
+  sobra="$SKILLS_DST/$reservada"
+  if [ -f "$sobra/SKILL.md" ] \
+    && ! git ls-files --error-unmatch "$sobra/SKILL.md" >/dev/null 2>&1 \
+    && [ "$(find "$sobra" -mindepth 1 | wc -l)" -eq 1 ]; then
+    rm -f "$sobra/SKILL.md"
+    rmdir "$sobra" 2>/dev/null || true
+    echo -e "${YELLOW}Skill local '$reservada' removida de $SKILLS_DST: o nome é do Claude Code${NC}"
+  fi
+done
+
 if [ -d "$SKILLS_SRC" ]; then
   for src in "$SKILLS_SRC"/*.md; do
     [ -f "$src" ] || continue
     name=$(basename "$src" .md)
+    case " $SKILLS_RESERVADAS " in
+      *" $name "*)
+        echo -e "${YELLOW}AVISO: $src tem nome reservado do Claude Code e não foi sincronizada — renomeie${NC}"
+        continue
+        ;;
+    esac
     dst_dir="$SKILLS_DST/$name"
     dst="$dst_dir/SKILL.md"
     mkdir -p "$dst_dir"
