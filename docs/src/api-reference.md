@@ -558,8 +558,8 @@ roda entram numa fila e são processadas na sequência.
 | `connected` | ao abrir a conexão | `session_id`, `session_token` |
 | `resumed` | após um `resume` aceito | `session_id`, `history_length`, `session_token` |
 | `delta` | só com `stream: true` | `session_id`, `content` — um pedaço do texto |
-| `tool_started` | só com `stream: true` | `session_id`, `name`, `detail` |
-| `tool_finished` | só com `stream: true` | `session_id`, `name`, `success`, `outcome`, `summary`, `duration_ms` |
+| `tool_started` | só com `stream: true` | `session_id`, `call_id`, `name`, `detail` |
+| `tool_finished` | só com `stream: true` | `session_id`, `call_id`, `name`, `success`, `outcome`, `summary`, `duration_ms` |
 | `message` | sempre, ao fim do turno | `session_id`, `content` — a resposta inteira |
 | `stopped` | após um `stop` aceito | `session_id` |
 | `error` | falha | `session_id`, `code`, `message` |
@@ -570,6 +570,11 @@ códigos: `success`, `error`, `timeout`, `denied_by_policy`, `unavailable`,
 `cancelled`. `cancelled` fecha uma chamada cujo turno foi descartado com ela em
 andamento; diz que o resultado nao foi observado, nao que a ferramenta deixou de
 ter efeito.
+
+`call_id` (#1915) é o id da chamada e é o mesmo no `tool_started` e no
+`tool_finished` que a fecha: é o que permite parear início e fim quando a mesma
+ferramenta roda mais de uma vez no turno. É um valor opaco, emitido pelo
+provedor do modelo; não tem formato garantido.
 
 `tool_finished` **não** carrega a saída da ferramenta: ela pode ter dezenas de
 KiB, e o frame existe para dizer que a ferramenta terminou.

@@ -81,6 +81,9 @@ pub struct AgentOptions {
 /// Uma execução de tool, como vai no envelope para o host MCP.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ToolCallSummary {
+    /// #1915: o id da chamada (o `tool_use_id` do provedor), para o host
+    /// distinguir duas execucoes da mesma tool no mesmo turno. Aditivo.
+    pub call_id: String,
     pub name: String,
     pub duration_ms: u64,
     pub success: bool,
@@ -327,6 +330,7 @@ pub fn events_to_summaries(events: &[TurnEvent]) -> Vec<ToolCallSummary> {
         .iter()
         .filter_map(|e| match e {
             TurnEvent::ToolFinished {
+                id,
                 name,
                 duration,
                 success,
@@ -334,6 +338,7 @@ pub fn events_to_summaries(events: &[TurnEvent]) -> Vec<ToolCallSummary> {
                 summary,
                 ..
             } => Some(ToolCallSummary {
+                call_id: id.clone(),
                 name: name.clone(),
                 duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
                 success: *success,
@@ -993,6 +998,7 @@ mod tests {
     #[test]
     fn agent_success_envelope_shape() {
         let calls = vec![ToolCallSummary {
+            call_id: "call-1".into(),
             name: "bash".into(),
             duration_ms: 120,
             success: true,
@@ -1013,6 +1019,7 @@ mod tests {
         assert_eq!(env["provider"], "openrouter");
         assert_eq!(env["model"], "openrouter/free");
         assert_eq!(env["session_id"], "mcp-abc");
+        assert_eq!(env["tool_calls"][0]["call_id"], "call-1");
         assert_eq!(env["tool_calls"][0]["name"], "bash");
         assert_eq!(env["tool_calls"][0]["duration_ms"], 120);
         // #1915: campo aditivo; o `success` ao lado dele nao mudou.
@@ -1024,6 +1031,7 @@ mod tests {
     #[test]
     fn agent_error_envelope_carries_tool_calls_and_kind() {
         let calls = vec![ToolCallSummary {
+            call_id: "call-1".into(),
             name: "bash".into(),
             duration_ms: 4000,
             success: true,
@@ -1095,6 +1103,10 @@ mod tests {
         ];
         let got = events_to_summaries(&events);
         assert_eq!(got.len(), 2);
+        // #1915: o id do `ToolFinished` chega ao resumo, sem ser trocado
+        // pelo de outro evento.
+        assert_eq!(got[0].call_id, "call-bash");
+        assert_eq!(got[1].call_id, "call-file_read");
         assert_eq!(got[0].name, "bash");
         assert_eq!(got[0].duration_ms, 120);
         assert!(got[0].success);

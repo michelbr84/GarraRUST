@@ -1045,13 +1045,20 @@ fn turn_event_frame(session_id: &str, turn_id: Option<&str>, event: &TurnEvent) 
             "session_id": session_id,
             "content": content,
         }),
-        TurnEvent::ToolStarted { name, detail, .. } => serde_json::json!({
+        TurnEvent::ToolStarted {
+            id, name, detail, ..
+        } => serde_json::json!({
             "type": "tool_started",
             "session_id": session_id,
+            // #1915: o id da chamada, o mesmo no `tool_finished` que a
+            // fecha. Sem ele, duas chamadas da mesma ferramenta no mesmo
+            // turno nao tem como ser pareadas por quem le o `/ws`.
+            "call_id": id,
             "name": name,
             "detail": detail,
         }),
         TurnEvent::ToolFinished {
+            id,
             name,
             duration,
             success,
@@ -1061,6 +1068,7 @@ fn turn_event_frame(session_id: &str, turn_id: Option<&str>, event: &TurnEvent) 
         } => serde_json::json!({
             "type": "tool_finished",
             "session_id": session_id,
+            "call_id": id,
             "name": name,
             "success": success,
             // #1915: campo ADITIVO ao lado do `success`, com o codigo
@@ -1446,8 +1454,59 @@ mod tests {
         ))
         .expect("frame valido");
         assert_eq!(frame["type"], "tool_started");
+        assert_eq!(frame["call_id"], "call-ws");
         assert_eq!(frame["name"], "bash");
         assert_eq!(frame["detail"], "cargo test");
+    }
+
+    /// #1915, criterio 4: duas chamadas da MESMA ferramenta em andamento ao
+    /// mesmo tempo, terminando fora de ordem. So pelo `name` os frames sao
+    /// indistinguiveis; o `call_id` e o que liga cada fim ao seu inicio.
+    #[test]
+    fn call_id_pareia_inicio_e_fim_de_chamadas_sobrepostas() {
+        let inicio = |id: &str, detail: &str| TurnEvent::ToolStarted {
+            id: id.into(),
+            name: "bash".into(),
+            detail: detail.into(),
+            input: serde_json::Value::Null,
+        };
+        let fim = |id: &str, outcome: garraia_agents::DesfechoDaChamada| TurnEvent::ToolFinished {
+            id: id.into(),
+            name: "bash".into(),
+            duration: std::time::Duration::from_millis(10),
+            success: outcome.e_sucesso(),
+            outcome,
+            summary: String::new(),
+            output: String::new(),
+        };
+        let eventos = [
+            inicio("call-a", "sleep 60"),
+            inicio("call-b", "cargo test"),
+            fim("call-b", garraia_agents::DesfechoDaChamada::Sucesso),
+            fim("call-a", garraia_agents::DesfechoDaChamada::Timeout),
+        ];
+        let frames: Vec<serde_json::Value> = eventos
+            .iter()
+            .map(|e| serde_json::from_str(&turn_event_frame("s1", None, e)).expect("frame valido"))
+            .collect();
+
+        let mut detalhe_por_chamada = std::collections::HashMap::new();
+        let mut pares = Vec::new();
+        for frame in &frames {
+            let id = frame["call_id"].as_str().expect("call_id no frame");
+            if frame["type"] == "tool_started" {
+                detalhe_por_chamada.insert(id, frame["detail"].as_str().expect("detail"));
+            } else {
+                pares.push((
+                    detalhe_por_chamada[id],
+                    frame["outcome"].as_str().expect("outcome"),
+                ));
+            }
+        }
+        assert_eq!(
+            pares,
+            vec![("cargo test", "success"), ("sleep 60", "timeout")]
+        );
     }
 
     /// `output` fica fora do frame de proposito: e a saida inteira da
@@ -1470,6 +1529,7 @@ mod tests {
         ))
         .expect("frame valido");
         assert_eq!(frame["type"], "tool_finished");
+        assert_eq!(frame["call_id"], "call-ws");
         assert_eq!(frame["name"], "bash");
         assert_eq!(frame["success"], true);
         assert_eq!(frame["outcome"], "success");
