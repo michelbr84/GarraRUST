@@ -34,6 +34,15 @@ pub mod slack;
 pub mod teams;
 #[cfg(feature = "voice")]
 pub mod voice_channel;
+/// Parse do corpo dos webhooks push com o tamanho conferido antes. Ver
+/// `webhook_body.rs`.
+#[cfg(any(
+    feature = "google_chat",
+    feature = "line",
+    feature = "teams",
+    feature = "whatsapp"
+))]
+pub mod webhook_body;
 #[cfg(feature = "whatsapp")]
 pub mod whatsapp;
 /// WhatsApp por dispositivo vinculado (QR) — canal PULL sobre um bridge

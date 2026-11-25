@@ -284,10 +284,123 @@ GITHUB_TOKEN=... python3 scripts/security/codeql-alert-report.py \
     --repo michelbr84/GarraRUST --severity "" --state "" --tool ""
 ```
 
+## Barreiras declaradas (model packs)
+
+Terceiro mecanismo, ao lado do **escopo** (`paths-ignore`, `-test`) e do
+**ledger** ([`codeql-suppressions.md`](codeql-suppressions.md)). Serve para um
+caso que nenhum dos dois resolve bem: o código **tem** um validador, e o CodeQL
+só não sabe que ele é um.
+
+Um pack de modelos em
+[`.github/codeql/extensions/garraia-rust/`](../../.github/codeql/extensions/garraia-rust/)
+declara, para a biblioteca `codeql/rust-all`, que o retorno de uma função é
+barreira de um tipo de fluxo. O code scanning carrega sozinho os packs dessa
+pasta — vale para o advanced setup que este repositório usa, sem mexer em
+`codeql.yml` nem em `codeql-config.yml`.
+
+| | Escopo | Ledger | Barreira declarada |
+|---|---|---|---|
+| Quando | o alerta está em código que não é superfície (fixture de teste) | falso-positivo pontual em produção, sem validador a apontar | existe um validador real no caminho do dado |
+| Granularidade | arquivo / `cfg` | um alerta, uma linha | um fluxo: tudo que passa pela função |
+| Alerta novo no mesmo padrão | não nasce | nasce, e pede entrada nova | não nasce **se** passar pelo validador; nasce se não passar |
+| Sobrevive a renumeração de alerta | sim | não (por isso existe o `--rekey`) | sim |
+| Onde a justificativa fica | `codeql-config.yml` | `codeql-suppressions.json` | comentário no `.model.yml` + testes do validador |
+
+A regra continua ligada. Isso é o que separa barreira de `query-filters:
+exclude`, que a política do ledger proíbe (§3, regra 6): o filtro apaga a regra,
+a barreira ensina a ela um fato.
+
+### O que está declarado
+
+| Função | Regra | Motivo |
+|---|---|---|
+| `garraia_channels::webhook_body::dentro_do_teto` | `rust/unsafe-deserialization` | devolve o corpo só se ele cabe em `MAX_WEBHOOK_BODY_BYTES` (issue #1987) |
+
+### Regras para acrescentar uma barreira
+
+1. **A função tem de validar de verdade**, e ter teste que caia se ela deixar de
+   validar. Uma barreira sobre uma função que só repassa o valor é supressão
+   com outro nome — e pior que o ledger, porque não aparece como dismissal em
+   lugar nenhum.
+2. **O valor validado sai no retorno.** A barreira é declarada em `ReturnValue`;
+   uma função que devolve `bool` e deixa o chamador usar o valor original não
+   serve de âncora.
+3. **Uma linha por função, com comentário dizendo o que ela NÃO cobre.**
+4. **A função declarada não é `pub`.** O `barrierModel` não olha o tipo de
+   destino: o que sai da barreira é dado por seguro para *qualquer* sink
+   daquela regra. Uma barreira de tamanho exportada vira salvo-conduto para
+   quem desserializar o retorno num tipo que tamanho nenhum torna seguro. A
+   barreira fica privada, atrás de uma função pública que fixa o destino
+   (`json_limitado` → `serde_json::Value`).
+5. **Validar antes de mesclar**, com a CLI do mesmo bundle dos runners: o alerta
+   tem de sumir *com* o pack e continuar *sem* ele. Se ele some nos dois casos,
+   a barreira não está fazendo nada — o CodeQL só perdeu o fluxo, e o alerta
+   volta quando a biblioteca dele melhorar. A receita está abaixo.
+6. Mexeu em auth, parse de entrada remota ou neste pack → `security-auditor`.
+   O code scanning carrega qualquer `*.model.yml` desta pasta sem pedir licença,
+   e um YAML recebe menos olho que código: é a revisão que segura.
+
+### Como validar localmente
+
+O bundle por linguagem (~95 MB) sai do release `codeql-bundle-vX.Y.Z` de
+`github/codeql-action`; a versão é a que o job `Analyze (rust)` imprime.
+
+```bash
+# Mesmo escopo do CI: -test e o paths-ignore do codeql-config.yml.
+CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES=-test \
+  codeql database create db --language=rust --build-mode=none \
+    --source-root=. --codescanning-config=.github/codeql-config.yml
+
+Q=<bundle>/qlpacks/codeql/rust-queries/*/queries/security/CWE-502/UnsafeDeserialization.ql
+
+# Com o pack: ele foi capturado de .github/codeql/extensions/ na criacao do banco.
+codeql database analyze db $Q --format=sarif-latest --output=com-pack.sarif
+
+# Controle: sem o pack.
+mv db/temp/extension-pack db/temp/extension-pack.fora
+codeql database analyze db $Q --format=sarif-latest --output=sem-pack.sarif --rerun
+```
+
+Duas armadilhas, as duas medidas em 2026-11-25 com o bundle 2.27.5:
+
+- **`~/.cargo/registry` como symlink zera a análise em silêncio.** O extractor
+  registra cada crate de dependência por um caminho e os arquivos dele por
+  outro; nada fora do workspace ganha *canonical path*, os modelos de fonte e
+  de sink deixam de casar, e a query devolve **zero** resultados — inclusive
+  para o código original, sabidamente alertado. Aponte `CARGO_HOME` para um
+  diretório sem symlink. O teste de sanidade é sempre o mesmo: **o controle
+  tem de alertar**. Um "0 alertas" sem controle positivo não prova nada.
+- **`--no-database-extension-packs` não serviu de controle**: com o pack
+  capturado da pasta `extensions`, a análise deu o mesmo resultado com e sem a
+  flag. Mover `db/temp/extension-pack` para fora é o que de fato o remove.
+
+### O experimento de #1987
+
+Um banco só, com os quatro handlers em quatro formas diferentes:
+
+| Forma do handler | Sem o pack | Com o pack |
+|---|---|---|
+| `serde_json::from_slice(&body)` direto (o código original) | alerta | alerta |
+| parse via validador de tamanho **não** declarado | alerta | alerta |
+| idem, com o `if` escrito como `bool::then_some` | alerta | alerta |
+| parse via `dentro_do_teto`, declarada no pack | alerta | **sem alerta** |
+
+As duas primeiras colunas dizem que só mudar o código não fecharia nada: o
+CodeQL segue o corpo através da checagem de tamanho sem dar valor a ela, e o
+alerta apenas mudaria de arquivo. A última linha diz que a barreira fecha
+exatamente o fluxo que passa pelo validador — e as outras três, que ela não
+fecha mais nada.
+
+Na árvore que foi mesclada (os quatro handlers em `json_limitado`,
+`dentro_do_teto` privada), a mesma query deu **0** resultados com o pack e
+**1** sem ele: o sink dentro de `json_limitado`, com quatro caminhos, um por
+handler. É o controle positivo desta mudança.
+
 ## See also
 
 - `.github/workflows/codeql.yml` — workflow definition.
 - `.github/codeql-config.yml` — paths-ignore.
+- `.github/codeql/extensions/garraia-rust/` — barreiras declaradas.
 - `.github/workflows/ci.yml` — source of the matching exclusions
   (`--exclude garraia-desktop`).
 - `docs/security/secret-scanning-runbook.md` — companion runbook for

@@ -9,9 +9,11 @@
 //!
 //! ## Invariantes
 //!
-//! - **Verificar antes de parsear.** `serde_json::from_slice` só acontece
-//!   depois de um `validate_signature` que passou. Parsear antes daria a um
-//!   POST forjado a chance de exercitar o parser.
+//! - **Verificar antes de parsear.** O parse (`webhook_body::json_limitado`)
+//!   só acontece depois de um `validate_signature` que passou. Parsear antes
+//!   daria a um POST forjado a chance de exercitar o parser.
+//! - **Medir antes de parsear.** O parse passa por `webhook_body`, que recusa
+//!   corpo acima de `MAX_WEBHOOK_BODY_BYTES` sem chamar o `serde_json`.
 //! - **403 uniforme.** Header ausente, Base64 malformado, tamanho errado,
 //!   HMAC diferente, segredo em branco: tudo responde o mesmo 403 com o mesmo
 //!   corpo. Distinguir os casos diria a quem está sondando o quão perto
@@ -29,6 +31,7 @@ use axum::response::IntoResponse;
 use tracing::{info, warn};
 
 use super::LineChannel;
+use crate::webhook_body::{CorpoRecusado, json_limitado};
 
 /// Estado compartilhado com o handler: os canais LINE configurados.
 pub type LineState = Arc<Vec<Arc<LineChannel>>>;
@@ -65,15 +68,26 @@ pub async fn line_webhook(
         return (StatusCode::FORBIDDEN, FORBIDDEN_BODY);
     };
 
-    // Só agora o corpo vira JSON.
-    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        warn!(
-            canal = channel.name(),
-            "line: webhook com assinatura valida mas corpo que nao e JSON"
-        );
-        // Assinatura confere, então quem mandou tem o segredo: é um erro de
-        // formato, não uma tentativa de forjar. 400, não 403.
-        return (StatusCode::BAD_REQUEST, "line: malformed body");
+    // Só agora o corpo vira JSON — e com o tamanho conferido antes do parse.
+    let payload = match json_limitado(&body) {
+        Ok(payload) => payload,
+        Err(CorpoRecusado::GrandeDemais) => {
+            warn!(
+                canal = channel.name(),
+                bytes = body.len(),
+                "line: webhook com assinatura valida mas corpo acima do teto"
+            );
+            return (StatusCode::PAYLOAD_TOO_LARGE, "line: body too large");
+        }
+        Err(CorpoRecusado::JsonInvalido) => {
+            warn!(
+                canal = channel.name(),
+                "line: webhook com assinatura valida mas corpo que nao e JSON"
+            );
+            // Assinatura confere, então quem mandou tem o segredo: é um erro
+            // de formato, não uma tentativa de forjar. 400, não 403.
+            return (StatusCode::BAD_REQUEST, "line: malformed body");
+        }
     };
 
     let eventos = payload
@@ -316,6 +330,54 @@ mod tests {
         let sig = compute_signature(SEGREDO_A, lixo);
         let (status, _) = resposta(vec![canal("a", SEGREDO_A)], requisicao(lixo, Some(&sig))).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// JSON valido, um byte acima do teto.
+    fn corpo_acima_do_teto() -> Vec<u8> {
+        let prefixo = br#"{"events":[],"enchimento":""#;
+        let sufixo = br#""}"#;
+        let alvo = crate::webhook_body::MAX_WEBHOOK_BODY_BYTES + 1;
+        let mut corpo = prefixo.to_vec();
+        corpo.resize(alvo - sufixo.len(), b'a');
+        corpo.extend_from_slice(sufixo);
+        assert_eq!(corpo.len(), alvo);
+        corpo
+    }
+
+    /// Chama o handler **direto**, sem router: num router o `DefaultBodyLimit`
+    /// responderia 413 antes, e o teste passaria sem o handler conferir nada.
+    async fn direto(canais: Vec<Arc<LineChannel>>, corpo: Vec<u8>, sig: &str) -> StatusCode {
+        let mut headers = HeaderMap::new();
+        headers.insert(SIGNATURE_HEADER, sig.parse().expect("header valido"));
+        line_webhook(State(Arc::new(canais)), headers, Bytes::from(corpo))
+            .await
+            .into_response()
+            .status()
+    }
+
+    /// O teto e do handler, nao so da rota. O corpo e JSON valido e esta
+    /// assinado: sem a checagem de tamanho a resposta seria 200.
+    #[tokio::test]
+    async fn corpo_assinado_acima_do_teto_da_413() {
+        let corpo = corpo_acima_do_teto();
+        let sig = compute_signature(SEGREDO_A, &corpo);
+        assert_eq!(
+            direto(vec![canal("a", SEGREDO_A)], corpo, &sig).await,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    /// Tamanho nao fura a ordem: sem assinatura valida a resposta continua
+    /// sendo o 403 uniforme. Um 413 aqui diria a quem sonda que o corpo foi
+    /// olhado antes da assinatura.
+    #[tokio::test]
+    async fn corpo_acima_do_teto_sem_assinatura_valida_continua_403() {
+        let corpo = corpo_acima_do_teto();
+        let sig_de_outro = compute_signature(SEGREDO_B, &corpo);
+        assert_eq!(
+            direto(vec![canal("a", SEGREDO_A)], corpo, &sig_de_outro).await,
+            StatusCode::FORBIDDEN
+        );
     }
 
     /// Sem nenhum canal configurado a rota nao pode virar um buraco aberto:
