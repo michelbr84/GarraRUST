@@ -34,12 +34,26 @@ pub async fn setup(
 ) -> impl IntoResponse {
     let guard = state.store.lock().await;
 
-    if guard.user_count() > 0 {
-        return (
-            StatusCode::CONFLICT,
-            HeaderMap::new(),
-            Json(serde_json::json!({"error": "setup already completed"})),
-        );
+    // `try_user_count`, nao `user_count`: este handler nao tem autenticacao,
+    // e um erro de leitura lido como "zero usuarios" liberaria um admin novo
+    // num console ja configurado (#2000). Erro recusa.
+    match guard.try_user_count() {
+        Ok(0) => {}
+        Ok(_) => {
+            return (
+                StatusCode::CONFLICT,
+                HeaderMap::new(),
+                Json(serde_json::json!({"error": "setup already completed"})),
+            );
+        }
+        Err(e) => {
+            tracing::error!("admin setup refused: {e}");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                HeaderMap::new(),
+                Json(serde_json::json!({"error": "admin store unavailable"})),
+            );
+        }
     }
 
     if body.username.len() < 3 || body.password.len() < MIN_PASSWORD_LEN {

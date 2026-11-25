@@ -434,18 +434,15 @@ impl GatewayServer {
         if let Err(e) = std::fs::create_dir_all(&data_dir) {
             warn!("failed to create data directory: {e}");
         }
-        // Initialize admin store for the web admin console
+        // Initialize admin store for the web admin console. An existing
+        // `admin.db` that does not open refuses the boot instead of falling
+        // back to an empty in-memory store, whose unauthenticated setup would
+        // accept a new first admin (#2000). Same early spot as the key below,
+        // so the refusal happens before any channel is up.
         let admin_db_path = data_dir.join("admin.db");
-        let mut admin_store_owned = match admin::store::AdminStore::open(&admin_db_path) {
-            Ok(store) => {
-                info!("admin store opened at {}", admin_db_path.display());
-                store
-            }
-            Err(e) => {
-                warn!("failed to open admin store, using in-memory: {e}");
-                admin::store::AdminStore::in_memory().expect("in-memory admin store should work")
-            }
-        };
+        let mut admin_store_owned = admin::store::AdminStore::open_for_boot(&admin_db_path)
+            .map_err(garraia_common::Error::Gateway)?;
+        info!("admin store ready ({})", admin_db_path.display());
 
         // Resolve the admin master key exactly once, here, while we still hold
         // the store exclusively. This also runs the forward-only re-key: until

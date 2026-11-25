@@ -119,6 +119,46 @@ impl AdminStore {
         Ok(store)
     }
 
+    /// Abre o store do console no boot do gateway, sem cair para memoria
+    /// quando ha um `admin.db` que nao abre (#2000).
+    ///
+    /// Um store em memoria nasce sem usuarios, e `POST /admin/api/setup` cria
+    /// o primeiro admin sem autenticacao enquanto `user_count() == 0`. Cair
+    /// para memoria quando um `admin.db` **existente** nao abre (arquivo
+    /// corrompido, permissao, disco cheio) entregava o console de uma
+    /// instalacao ja configurada a quem chegasse primeiro em `/admin`, e
+    /// apagava no restart tudo o que o operador gravasse nesse boot.
+    ///
+    /// - abriu: devolve o store;
+    /// - nao abriu e o arquivo existe (ou nao da para saber se existe): erro,
+    ///   o boot e recusado;
+    /// - nao abriu e o arquivo nao existe: nao ha admin para sequestrar, entao
+    ///   o comportamento de primeira instalacao fica (store em memoria, com
+    ///   aviso), sem `expect()`.
+    pub fn open_for_boot(db_path: &Path) -> Result<Self, String> {
+        let open_err = match Self::open(db_path) {
+            Ok(store) => return Ok(store),
+            Err(e) => e,
+        };
+        match db_path.try_exists() {
+            Ok(false) => {
+                tracing::warn!(
+                    "admin store nao pode ser criado em {} ({open_err}); \
+                     console em memoria ate o proximo boot",
+                    db_path.display()
+                );
+                Self::in_memory()
+            }
+            Ok(true) | Err(_) => Err(format!(
+                "{} existe mas nao abre ({open_err}). O gateway recusa o boot em vez \
+                 de subir um console sem usuarios, cujo setup aceitaria um admin novo \
+                 sem autenticacao. Corrija permissao/espaco em disco ou restaure o \
+                 arquivo de um backup.",
+                db_path.display()
+            )),
+        }
+    }
+
     pub fn in_memory() -> Result<Self, String> {
         let conn = Connection::open_in_memory()
             .map_err(|e| format!("failed to open in-memory admin db: {e}"))?;
@@ -273,9 +313,10 @@ impl AdminStore {
     ///
     /// Ler o schema e depois escrever nao e atomico, e por isso o perdedor da
     /// corrida (dois processos subindo juntos leem o `PRAGMA` antes de
-    /// qualquer `ALTER`) nao pode receber `Err`: `AdminStore::open` cairia
-    /// para `in_memory()`, que deixa o `/admin/api/setup` reivindicavel por
-    /// anonimo. A prova de que a corrida foi vencida por alguem e reler o
+    /// qualquer `ALTER`) nao pode receber `Err`: `AdminStore::open_for_boot`
+    /// recusaria o boot desse processo (antes do #2000 ele caia para
+    /// `in_memory()`, que deixava o `/admin/api/setup` reivindicavel por
+    /// anonimo). A prova de que a corrida foi vencida por alguem e reler o
     /// schema apos o erro — a mensagem `duplicate column name` do SQLite nao
     /// e contrato estavel entre versoes. Erro de leitura do schema, esse sim,
     /// e propagado: migrar com metade das linhas lidas seria pior que nao
@@ -469,6 +510,19 @@ impl AdminStore {
             return Err("user not found".to_string());
         }
         Ok(())
+    }
+
+    /// Contagem de usuarios que distingue "zero" de "nao consegui contar".
+    ///
+    /// `user_count` devolve 0 em erro de leitura, o que e seguro para exibir
+    /// mas nao para decidir: o `setup` sem autenticacao usa esta versao, e um
+    /// erro de leitura recusa o setup em vez de liberar um admin novo (#2000).
+    pub fn try_user_count(&self) -> Result<usize, String> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM admin_users", [], |row| row.get(0))
+            .map_err(|e| format!("failed to count admin users: {e}"))?;
+        usize::try_from(n).map_err(|e| format!("invalid admin user count {n}: {e}"))
     }
 
     pub fn user_count(&self) -> usize {
@@ -1789,6 +1843,71 @@ mod tests {
     }
 
     #[test]
+    fn try_user_count_matches_user_count() {
+        let store = test_store();
+        assert_eq!(store.try_user_count(), Ok(0));
+        store.create_user("a", "p", Role::Viewer).unwrap();
+        assert_eq!(store.try_user_count(), Ok(1));
+    }
+
+    #[test]
+    fn try_user_count_reports_read_failure_instead_of_zero() {
+        let store = test_store();
+        store.conn.execute_batch("DROP TABLE admin_users;").unwrap();
+        assert_eq!(store.user_count(), 0, "display helper keeps fail-soft");
+        assert!(store.try_user_count().is_err());
+    }
+
+    #[test]
+    fn open_for_boot_creates_missing_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admin.db");
+        let store = AdminStore::open_for_boot(&path).expect("fresh install opens");
+        assert_eq!(store.try_user_count(), Ok(0));
+        assert!(path.exists(), "fresh install persists to disk, not memory");
+    }
+
+    #[test]
+    fn open_for_boot_keeps_existing_users() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admin.db");
+        {
+            let store = AdminStore::open(&path).unwrap();
+            store
+                .create_user("admin", "password123", Role::Admin)
+                .unwrap();
+        }
+        let store = AdminStore::open_for_boot(&path).unwrap();
+        assert_eq!(store.try_user_count(), Ok(1));
+    }
+
+    #[test]
+    fn open_for_boot_refuses_existing_unreadable_db() {
+        // #2000: um admin.db que existe e nao abre nao pode virar um console
+        // vazio em memoria, cujo setup aceitaria um admin novo.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admin.db");
+        std::fs::write(&path, vec![0xA5u8; 8192]).unwrap();
+        let err = match AdminStore::open_for_boot(&path) {
+            Ok(_) => panic!("corrupt admin.db must refuse the boot"),
+            Err(e) => e,
+        };
+        assert!(err.contains("admin.db"), "names the file: {err}");
+        assert!(err.contains("backup"), "names the way out: {err}");
+    }
+
+    #[test]
+    fn open_for_boot_falls_back_only_when_file_is_absent() {
+        // Diretorio inexistente: o arquivo nao existe e nao da para cria-lo.
+        // Nao ha admin a sequestrar, entao fica o comportamento antigo.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nao-existe").join("admin.db");
+        let store = AdminStore::open_for_boot(&path).expect("in-memory fallback");
+        assert_eq!(store.try_user_count(), Ok(0));
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn user_count() {
         let store = test_store();
         assert_eq!(store.user_count(), 0);
@@ -2372,8 +2491,8 @@ mod tests {
 
     /// O `PRAGMA table_info` e o `ALTER TABLE` nao sao atomicos: dois processos
     /// podem ler o schema antes de qualquer um escrever. O perdedor tem que
-    /// receber sucesso, nao um `Err` que derruba o `open` para store em
-    /// memoria — e dai o `/admin/api/setup` fica reivindicavel por anonimo.
+    /// receber sucesso, nao um `Err` que faz o `open_for_boot` recusar o boot
+    /// de uma instalacao saudavel (#2000).
     #[test]
     fn rodar_a_migracao_duas_vezes_e_sucesso() {
         let store = test_store();
