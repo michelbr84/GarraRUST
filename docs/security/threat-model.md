@@ -1109,15 +1109,16 @@ HTTP/WS); `registro` é `crates/garraia-agents/src/tools/pending_approval.rs`;
 agente; `POST /api/sessions/{id}/messages` (`api.rs`), porque o Web Console é
 auth-free e a sessão vem do path; a resposta do agente no chat do workspace
 (`rest_v1/messages.rs`), one-shot com histórico vazio; a tarefa agendada
-(`process_heartbeat` em `server.rs`), que não tem humano no turno; `garraia
+(`process_heartbeat_with_exec` em `server.rs`), que não tem humano no turno; `garraia
 ask` e o `garra_agent` do `garraia mcp-server`, one-shot e dirigidos por
 agente.
 
 **Guardas de regressão.** `crates/garraia-gateway/tests/approval_scope_coverage.rs`
 varre `src/` atrás de toda chamada a um ponto de entrada do runtime
-(`process_message*` e `process_heartbeat`; nome novo com esse prefixo reprova
-até entrar na lista) e decide **por chamada**: o contexto de execução tem de
-ser exatamente `crate::approval_scope::com_escopo(..)`, inline ou no `let`
+(`process_message*` por prefixo — nome novo com esse prefixo reprova até
+entrar na lista — e os de `process_heartbeat`, casados um a um contra a
+lista) e decide **por chamada**: o contexto de execução tem de ser
+exatamente `crate::approval_scope::com_escopo(..)`, inline ou no `let`
 que a chamada enxerga dentro da mesma `fn`, ou a chamada tem de estar em
 `SEM_ESCOPO`, presa por arquivo, `fn` e ponto de entrada, com o motivo. Toda
 chamada a `com_escopo` confere o remetente contra `REMETENTES` (um por

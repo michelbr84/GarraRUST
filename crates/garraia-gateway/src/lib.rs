@@ -78,6 +78,7 @@ pub mod skins_handler;
 pub mod slash_commands;
 pub mod state;
 pub mod stats_handler;
+pub(crate) mod tarefa_agendada;
 pub mod tasks_recurrence_worker;
 pub mod tools;
 pub mod totp;

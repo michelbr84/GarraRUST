@@ -1859,9 +1859,22 @@ async fn bot_reply_task(
     let response_body = if prompt.is_empty() {
         "Uso: /garra <prompt>. Exemplo: /garra me dê um resumo desta conversa.".to_string()
     } else {
+        // Fronteira de autorizacao: o turno do bot passa pelo CONSTRUTOR
+        // CENTRAL, como todo turno de canal — `exec_context_for_msg` consulta
+        // `sessao_do_operador` e aplica o teto da superficie. Sessao sem prova
+        // de operador roda sob o teto de leitura, mesmo que o modo escolhido
+        // liberasse mais.
+        let exec = state
+            .app
+            .exec_context_for_msg(
+                &chat_id.to_string(),
+                Some(&user_id.to_string()),
+                Some(&prompt),
+            )
+            .await;
         match state
             .agents
-            .process_message(&chat_id.to_string(), &prompt, &[])
+            .process_message_with_exec(&chat_id.to_string(), &prompt, &[], None, None, &exec)
             .await
         {
             Ok(text) => text,

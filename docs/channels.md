@@ -69,6 +69,10 @@ Scheduled tasks (`schedule_heartbeat`, `schedule_recurring`) use the same
 delivery path. Before `v0.3.9` their Telegram delivery silently failed, because
 nothing ever wrote the chat address into the outgoing message (issue #921).
 
+A scheduled task runs with the authority of whoever created it, and its reply
+starts with a notice when a limit blocked what it needed. See
+[Scheduled task authority](configuration.md#scheduled-task-authority-tasks).
+
 ### Commands
 
 All built-in commands work in Telegram:

@@ -84,7 +84,8 @@ pub mod numero;
 pub mod politica;
 pub mod rejeicoes;
 pub use politica::{
-    Admission, Alcance, EntradaDeUsuario, PoliticaDeAcesso, principal_do_turno, teto_do_principal,
+    Admission, Alcance, EntradaDeUsuario, PoliticaDeAcesso, principal_do_turno,
+    teto_da_superficie_do_principal, teto_do_principal,
 };
 
 /// Chave da secao de config. Vem do proprio canal para nao existir um segundo
@@ -1948,8 +1949,16 @@ impl GatewaySink {
         );
         // ADR 0025 §2: o teto do principal, composto por E com o modo em todo
         // ponto do runtime. So tira, nunca poe: `write on` nao desliga
-        // sandbox, jail nem confirmacao. O dono nao tem teto.
+        // sandbox, jail nem confirmacao. O dono nao tem teto DE PRINCIPAL —
+        // mas o teto da SUPERFICIE e camada propria que esta atribuicao nao
+        // toca, e o `ToolGate` compoe os dois por E: nenhuma camada amplia a
+        // outra. Aqui a camada da superficie e RESOLVIDA com a prova de
+        // identidade do principal (este canal autentica o remetente):
+        // identidade provada => a fronteira e o teto do principal; sem
+        // identidade provada (`admission: open`) => leitura (fail-closed),
+        // mesmo que o default do canal seja `full`.
         exec.teto = teto_do_principal(&principal);
+        exec.teto_da_superficie = teto_da_superficie_do_principal(&principal);
         let exec = crate::approval_scope::com_escopo(exec, CONFIG_KEY, &sid, &remetente);
 
         let resposta = state

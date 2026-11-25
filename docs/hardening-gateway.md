@@ -135,11 +135,32 @@ vier do **mesmo remetente**, na **mesma sessao** e no **mesmo canal**:
 
 Continuam **sem** retomada, e ali a pausa e terminal de proposito: A2A,
 OpenClaw, `POST /api/sessions/{id}/messages`, a resposta do agente no chat
-do workspace (`rest_v1`), as tarefas agendadas (`process_heartbeat`),
+do workspace (`rest_v1`), as tarefas agendadas (`process_heartbeat_with_exec`),
 `garraia ask` e o `garra_agent` do `garraia mcp-server` — ou quem fala e
 outro agente, ou nao ha remetente que o servidor possa provar. Qualquer mensagem no meio encerra o pedido, e
 reiniciar o gateway cancela todos. Detalhes em
 [`security/threat-model.md`](security/threat-model.md) §5.16.
+
+**Autoridade das tarefas agendadas (#1985).** A tarefa roda com a autoridade
+de quem a criou, gravada na criacao: agendar nao eleva privilegio e tambem
+nao reduz. As tools de agenda gravam na tarefa os tetos do turno (o do
+principal e o da superficie); na execucao valem esses, e nao os que a sessao
+teria hoje. Por cima vai a politica de acesso **atual** do canal para quem
+criou a tarefa — no WhatsApp vinculado, rebaixar ou bloquear um contato vale
+tambem para as tarefas que ele ja tinha. Fora do WhatsApp vinculado, uma
+sessao que deixou de ser so do operador depois da criacao (console
+compartilhado com um canal remoto) derruba a tarefa para leitura: quem
+escreve na conversa alcanca o historico que a tarefa le. Tarefa sem autoridade gravada
+(anterior a esse registro) roda pelo canal da sessao: sessao do operador
+segue como estava, sessao remota roda so com leitura, ate o operador
+reautorizar com `garraia tasks authorize <id>` — que mostra o texto da
+tarefa e so grava com `--yes`. Quando um teto barra o que a tarefa pediu, ou
+ela roda com acesso reduzido, a resposta da tarefa comeca pelo aviso. A
+resposta fica sempre no historico da sessao e no ledger (`garraia runs
+list`), e o gateway registra um aviso no log; **entrega ativa ao canal so
+existe hoje no Telegram** — no WhatsApp vinculado, no Discord e no console
+local o aviso nao e empurrado, aparece quando a conversa e aberta.
+Detalhes em [`configuration.md`](configuration.md#scheduled-task-authority-tasks).
 
 **Nível de aprovação: `agent.approval` e `--yolo` (#1858).** O que acontece
 com o tier arriscado (a segunda linha da tabela) é um knob declarado pelo
@@ -292,6 +313,15 @@ Arquivo completo comentado, validado com `garra config check`:
    `/api/*`, sem resolução de identidade nenhuma, e é por elas que o
    runtime executa as tools do GarraIA na máquina do dono. Quem
    configurava a chave acreditava tê-las fechado.
+
+   **Sem a chave, o A2A roda só com leitura (#1985).** Com
+   `gateway.api_key` configurada, quem chega ao `/a2a/*` já apresentou a
+   credencial do administrador e a tarefa roda sem teto de superfície.
+   Sem ela a rota fica aberta para quem alcança a porta, e a tarefa A2A
+   recebe o mesmo teto de leitura das superfícies remotas: `bash`,
+   escrita de arquivo e envio de mensagem ficam fora, com ou sem agente
+   nomeado. Para delegar trabalho com escrita entre agentes, configure a
+   chave.
 
    **E o socket do papagaio (`/ws/parrot`), desde a auditoria R4 do PR
    #1251.** Ele roda um turno completo do agente — com as tools e a chave

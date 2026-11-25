@@ -89,6 +89,29 @@ pub struct ExecContext {
     /// fala, compilados em classes. `None` = sem teto (todo canal que nao
     /// tem principal com politica propria, a CLI inclusive).
     pub teto: Option<crate::modes::TetoDeCapacidades>,
+
+    /// O teto da superficie (#1665 e follow-up de fronteira): a camada que
+    /// reflete a prova (ou ausencia) de operador da SESSAO, aplicada em todo
+    /// turno e que nenhuma outra camada pode ampliar.
+    ///
+    /// Quem constrói o contexto DECLARA a base de confianca: o construtor
+    /// central do gateway (`AppState::exec_context_for_*`, que consulta
+    /// `sessao_do_operador`), o operador local ([`Self::operador_local`]) ou a
+    /// credencial de operador validada ([`Self::com_credencial_de_operador`]).
+    /// Os wrappers de conveniencia SEM contexto usam
+    /// [`Self::sem_prova_de_operador`] (fail-closed) — nenhum caminho sem
+    /// contexto prova privilegio em silencio. `Default` mantem `None` porque
+    /// contexto explicito e uma decisao do chamador; a guarda de fiacao do
+    /// gateway reprova qualquer `ExecContext::default()` novo em producao fora
+    /// da lista declarada.
+    pub teto_da_superficie: Option<crate::modes::TetoDeCapacidades>,
+
+    /// Camadas VIGENTES (#1985): a politica de HOJE para quem criou uma
+    /// tarefa agendada cuja autoridade foi gravada na criacao. So a execucao
+    /// de tarefa agendada preenche; compostas por E com as duas camadas
+    /// acima em `ToolGate`, entao so tiram. E o que faz rebaixar ou bloquear
+    /// um contato valer tambem para as tarefas que ele ja tinha agendado.
+    pub tetos_vigentes: Vec<crate::modes::TetoDeCapacidades>,
 }
 
 impl ExecContext {
@@ -118,5 +141,41 @@ impl ExecContext {
             working_dir,
             ..Self::default()
         }
+    }
+
+    /// Contexto SEM prova de operador: o teto de leitura da superficie. E o
+    /// que os wrappers de conveniencia do runtime constroem — caminho sem
+    /// contexto prova o MINIMO, nunca privilegio administrativo.
+    pub fn sem_prova_de_operador() -> Self {
+        Self::default().sem_credencial_de_operador()
+    }
+
+    /// O mesmo teto de leitura de [`Self::sem_prova_de_operador`], aplicado a
+    /// um contexto JA montado (perfil de agente nomeado, diretorio): o resto
+    /// do contexto fica, a camada da superficie fecha. E o par de
+    /// [`Self::com_credencial_de_operador`] para a rota que so exige
+    /// credencial quando ela esta configurada — sem credencial exigida,
+    /// ninguem provou ser operador.
+    pub fn sem_credencial_de_operador(mut self) -> Self {
+        self.teto_da_superficie = Some(crate::modes::TetoDeCapacidades::sem_prova_de_operador());
+        self
+    }
+
+    /// Confianca LOCAL declarada (CLI e ferramentas do proprio host): o
+    /// operador da maquina, sem superficie remota. Zera o teto da superficie —
+    /// explicitamente, nunca em silencio.
+    pub fn operador_local(mut self) -> Self {
+        self.teto_da_superficie = None;
+        self
+    }
+
+    /// Credencial de OPERADOR validada pelo gateway (bearer `api_key` em
+    /// `/a2a/*` e no MCP HTTP): o chamador carrega a mesma credencial do
+    /// administrador. Zera o teto da superficie, explicitamente. So vale onde
+    /// a rota EXIGIU a credencial: o A2A, que tambem atende com o gateway sem
+    /// `api_key`, usa [`Self::sem_credencial_de_operador`] nesse caso.
+    pub fn com_credencial_de_operador(mut self) -> Self {
+        self.teto_da_superficie = None;
+        self
     }
 }
