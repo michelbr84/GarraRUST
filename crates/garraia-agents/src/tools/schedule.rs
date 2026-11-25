@@ -371,7 +371,15 @@ impl Tool for ScheduleHeartbeat {
 
         let execute_at = chrono::Utc::now() + chrono::Duration::seconds(delay);
 
-        let task_id = store.schedule_task(&context.session_id, &user_id, execute_at, reason)?;
+        // #1985: a tarefa carrega as camadas de teto do turno que a criou.
+        let autoridade = autoridade_para_gravar();
+        let task_id = store.schedule_task_with_authority(
+            &context.session_id,
+            &user_id,
+            execute_at,
+            reason,
+            autoridade.as_deref(),
+        )?;
 
         Ok(ToolOutput::success(format!(
             "Heartbeat agendado para {} (em {} segundos). ID da tarefa: {}",
@@ -380,6 +388,14 @@ impl Tool for ScheduleHeartbeat {
             task_id
         )))
     }
+}
+
+/// O documento de autoridade que vai junto com a tarefa (#1985): as camadas
+/// de teto do turno, publicadas pelo runtime em volta do `execute`. Fora de um
+/// despacho do runtime nao ha o que gravar, e a tarefa nasce sem autoridade —
+/// o executor aplica o fallback restritivo, nunca o portao aberto.
+fn autoridade_para_gravar() -> Option<String> {
+    crate::tools::turn_tools::autoridade_do_turno().and_then(|a| a.para_json())
 }
 
 /// Ferramenta para agendar uma tarefa recorrente por expressão cron.
@@ -484,13 +500,16 @@ impl Tool for ScheduleRecurring {
             )));
         }
 
-        let (task_id, first_run) = store.schedule_recurring_task(
+        // #1985: a mesma autoridade vale para todas as ocorrencias.
+        let autoridade = autoridade_para_gravar();
+        let (task_id, first_run) = store.schedule_recurring_task_with_authority(
             &context.session_id,
             &user_id,
             cron_expr,
             timezone,
             reason,
             max_runs,
+            autoridade.as_deref(),
         )?;
 
         Ok(ToolOutput::success(format!(
@@ -763,5 +782,81 @@ mod tests {
             .unwrap();
 
         assert!(!out.is_error);
+    }
+
+    fn autoridade_de_teste() -> crate::modes::AutoridadeDaTarefa {
+        crate::modes::ToolGate::sem_politica()
+            .com_teto(Some(crate::modes::TetoDeCapacidades {
+                nome: "usuario (full, write off)".to_string(),
+                politica: crate::modes::politica_do_nivel(crate::modes::Nivel::Full, false),
+            }))
+            .autoridade_do_turno()
+    }
+
+    async fn autoridades_gravadas(store: &Arc<Mutex<SessionStore>>) -> Vec<Option<String>> {
+        store
+            .lock()
+            .await
+            .list_scheduled_tasks(true)
+            .expect("lista")
+            .into_iter()
+            .map(|t| t.authority)
+            .collect()
+    }
+
+    /// #1985: a tarefa nasce com as camadas de teto do turno que a criou —
+    /// nas duas tools.
+    #[tokio::test]
+    async fn as_duas_tools_gravam_a_autoridade_do_turno() {
+        let store = setup_store("sess-aut").await;
+        let esperada = autoridade_de_teste();
+
+        let out = crate::tools::turn_tools::com_autoridade_do_turno(
+            esperada.clone(),
+            ScheduleHeartbeat::new(Arc::clone(&store)).execute(
+                &contexto_teste("sess-aut"),
+                serde_json::json!({"delay_seconds": 60, "reason": "uma vez"}),
+            ),
+        )
+        .await
+        .expect("agenda");
+        assert!(!out.is_error);
+
+        let out = crate::tools::turn_tools::com_autoridade_do_turno(
+            esperada.clone(),
+            ScheduleRecurring::new(Arc::clone(&store)).execute(
+                &contexto_teste("sess-aut"),
+                serde_json::json!({"cron_expr": "0 9 * * *", "reason": "todo dia"}),
+            ),
+        )
+        .await
+        .expect("agenda recorrente");
+        assert!(!out.is_error, "{}", out.content);
+
+        let gravadas = autoridades_gravadas(&store).await;
+        assert_eq!(gravadas.len(), 2);
+        for doc in gravadas {
+            let doc = doc.expect("a tarefa carrega a autoridade");
+            assert_eq!(
+                crate::modes::AutoridadeDaTarefa::de_json(&doc),
+                Some(esperada.clone())
+            );
+        }
+    }
+
+    /// Fora de um despacho do runtime nao ha autoridade publicada: a tarefa
+    /// nasce SEM ela (e o executor aplica o fallback restritivo). Nunca
+    /// inventar "sem teto".
+    #[tokio::test]
+    async fn sem_autoridade_publicada_a_tarefa_nasce_sem_autoridade() {
+        let store = setup_store("sess-sem").await;
+        ScheduleHeartbeat::new(Arc::clone(&store))
+            .execute(
+                &contexto_teste("sess-sem"),
+                serde_json::json!({"delay_seconds": 60, "reason": "direto"}),
+            )
+            .await
+            .expect("agenda");
+        assert_eq!(autoridades_gravadas(&store).await, vec![None]);
     }
 }

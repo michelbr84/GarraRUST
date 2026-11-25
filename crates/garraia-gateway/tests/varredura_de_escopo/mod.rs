@@ -24,12 +24,14 @@ use std::path::{Path, PathBuf};
 pub const ENTRADAS: &[&str] = &[
     "process_message",
     "process_message_with_context",
+    "process_message_with_exec",
     "process_message_with_agent_config",
     "process_message_streaming",
     "process_message_streaming_with_context",
     "process_message_streaming_with_agent_config",
     "process_message_streaming_with_events",
     "process_heartbeat",
+    "process_heartbeat_with_exec",
 ];
 
 /// Casam o prefixo `process_message` mas sao privados do runtime: ninguem de

@@ -55,6 +55,73 @@ tokio::task_local! {
     /// nativas de introspeccao: sem isto o `garra_status` sabia QUE a
     /// ferramenta estava negada e nao sabia por qual camada.
     static RECUSAS: Arc<[(String, crate::modes::RecusaDoPortao)]>;
+    /// #1985: as camadas de teto do portao deste turno, publicadas em volta
+    /// do `execute` das tools de agendamento. E o que a tool grava na tarefa
+    /// para ela rodar, depois, com a autoridade de quem a criou.
+    static AUTORIDADE: Arc<crate::modes::AutoridadeDaTarefa>;
+    /// #1985: o coletor das recusas de TETO, aberto por quem chama o runtime
+    /// em volta do turno inteiro (hoje, a execucao de tarefa agendada). O
+    /// runtime nao usa `tokio::spawn` no despacho, entao o escopo do chamador
+    /// alcanca o ponto da recusa.
+    static BLOQUEIOS: Arc<std::sync::Mutex<Vec<BloqueioDeTeto>>>;
+}
+
+/// Uma ferramenta que o modelo pediu e uma camada de TETO barrou (#1985).
+/// Recusa so de modo nao entra: ali trocar de modo resolve, e nao e disso que
+/// o aviso de tarefa bloqueada fala.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BloqueioDeTeto {
+    pub ferramenta: String,
+    /// O nome do teto que barrou (`TetoDeCapacidades::nome`).
+    pub teto: String,
+}
+
+/// A autoridade do turno em que esta tool roda, se o runtime a publicou.
+/// `None` fora de um despacho do `AgentRuntime` (teste que chama a tool
+/// direto, CLI de inspecao): quem agenda sem autoridade grava a tarefa SEM
+/// ela, e o executor aplica o fallback restritivo — nunca o portao aberto.
+pub fn autoridade_do_turno() -> Option<crate::modes::AutoridadeDaTarefa> {
+    AUTORIDADE.try_with(|a| (**a).clone()).ok()
+}
+
+/// Roda `fut` com `autoridade` publicada. O runtime chama em volta do
+/// `execute` das tools de agendamento; e publico para o teste montar o mesmo
+/// escopo.
+pub async fn com_autoridade_do_turno<F: Future>(
+    autoridade: crate::modes::AutoridadeDaTarefa,
+    fut: F,
+) -> F::Output {
+    AUTORIDADE.scope(Arc::new(autoridade), fut).await
+}
+
+/// Roda `fut` coletando as recusas de teto que o runtime registrar dentro
+/// dele. Devolve a saida de `fut` e os bloqueios, sem repeticao.
+pub async fn coletando_bloqueios_de_teto<F: Future>(fut: F) -> (F::Output, Vec<BloqueioDeTeto>) {
+    let coletor = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let saida = BLOQUEIOS.scope(Arc::clone(&coletor), fut).await;
+    // Lock envenenado so acontece se um `push` entrou em panico; ai o que ha
+    // para ler e o que ja estava la.
+    let bloqueios = match coletor.lock() {
+        Ok(g) => g.clone(),
+        Err(envenenado) => envenenado.into_inner().clone(),
+    };
+    (saida, bloqueios)
+}
+
+/// O runtime chama no ponto em que recusa uma ferramenta por TETO. Sem
+/// coletor aberto, nao faz nada.
+pub(crate) fn registrar_bloqueio_de_teto(ferramenta: &str, teto: &str) {
+    let _ = BLOQUEIOS.try_with(|coletor| {
+        if let Ok(mut lista) = coletor.lock() {
+            let novo = BloqueioDeTeto {
+                ferramenta: ferramenta.to_string(),
+                teto: teto.to_string(),
+            };
+            if !lista.contains(&novo) {
+                lista.push(novo);
+            }
+        }
+    });
 }
 
 /// A recusa do portao deste turno para `nome`, se o runtime a publicou.

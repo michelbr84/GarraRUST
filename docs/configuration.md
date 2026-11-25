@@ -699,3 +699,67 @@ truncated to 500 characters and no column links a run back to its task.
 Resuming is left out until a real consumer of the sub-agent coordinator
 exists; when it does, it must require explicit confirmation and create a new
 run that references the original.
+
+## Scheduled task authority (`tasks`)
+
+A scheduled task (`schedule_heartbeat`, `schedule_recurring`) runs with the
+authority of whoever created it, recorded when it is created (#1985).
+Scheduling never raises privilege, and it does not lower it either.
+
+- **Recorded at creation.** The task stores the capability ceilings of the
+  turn that created it (`scheduled_tasks.authority`). A task created from the
+  local console keeps operator access; a task created by a WhatsApp contact
+  keeps exactly that contact's access.
+- **Composed with today's channel policy.** On the linked WhatsApp channel the
+  executor also applies the creator's **current** access
+  (`channels.whatsapp_linked.access`). Lowering or blocking a contact applies
+  to the tasks that contact already scheduled; a contact removed from the
+  config runs with no tools.
+- **A session that stopped being operator-only.** A task runs with its
+  session's history. If the operator scheduled a task and the session later
+  gained a remote channel (a console session shared with Telegram, for
+  example), whoever writes there reaches what the task reads, so the task
+  drops to read-only and says so. This does not apply to the linked WhatsApp
+  channel, where the session is the creator's own chat and the creator's
+  identity is re-checked on every run, nor to a task the operator
+  re-authorized.
+- **Tasks with no recorded authority.** A task created before this record
+  exists runs by its session's channel: operator sessions are unchanged, and
+  a remote session runs read-only (no file writes, no commands, no outgoing
+  messages).
+- **A notice when a limit gets in the way.** When a ceiling blocks a tool the
+  task asked for, or the task runs with reduced access, the task's reply
+  starts with a notice naming the limit and what to do. The reduced-access
+  notice is added once per task per gateway start; a blocked tool is reported
+  every time. The reply is always stored in the session history and its start
+  in the runs ledger (`garraia runs list`), and the gateway logs a warning
+  with the task id. **Where it is pushed depends on the channel:** the
+  scheduler only delivers a task's reply on Telegram today. On the linked
+  WhatsApp channel, Discord and the local console the reply (notice included)
+  is not pushed; it is there the next time the conversation is opened, and in
+  the ledger.
+
+### `garraia tasks`
+
+Reads and writes `sessions.db` directly, like `garraia runs`; it does not
+need the gateway to be running.
+
+```bash
+garraia tasks list                 # open tasks, soonest first
+garraia tasks list --all --json    # include finished ones, stable JSON
+garraia tasks authorize <id>       # preview only: shows the task, changes nothing
+garraia tasks authorize <id> --yes # grant operator access to its future runs
+garraia tasks revoke <id>          # remove the recorded authority again
+```
+
+`authorize` grants file writes, command execution and outgoing messages to
+**every future run** of that task. The task text may have been written by
+someone talking to the agent on a remote channel, so the command shows the
+full text first and only records the grant with `--yes`. The id must match
+exactly; a prefix is not accepted. The channel's current access policy still
+applies on top of the grant. A re-authorized task keeps operator access even
+on a remote session, so messages written in that conversation before the task
+fires are part of what it acts on: grant it only for conversations you trust.
+
+Exit codes: `0` ok (including the preview), `2` unknown id or a task that
+already finished, `74` the database exists but cannot be opened.

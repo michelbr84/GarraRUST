@@ -36,6 +36,7 @@ mod sigpipe;
 mod skills_cmd;
 mod sonda_de_provider;
 mod systemd_guard;
+mod tasks_cmd;
 mod team;
 mod tool_history;
 mod tracing_setup;
@@ -428,6 +429,18 @@ enum Commands {
     Runs {
         #[command(subcommand)]
         action: RunsCommands,
+    },
+
+    /// List scheduled tasks and re-authorize the ones that need it (#1985).
+    ///
+    /// A scheduled task runs with the authority of whoever created it,
+    /// recorded at creation. A task that predates that record runs read-only
+    /// on a remote session; `tasks authorize` is how the machine's operator
+    /// grants it operator access. Works on `sessions.db` directly, like
+    /// `runs`.
+    Tasks {
+        #[command(subcommand)]
+        action: TasksCommands,
     },
 
     /// Operate the skills pipeline: mine session logs, list candidates and
@@ -1074,6 +1087,41 @@ enum RunsCommands {
         /// Emit a stable JSON array instead of the human-friendly listing.
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum TasksCommands {
+    /// List scheduled tasks that can still run, soonest first.
+    List {
+        /// Include finished and failed tasks too.
+        #[arg(long)]
+        all: bool,
+
+        /// Emit a stable JSON array instead of the human-friendly listing.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Grant a scheduled task operator access for its future runs.
+    ///
+    /// Without `--yes` it only shows the task — channel, schedule and the
+    /// exact text the agent will receive — and changes nothing. The channel's
+    /// current access policy still applies on top.
+    Authorize {
+        /// The task id, exactly as `tasks list` prints it.
+        id: String,
+
+        /// Actually record the authorization.
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Remove a task's recorded authority; it runs by its session's channel
+    /// again (read-only on a remote session).
+    Revoke {
+        /// The task id, exactly as `tasks list` prints it.
+        id: String,
     },
 }
 
@@ -2041,6 +2089,11 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
         Commands::Desktop { status, no_launch } => *status || *no_launch,
         Commands::Runs { action } => match action {
             RunsCommands::List { .. } => true,
+        },
+        Commands::Tasks { action } => match action {
+            TasksCommands::List { .. } => true,
+            // Mudam estado: um `EPIPE` no meio tem de ser erro tratado.
+            TasksCommands::Authorize { .. } | TasksCommands::Revoke { .. } => false,
         },
         Commands::Skills { action } => match action {
             // `mine` grava candidatos ANTES de imprimir qualquer coisa (o
@@ -3695,6 +3748,23 @@ async fn async_main(
                     limit,
                     json,
                 } => runs_cmd::run_list(&config, status, limit, json)?,
+            };
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Commands::Tasks { action } => {
+            // Mesmo console limpo do `runs`: a saida do subcomando e o
+            // relatorio, e o tracing so entra quando o operador pede.
+            if cli.verbose || cli.debug {
+                init_tracing(&effective_level);
+            }
+            let code = match action {
+                TasksCommands::List { all, json } => tasks_cmd::run_list(&config, all, json)?,
+                TasksCommands::Authorize { id, yes } => {
+                    tasks_cmd::run_authorize(&config, &id, yes)?
+                }
+                TasksCommands::Revoke { id } => tasks_cmd::run_revoke(&config, &id)?,
             };
             if code != 0 {
                 std::process::exit(code);

@@ -47,6 +47,7 @@ mod aprovacao_isolamento;
 mod aprovacao_retomada;
 mod aprovacao_vinculada;
 mod aprovacao_workspace;
+mod autoridade_da_tarefa;
 mod aviso_de_loop;
 mod breaker;
 mod cancelamento_do_turno;
@@ -65,6 +66,8 @@ mod disponibilidade;
 /// existe depois de o runtime juntar os deltas.
 mod eventos_por_passo_no_streaming;
 mod fallback_local;
+/// Fronteira de autorizacao dos wrappers sem contexto (follow-up do #1666).
+mod fronteira_wrappers;
 mod mcp_no_runtime;
 mod metricas_de_memoria;
 mod nota_garra_status;
