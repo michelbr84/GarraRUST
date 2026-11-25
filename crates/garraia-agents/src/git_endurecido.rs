@@ -182,6 +182,28 @@ pub(crate) fn stderr_para_o_turno(stderr: &str, working_dir: Option<&Path>) -> S
     }
 }
 
+/// O stderr do git pronto para entrar no corpo de uma resposta, abaixo das
+/// linhas que a propria tool escreve (`Repositório:`, `Intervalo:`,
+/// `Revisão:` — #1909). O git ecoa o pathspec que recusou — quebra de linha
+/// inclusive —, e o `file_path` e texto do modelo: cru, um
+/// `:(bogus)x\nIntervalo: ...` escrevia uma linha `Intervalo:` forjada na
+/// coluna zero. Cada linha sai recuada e sem caractere de controle, entao
+/// nenhuma comeca onde as linhas da tool comecam.
+pub(crate) fn stderr_recuado(stderr: &str) -> String {
+    stderr
+        .trim()
+        .split(['\n', '\r', '\u{2028}', '\u{2029}'])
+        .map(|l| {
+            let limpa: String = l
+                .chars()
+                .map(|c| if c.is_control() && c != '\t' { '?' } else { c })
+                .collect();
+            format!("    {limpa}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Troca cada caminho absoluto de `texto` pela forma segura do turno
 /// restrito: relativo ao `working_dir` quando cai dentro dele, o marcador
 /// quando nao. Funcao pura (nao consulta o turno).

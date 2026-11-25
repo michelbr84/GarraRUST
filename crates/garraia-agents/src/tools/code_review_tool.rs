@@ -119,27 +119,6 @@ fn linha_do_intervalo_desde_a_base_comum(
     )
 }
 
-/// O stderr do git pronto para entrar no corpo de um erro, abaixo da linha
-/// `Intervalo:` (#1909). O git ecoa o pathspec que recusou — quebra de linha
-/// inclusive —, e o `file_path` e texto do modelo: cru, um
-/// `:(bogus)x\nIntervalo: ...` escrevia uma linha `Intervalo:` forjada na
-/// coluna zero. Cada linha sai recuada e sem caractere de controle, entao
-/// nenhuma comeca onde as linhas da tool comecam.
-fn stderr_recuado(stderr: &str) -> String {
-    stderr
-        .trim()
-        .split(['\n', '\r', '\u{2028}', '\u{2029}'])
-        .map(|l| {
-            let limpa: String = l
-                .chars()
-                .map(|c| if c.is_control() && c != '\t' { '?' } else { c })
-                .collect();
-            format!("    {limpa}")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// Automated code review tool that analyzes git diffs using an LLM.
 /// Returns structured review with issues, suggestions, and severity ratings.
 pub struct CodeReviewTool {
@@ -428,7 +407,7 @@ impl CodeReviewTool {
                     return Err(format!(
                         "{linha}\n\ngit diff failed (exit code {}), nothing was reviewed:\n{}",
                         output.status.code().unwrap_or(-1),
-                        stderr_recuado(&stderr)
+                        crate::git_endurecido::stderr_recuado(&stderr)
                     ));
                 }
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
