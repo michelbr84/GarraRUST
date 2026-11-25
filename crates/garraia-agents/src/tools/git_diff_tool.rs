@@ -229,12 +229,15 @@ impl GitDiffTool {
                     combined.push_str(&stdout);
                 }
 
-                if !stderr.is_empty() {
+                if !stderr.trim().is_empty() {
                     if !combined.is_empty() {
                         combined.push('\n');
                     }
                     combined.push_str("STDERR:\n");
-                    combined.push_str(&stderr);
+                    // #1909: recuado, para que o eco de um `file_path` do
+                    // modelo no stderr nao desenhe uma linha da tool
+                    // (`Intervalo:`, `Repositório:`) na coluna zero.
+                    combined.push_str(&crate::git_endurecido::stderr_recuado(&stderr));
                 }
 
                 if combined.is_empty() {

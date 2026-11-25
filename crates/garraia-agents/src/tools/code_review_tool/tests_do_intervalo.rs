@@ -490,7 +490,9 @@ async fn file_path_nao_forja_linha_pelo_stderr_do_git() {
 
 #[test]
 fn stderr_recuado_nao_deixa_linha_na_coluna_zero() {
-    let saida = stderr_recuado("fatal: a\nIntervalo: b\rRepositório: c\u{2028}d\u{7}e\n");
+    let saida = crate::git_endurecido::stderr_recuado(
+        "fatal: a\nIntervalo: b\rRepositório: c\u{2028}d\u{7}e\n",
+    );
     assert!(saida.lines().all(|l| l.starts_with("    ")), "{saida:?}");
     assert!(
         !saida.contains('\r') && !saida.contains('\u{2028}'),
