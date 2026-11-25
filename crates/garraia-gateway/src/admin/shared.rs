@@ -148,7 +148,7 @@ impl KdfParams {
     fn salt_bytes(&self) -> Result<Vec<u8>, String> {
         BASE64
             .decode(&self.salt)
-            .map_err(|e| format!("kdf.json has a malformed salt: {e}"))
+            .map_err(|e| format!("the KDF salt is not valid base64: {e}"))
     }
 }
 
@@ -251,7 +251,7 @@ fn derive_with_passphrase(
 }
 
 /// Accept a `kdf_params` row only if it has the shape this code records:
-/// the current schema version, a [`KDF_SALT_LEN`]-byte salt, and at least
+/// a schema version this build reads, a [`KDF_SALT_LEN`]-byte salt, and at least
 /// [`MIN_STORED_KDF_ITERATIONS`] iterations.
 ///
 /// Strict on purpose. The row is not authenticated, so whoever can write to
@@ -261,9 +261,15 @@ fn derive_with_passphrase(
 /// loud at the first decrypt — but never a weaker one.
 fn usable_stored_params(stored: &StoredKdfParams) -> Result<(Vec<u8>, NonZeroU32), String> {
     let (version, salt_b64, iterations) = stored;
-    if *version != KDF_PARAMS_VERSION {
+    // Versions this build can read: every one up to its own. Today that is
+    // just 1. A newer row was written by a newer build and must not be guessed
+    // at; an older one stays readable, so bumping `KDF_PARAMS_VERSION` cannot
+    // by itself lock existing installations out — whoever bumps it adds the
+    // per-version derivation here.
+    if *version == 0 || *version > KDF_PARAMS_VERSION {
         return Err(format!(
-            "unknown parameter version {version} (this build reads version {KDF_PARAMS_VERSION})"
+            "unknown parameter version {version} (this build reads up to version \
+             {KDF_PARAMS_VERSION})"
         ));
     }
     let salt = BASE64
@@ -275,14 +281,14 @@ fn usable_stored_params(stored: &StoredKdfParams) -> Result<(Vec<u8>, NonZeroU32
             salt.len()
         ));
     }
-    if *iterations < MIN_STORED_KDF_ITERATIONS {
-        return Err(format!(
-            "the iteration count is {iterations}, below the minimum of \
-             {MIN_STORED_KDF_ITERATIONS} this installation was created with"
-        ));
-    }
-    let iterations =
-        NonZeroU32::new(*iterations).ok_or_else(|| "the iteration count is zero".to_string())?;
+    let iterations = NonZeroU32::new(*iterations)
+        .filter(|n| n.get() >= MIN_STORED_KDF_ITERATIONS)
+        .ok_or_else(|| {
+            format!(
+                "the iteration count is {iterations}, below the minimum of \
+                 {MIN_STORED_KDF_ITERATIONS} this installation was created with"
+            )
+        })?;
     Ok((salt, iterations))
 }
 
@@ -595,6 +601,7 @@ mod tests {
                 (version + 1, salt.clone(), iterations),
                 "unknown parameter version",
             ),
+            ((0, salt.clone(), iterations), "unknown parameter version"),
         ];
 
         for (bad, reason) in cases {
@@ -639,6 +646,7 @@ mod tests {
         let legacy = pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, PASS);
         let (version, salt, iterations) = good_row();
 
+        let mut yielded_a_key = 0;
         for stored in [
             None,
             Some(good_row()),
@@ -647,8 +655,11 @@ mod tests {
         ] {
             if let Ok(keys) = derive_with_passphrase(stored, PASS) {
                 assert_ne!(keys.current, legacy);
+                yielded_a_key += 1;
             }
         }
+        // Not vacuous: the two healthy inputs really do produce a key.
+        assert_eq!(yielded_a_key, 2);
     }
 
     /// End to end through the boot entry point: a damaged row refuses, and the

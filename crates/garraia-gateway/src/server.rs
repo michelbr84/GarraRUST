@@ -434,6 +434,36 @@ impl GatewayServer {
         if let Err(e) = std::fs::create_dir_all(&data_dir) {
             warn!("failed to create data directory: {e}");
         }
+        // Initialize admin store for the web admin console
+        let admin_db_path = data_dir.join("admin.db");
+        let mut admin_store_owned = match admin::store::AdminStore::open(&admin_db_path) {
+            Ok(store) => {
+                info!("admin store opened at {}", admin_db_path.display());
+                store
+            }
+            Err(e) => {
+                warn!("failed to open admin store, using in-memory: {e}");
+                admin::store::AdminStore::in_memory().expect("in-memory admin store should work")
+            }
+        };
+
+        // Resolve the admin master key exactly once, here, while we still hold
+        // the store exclusively. This also runs the forward-only re-key: until
+        // 2026-08-29 the key was derived with a constant PBKDF2 salt shared by
+        // every installation. A failed re-key is fail-soft — the deployment
+        // stays on the legacy key and the next boot retries. A key that cannot
+        // be resolved at all (recorded KDF parameters unusable, no entropy) is
+        // fail-closed and refuses the boot here (#1992). See admin/shared.rs.
+        //
+        // Deliberately this early: a refusal after the channels had connected
+        // and the WhatsApp child had been spawned would return from `run`
+        // leaving them up. Nothing between here and the router needs the store.
+        let admin_encryption_key = Arc::new(
+            admin::handlers::resolve_admin_encryption_key(&mut admin_store_owned)
+                .map_err(|e| garraia_common::Error::Gateway(e.to_string()))?,
+        );
+        let admin_store = Arc::new(Mutex::new(admin_store_owned));
+
         let sessions_db = data_dir.join("sessions.db");
         match SessionStore::open(&sessions_db) {
             Ok(store) => {
@@ -1220,32 +1250,6 @@ impl GatewayServer {
             }
             Err(motivo) => warn!("whatsapp_linked: canal nao subiu — {motivo}"),
         }
-
-        // Initialize admin store for the web admin console
-        let admin_db_path = data_dir.join("admin.db");
-        let mut admin_store_owned = match admin::store::AdminStore::open(&admin_db_path) {
-            Ok(store) => {
-                info!("admin store opened at {}", admin_db_path.display());
-                store
-            }
-            Err(e) => {
-                warn!("failed to open admin store, using in-memory: {e}");
-                admin::store::AdminStore::in_memory().expect("in-memory admin store should work")
-            }
-        };
-
-        // Resolve the admin master key exactly once, here, while we still hold
-        // the store exclusively. This also runs the forward-only re-key: until
-        // 2026-08-29 the key was derived with a constant PBKDF2 salt shared by
-        // every installation. A failed re-key is fail-soft — the deployment
-        // stays on the legacy key and the next boot retries. A key that cannot
-        // be resolved at all (recorded KDF parameters unusable, no entropy) is
-        // fail-closed and refuses the boot here (#1992). See admin/shared.rs.
-        let admin_encryption_key = Arc::new(
-            admin::handlers::resolve_admin_encryption_key(&mut admin_store_owned)
-                .map_err(|e| garraia_common::Error::Gateway(e.to_string()))?,
-        );
-        let admin_store = Arc::new(Mutex::new(admin_store_owned));
 
         // Spawn periodic cleanup of expired admin sessions
         {

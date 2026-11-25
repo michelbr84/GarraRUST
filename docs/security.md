@@ -113,7 +113,10 @@ two operational notes come with it:
   `kdf_params` in `admin.db`. If that row is there but is not what the gateway
   records (unknown version, salt that is not 32 bytes of base64, fewer than
   600 000 iterations, unreadable column), the gateway **does not start** and
-  the error names the reason. It used to fall back to the pre-2026-08-29
+  the error names the reason. In the foreground (`garraia start`) that is the
+  command's error; with `garraia start -d` the parent has already reported the
+  daemon as started by then, so the refusal is only in the log file
+  (`garraia.log`) — check it when the daemon is not listening. It used to fall back to the pre-2026-08-29
   shared salt and keep running, which opened none of the existing secrets and
   encrypted every new one under the weaker key. The fix is to restore
   `admin.db` from a backup; without the original salt the stored admin
@@ -122,7 +125,8 @@ two operational notes come with it:
   when the system random number generator fails while the salt or
   `master.key` is being generated. A re-key that merely *fails* (a secret
   does not open with the legacy key) is still deferred to the next start, not
-  refused.
+  refused — which also means a *removed* row (as opposed to a damaged one)
+  still ends on the legacy key; that is tracked in #1999.
 - **Locked out by the 15-minute window and do not want to disable 2FA?** Clear
   just the counter, with the gateway stopped:
   `sqlite3 "$HOME/.garraia/data/admin.db" "DELETE FROM totp_attempts;"`
