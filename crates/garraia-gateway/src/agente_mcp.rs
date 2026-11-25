@@ -492,7 +492,9 @@ pub async fn agent_oneshot(
     let session_id = format!("{session_prefix}-{}", uuid::Uuid::new_v4());
     let history: Vec<ChatMessage> = Vec::new();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<TurnEvent>(512);
-    let exec = ExecContext::with_working_dir(opts.working_dir.clone());
+    // Excecao DECLARADA: `garra_agent` so e invocavel pelo MCP HTTP com o
+    // bearer `api_key` do gateway (credencial do administrador).
+    let exec = ExecContext::with_working_dir(opts.working_dir.clone()).com_credencial_de_operador();
 
     let call = runtime.process_message_streaming_with_events(
         &session_id,

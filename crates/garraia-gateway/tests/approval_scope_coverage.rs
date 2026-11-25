@@ -48,9 +48,11 @@ const SEM_ESCOPO: &[(&str, &str, &str, usize, &str)] = &[
     (
         "a2a.rs",
         "create_task",
-        "process_message_with_context",
+        "process_message_with_exec",
         1,
-        "trafego de outro agente (A2A), ramo sem agente configurado",
+        "trafego de outro agente (A2A), ramo sem agente configurado — o contexto \
+         vem do construtor central com a credencial de operador, sem remetente \
+         humano verificavel para aprovar",
     ),
     (
         "api.rs",
@@ -70,17 +72,20 @@ const SEM_ESCOPO: &[(&str, &str, &str, usize, &str)] = &[
     (
         "rest_v1/messages.rs",
         "bot_reply_task",
-        "process_message",
+        "process_message_with_exec",
         1,
         "resposta do agente a uma mensagem de chat do workspace, one-shot e com \
-         historico vazio",
+         historico vazio — o contexto vem do construtor central (teto da \
+         superficie), sem escopo de aprovacao humana no turno",
     ),
     (
         "server.rs",
         "execute_scheduled_task_inner",
-        "process_heartbeat",
+        "process_heartbeat_with_exec",
         1,
-        "tarefa agendada (heartbeat): nao ha humano no turno para dizer \"sim\"",
+        "tarefa agendada (heartbeat): nao ha humano no turno para dizer \"sim\" — \
+         o contexto vem do construtor central, preservando o vinculo com a \
+         sessao que autorizou a tarefa",
     ),
     (
         "agente_mcp.rs",

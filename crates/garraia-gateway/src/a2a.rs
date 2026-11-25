@@ -103,6 +103,38 @@ fn politica_do_agente(ac: &garraia_config::NamedAgentConfig) -> Option<ModeProfi
     })
 }
 
+/// O contexto de execucao de uma tarefa A2A, pela confianca que o chamador
+/// **provou** (#1985).
+///
+/// A rota `/a2a/*` so exige o bearer `api_key` quando o gateway tem chave
+/// configurada: sem ela, o `api_key_layer` deixa todo pedido passar. Declarar
+/// credencial de operador nesse caso seria conceder o portao aberto a quem
+/// nao apresentou credencial nenhuma — entao a confianca segue o gate:
+///
+/// - rota exigiu a credencial → o chamador e o administrador
+///   (`com_credencial_de_operador`, sem teto de superficie);
+/// - rota aberta → ninguem provou ser operador
+///   (`sem_credencial_de_operador`, teto de leitura).
+///
+/// O `perfil` (o `tools:` do agente nomeado) vale nos dois casos: e outra
+/// camada, composta por E com o teto.
+///
+/// Funcao pura para que a decisao seja testavel sem subir servidor.
+pub(crate) fn exec_do_a2a(
+    perfil: Option<(String, ModeProfile)>,
+    rota_exige_credencial: bool,
+) -> ExecContext {
+    let base = match perfil {
+        Some((nome, p)) => ExecContext::with_custom_profile(nome, p),
+        None => ExecContext::default(),
+    };
+    if rota_exige_credencial {
+        base.com_credencial_de_operador()
+    } else {
+        base.sem_credencial_de_operador()
+    }
+}
+
 /// O que o `target` de um pedido A2A resolve (#965).
 ///
 /// Existe como enum e nao como `Option` porque sao **tres** casos, e juntar
@@ -236,6 +268,12 @@ pub async fn create_task(
     //
     // Se um dia a tarefa A2A passar a herdar a sessao de quem a pediu, este e
     // o ponto onde o modo escolhido precisa entrar.
+    //
+    // A confianca do chamador sai do MESMO gate que o middleware usa
+    // (`api_key_layer`, montado da config do boot): so ha credencial de
+    // operador para declarar se a rota a exigiu. Ver `exec_do_a2a`.
+    let rota_exige_credencial =
+        crate::gateway_auth::ApiKeyGate::from_config(&state.config.gateway).is_enabled();
     let result = match agente {
         // Com agente nomeado, o provider, o prompt e o teto de tokens sao os
         // dele — e o mesmo caminho que o `POST /api/chat` ja usa para
@@ -257,22 +295,23 @@ pub async fn create_task(
                     ac.max_tokens,
                     // E o `tools:` do agente, que ate aqui nao era lido por
                     // ninguem — ver `politica_do_agente`.
-                    &match politica_do_agente(ac) {
-                        Some(p) => ExecContext::with_custom_profile(nome_do_alvo.clone(), p),
-                        None => ExecContext::default(),
-                    },
+                    &exec_do_a2a(
+                        politica_do_agente(ac).map(|p| (nome_do_alvo.clone(), p)),
+                        rota_exige_credencial,
+                    ),
                 )
                 .await
         }
         None => {
             state
                 .agents
-                .process_message_with_context(
+                .process_message_with_exec(
                     &session_id,
                     &user_text,
                     &history,
                     continuity_key.as_deref(),
                     None,
+                    &exec_do_a2a(None, rota_exige_credencial),
                 )
                 .await
         }
@@ -547,6 +586,83 @@ mod tests_politica {
         assert!(
             p.system_prompt_template.is_none(),
             "o prompt do agente vai por `system_prompt_override`, nao daqui"
+        );
+    }
+}
+
+/// A confianca do chamador A2A segue o gate da rota (#1985).
+#[cfg(test)]
+mod tests_confianca {
+    use super::*;
+    use garraia_agents::capacidades::capacidades_nativas;
+    use garraia_agents::modes::{TetoDeCapacidades, ToolGate};
+    use garraia_config::NamedAgentConfig;
+
+    /// O portao que o runtime monta para o turno (`para_o_turno`, o que le o
+    /// perfil customizado do agente nomeado) — nao o `from_exec`, que o ignora.
+    fn permite(exec: &ExecContext, tool: &str) -> bool {
+        ToolGate::para_o_turno(exec, "qualquer texto")
+            .permite_com_capacidades(tool, capacidades_nativas(tool))
+    }
+
+    fn perfil(tools: &[&str]) -> Option<(String, ModeProfile)> {
+        politica_do_agente(&NamedAgentConfig {
+            provider: None,
+            model: None,
+            system_prompt: None,
+            max_tokens: None,
+            max_context_tokens: None,
+            tools: tools.iter().map(|s| s.to_string()).collect(),
+        })
+        .map(|p| ("hera".to_string(), p))
+    }
+
+    /// O furo: gateway sem `api_key` deixa `/a2a/*` aberta, e o handler
+    /// declarava credencial de operador assim mesmo — portao aberto para quem
+    /// nao apresentou credencial.
+    #[test]
+    fn rota_aberta_nao_declara_credencial_de_operador() {
+        let exec = exec_do_a2a(None, false);
+        assert_eq!(
+            exec.teto_da_superficie,
+            Some(TetoDeCapacidades::sem_prova_de_operador()),
+            "sem credencial exigida, vale o teto de leitura"
+        );
+        assert!(!permite(&exec, "bash"), "bash liberado sem credencial");
+        assert!(
+            !permite(&exec, "file_write"),
+            "escrita liberada sem credencial"
+        );
+        assert!(permite(&exec, "file_read"), "leitura continua valendo");
+    }
+
+    /// Com a chave configurada o middleware ja devolveu 401 a quem nao a
+    /// trouxe: quem chega aqui e o administrador, e nada muda para ele.
+    #[test]
+    fn rota_com_credencial_mantem_o_operador() {
+        let exec = exec_do_a2a(None, true);
+        assert!(exec.teto_da_superficie.is_none());
+        assert!(permite(&exec, "bash"));
+        assert!(permite(&exec, "file_write"));
+    }
+
+    /// O `tools:` do agente nomeado e outra camada: vale com e sem
+    /// credencial, e sem credencial o teto de leitura ainda corta o que a
+    /// lista liberaria.
+    #[test]
+    fn perfil_do_agente_vale_nos_dois_casos() {
+        let com = exec_do_a2a(perfil(&["file_write", "file_read"]), true);
+        assert_eq!(com.agent_mode.as_deref(), Some("hera"));
+        assert!(permite(&com, "file_write"));
+        assert!(!permite(&com, "bash"), "fora da lista do agente");
+
+        let sem = exec_do_a2a(perfil(&["file_write", "file_read"]), false);
+        assert_eq!(sem.agent_mode.as_deref(), Some("hera"));
+        assert!(sem.custom_profile.is_some(), "o perfil nao se perde");
+        assert!(permite(&sem, "file_read"));
+        assert!(
+            !permite(&sem, "file_write"),
+            "a lista do agente nao amplia o teto de leitura"
         );
     }
 }

@@ -340,7 +340,9 @@ mod tests {
             (
                 dono_provado_neste_turno(&st, SID, Some(DONO)),
                 crate::channels_view::sessao_do_operador(&st, SID).await,
-                exec.teto.is_some(),
+                // O teto da superficie e camada propria do contexto desde a
+                // fronteira de autorizacao (follow-up do #1666).
+                exec.teto_da_superficie.is_some(),
             )
         })
         .await;

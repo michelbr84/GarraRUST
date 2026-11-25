@@ -570,3 +570,25 @@ pub fn teto_do_principal(principal: &Principal) -> Option<TetoDeCapacidades> {
         politica: politica_do_nivel(alcance.nivel, alcance.write),
     })
 }
+
+/// A camada de SUPERFICIE deste canal, resolvida com a prova de identidade do
+/// principal (follow-up do #1666). O WhatsApp vinculado autentica o remetente
+/// (owners/`allow`/`access.users`/grupos/pairing) — nao e uma superficie sem
+/// identidade como o mobile: com identidade provada, a fronteira efetiva e o
+/// teto do PRINCIPAL ([`teto_do_principal`]), composto por E com o modo, e que
+/// segue restritivo para quem nao tem `full`. O que NAO tem identidade provada
+/// cai no minimo da superficie (leitura), mesmo que o default do canal seja
+/// `full` — ausencia de autenticacao nao concede privilegio administrativo.
+pub fn teto_da_superficie_do_principal(principal: &Principal) -> Option<TetoDeCapacidades> {
+    match principal {
+        Principal::Dono | Principal::Usuario(_) | Principal::Pareado | Principal::Grupo(_) => None,
+        Principal::Desconhecido(_) => Some(TetoDeCapacidades {
+            nome: "sem identidade provada (fail-closed)".to_string(),
+            politica: politica_do_nivel(Nivel::Read, false),
+        }),
+        Principal::Bloqueado | Principal::Estranho => Some(TetoDeCapacidades {
+            nome: "nao admitido".to_string(),
+            politica: politica_do_nivel(Nivel::Chat, false),
+        }),
+    }
+}

@@ -485,7 +485,10 @@ pub(crate) const CANAL_CLI: &str = "cli";
 /// `ToolGate` do runtime faz o resto — o CLI nao tem politica propria. `None`
 /// e "sem politica", o comportamento de antes do `/mode` existir.
 fn exec_do_turno(cwd: &str, session_id: &str, modo: Option<AgentMode>) -> ExecContext {
-    let mut exec = ExecContext::with_working_dir(Some(cwd.to_string()));
+    // Operador LOCAL declarado: o CLI roda na maquina do proprio operador —
+    // confianca do usuario local, nao identidade autenticada. O teto da
+    // superficie e zerado explicitamente aqui, e so aqui.
+    let mut exec = ExecContext::with_working_dir(Some(cwd.to_string())).operador_local();
     exec.approval_scope = garraia_agents::ApprovalScope::new(CANAL_CLI, session_id, REMETENTE_CLI);
     exec.agent_mode = modo.map(|m| m.as_str().to_string());
     exec
