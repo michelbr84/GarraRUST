@@ -32,7 +32,7 @@
 //! # O que sai
 //!
 //! `{"runs":[{id, session_id, mode, status, started_at, finished_at,
-//! goal_preview, result_preview, error_preview}]}` — instantes em ISO 8601
+//! goal_preview, result_preview, error_preview, delivery}]}` — instantes em ISO 8601
 //! UTC com `Z`, previas de no maximo [`PREVIEW_MAX`] caracteres, com
 //! segredo de formato conhecido redigido (`garraia_security::redact_secrets`)
 //! **antes** do corte (cortar primeiro deixaria meia chave curta demais para o
@@ -168,6 +168,8 @@ fn run_json(run: &AgentRunRow) -> serde_json::Value {
         "goal_preview": previa(&run.goal),
         "result_preview": run.result_snippet.as_deref().map(previa),
         "error_preview": run.error_snippet.as_deref().map(previa),
+        // #2002: o desfecho da entrega da resposta ao canal; etiqueta fixa.
+        "delivery": run.delivery.as_deref().map(sanitize_control_chars),
     })
 }
 

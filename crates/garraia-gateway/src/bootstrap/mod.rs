@@ -108,6 +108,14 @@ pub use whatsapp_linked::{
     LinkedSettings as WhatsAppLinkedSettings, chave_do_portao as whatsapp_linked_chave_do_portao,
     normalizar_identidade as whatsapp_linked_normalizar_identidade,
 };
+/// #2002: os testes da entrega ativa de tarefa agendada
+/// (`crate::entrega_agendada`) conferem a marca de auto-conversa e o teto de
+/// entregas por chat do canal.
+#[cfg(test)]
+pub(crate) use whatsapp_linked::{
+    MARCA_DO_GARRA as WHATSAPP_LINKED_MARCA_DO_GARRA,
+    MAX_ENTREGAS_AGENDADAS_POR_JANELA as WHATSAPP_LINKED_MAX_ENTREGAS_AGENDADAS,
+};
 /// #1409: o piso de modo do turno por principal, para o admin dizer o modo
 /// EFETIVO de uma sessao do WhatsApp (o mesmo que `turno` calcula).
 pub use whatsapp_linked::{
