@@ -610,6 +610,16 @@ decisão do dono.
   passavam.
 - **Contagens e datas em prosa** estavam todas velhas: "Last updated" (três
   meses), os três totais de §4 e o `2026-08-01` da §3 regra 4.
+- **Há um alerta dispensado, ainda detectado, fora deste ledger: o #17**
+  (`js/unvalidated-dynamic-method-call`, `admin.html:774`, dispensado em
+  2026-05-12). O ledger nasceu para Rust e nunca o cobriu, e ele é o único
+  caso: os 29 daqui mais o #17 são todos os dispensados que a análise de
+  `4d92764b` ainda detecta. O comentário da dispensa afirma que nenhuma string
+  externa chega a `pages[page]()` — mas `page` vem de `location.hash`, e o
+  filtro `if (!pages[page])` aceita nomes herdados de `Object.prototype`
+  (`#__proto__` lança exceção e deixa o painel preso em "loading"). Não há
+  execução de código, e a correção é de uma linha: issue
+  [#1996](https://github.com/michelbr84/GarraRUST/issues/1996).
 
 As duas primeiras, mais a cegueira para alerta que deixou de ser detectado, são
 lacuna de ferramenta e estão na issue
