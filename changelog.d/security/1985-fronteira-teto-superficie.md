@@ -7,4 +7,7 @@
   workspace e as tarefas agendadas passam pelo construtor central de contexto,
   preservando o vinculo com a sessao que autorizou o turno. A2A, MCP HTTP e CLI
   mantem seus fluxos por confianca declarada (credencial de operador / operador
-  local). Follow-up do #1666 (#1985).
+  local). **Mudanca de comportamento:** com o gateway sem `gateway.api_key`, as
+  tarefas de `/a2a/*` passam a rodar com teto de leitura (sem `bash`, escrita ou
+  envio de mensagem), porque nesse caso a rota nao exige credencial; com a chave
+  configurada nada muda. Follow-up do #1666 (#1985).

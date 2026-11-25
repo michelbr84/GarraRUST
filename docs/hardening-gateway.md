@@ -135,7 +135,7 @@ vier do **mesmo remetente**, na **mesma sessao** e no **mesmo canal**:
 
 Continuam **sem** retomada, e ali a pausa e terminal de proposito: A2A,
 OpenClaw, `POST /api/sessions/{id}/messages`, a resposta do agente no chat
-do workspace (`rest_v1`), as tarefas agendadas (`process_heartbeat`),
+do workspace (`rest_v1`), as tarefas agendadas (`process_heartbeat_with_exec`),
 `garraia ask` e o `garra_agent` do `garraia mcp-server` — ou quem fala e
 outro agente, ou nao ha remetente que o servidor possa provar. Qualquer mensagem no meio encerra o pedido, e
 reiniciar o gateway cancela todos. Detalhes em
@@ -292,6 +292,15 @@ Arquivo completo comentado, validado com `garra config check`:
    `/api/*`, sem resolução de identidade nenhuma, e é por elas que o
    runtime executa as tools do GarraIA na máquina do dono. Quem
    configurava a chave acreditava tê-las fechado.
+
+   **Sem a chave, o A2A roda só com leitura (#1985).** Com
+   `gateway.api_key` configurada, quem chega ao `/a2a/*` já apresentou a
+   credencial do administrador e a tarefa roda sem teto de superfície.
+   Sem ela a rota fica aberta para quem alcança a porta, e a tarefa A2A
+   recebe o mesmo teto de leitura das superfícies remotas: `bash`,
+   escrita de arquivo e envio de mensagem ficam fora, com ou sem agente
+   nomeado. Para delegar trabalho com escrita entre agentes, configure a
+   chave.
 
    **E o socket do papagaio (`/ws/parrot`), desde a auditoria R4 do PR
    #1251.** Ele roda um turno completo do agente — com as tools e a chave

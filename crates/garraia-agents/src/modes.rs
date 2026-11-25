@@ -159,8 +159,9 @@ pub struct TetoDeCapacidades {
 impl TetoDeCapacidades {
     /// O teto fail-closed de quem chega SEM prova de operador: o mesmo
     /// `Nivel::Read` (sem escrita) que a superficie remota aplica. E o que o
-    /// [`crate::exec_context::ExecContext::default`] carrega, para que nenhuma
-    /// API de conveniencia conceda privilegio administrativo em silencio.
+    /// [`crate::exec_context::ExecContext::sem_prova_de_operador`] carrega,
+    /// para que nenhuma API de conveniencia conceda privilegio administrativo
+    /// em silencio.
     pub fn sem_prova_de_operador() -> Self {
         Self {
             nome: "sem prova de operador (fail-closed)".to_string(),

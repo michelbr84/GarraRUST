@@ -140,10 +140,18 @@ impl ExecContext {
     /// que os wrappers de conveniencia do runtime constroem — caminho sem
     /// contexto prova o MINIMO, nunca privilegio administrativo.
     pub fn sem_prova_de_operador() -> Self {
-        Self {
-            teto_da_superficie: Some(crate::modes::TetoDeCapacidades::sem_prova_de_operador()),
-            ..Self::default()
-        }
+        Self::default().sem_credencial_de_operador()
+    }
+
+    /// O mesmo teto de leitura de [`Self::sem_prova_de_operador`], aplicado a
+    /// um contexto JA montado (perfil de agente nomeado, diretorio): o resto
+    /// do contexto fica, a camada da superficie fecha. E o par de
+    /// [`Self::com_credencial_de_operador`] para a rota que so exige
+    /// credencial quando ela esta configurada — sem credencial exigida,
+    /// ninguem provou ser operador.
+    pub fn sem_credencial_de_operador(mut self) -> Self {
+        self.teto_da_superficie = Some(crate::modes::TetoDeCapacidades::sem_prova_de_operador());
+        self
     }
 
     /// Confianca LOCAL declarada (CLI e ferramentas do proprio host): o
@@ -156,9 +164,9 @@ impl ExecContext {
 
     /// Credencial de OPERADOR validada pelo gateway (bearer `api_key` em
     /// `/a2a/*` e no MCP HTTP): o chamador carrega a mesma credencial do
-    /// administrador. Zera o teto da superficie, explicitamente. Se essas
-    /// rotas um dia aceitarem chamadores sem essa credencial, o teto volta a
-    /// valer ANTES do dispatch.
+    /// administrador. Zera o teto da superficie, explicitamente. So vale onde
+    /// a rota EXIGIU a credencial: o A2A, que tambem atende com o gateway sem
+    /// `api_key`, usa [`Self::sem_credencial_de_operador`] nesse caso.
     pub fn com_credencial_de_operador(mut self) -> Self {
         self.teto_da_superficie = None;
         self

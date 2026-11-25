@@ -2,64 +2,40 @@
 //!
 //! Os testes comportamentais (`garraia-agents`, `runtime/tests/fronteira_wrappers.rs`)
 //! provam o MECANISMO; esta guarda cobre a LIGACAO: nenhum ponto de entrada de
-//! turno pode voltar a despachar sem contexto provado, e nenhum
-//! `ExecContext::default()` novo aparece em producao fora da lista declarada —
-//! cada entrada da lista carrega a justificativa da confianca que a autoriza.
+//! turno pode voltar a despachar sem contexto provado, e nenhuma construcao de
+//! `ExecContext` sem teto de superficie (`default()`, `with_*` ou literal)
+//! aparece em producao fora da lista declarada — cada entrada da lista carrega
+//! a contagem e a justificativa da confianca que a autoriza.
 //!
 //! Busca textual e COMPLEMENTO, nao substituto: o comportamento e provado no
 //! runtime com ferramentas simuladas, em ambiente isolado.
 
-use std::path::{Path, PathBuf};
+mod varredura_de_escopo;
 
-/// Metade de producao: tudo antes do primeiro `#[cfg(test)]`.
-fn producao(fonte: &str) -> &str {
-    fonte.split("#[cfg(test)]").next().unwrap_or(fonte)
-}
+use std::path::PathBuf;
 
-/// Codigo sem comentarios de linha — comentario citando um padrao nao e uso.
-fn sem_comentarios(txt: &str) -> String {
-    txt.lines()
-        .map(|l| l.split("//").next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+use varredura_de_escopo::varrer;
 
-/// (caminho relativo a `crates/`, fonte) de todo `.rs` de producao do workspace.
+/// (caminho relativo a `crates/`, codigo) de todo `.rs` de producao do
+/// workspace.
+///
+/// O detector e o de `varredura_de_escopo` (o mesmo do
+/// `approval_scope_coverage.rs`): comentarios e conteudo de literais apagados,
+/// os `#[cfg(test)] mod x { .. }` inline apagados SEM esconder a producao que
+/// vem depois deles, e o arquivo dos `#[cfg(test)] mod x;` fora da lista. A
+/// primeira versao desta guarda cortava o fonte no primeiro `#[cfg(test)]` — o
+/// que viesse depois de um modulo de teste no meio do arquivo ficava invisivel.
 fn fontes_de_producao() -> Vec<(String, String)> {
     let crates_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .canonicalize()
         .expect("diretorio crates");
-    let mut out = Vec::new();
-    varrer(&crates_dir, &crates_dir, &mut out);
-    out.sort();
-    out
-}
-
-fn varrer(raiz: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
-    for entrada in std::fs::read_dir(dir).expect("lista diretorio") {
-        let entrada = entrada.expect("entrada");
-        let caminho = entrada.path();
-        if caminho.is_dir() {
-            // `tests/` de crate e modulos de teste nao sao producao.
-            if caminho.file_name().and_then(|n| n.to_str()) != Some("tests") {
-                varrer(raiz, &caminho, out);
-            }
-        } else if caminho.extension().and_then(|e| e.to_str()) == Some("rs") {
-            // `tests.rs` e modulo de teste declarado pelo pai
-            // (`#[cfg(test)] mod tests;`) — o gate esta FORA do arquivo.
-            if caminho.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
-                continue;
-            }
-            let rel = caminho
-                .strip_prefix(raiz)
-                .expect("prefixo")
-                .to_string_lossy()
-                .to_string();
-            let fonte = std::fs::read_to_string(&caminho).expect("le fonte");
-            out.push((rel, fonte));
-        }
-    }
+    varrer(&crates_dir)
+        .into_iter()
+        // `tests/` de crate (testes de integracao) nao e producao.
+        .filter(|(rel, _)| !rel.split('/').any(|parte| parte == "tests"))
+        .map(|(rel, fonte)| (rel, fonte.codigo))
+        .collect()
 }
 
 /// Wrappers de conveniencia do `AgentRuntime` (contexto implicito). Chamadas
@@ -91,20 +67,71 @@ fn wrappers_declarados() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-/// Uso declarado de `ExecContext::default()` em producao, com a confianca que o
-/// autoriza. O padrao e: quem monta contexto SEM prova de operador usa
+/// Construtores que devolvem um `ExecContext` SEM teto de superficie: o
+/// `default()` e os `with_*`, que partem dele. Quem os usa em producao tem de
+/// declarar a confianca na mesma cadeia (`.operador_local()`,
+/// `.com_credencial_de_operador()`, `.sem_credencial_de_operador()`) ou passar
+/// pelo construtor central — e entra na lista abaixo.
+const CONSTRUTORES_IMPLICITOS: [&str; 4] = [
+    "ExecContext::default()",
+    "ExecContext::with_mode(",
+    "ExecContext::with_working_dir(",
+    "ExecContext::with_custom_profile(",
+];
+
+/// Quantos contextos implicitos o codigo monta: os construtores acima mais os
+/// literais `ExecContext { .. }` (que tambem nascem sem teto de superficie).
+/// `-> ExecContext {`, `impl ExecContext {`, `struct ExecContext {` e
+/// `for ExecContext {` sao assinatura/definicao, nao construcao.
+fn contextos_implicitos(codigo: &str) -> usize {
+    let construtores: usize = CONSTRUTORES_IMPLICITOS
+        .iter()
+        .map(|padrao| codigo.matches(padrao).count())
+        .sum();
+    let literais = codigo
+        .match_indices("ExecContext {")
+        .filter(|(pos, _)| {
+            let antes = codigo[..*pos].trim_end();
+            !["->", "impl", "struct", "for"]
+                .iter()
+                .any(|palavra| antes.ends_with(palavra))
+        })
+        .count();
+    construtores + literais
+}
+
+/// Uso declarado de contexto implicito em producao: arquivo, QUANTAS
+/// construcoes e a confianca que as autoriza. A contagem e parte do espelho —
+/// uma construcao nova num arquivo ja declarado tambem reprova. O padrao e:
+/// quem monta contexto SEM prova de operador usa
 /// `ExecContext::sem_prova_de_operador()` (fail-closed).
-fn contextos_default_declarados() -> Vec<(&'static str, &'static str)> {
+fn contextos_implicitos_declarados() -> Vec<(&'static str, usize, &'static str)> {
     vec![
         (
+            "garraia-cli/src/chat.rs",
+            1,
+            "`exec_do_turno`: `with_working_dir(..).operador_local()` — o \
+             operador da propria maquina, sem superficie remota",
+        ),
+        (
             "garraia-gateway/src/a2a.rs",
-            "rota `/a2a/*` gateada pelo bearer `api_key` (credencial do \
-             administrador); os usos levam `.com_credencial_de_operador()` na \
-             mesma cadeia",
+            2,
+            "`exec_do_a2a`: as duas bases (`with_custom_profile` e `default()`) \
+             saem sempre por `.com_credencial_de_operador()` quando o gate da \
+             rota exigiu o bearer `api_key`, ou por \
+             `.sem_credencial_de_operador()` quando o gateway esta sem chave",
+        ),
+        (
+            "garraia-gateway/src/agente_mcp.rs",
+            1,
+            "`agent_oneshot`: `with_working_dir(..).com_credencial_de_operador()` \
+             — a ponte MCP HTTP nao monta sem `api_key` (`decidir_montagem`)",
         ),
         (
             "garraia-gateway/src/state.rs",
-            "`exec_context_base` monta a base; a camada da superficie e \
+            4,
+            "`exec_context_base` monta a base (literal + `default()`, \
+             `with_custom_profile`, `with_mode`); a camada da superficie e \
              sobrescrita INCONDICIONALMENTE pelo construtor central logo abaixo",
         ),
     ]
@@ -114,10 +141,7 @@ fn arquivos_com(ocorrencias: &[&str], fontes: &[(String, String)]) -> Vec<String
     let mut achados: Vec<String> = fontes
         .iter()
         .filter(|(rel, _)| rel != "garraia-agents/src/runtime.rs")
-        .filter(|(_, fonte)| {
-            let codigo = sem_comentarios(producao(fonte));
-            ocorrencias.iter().any(|padrao| codigo.contains(padrao))
-        })
+        .filter(|(_, codigo)| ocorrencias.iter().any(|padrao| codigo.contains(padrao)))
         .map(|(rel, _)| rel.clone())
         .collect();
     achados.sort();
@@ -145,21 +169,61 @@ fn wrappers_de_conveniencia_sao_so_os_declarados() {
     );
 }
 
-/// Nenhum `ExecContext::default()` novo em producao fora da lista declarada.
+/// Nenhum contexto implicito novo em producao fora da lista declarada — nem em
+/// arquivo novo, nem a mais num arquivo ja declarado.
 #[test]
-fn contexto_default_em_producao_e_so_o_declarado() {
-    let fontes = fontes_de_producao();
-    let mut declarados: Vec<String> = contextos_default_declarados()
+fn contexto_implicito_em_producao_e_so_o_declarado() {
+    let achados: Vec<(String, usize)> = fontes_de_producao()
         .into_iter()
-        .map(|(arquivo, _)| arquivo.to_string())
+        .map(|(rel, codigo)| (rel, contextos_implicitos(&codigo)))
+        .filter(|(_, n)| *n > 0)
+        .collect();
+    let mut declarados: Vec<(String, usize)> = contextos_implicitos_declarados()
+        .into_iter()
+        .map(|(arquivo, n, _)| (arquivo.to_string(), n))
         .collect();
     declarados.sort();
     assert_eq!(
-        arquivos_com(&["ExecContext::default()"], &fontes),
-        declarados,
-        "uso de `ExecContext::default()` em producao fora da lista declarada em \
-         `contextos_default_declarados()`. Caminho sem prova de operador usa \
-         `ExecContext::sem_prova_de_operador()` (fail-closed)."
+        achados, declarados,
+        "construcao de `ExecContext` sem teto de superficie (`default()`, \
+         `with_*` ou literal) fora da lista declarada em \
+         `contextos_implicitos_declarados()`, ou em quantidade diferente da \
+         declarada. Caminho sem prova de operador usa \
+         `ExecContext::sem_prova_de_operador()` (fail-closed); caminho com \
+         confianca declara-a na mesma cadeia."
+    );
+}
+
+/// O detector de literal distingue construcao de assinatura.
+#[test]
+fn literal_de_contexto_nao_confunde_assinatura() {
+    assert_eq!(
+        contextos_implicitos(
+            "fn a() -> ExecContext { ExecContext { x: 1, ..Default::default() } }"
+        ),
+        1
+    );
+    assert_eq!(contextos_implicitos("impl ExecContext { }"), 0);
+    assert_eq!(contextos_implicitos("pub struct ExecContext { }"), 0);
+    assert_eq!(contextos_implicitos("impl Default for ExecContext { }"), 0);
+    assert_eq!(
+        contextos_implicitos("let e = ExecContext::with_working_dir(None);"),
+        1
+    );
+}
+
+/// A guarda enxerga producao que vem DEPOIS de um modulo de teste inline —
+/// o ponto cego do corte no primeiro `#[cfg(test)]`.
+#[test]
+fn producao_depois_de_modulo_de_teste_continua_visivel() {
+    let fonte = "fn antes() {}\n\
+                 #[cfg(test)]\nmod tests { fn t() { let _ = ExecContext::default(); } }\n\
+                 fn depois() { let _ = ExecContext::default(); }\n";
+    let codigo = varredura_de_escopo::Fonte::nova(fonte).codigo;
+    assert_eq!(
+        contextos_implicitos(&codigo),
+        1,
+        "so a construcao de producao conta; a do modulo de teste some"
     );
 }
 
@@ -196,6 +260,29 @@ fn construtor_central_e_caminhos_de_turno_estao_ligados() {
         servidor.contains("process_heartbeat_with_exec(")
             && servidor.contains("exec_context_for_msg("),
         "server.rs: a tarefa agendada nao passa pelo construtor central"
+    );
+
+    // A2A (#1985): a confianca sai do MESMO gate do middleware, e a
+    // credencial de operador so e declarada dentro de `exec_do_a2a`.
+    let a2a = varredura_de_escopo::Fonte::nova(&le("garraia-gateway/src/a2a.rs")).codigo;
+    assert!(
+        a2a.contains("ApiKeyGate::from_config(&state.config.gateway).is_enabled()"),
+        "a2a.rs: a confianca do chamador nao sai do gate da rota"
+    );
+    assert_eq!(
+        a2a.matches(".com_credencial_de_operador()").count(),
+        1,
+        "a2a.rs: credencial de operador declarada fora de `exec_do_a2a`"
+    );
+    assert_eq!(
+        a2a.matches(".sem_credencial_de_operador()").count(),
+        1,
+        "a2a.rs: sem `api_key`, o A2A precisa cair no teto de leitura"
+    );
+    assert_eq!(
+        a2a.matches("exec_do_a2a(").count(),
+        3,
+        "a2a.rs: os dois ramos do dispatch passam por `exec_do_a2a`"
     );
 
     let runtime = le("garraia-agents/src/runtime.rs");
