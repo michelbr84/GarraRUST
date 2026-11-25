@@ -12,6 +12,7 @@ use tracing::{info, warn};
 use super::WhatsAppChannel;
 use super::api;
 use super::signature::{SignatureError, verify_signature};
+use crate::webhook_body::{CorpoRecusado, json_limitado};
 
 /// Header em que a Cloud API manda a assinatura do corpo.
 const SIGNATURE_HEADER: &str = "X-Hub-Signature-256";
@@ -148,10 +149,17 @@ pub async fn whatsapp_webhook(
         return (StatusCode::FORBIDDEN, FORBIDDEN_BODY).into_response();
     };
 
-    // So a partir daqui o corpo e parseado.
-    let body: serde_json::Value = match serde_json::from_slice(&body) {
+    // So a partir daqui o corpo e parseado — e com o tamanho conferido antes.
+    let body: serde_json::Value = match json_limitado(&body) {
         Ok(v) => v,
-        Err(_) => {
+        Err(CorpoRecusado::GrandeDemais) => {
+            warn!(
+                bytes = body.len(),
+                "whatsapp: corpo assinado mas acima do teto"
+            );
+            return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
+        }
+        Err(CorpoRecusado::JsonInvalido) => {
             // Corpo assinado mas ilegivel: 400, nao 403 — a autenticidade
             // esta provada, o formato e que esta errado.
             warn!("whatsapp: corpo assinado mas nao e JSON valido");
@@ -672,5 +680,53 @@ mod tests {
         let sig = compute_signature(SEGREDO_A, lixo);
         let (status, _) = resposta(vec![canal(SEGREDO_A)], requisicao(lixo, Some(&sig))).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// JSON valido, assinado pelo segredo certo, um byte acima do teto.
+    fn corpo_acima_do_teto() -> Vec<u8> {
+        let prefixo = br#"{"entry":[],"enchimento":""#;
+        let sufixo = br#""}"#;
+        let alvo = crate::webhook_body::MAX_WEBHOOK_BODY_BYTES + 1;
+        let mut corpo = prefixo.to_vec();
+        corpo.resize(alvo - sufixo.len(), b'a');
+        corpo.extend_from_slice(sufixo);
+        assert_eq!(corpo.len(), alvo);
+        corpo
+    }
+
+    /// Chama o handler **direto**, sem router: num router o `DefaultBodyLimit`
+    /// responderia 413 antes, e o teste passaria sem o handler conferir nada.
+    async fn direto(canais: Vec<Arc<WhatsAppChannel>>, corpo: Vec<u8>, sig: &str) -> StatusCode {
+        let mut headers = HeaderMap::new();
+        headers.insert(SIGNATURE_HEADER, sig.parse().expect("header valido"));
+        whatsapp_webhook(State(Arc::new(canais)), headers, Bytes::from(corpo))
+            .await
+            .into_response()
+            .status()
+    }
+
+    /// O teto e do handler, nao so da rota. O corpo e JSON valido e esta
+    /// assinado: sem a checagem de tamanho a resposta seria 200.
+    #[tokio::test]
+    async fn corpo_assinado_acima_do_teto_da_413() {
+        let corpo = corpo_acima_do_teto();
+        let sig = compute_signature(SEGREDO_A, &corpo);
+        assert_eq!(
+            direto(vec![canal(SEGREDO_A)], corpo, &sig).await,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    /// Tamanho nao fura a ordem: sem assinatura valida a resposta continua
+    /// sendo o 403 uniforme. Um 413 aqui diria a quem sonda que o corpo foi
+    /// olhado antes da assinatura.
+    #[tokio::test]
+    async fn corpo_acima_do_teto_sem_assinatura_valida_continua_403() {
+        let corpo = corpo_acima_do_teto();
+        let sig_de_outro = compute_signature(SEGREDO_B, &corpo);
+        assert_eq!(
+            direto(vec![canal(SEGREDO_A)], corpo, &sig_de_outro).await,
+            StatusCode::FORBIDDEN
+        );
     }
 }

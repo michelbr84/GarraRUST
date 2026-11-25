@@ -1,0 +1,16 @@
+# Pack de modelos (data extensions) do GarraRUST para o CodeQL de Rust.
+#
+# Não contém query nem filtro: só declara, para a biblioteca `codeql/rust-all`,
+# fatos sobre o código deste repositório que o CodeQL não tem como inferir —
+# hoje, quais funções são validadores (barreiras) de um fluxo de dados.
+#
+# O code scanning carrega sozinho os packs que estão em
+# `.github/codeql/extensions/`. Ver docs/security/codeql-setup.md,
+# seção "Barreiras declaradas".
+name: garraia/rust-models
+version: 0.0.1
+library: true
+extensionTargets:
+  codeql/rust-all: "*"
+dataExtensions:
+  - models/**/*.model.yml

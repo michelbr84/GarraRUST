@@ -153,6 +153,21 @@ fn build_skill_skin_routes(
         .with_state(state)
 }
 
+/// Teto do corpo das quatro rotas de webhook push, declarado em vez de
+/// herdado.
+///
+/// O valor e o mesmo que o Axum ja aplicava por default ao extrator `Bytes`,
+/// entao nada muda no que e aceito. O que muda e que o teto deixa de depender
+/// de um default que ninguem escreveu: um `DefaultBodyLimit` mais largo posto
+/// no router de fora (para uma rota de upload, por exemplo) nao alarga estas
+/// rotas, porque a camada mais interna e a que vale. O handler confere o
+/// mesmo numero de novo antes de parsear (`garraia_channels::webhook_body`),
+/// mas ali o corpo ja esta inteiro na memoria — e esta camada que impede o
+/// buffer de crescer.
+fn teto_do_corpo_de_webhook() -> axum::extract::DefaultBodyLimit {
+    axum::extract::DefaultBodyLimit::max(garraia_channels::webhook_body::MAX_WEBHOOK_BODY_BYTES)
+}
+
 pub fn build_router(
     state: SharedState,
     push: crate::push_channels::PushChannelStates,
@@ -310,6 +325,7 @@ pub fn build_router(
             get(garraia_channels::whatsapp::webhook::whatsapp_verify)
                 .post(garraia_channels::whatsapp::webhook::whatsapp_webhook),
         )
+        .layer(teto_do_corpo_de_webhook())
         .with_state(push.whatsapp);
 
     // #1050: so POST. O `GET` do WhatsApp existe por causa do handshake
@@ -320,6 +336,7 @@ pub fn build_router(
             "/webhooks/google-chat",
             post(garraia_channels::google_chat::webhook::google_chat_webhook),
         )
+        .layer(teto_do_corpo_de_webhook())
         .with_state(push.google_chat);
 
     // #1050: so POST, como o Google Chat.
@@ -328,6 +345,7 @@ pub fn build_router(
             "/webhooks/teams",
             post(garraia_channels::teams::webhook::teams_webhook),
         )
+        .layer(teto_do_corpo_de_webhook())
         .with_state(push.teams);
 
     // #1050: o LINE tambem so tem POST. O `GET` do WhatsApp existe porque a
@@ -339,6 +357,7 @@ pub fn build_router(
             "/webhooks/line",
             post(garraia_channels::line_channel::webhook::line_webhook),
         )
+        .layer(teto_do_corpo_de_webhook())
         .with_state(push.line);
 
     let router = Router::new()
@@ -2868,5 +2887,48 @@ mod tests_janela_do_provider_ativado_1790 {
             "a janela de 1s tinha de cortar a resposta de 5s"
         );
         assert!(levou < Duration::from_secs(4), "levou {levou:?}");
+    }
+}
+
+#[cfg(test)]
+mod tests_teto_do_corpo_de_webhook {
+    //! A camada das rotas de webhook vence um limite mais largo posto por
+    //! fora. E a afirmacao do doc de `teto_do_corpo_de_webhook`, e sem este
+    //! teste ela seria so um comentario: tirar o `.layer()` de dentro faz o
+    //! corpo de `MAX + 1` bytes passar com 200.
+    use super::teto_do_corpo_de_webhook;
+    use axum::Router;
+    use axum::body::{Body, Bytes};
+    use axum::extract::DefaultBodyLimit;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::post;
+    use garraia_channels::webhook_body::MAX_WEBHOOK_BODY_BYTES;
+    use tower::ServiceExt as _;
+
+    async fn status_com(bytes: usize) -> StatusCode {
+        let app = Router::new()
+            .route(
+                "/w",
+                post(|corpo: Bytes| async move { corpo.len().to_string() }),
+            )
+            .layer(teto_do_corpo_de_webhook())
+            // De fora e mais largo: o que um router pai faria por causa de
+            // uma rota de upload.
+            .layer(DefaultBodyLimit::max(4 * MAX_WEBHOOK_BODY_BYTES));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/w")
+            .body(Body::from(vec![b' '; bytes]))
+            .expect("request");
+        app.oneshot(req).await.expect("resposta").status()
+    }
+
+    #[tokio::test]
+    async fn a_camada_de_dentro_vence_o_limite_mais_largo_de_fora() {
+        assert_eq!(status_com(MAX_WEBHOOK_BODY_BYTES).await, StatusCode::OK);
+        assert_eq!(
+            status_com(MAX_WEBHOOK_BODY_BYTES + 1).await,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
     }
 }
