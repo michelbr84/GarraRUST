@@ -1873,9 +1873,11 @@ async fn execute_scheduled_task_inner(
         Some(aviso) => {
             // O payload e a resposta nao entram no log; o id e as ferramentas
             // barradas, sim — e o que o operador precisa para reautorizar.
+            // A sessao tambem fica FORA: no WhatsApp vinculado o id dela
+            // carrega o telefone do contato (`whatsapp-linked-<jid>`), e o id
+            // da tarefa ja leva o operador ate ela (`garraia tasks list`).
             tracing::warn!(
                 task = %task.id,
-                session = %task.session_id,
                 barradas = ?bloqueios.iter().map(|b| b.ferramenta.as_str()).collect::<Vec<_>>(),
                 "tarefa agendada rodou sob um teto que restringe o que ela pediu"
             );
