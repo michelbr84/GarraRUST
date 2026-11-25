@@ -120,7 +120,8 @@ pub async fn setup(
 /// GET /admin/api/setup/status — check if setup is needed
 pub async fn setup_status(State(state): State<AdminState>) -> Json<serde_json::Value> {
     let guard = state.store.lock().await;
-    let needs_setup = guard.user_count() == 0;
+    // Mesmo criterio do `setup`: erro de leitura nao anuncia setup pendente.
+    let needs_setup = matches!(guard.try_user_count(), Ok(0));
     Json(serde_json::json!({ "needs_setup": needs_setup }))
 }
 

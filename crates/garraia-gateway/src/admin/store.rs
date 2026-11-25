@@ -135,12 +135,18 @@ impl AdminStore {
     /// - nao abriu e o arquivo nao existe: nao ha admin para sequestrar, entao
     ///   o comportamento de primeira instalacao fica (store em memoria, com
     ///   aviso), sem `expect()`.
+    ///
+    /// A existencia e lida **antes** do `open`: o `Connection::open` cria o
+    /// arquivo, entao uma primeira instalacao cujo `PRAGMA`/migracao falha
+    /// (disco cheio, mount read-only) acharia depois um arquivo que ela mesma
+    /// criou e recusaria o boot pedindo um backup que nunca existiu.
     pub fn open_for_boot(db_path: &Path) -> Result<Self, String> {
+        let existed_before = db_path.try_exists();
         let open_err = match Self::open(db_path) {
             Ok(store) => return Ok(store),
             Err(e) => e,
         };
-        match db_path.try_exists() {
+        match existed_before {
             Ok(false) => {
                 tracing::warn!(
                     "admin store nao pode ser criado em {} ({open_err}); \
@@ -1905,6 +1911,25 @@ mod tests {
         let store = AdminStore::open_for_boot(&path).expect("in-memory fallback");
         assert_eq!(store.try_user_count(), Ok(0));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn open_for_boot_does_not_refuse_a_file_it_created_itself() {
+        // Primeira instalacao: o `open` cria o arquivo e a migracao falha.
+        // Simulado com um diretorio no lugar do `-wal`, o que faz o
+        // `journal_mode=WAL` falhar depois de o arquivo principal existir.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admin.db");
+        std::fs::create_dir(dir.path().join("admin.db-wal")).unwrap();
+        assert!(!path.exists());
+        match AdminStore::open(&path) {
+            Ok(_) => return, // plataforma em que o WAL nao falha: nada a provar
+            Err(_) => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+        let store = AdminStore::open_for_boot(&path).expect("fresh install falls back");
+        assert_eq!(store.try_user_count(), Ok(0));
     }
 
     #[test]
