@@ -763,7 +763,11 @@ var pages = {
 function navigate(page) {
   if (mcpRefreshTimer !== null) { clearInterval(mcpRefreshTimer); mcpRefreshTimer = null; }
   if (auditAutoRefresh !== null) { clearInterval(auditAutoRefresh); auditAutoRefresh = null; }
-  if (!pages[page]) page = 'dashboard';
+  // Posse propria, nao veracidade: `pages` e um objeto literal, entao
+  // `pages['__proto__']`, `pages['constructor']` e `pages['toString']` tambem
+  // sao verdadeiros. `page` vem de `location.hash`, ou seja, de qualquer link
+  // que o admin abrir (#1996, alerta CodeQL js/unvalidated-dynamic-method-call).
+  if (!Object.prototype.hasOwnProperty.call(pages, page)) page = 'dashboard';
   currentPage = page;
   location.hash = '#' + page;
   document.getElementById('page-title').textContent = pageTitle(page);
