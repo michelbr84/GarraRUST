@@ -105,6 +105,13 @@ pub struct ExecContext {
     /// gateway reprova qualquer `ExecContext::default()` novo em producao fora
     /// da lista declarada.
     pub teto_da_superficie: Option<crate::modes::TetoDeCapacidades>,
+
+    /// Camadas VIGENTES (#1985): a politica de HOJE para quem criou uma
+    /// tarefa agendada cuja autoridade foi gravada na criacao. So a execucao
+    /// de tarefa agendada preenche; compostas por E com as duas camadas
+    /// acima em `ToolGate`, entao so tiram. E o que faz rebaixar ou bloquear
+    /// um contato valer tambem para as tarefas que ele ja tinha agendado.
+    pub tetos_vigentes: Vec<crate::modes::TetoDeCapacidades>,
 }
 
 impl ExecContext {

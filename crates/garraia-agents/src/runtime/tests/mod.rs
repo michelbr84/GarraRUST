@@ -47,6 +47,7 @@ mod aprovacao_isolamento;
 mod aprovacao_retomada;
 mod aprovacao_vinculada;
 mod aprovacao_workspace;
+mod autoridade_da_tarefa;
 mod aviso_de_loop;
 mod breaker;
 mod cancelamento_do_turno;

@@ -3858,6 +3858,11 @@ impl AgentRuntime {
                 neutralizar_marcadores(&portao.explica_recusa(name, self.capacidades_de(name)));
             // #1438: rejeicao de politica, contada por ferramenta.
             self.observar_recusa(name, Desfecho::NegadaPelaPolitica);
+            // #1985: quando quem barrou foi um TETO, quem abriu o coletor
+            // (a execucao de tarefa agendada) fica sabendo e avisa o canal.
+            if let Some(teto) = portao.teto_que_barra(name, self.capacidades_de(name)) {
+                crate::tools::turn_tools::registrar_bloqueio_de_teto(name, teto);
+            }
             // #1226 (achado de revisao): fecha o `tool_started` de cima.
             // Sem isto, um passo negado dentro de um `tool_program` deixava
             // um inicio sem fim entre o par do proprio programa — a UI de
@@ -4091,6 +4096,24 @@ impl AgentRuntime {
                         portao.restringe_por_whitelist(),
                         execucao,
                     );
+                    // #1985: quem agenda grava na tarefa as camadas de teto
+                    // DESTE turno. So para tool que declara a classe de
+                    // agenda: as outras nao tem o que fazer com isso, e a
+                    // copia das politicas nao e de graca.
+                    let agenda = self
+                        .capacidades_de(name)
+                        .contains(&crate::capacidades::Capacidade::Scheduling);
+                    let execucao = async {
+                        if agenda {
+                            crate::tools::turn_tools::com_autoridade_do_turno(
+                                portao.autoridade_do_turno(),
+                                execucao,
+                            )
+                            .await
+                        } else {
+                            execucao.await
+                        }
+                    };
                     // #1780: ferramenta que declara teto proprio (LLM por
                     // dentro, p.ex. o `code_review`) nao morre no teto do
                     // modo antes do bound que ela mesma respeita — ver

@@ -82,7 +82,8 @@ const CONSTRUTORES_IMPLICITOS: [&str; 4] = [
 /// Quantos contextos implicitos o codigo monta: os construtores acima mais os
 /// literais `ExecContext { .. }` (que tambem nascem sem teto de superficie).
 /// `-> ExecContext {`, `impl ExecContext {`, `struct ExecContext {` e
-/// `for ExecContext {` sao assinatura/definicao, nao construcao.
+/// `for ExecContext {` sao assinatura/definicao, nao construcao — com o tipo
+/// solto ou qualificado (`-> crate::exec_context::ExecContext {`).
 fn contextos_implicitos(codigo: &str) -> usize {
     let construtores: usize = CONSTRUTORES_IMPLICITOS
         .iter()
@@ -91,13 +92,23 @@ fn contextos_implicitos(codigo: &str) -> usize {
     let literais = codigo
         .match_indices("ExecContext {")
         .filter(|(pos, _)| {
-            let antes = codigo[..*pos].trim_end();
+            let antes = sem_caminho(&codigo[..*pos]).trim_end();
             !["->", "impl", "struct", "for"]
                 .iter()
                 .any(|palavra| antes.ends_with(palavra))
         })
         .count();
     construtores + literais
+}
+
+/// Tira do fim de `s` o caminho que qualifica um tipo (`crate::exec_context::`),
+/// para o que sobra ser o que vem ANTES do tipo.
+fn sem_caminho(s: &str) -> &str {
+    let mut resto = s;
+    while let Some(sem_dois_pontos) = resto.strip_suffix("::") {
+        resto = sem_dois_pontos.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
+    }
+    resto
 }
 
 /// Uso declarado de contexto implicito em producao: arquivo, QUANTAS
@@ -208,6 +219,20 @@ fn literal_de_contexto_nao_confunde_assinatura() {
     assert_eq!(contextos_implicitos("impl Default for ExecContext { }"), 0);
     assert_eq!(
         contextos_implicitos("let e = ExecContext::with_working_dir(None);"),
+        1
+    );
+    // Tipo qualificado: assinatura continua nao sendo construcao, e literal
+    // continua sendo.
+    assert_eq!(
+        contextos_implicitos("fn a(e: E) -> crate::exec_context::ExecContext { e }"),
+        0
+    );
+    assert_eq!(
+        contextos_implicitos("impl Default for garraia_agents::ExecContext { }"),
+        0
+    );
+    assert_eq!(
+        contextos_implicitos("let e = crate::exec_context::ExecContext { x: 1 };"),
         1
     );
 }

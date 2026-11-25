@@ -1832,27 +1832,60 @@ async fn execute_scheduled_task_inner(
     let history = state.session_history(&task.session_id);
     let continuity_key = state.continuity_key().map(|k| k.as_str().to_string());
 
-    // Fronteira de autorizacao: a tarefa agendada executa com o CONTEXTO DA
-    // SESSAO que a autorizou (superficie gravada antes do turno), nunca com um
-    // contexto privilegiado implicito. Agendamento nao eleva privilegio.
-    let exec = state
+    // Fronteira de autorizacao (#1985): a tarefa roda com a AUTORIDADE DE
+    // QUEM A CRIOU, gravada na criacao — agendar nao eleva privilegio e
+    // tambem nao reduz. O construtor central da o contexto da sessao de hoje
+    // (modo, diretorio, superficie); `tarefa_agendada::contexto` troca as
+    // camadas de teto pelas gravadas, cai no fallback restritivo quando nao
+    // ha gravacao, e poe por cima a politica VIGENTE do canal. Nunca ha
+    // contexto privilegiado implicito.
+    let base = state
         .exec_context_for_msg(
             &task.session_id,
             Some(task.user_id.as_str()),
             Some(&task.payload),
         )
         .await;
-    let response_text = state
-        .agents
-        .process_heartbeat_with_exec(
+    let autoridade = crate::tarefa_agendada::ler(task);
+    let vigente = crate::tarefa_agendada::politica_vigente(state, task);
+    let exec = crate::tarefa_agendada::contexto(base, &autoridade, &vigente);
+    // O coletor recebe as ferramentas que um TETO barrou durante o turno: a
+    // tarefa nao pode deixar de fazer o que prometeu em silencio.
+    let (resposta, bloqueios) = garraia_agents::tools::turn_tools::coletando_bloqueios_de_teto(
+        state.agents.process_heartbeat_with_exec(
             &task.session_id,
             &task.payload,
             &history,
             continuity_key.as_deref(),
             Some(task.user_id.as_str()),
             &exec,
-        )
-        .await?;
+        ),
+    )
+    .await;
+    let response_text = resposta?;
+    let response_text = match crate::tarefa_agendada::aviso_da_execucao(
+        task,
+        &autoridade,
+        &vigente,
+        &exec,
+        &bloqueios,
+    ) {
+        Some(aviso) => {
+            // O payload e a resposta nao entram no log; o id e as ferramentas
+            // barradas, sim — e o que o operador precisa para reautorizar.
+            tracing::warn!(
+                task = %task.id,
+                session = %task.session_id,
+                barradas = ?bloqueios.iter().map(|b| b.ferramenta.as_str()).collect::<Vec<_>>(),
+                "tarefa agendada rodou sob um teto que restringe o que ela pediu"
+            );
+            // O aviso ABRE a resposta: e o que cabe no snippet do ledger
+            // (`garra runs`) e o que o canal le primeiro quando ha entrega
+            // (passo 4, hoje so o Telegram).
+            format!("{aviso}\n\n{response_text}")
+        }
+        None => response_text,
+    };
 
     // Issue #921: `task.session_metadata` is written by `AppState::persist_turn`
     // as `{}` or `{"continuity_key": …}` — it never carried a channel address,
@@ -3080,6 +3113,7 @@ mod tests {
             run_count: 0,
             max_runs: None,
             attempts: 0,
+            authority: None,
         }
     }
 

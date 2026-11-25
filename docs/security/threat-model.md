@@ -1115,9 +1115,10 @@ agente.
 
 **Guardas de regressão.** `crates/garraia-gateway/tests/approval_scope_coverage.rs`
 varre `src/` atrás de toda chamada a um ponto de entrada do runtime
-(`process_message*` e `process_heartbeat*`; nome novo com esse prefixo reprova
-até entrar na lista) e decide **por chamada**: o contexto de execução tem de
-ser exatamente `crate::approval_scope::com_escopo(..)`, inline ou no `let`
+(`process_message*` por prefixo — nome novo com esse prefixo reprova até
+entrar na lista — e os de `process_heartbeat`, casados um a um contra a
+lista) e decide **por chamada**: o contexto de execução tem de ser
+exatamente `crate::approval_scope::com_escopo(..)`, inline ou no `let`
 que a chamada enxerga dentro da mesma `fn`, ou a chamada tem de estar em
 `SEM_ESCOPO`, presa por arquivo, `fn` e ponto de entrada, com o motivo. Toda
 chamada a `com_escopo` confere o remetente contra `REMETENTES` (um por

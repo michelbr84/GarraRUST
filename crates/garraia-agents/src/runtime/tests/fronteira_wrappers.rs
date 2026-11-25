@@ -20,8 +20,8 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
 /// Pede `alvo` uma unica volta e encerra com texto.
-struct PedeUmaVez {
-    alvo: &'static str,
+pub(super) struct PedeUmaVez {
+    pub(super) alvo: &'static str,
 }
 
 #[async_trait::async_trait]
@@ -84,7 +84,7 @@ impl Tool for ContaExecucoes {
     }
 }
 
-fn runtime_com_tool_destrutiva() -> (AgentRuntime, Arc<AtomicUsize>) {
+pub(super) fn runtime_com_tool_destrutiva() -> (AgentRuntime, Arc<AtomicUsize>) {
     let rt = AgentRuntime::new();
     rt.register_provider(Arc::new(PedeUmaVez { alvo: "bash" }));
     let executou = Arc::new(AtomicUsize::new(0));

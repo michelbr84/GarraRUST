@@ -141,6 +141,27 @@ outro agente, ou nao ha remetente que o servidor possa provar. Qualquer mensagem
 reiniciar o gateway cancela todos. Detalhes em
 [`security/threat-model.md`](security/threat-model.md) §5.16.
 
+**Autoridade das tarefas agendadas (#1985).** A tarefa roda com a autoridade
+de quem a criou, gravada na criacao: agendar nao eleva privilegio e tambem
+nao reduz. As tools de agenda gravam na tarefa os tetos do turno (o do
+principal e o da superficie); na execucao valem esses, e nao os que a sessao
+teria hoje. Por cima vai a politica de acesso **atual** do canal para quem
+criou a tarefa — no WhatsApp vinculado, rebaixar ou bloquear um contato vale
+tambem para as tarefas que ele ja tinha. Fora do WhatsApp vinculado, uma
+sessao que deixou de ser so do operador depois da criacao (console
+compartilhado com um canal remoto) derruba a tarefa para leitura: quem
+escreve na conversa alcanca o historico que a tarefa le. Tarefa sem autoridade gravada
+(anterior a esse registro) roda pelo canal da sessao: sessao do operador
+segue como estava, sessao remota roda so com leitura, ate o operador
+reautorizar com `garraia tasks authorize <id>` — que mostra o texto da
+tarefa e so grava com `--yes`. Quando um teto barra o que a tarefa pediu, ou
+ela roda com acesso reduzido, a resposta da tarefa comeca pelo aviso. A
+resposta fica sempre no historico da sessao e no ledger (`garraia runs
+list`), e o gateway registra um aviso no log; **entrega ativa ao canal so
+existe hoje no Telegram** — no WhatsApp vinculado, no Discord e no console
+local o aviso nao e empurrado, aparece quando a conversa e aberta.
+Detalhes em [`configuration.md`](configuration.md#scheduled-task-authority-tasks).
+
 **Nível de aprovação: `agent.approval` e `--yolo` (#1858).** O que acontece
 com o tier arriscado (a segunda linha da tabela) é um knob declarado pelo
 operador — nunca um default de fábrica:

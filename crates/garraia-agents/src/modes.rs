@@ -170,6 +170,90 @@ impl TetoDeCapacidades {
     }
 }
 
+/// De onde veio a autoridade gravada numa tarefa agendada (#1985).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrigemDaAutoridade {
+    /// Fotografada do portao do turno que criou a tarefa.
+    Turno,
+    /// Concedida depois pelo operador da maquina (`garra tasks authorize`).
+    Operador,
+}
+
+/// A autoridade com que uma tarefa agendada roda (#1985): as camadas de teto
+/// do turno que a criou, gravadas junto com a tarefa.
+///
+/// Agendar nao eleva privilegio — a tarefa nao roda com mais do que quem a
+/// criou tinha — e tambem nao reduz: reavaliar a superficie na hora de rodar
+/// tirava a escrita de quem a tinha na conversa (o dono do WhatsApp vinculado
+/// com `full`, por exemplo). O modo NAO entra aqui: e preferencia da sessao,
+/// lida de novo a cada execucao, e so restringe dentro destes tetos.
+///
+/// O documento vai como JSON para `scheduled_tasks.authority`. Versao
+/// desconhecida ou JSON invalido nao sao "sem teto": [`Self::de_json`]
+/// devolve `None` e quem executa cai no fallback fail-closed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutoridadeDaTarefa {
+    /// Versao do documento. Hoje, [`Self::VERSAO`].
+    pub v: u8,
+    pub origem: OrigemDaAutoridade,
+    /// O teto do principal no turno que criou a tarefa.
+    #[serde(default)]
+    pub teto: Option<TetoDeCapacidades>,
+    /// O teto da superficie no turno que criou a tarefa.
+    #[serde(default)]
+    pub teto_da_superficie: Option<TetoDeCapacidades>,
+    /// Camadas vigentes que o turno de criacao ja carregava (ver
+    /// `ExecContext::tetos_vigentes`). Vazio no caso comum.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tetos_vigentes: Vec<TetoDeCapacidades>,
+}
+
+impl AutoridadeDaTarefa {
+    pub const VERSAO: u8 = 1;
+
+    /// A reautorizacao do operador: nenhum teto gravado. As camadas vigentes
+    /// que o executor acrescenta (a politica de HOJE do canal) continuam
+    /// valendo por cima — reautorizar nao passa por cima de um bloqueio.
+    pub fn do_operador() -> Self {
+        Self {
+            v: Self::VERSAO,
+            origem: OrigemDaAutoridade::Operador,
+            teto: None,
+            teto_da_superficie: None,
+            tetos_vigentes: Vec::new(),
+        }
+    }
+
+    /// O documento para a coluna. `None` so se a serializacao falhar — e ai
+    /// a tarefa nasce sem autoridade gravada, que e o lado restritivo.
+    pub fn para_json(&self) -> Option<String> {
+        serde_json::to_string(self).ok()
+    }
+
+    /// Le o documento da coluna. `None` para JSON invalido ou versao que este
+    /// binario nao conhece: nunca interpretar pela metade.
+    pub fn de_json(doc: &str) -> Option<Self> {
+        serde_json::from_str::<Self>(doc)
+            .ok()
+            .filter(|a| a.v == Self::VERSAO)
+    }
+
+    /// Poe as camadas gravadas no contexto da execucao, no lugar das que o
+    /// chamador tinha deduzido da sessao. O resto do contexto (modo,
+    /// diretorio, escopo de aprovacao, camadas vigentes ja postas) fica.
+    pub fn aplicar(
+        &self,
+        mut exec: crate::exec_context::ExecContext,
+    ) -> crate::exec_context::ExecContext {
+        exec.teto = self.teto.clone();
+        exec.teto_da_superficie = self.teto_da_superficie.clone();
+        exec.tetos_vigentes
+            .extend(self.tetos_vigentes.iter().cloned());
+        exec
+    }
+}
+
 /// Os niveis de acesso do WhatsApp (#1398), compilados em [`ToolPolicy`] por
 /// [`politica_do_nivel`]. Presets, nao modos: valem como **teto** sobre o
 /// modo que a sessao escolher.
@@ -580,6 +664,11 @@ pub struct ToolGate {
     /// `teto` e com o perfil em [`Self::permite_com_capacidades`] — trocar de
     /// modo, de perfil ou de principal nao abre o que ela fecha.
     teto_da_superficie: Option<TetoDeCapacidades>,
+    /// Camadas VIGENTES (#1985): a politica de HOJE para quem criou uma
+    /// tarefa cuja autoridade foi gravada no passado. Compostas por E com
+    /// todas as outras — e o que faz um rebaixamento ou bloqueio posterior
+    /// valer tambem para as tarefas ja agendadas. Vazio fora desse caso.
+    tetos_vigentes: Vec<TetoDeCapacidades>,
     /// O perfil que vale neste turno, se algum vale.
     ///
     /// Guarda o perfil inteiro, e nao so a `ToolPolicy`, porque o mesmo perfil
@@ -638,6 +727,7 @@ impl ToolGate {
         Self {
             teto: None,
             teto_da_superficie: None,
+            tetos_vigentes: Vec::new(),
             profile: None,
             nome: None,
         }
@@ -648,6 +738,7 @@ impl ToolGate {
         Self {
             teto: None,
             teto_da_superficie: None,
+            tetos_vigentes: Vec::new(),
             nome: Some(profile.name.clone()),
             profile: Some(profile.clone()),
         }
@@ -664,6 +755,40 @@ impl ToolGate {
         self.teto_da_superficie = teto;
         self
     }
+    /// O mesmo portao, com as camadas vigentes por cima (#1985). Cada uma e
+    /// composta por E com as demais: so tiram, nunca poem.
+    pub fn com_tetos_vigentes(mut self, tetos: Vec<TetoDeCapacidades>) -> Self {
+        self.tetos_vigentes = tetos;
+        self
+    }
+    /// As camadas de teto deste portao como a autoridade que uma tarefa
+    /// agendada criada NESTE turno deve carregar (#1985). O modo fica de
+    /// fora: e preferencia da sessao, nao autoridade.
+    pub fn autoridade_do_turno(&self) -> AutoridadeDaTarefa {
+        AutoridadeDaTarefa {
+            v: AutoridadeDaTarefa::VERSAO,
+            origem: OrigemDaAutoridade::Turno,
+            teto: self.teto.clone(),
+            teto_da_superficie: self.teto_da_superficie.clone(),
+            tetos_vigentes: self.tetos_vigentes.clone(),
+        }
+    }
+    /// O nome da primeira camada de TETO (principal, superficie, vigentes)
+    /// que barra esta ferramenta — `None` quando nenhuma barra, inclusive
+    /// quando quem barra e so o modo. E o que o aviso de uma tarefa agendada
+    /// bloqueada cita (#1985).
+    pub fn teto_que_barra(
+        &self,
+        tool_name: &str,
+        capacidades: &[crate::capacidades::Capacidade],
+    ) -> Option<&str> {
+        self.teto
+            .iter()
+            .chain(self.teto_da_superficie.iter())
+            .chain(self.tetos_vigentes.iter())
+            .find(|t| !politica_permite(&t.politica, tool_name, capacidades))
+            .map(|t| t.nome.as_str())
+    }
     /// A ferramenta pode rodar, dadas as classes dela? (#1385)
     ///
     /// E [`Self::permite`] com as classes: nome e classe somam no `allowed`,
@@ -676,6 +801,7 @@ impl ToolGate {
         self.modo_permite(tool_name, capacidades)
             && self.teto_permite(tool_name, capacidades)
             && self.superficie_permite(tool_name, capacidades)
+            && self.vigentes_permitem(tool_name, capacidades)
     }
     /// A recusa do portao para esta ferramenta, **por camada** (#1915):
     /// `None` exatamente quando [`Self::permite_com_capacidades`] e `true`
@@ -703,7 +829,16 @@ impl ToolGate {
             t.as_ref()
                 .and_then(|t| recusa_da_politica(&t.politica, tool_name, capacidades))
         };
-        let teto = do_teto(&self.teto).or_else(|| do_teto(&self.teto_da_superficie));
+        // #1985: as camadas vigentes entram no mesmo campo, pela mesma razao
+        // da superficie — sao tetos, e o relatorio nao pode liberar o que o
+        // turno recusa.
+        let teto = do_teto(&self.teto)
+            .or_else(|| do_teto(&self.teto_da_superficie))
+            .or_else(|| {
+                self.tetos_vigentes
+                    .iter()
+                    .find_map(|t| recusa_da_politica(&t.politica, tool_name, capacidades))
+            });
         (modo.is_some() || teto.is_some()).then_some(RecusaDoPortao { modo, teto })
     }
     /// Por que a ferramenta foi barrada — o modo, ou o teto do principal.
@@ -736,6 +871,18 @@ impl ToolGate {
                 t.nome
             );
         }
+        if let Some(t) = self
+            .tetos_vigentes
+            .iter()
+            .find(|t| !politica_permite(&t.politica, tool_name, capacidades))
+        {
+            return format!(
+                "A ferramenta `{tool_name}` nao e permitida pela politica de acesso em vigor \
+                 (`{}`) para quem criou esta tarefa. Trocar de modo nao amplia este limite; \
+                 siga sem ela.",
+                t.nome
+            );
+        }
         Self::recusa(tool_name, self.nome_do_modo().unwrap_or(""))
     }
 
@@ -751,6 +898,7 @@ impl ToolGate {
         }
         .com_teto(exec.teto.clone())
         .com_teto_de_superficie(exec.teto_da_superficie.clone())
+        .com_tetos_vigentes(exec.tetos_vigentes.clone())
     }
 
     /// O portao do turno: igual ao [`Self::from_exec`], exceto em `auto`.
@@ -779,6 +927,7 @@ impl ToolGate {
         Self::para_o_turno_sem_teto(exec, user_text)
             .com_teto(exec.teto.clone())
             .com_teto_de_superficie(exec.teto_da_superficie.clone())
+            .com_tetos_vigentes(exec.tetos_vigentes.clone())
     }
     fn para_o_turno_sem_teto(exec: &crate::exec_context::ExecContext, user_text: &str) -> Self {
         // Modo customizado (#986) chega com o perfil pronto de quem tem banco.
@@ -840,6 +989,7 @@ impl ToolGate {
                 .teto_da_superficie
                 .as_ref()
                 .is_some_and(|t| restringe(&t.politica))
+            || self.tetos_vigentes.iter().any(|t| restringe(&t.politica))
     }
 
     /// O perfil ligou `whitelist_mode` e deixou `allowed` vazia?
@@ -973,6 +1123,15 @@ impl ToolGate {
             Some(t) => politica_permite(&t.politica, tool_name, capacidades),
             None => true,
         }
+    }
+    fn vigentes_permitem(
+        &self,
+        tool_name: &str,
+        capacidades: &[crate::capacidades::Capacidade],
+    ) -> bool {
+        self.tetos_vigentes
+            .iter()
+            .all(|t| politica_permite(&t.politica, tool_name, capacidades))
     }
 
     /// A mensagem que o modelo recebe quando pede uma ferramenta barrada.
@@ -3235,6 +3394,108 @@ mod recusa_por_camada_tests {
                 );
             }
         }
+    }
+
+    /// #1985: a camada vigente e teto como as outras — entra no relatorio e
+    /// mantem a invariante com o enforcement, sozinha e somada as demais.
+    #[test]
+    fn camada_vigente_aparece_no_relatorio_e_mantem_a_invariante() {
+        let vigente = |n: Nivel| vec![teto(n).expect("teto")];
+        let so_vigente = ToolGate::sem_politica().com_tetos_vigentes(vigente(Nivel::Read));
+        let r = recusa(&so_vigente, "bash").expect("vigente read nega bash");
+        assert_eq!(r.camada(), CamadaDaRecusa::Teto);
+        assert!(recusa(&so_vigente, "file_read").is_none());
+        assert_eq!(
+            so_vigente.teto_que_barra("bash", capacidades_nativas("bash")),
+            Some("read")
+        );
+        assert_eq!(
+            so_vigente.teto_que_barra("file_read", capacidades_nativas("file_read")),
+            None
+        );
+        assert!(so_vigente.restringe_por_whitelist());
+
+        // Duas vigentes: vale a mais restrita, em qualquer ordem.
+        let duas = ToolGate::sem_politica().com_tetos_vigentes(vec![
+            teto(Nivel::Full).expect("teto"),
+            teto(Nivel::Chat).expect("teto"),
+        ]);
+        assert!(recusa(&duas, "file_read").is_some(), "chat nega tudo");
+
+        // Vigente ampla nao abre o que o teto do principal fecha.
+        let principal_fecha = ToolGate::sem_politica()
+            .com_teto(teto(Nivel::Read))
+            .com_tetos_vigentes(vigente(Nivel::Full));
+        assert!(recusa(&principal_fecha, "bash").is_some());
+
+        // So o modo barra: nao e teto nenhum.
+        let so_modo = ToolGate::for_mode_name("ask");
+        assert_eq!(
+            so_modo.teto_que_barra("file_write", capacidades_nativas("file_write")),
+            None
+        );
+
+        for portao in [&so_vigente, &duas, &principal_fecha] {
+            for nome in ["bash", "file_read", "file_write", "web_search"] {
+                let caps = capacidades_nativas(nome);
+                assert_eq!(
+                    portao.recusa_de(nome, caps).is_none(),
+                    portao.permite_com_capacidades(nome, caps),
+                    "relatorio e enforcement divergem em `{nome}`"
+                );
+            }
+        }
+    }
+
+    /// #1985: o documento vai e volta inteiro, e o que este binario nao
+    /// entende NAO vira "sem teto".
+    #[test]
+    fn autoridade_da_tarefa_vai_e_volta_e_recusa_o_que_nao_entende() {
+        let gravada = ToolGate::for_mode_name("code")
+            .com_teto(teto(Nivel::Full))
+            .com_teto_de_superficie(teto(Nivel::Read))
+            .com_tetos_vigentes(vec![teto(Nivel::Chat).expect("teto")])
+            .autoridade_do_turno();
+        assert_eq!(gravada.origem, OrigemDaAutoridade::Turno);
+        let doc = gravada.para_json().expect("serializa");
+        assert_eq!(AutoridadeDaTarefa::de_json(&doc), Some(gravada.clone()));
+
+        // O modo nao entra: e preferencia da sessao, nao autoridade.
+        assert!(
+            !doc.contains("code"),
+            "o modo vazou para o documento: {doc}"
+        );
+
+        // Aplicar repoe as camadas gravadas por cima das deduzidas da sessao.
+        let exec = gravada.aplicar(crate::exec_context::ExecContext::sem_prova_de_operador());
+        assert_eq!(exec.teto, gravada.teto);
+        assert_eq!(exec.teto_da_superficie, gravada.teto_da_superficie);
+        assert_eq!(exec.tetos_vigentes, gravada.tetos_vigentes);
+
+        // A do operador e sem teto, e diz de onde veio.
+        let operador = AutoridadeDaTarefa::do_operador();
+        let doc_operador = operador.para_json().expect("serializa");
+        assert!(doc_operador.contains("\"origem\":\"operador\""));
+        assert_eq!(AutoridadeDaTarefa::de_json(&doc_operador), Some(operador));
+
+        // Fail-closed: lixo, versao futura e origem desconhecida sao `None`.
+        assert_eq!(AutoridadeDaTarefa::de_json("nao e json"), None);
+        assert_eq!(AutoridadeDaTarefa::de_json("{}"), None);
+        assert_eq!(
+            AutoridadeDaTarefa::de_json(r#"{"v":2,"origem":"turno"}"#),
+            None,
+            "versao que este binario nao conhece"
+        );
+        assert_eq!(
+            AutoridadeDaTarefa::de_json(r#"{"v":1,"origem":"qualquer"}"#),
+            None
+        );
+        // Campos de teto ausentes na versao conhecida valem "sem teto" — e
+        // assim que a do operador e escrita por quem nao tem o tipo na mao.
+        assert_eq!(
+            AutoridadeDaTarefa::de_json(r#"{"v":1,"origem":"operador"}"#),
+            Some(AutoridadeDaTarefa::do_operador())
+        );
     }
 
     #[test]

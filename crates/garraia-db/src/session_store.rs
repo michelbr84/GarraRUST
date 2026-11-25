@@ -206,7 +206,11 @@ impl SessionStore {
                     -- enquanto `lease_until` nao passou; depois disso a linha
                     -- e devolvida a `pending` na subida ou no tick seguinte.
                     lease_until TEXT,
-                    leased_by TEXT
+                    leased_by TEXT,
+                    -- #1985: a autoridade com que a tarefa foi criada (JSON
+                    -- opaco para este crate). NULL = tarefa anterior a
+                    -- coluna, ou criada fora de um turno do runtime.
+                    authority TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_tasks_execute_at
@@ -379,6 +383,12 @@ impl SessionStore {
             (
                 "leased_by",
                 "ALTER TABLE scheduled_tasks ADD COLUMN leased_by TEXT;",
+            ),
+            // #1985: forward-only e aditiva. As linhas que ja existem ficam
+            // com NULL, que e exatamente "sem autoridade gravada".
+            (
+                "authority",
+                "ALTER TABLE scheduled_tasks ADD COLUMN authority TEXT;",
             ),
         ] {
             if !self.column_exists("scheduled_tasks", column)? {
@@ -1174,7 +1184,10 @@ impl SessionStore {
         Ok(id)
     }
 
-    /// Schedule a task for future execution.
+    /// Schedule a task for future execution, with no recorded authority.
+    ///
+    /// See [`Self::schedule_task_with_authority`]: a task created through
+    /// this method runs under the fallback for "no recorded authority".
     pub fn schedule_task(
         &self,
         session_id: &str,
@@ -1182,21 +1195,90 @@ impl SessionStore {
         execute_at: chrono::DateTime<chrono::Utc>,
         payload: &str,
     ) -> Result<String> {
+        self.schedule_task_with_authority(session_id, user_id, execute_at, payload, None)
+    }
+
+    /// Schedule a task for future execution, recording the authority it was
+    /// created with (#1985).
+    ///
+    /// `authority` is an opaque JSON document for this crate; the scheduler
+    /// hands it back untouched in [`ScheduledTask::authority`].
+    pub fn schedule_task_with_authority(
+        &self,
+        session_id: &str,
+        user_id: &str,
+        execute_at: chrono::DateTime<chrono::Utc>,
+        payload: &str,
+        authority: Option<&str>,
+    ) -> Result<String> {
         let task_id = uuid::Uuid::new_v4().to_string();
         self.conn
             .execute(
-                "INSERT INTO scheduled_tasks (id, session_id, user_id, execute_at, payload, status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending')",
+                "INSERT INTO scheduled_tasks
+                    (id, session_id, user_id, execute_at, payload, status, authority)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
                 params![
                     task_id,
                     session_id,
                     user_id,
                     execute_at.to_rfc3339(),
-                    payload
+                    payload,
+                    authority
                 ],
             )
             .map_err(|e| Error::Database(format!("failed to schedule task: {e}")))?;
         Ok(task_id)
+    }
+
+    /// Replace the recorded authority of a task (#1985) — the operator's
+    /// re-authorization. `None` clears it. Returns `false` when no task has
+    /// that id.
+    pub fn set_task_authority(&self, task_id: &str, authority: Option<&str>) -> Result<bool> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE scheduled_tasks SET authority = ?2 WHERE id = ?1",
+                params![task_id, authority],
+            )
+            .map_err(|e| Error::Database(format!("failed to set task authority: {e}")))?;
+        Ok(changed == 1)
+    }
+
+    /// Scheduled tasks for an operator to inspect (#1985), soonest first.
+    ///
+    /// `only_open` keeps the ones that can still run (`pending` and
+    /// `running`); otherwise finished and failed tasks are listed too. A
+    /// `LEFT JOIN` on purpose: a task whose session row is gone still shows
+    /// up, with `channel_id: None`.
+    pub fn list_scheduled_tasks(&self, only_open: bool) -> Result<Vec<ScheduledTaskSummary>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT t.id, t.session_id, s.channel_id, t.user_id, t.status, t.execute_at,
+                        t.cron_expr, t.payload, t.authority
+                 FROM scheduled_tasks t
+                 LEFT JOIN sessions s ON t.session_id = s.id
+                 WHERE ?1 = 0 OR t.status IN ('pending', 'running')
+                 ORDER BY t.execute_at ASC",
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare task listing: {e}")))?;
+        let rows = stmt
+            .query_map(params![only_open], |row| {
+                Ok(ScheduledTaskSummary {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    channel_id: row.get(2)?,
+                    user_id: row.get(3)?,
+                    status: row.get(4)?,
+                    execute_at: row.get(5)?,
+                    cron_expr: row.get(6)?,
+                    payload: row.get(7)?,
+                    authority: row.get(8)?,
+                })
+            })
+            .map_err(|e| Error::Database(format!("failed to list tasks: {e}")))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Database(format!("failed to read task row: {e}")))
     }
 
     /// Poll for pending tasks that are due for execution — **read-only**.
@@ -1219,7 +1301,8 @@ impl SessionStore {
             .conn
             .prepare(
                 "SELECT t.id, t.session_id, s.channel_id, t.user_id, t.execute_at, t.payload,
-                        s.metadata, t.cron_expr, t.timezone, t.run_count, t.max_runs, t.attempts
+                        s.metadata, t.cron_expr, t.timezone, t.run_count, t.max_runs, t.attempts,
+                        t.authority
                  FROM scheduled_tasks t
                  JOIN sessions s ON t.session_id = s.id
                  WHERE t.status = 'pending' AND datetime(t.execute_at) <= datetime('now')
@@ -1240,7 +1323,7 @@ impl SessionStore {
     }
 
     /// Row shape shared by `poll_due_tasks_limit`, `claim_due_tasks` and
-    /// `recover_expired_leases`: the 12-column projection of
+    /// `recover_expired_leases`: the 13-column projection of
     /// `scheduled_tasks t JOIN sessions s`, in this exact order.
     fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduledTask> {
         let execute_at_raw: String = row.get(4)?;
@@ -1259,6 +1342,7 @@ impl SessionStore {
             run_count: row.get(9)?,
             max_runs: row.get(10)?,
             attempts: row.get(11)?,
+            authority: row.get(12)?,
         })
     }
 
@@ -1297,7 +1381,7 @@ impl SessionStore {
                 .prepare(
                     "SELECT t.id, t.session_id, s.channel_id, t.user_id, t.execute_at, t.payload,
                             s.metadata, t.cron_expr, t.timezone, t.run_count, t.max_runs,
-                            t.attempts
+                            t.attempts, t.authority
                      FROM scheduled_tasks t
                      JOIN sessions s ON t.session_id = s.id
                      WHERE t.status = 'pending' AND datetime(t.execute_at) <= datetime('now')
@@ -1354,7 +1438,7 @@ impl SessionStore {
                 .prepare(
                     "SELECT t.id, t.session_id, s.channel_id, t.user_id, t.execute_at, t.payload,
                             s.metadata, t.cron_expr, t.timezone, t.run_count, t.max_runs,
-                            t.attempts
+                            t.attempts, t.authority
                      FROM scheduled_tasks t
                      JOIN sessions s ON t.session_id = s.id
                      WHERE t.status = 'running'
@@ -1429,14 +1513,33 @@ impl SessionStore {
         payload: &str,
         max_runs: Option<i64>,
     ) -> Result<(String, chrono::DateTime<chrono::Utc>)> {
+        self.schedule_recurring_task_with_authority(
+            session_id, user_id, cron_expr, timezone, payload, max_runs, None,
+        )
+    }
+
+    /// [`Self::schedule_recurring_task`] recording the authority the task was
+    /// created with (#1985). Every occurrence runs under that same document.
+    #[allow(clippy::too_many_arguments)]
+    pub fn schedule_recurring_task_with_authority(
+        &self,
+        session_id: &str,
+        user_id: &str,
+        cron_expr: &str,
+        timezone: Option<&str>,
+        payload: &str,
+        max_runs: Option<i64>,
+        authority: Option<&str>,
+    ) -> Result<(String, chrono::DateTime<chrono::Utc>)> {
         let tz = crate::recurrence::parse_timezone(timezone)?;
         let first = crate::recurrence::next_occurrence(cron_expr, tz, chrono::Utc::now())?;
         let task_id = uuid::Uuid::new_v4().to_string();
         self.conn
             .execute(
                 "INSERT INTO scheduled_tasks
-                    (id, session_id, user_id, execute_at, payload, status, cron_expr, timezone, max_runs)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8)",
+                    (id, session_id, user_id, execute_at, payload, status, cron_expr, timezone,
+                     max_runs, authority)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?9)",
                 params![
                     task_id,
                     session_id,
@@ -1445,7 +1548,8 @@ impl SessionStore {
                     payload,
                     cron_expr,
                     tz.name(),
-                    max_runs
+                    max_runs,
+                    authority
                 ],
             )
             .map_err(|e| Error::Database(format!("failed to schedule recurring task: {e}")))?;
@@ -2116,6 +2220,28 @@ pub struct ScheduledTask {
     pub max_runs: Option<i64>,
     /// Consecutive failed attempts of the current occurrence.
     pub attempts: i64,
+    /// #1985: the authority the task was created with, as an opaque JSON
+    /// document owned by the caller (`garraia_agents::AutoridadeDaTarefa`).
+    /// `None` for a task that predates the column or was created outside a
+    /// runtime turn — the executor treats that as "no recorded authority" and
+    /// falls back to the session's surface, never to an open gate.
+    pub authority: Option<String>,
+}
+
+/// One row of [`SessionStore::list_scheduled_tasks`]: what an operator needs
+/// to decide whether a task should be re-authorized (#1985).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduledTaskSummary {
+    pub id: String,
+    pub session_id: String,
+    /// `None` when the session row is gone (the scheduler would skip it too).
+    pub channel_id: Option<String>,
+    pub user_id: String,
+    pub status: String,
+    pub execute_at: String,
+    pub cron_expr: Option<String>,
+    pub payload: String,
+    pub authority: Option<String>,
 }
 
 impl ScheduledTask {
@@ -3249,6 +3375,179 @@ mod tests {
         // E o store antigo funciona de ponta a ponta com o claim.
         let task_id = due_task(&store, "legacy");
         assert_eq!(store.claim_due_tasks(10, 600, "o").unwrap()[0].id, task_id);
+    }
+
+    // ── Authority (#1985) ────────────────────────────────────────────
+
+    /// Um store anterior a coluna ganha `authority` na migracao, e as linhas
+    /// que ja existiam ficam com NULL — "sem autoridade gravada", que o
+    /// executor trata pelo fallback, nunca como portao aberto.
+    #[test]
+    fn migracao_adiciona_authority_e_tarefa_antiga_fica_sem_autoridade() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE scheduled_tasks (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                execute_at TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO scheduled_tasks (id, session_id, user_id, execute_at, payload)
+            VALUES ('antiga', 's1', 'u1', datetime('now', '-1 minutes'), 'legado');",
+        )
+        .unwrap();
+        let store = SessionStore { conn };
+        assert!(!store.column_exists("scheduled_tasks", "authority").unwrap());
+
+        store.run_migrations().unwrap();
+        assert!(store.column_exists("scheduled_tasks", "authority").unwrap());
+        // Segunda passada nao pode falhar com "duplicate column".
+        store.run_migrations().unwrap();
+
+        store
+            .upsert_session("s1", "telegram", "u1", &serde_json::json!({}))
+            .unwrap();
+        let reclamadas = store.claim_due_tasks(10, 600, "o").unwrap();
+        assert_eq!(reclamadas.len(), 1);
+        assert_eq!(reclamadas[0].id, "antiga");
+        assert_eq!(reclamadas[0].authority, None);
+    }
+
+    /// A autoridade gravada na criacao volta intacta no claim, no poll e na
+    /// recuperacao de lease — os tres caminhos por onde o executor le a
+    /// tarefa. O documento e opaco para este crate.
+    #[test]
+    fn autoridade_gravada_volta_intacta_em_todo_caminho_de_leitura() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+        let doc = r#"{"v":1,"origem":"turno"}"#;
+        let id = store
+            .schedule_task_with_authority(
+                "s1",
+                "u1",
+                chrono::Utc::now() - Duration::minutes(1),
+                "com autoridade",
+                Some(doc),
+            )
+            .unwrap();
+        let sem = due_task(&store, "sem autoridade");
+
+        let poll = store.poll_due_tasks().unwrap();
+        let do_poll = |quem: &str| {
+            poll.iter()
+                .find(|t| t.id == quem)
+                .unwrap()
+                .authority
+                .clone()
+        };
+        assert_eq!(do_poll(&id).as_deref(), Some(doc));
+        assert_eq!(
+            do_poll(&sem),
+            None,
+            "`schedule_task` nao inventa autoridade"
+        );
+
+        let claim = store.claim_due_tasks(10, 600, "o").unwrap();
+        assert_eq!(
+            claim
+                .iter()
+                .find(|t| t.id == id)
+                .unwrap()
+                .authority
+                .as_deref(),
+            Some(doc)
+        );
+
+        expire_lease(&store, &id);
+        let recuperadas = store.recover_expired_leases().unwrap();
+        assert_eq!(
+            recuperadas
+                .iter()
+                .find(|t| t.id == id)
+                .unwrap()
+                .authority
+                .as_deref(),
+            Some(doc)
+        );
+    }
+
+    /// A recorrente carrega a mesma autoridade em toda ocorrencia: rearmar a
+    /// proxima nao apaga o documento.
+    #[test]
+    fn recorrente_mantem_a_autoridade_entre_ocorrencias() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+        let doc = r#"{"v":1,"origem":"turno"}"#;
+        let (id, _) = store
+            .schedule_recurring_task_with_authority(
+                "s1",
+                "u1",
+                "* * * * *",
+                None,
+                "recorrente",
+                None,
+                Some(doc),
+            )
+            .unwrap();
+        let vencer = |store: &SessionStore| {
+            store
+                .conn
+                .execute(
+                    "UPDATE scheduled_tasks SET execute_at = ?2 WHERE id = ?1",
+                    params![id, (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339()],
+                )
+                .unwrap();
+        };
+        vencer(&store);
+        let primeira = store.claim_due_tasks(10, 600, "o").unwrap().remove(0);
+        assert_eq!(primeira.authority.as_deref(), Some(doc));
+        store
+            .complete_recurring_run(&primeira, chrono::Utc::now())
+            .unwrap()
+            .expect("sem max_runs, rearma");
+
+        vencer(&store);
+        let segunda = store.claim_due_tasks(10, 600, "o").unwrap().remove(0);
+        assert_eq!(segunda.id, id);
+        assert_eq!(segunda.authority.as_deref(), Some(doc));
+    }
+
+    /// A reautorizacao troca o documento de UMA tarefa, e a listagem mostra o
+    /// que o operador precisa para decidir.
+    #[test]
+    fn reautorizacao_troca_o_documento_e_a_listagem_mostra() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let alvo = due_task(&store, "alvo");
+        let outra = due_task(&store, "outra");
+
+        assert!(store.set_task_authority(&alvo, Some("{\"v\":1}")).unwrap());
+        assert!(
+            !store.set_task_authority("nao-existe", Some("{}")).unwrap(),
+            "id desconhecido nao altera nada e diz isso"
+        );
+
+        let lista = store.list_scheduled_tasks(true).unwrap();
+        let de = |quem: &str| lista.iter().find(|t| t.id == quem).unwrap().clone();
+        assert_eq!(de(&alvo).authority.as_deref(), Some("{\"v\":1}"));
+        assert_eq!(de(&outra).authority, None, "so a tarefa pedida muda");
+        assert_eq!(de(&alvo).channel_id.as_deref(), Some("web"));
+        assert_eq!(de(&alvo).status, "pending");
+
+        // `None` limpa: a tarefa volta a "sem autoridade gravada".
+        assert!(store.set_task_authority(&alvo, None).unwrap());
+        // Concluida some da listagem aberta e aparece na completa.
+        store.complete_task(&outra).unwrap();
+        let abertas = store.list_scheduled_tasks(true).unwrap();
+        assert_eq!(abertas.len(), 1);
+        assert_eq!(abertas[0].authority, None);
+        assert_eq!(store.list_scheduled_tasks(false).unwrap().len(), 2);
     }
 
     // ── Recurrence ───────────────────────────────────────────────────
