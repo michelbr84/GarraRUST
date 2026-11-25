@@ -40,6 +40,7 @@ use tracing::{info, warn};
 
 use super::GoogleChatChannel;
 use super::auth::extrair_bearer;
+use crate::webhook_body::{CorpoRecusado, json_limitado};
 
 /// Estado compartilhado com o handler: os canais Google Chat configurados.
 pub type GoogleChatState = Arc<Vec<Arc<GoogleChatChannel>>>;
@@ -73,16 +74,27 @@ pub async fn google_chat_webhook(
         return (StatusCode::UNAUTHORIZED, UNAUTHORIZED_BODY);
     };
 
-    // So agora o corpo vira JSON.
-    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        warn!(
-            canal = channel.name(),
-            "google chat: token valido mas corpo que nao e JSON"
-        );
-        // Quem chegou aqui tem um token valido para este canal: e erro de
-        // formato, nao forja. 400, nao 401 — e a distincao nao vaza nada
-        // para quem nao tem token, que sai no 401 antes.
-        return (StatusCode::BAD_REQUEST, "google chat: malformed body");
+    // So agora o corpo vira JSON — e com o tamanho conferido antes do parse.
+    let payload = match json_limitado(&body) {
+        Ok(payload) => payload,
+        Err(CorpoRecusado::GrandeDemais) => {
+            warn!(
+                canal = channel.name(),
+                bytes = body.len(),
+                "google chat: token valido mas corpo acima do teto"
+            );
+            return (StatusCode::PAYLOAD_TOO_LARGE, "google chat: body too large");
+        }
+        Err(CorpoRecusado::JsonInvalido) => {
+            warn!(
+                canal = channel.name(),
+                "google chat: token valido mas corpo que nao e JSON"
+            );
+            // Quem chegou aqui tem um token valido para este canal: e erro de
+            // formato, nao forja. 400, nao 401 — e a distincao nao vaza nada
+            // para quem nao tem token, que sai no 401 antes.
+            return (StatusCode::BAD_REQUEST, "google chat: malformed body");
+        }
     };
 
     let Some((space, user_id, user_name, texto)) = mensagem_de_texto(&payload) else {

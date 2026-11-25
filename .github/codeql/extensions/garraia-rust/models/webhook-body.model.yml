@@ -1,0 +1,41 @@
+# Barreira de `rust/unsafe-deserialization` (CWE-502) para o corpo dos
+# webhooks push.
+#
+# A query alerta todo dado remoto que chega a `serde_json::from_slice` & cia.
+# e só reconhece como barreira um valor numérico, booleano ou enum sem campos
+# — ela não enxerga uma checagem de tamanho. O help da própria regra manda
+# "validar o tamanho da entrada antes de desserializar"; esta linha diz ao
+# CodeQL qual é a função do repositório que faz isso.
+#
+# `garraia_channels::webhook_body::dentro_do_teto` devolve o corpo SÓ se ele
+# cabe em `MAX_WEBHOOK_BODY_BYTES`. O valor de retorno é o corpo validado, e é
+# nele que a barreira fica.
+#
+# O que isto NÃO garante: a barreira vale para QUALQUER sink de
+# desserialização alcançado pelo valor de retorno, seja qual for o tipo de
+# destino — o `barrierModel` não condiciona ao tipo. Tamanho conferido não
+# torna seguro desserializar num tipo perigoso (`typetag`, objeto de trait).
+# Por isso a função é PRIVADA ao módulo e tem um consumidor só,
+# `json_limitado`, cujo destino é fixo em `serde_json::Value`. Se um dia ela
+# virar `pub`, ou ganhar um segundo consumidor com outro tipo de destino, esta
+# linha tem de ser reauditada antes.
+#
+# O que isto NÃO faz:
+#   - não desliga a regra, nem para um arquivo nem para o repositório;
+#   - não dispensa alerta nenhum (não é o ledger de
+#     docs/security/codeql-suppressions.json);
+#   - não cobre quem parseia sem passar pela função: um handler novo com
+#     `serde_json::from_slice(&body)` direto continua sendo alertado.
+#
+# Ao mexer aqui: uma barreira errada esconde achado real. A função declarada
+# tem de continuar sendo um validador de verdade — os testes
+# `o_teto_e_inclusivo` e `json_valido_acima_do_teto_nem_chega_ao_parser` em
+# `crates/garraia-channels/src/webhook_body.rs` são o que sustenta esta linha.
+# Renomear ou mover a função sem atualizar o caminho abaixo reabre os alertas
+# (falha para o lado seguro).
+extensions:
+  - addsTo:
+      pack: codeql/rust-all
+      extensible: barrierModel
+    data:
+      - ["garraia_channels::webhook_body::dentro_do_teto", "ReturnValue", "unsafe-deserialization", "manual"]

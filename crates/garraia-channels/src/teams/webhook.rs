@@ -28,6 +28,7 @@ use tracing::{info, warn};
 
 use super::TeamsChannel;
 use super::auth::{extrair_bearer, mesma_service_url};
+use crate::webhook_body::{CorpoRecusado, json_limitado};
 
 /// Estado compartilhado com o handler: os canais Teams configurados.
 pub type TeamsState = Arc<Vec<Arc<TeamsChannel>>>;
@@ -58,13 +59,24 @@ pub async fn teams_webhook(
         return (StatusCode::UNAUTHORIZED, UNAUTHORIZED_BODY);
     };
 
-    // So agora o corpo vira JSON.
-    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        warn!(
-            canal = channel.name(),
-            "teams: token valido mas corpo que nao e JSON"
-        );
-        return (StatusCode::BAD_REQUEST, "teams: malformed body");
+    // So agora o corpo vira JSON — e com o tamanho conferido antes do parse.
+    let payload = match json_limitado(&body) {
+        Ok(payload) => payload,
+        Err(CorpoRecusado::GrandeDemais) => {
+            warn!(
+                canal = channel.name(),
+                bytes = body.len(),
+                "teams: token valido mas corpo acima do teto"
+            );
+            return (StatusCode::PAYLOAD_TOO_LARGE, "teams: body too large");
+        }
+        Err(CorpoRecusado::JsonInvalido) => {
+            warn!(
+                canal = channel.name(),
+                "teams: token valido mas corpo que nao e JSON"
+            );
+            return (StatusCode::BAD_REQUEST, "teams: malformed body");
+        }
     };
 
     let service_url_do_corpo = payload
