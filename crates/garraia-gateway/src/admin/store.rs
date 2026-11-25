@@ -1294,21 +1294,36 @@ impl AdminStore {
 
     /// The PBKDF2 parameters the master key was derived with, if this
     /// installation has already been through the re-key.
-    pub fn kdf_params(&self) -> Option<StoredKdfParams> {
-        self.conn
-            .query_row(
-                "SELECT version, salt, iterations FROM kdf_params WHERE id = 1",
-                [],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)? as u32,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)? as u32,
-                    ))
-                },
-            )
-            .ok()
-            .filter(|(_, salt, iterations)| !salt.is_empty() && *iterations > 0)
+    ///
+    /// `Ok(None)` means exactly one thing: **there is no row**. A row that is
+    /// there but cannot be read is an `Err`, never `None` (#1992). The
+    /// difference decides the boot: no row means "not re-keyed yet", and the
+    /// caller answers that by deriving the legacy key and re-keying — which,
+    /// for a row that merely failed to parse, would be re-keying secrets that
+    /// are not under the legacy key, and then running on it.
+    pub fn kdf_params(&self) -> Result<Option<StoredKdfParams>, String> {
+        let row = self.conn.query_row(
+            "SELECT version, salt, iterations FROM kdf_params WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        );
+        let (version, salt, iterations) = match row {
+            Ok(row) => row,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(e) => return Err(format!("the row cannot be read ({e})")),
+        };
+        // `as u32` would wrap a negative count into ~4 billion iterations.
+        let version = u32::try_from(version)
+            .map_err(|_| format!("the parameter version {version} is out of range"))?;
+        let iterations = u32::try_from(iterations)
+            .map_err(|_| format!("the iteration count {iterations} is out of range"))?;
+        Ok(Some((version, salt, iterations)))
     }
 
     /// Overwrite every secret ciphertext **and** record the KDF parameters that
@@ -2364,5 +2379,68 @@ mod tests {
         let store = test_store();
         store.ensure_totp_columns().expect("segunda passada");
         store.ensure_totp_columns().expect("terceira passada");
+    }
+
+    // ── #1992: `kdf_params` distingue "sem linha" de "linha ilegivel" ────
+
+    #[test]
+    fn kdf_params_is_none_only_when_there_is_no_row() {
+        let mut store = AdminStore::in_memory().expect("in-memory store");
+        assert_eq!(store.kdf_params(), Ok(None));
+
+        let recorded = (1u32, "c2FsdA==".to_string(), 600_000u32);
+        store
+            .apply_secret_rekey(&[], &[], &[], &recorded)
+            .expect("record");
+        assert_eq!(store.kdf_params(), Ok(Some(recorded)));
+    }
+
+    /// Antes do #1992 este leitor devolvia `None` para salt vazio, contagem
+    /// zero e qualquer erro de leitura. `None` e a resposta de "instalacao que
+    /// ainda nao foi re-chaveada", e o boot respondia a ela derivando a chave
+    /// do salt constante. Julgar a linha e trabalho de quem deriva
+    /// (`shared::usable_stored_params`); aqui ela so nao pode sumir.
+    #[test]
+    fn kdf_params_never_reports_a_damaged_row_as_absent() {
+        let store = AdminStore::in_memory().expect("in-memory store");
+
+        // Contagem zero e salt vazio: chegam ao chamador como estao.
+        store
+            .conn
+            .execute(
+                "INSERT INTO kdf_params (id, version, salt, iterations) VALUES (1, 1, '', 0)",
+                [],
+            )
+            .expect("insert");
+        assert_eq!(store.kdf_params(), Ok(Some((1, String::new(), 0))));
+
+        // Negativo: `as u32` transformava -1 em ~4 bilhoes de iteracoes.
+        store
+            .conn
+            .execute("UPDATE kdf_params SET iterations = -1 WHERE id = 1", [])
+            .expect("update");
+        let err = store.kdf_params().expect_err("fora da faixa");
+        assert!(err.contains("iteration count -1"), "{err}");
+
+        store
+            .conn
+            .execute(
+                "UPDATE kdf_params SET iterations = 600000, version = -3 WHERE id = 1",
+                [],
+            )
+            .expect("update");
+        let err = store.kdf_params().expect_err("fora da faixa");
+        assert!(err.contains("parameter version -3"), "{err}");
+
+        // Tipo errado na coluna (SQLite nao impoe): erro de leitura, nao `None`.
+        store
+            .conn
+            .execute(
+                "UPDATE kdf_params SET version = 1, salt = x'00ff' WHERE id = 1",
+                [],
+            )
+            .expect("update");
+        let err = store.kdf_params().expect_err("blob no lugar de texto");
+        assert!(err.contains("cannot be read"), "{err}");
     }
 }

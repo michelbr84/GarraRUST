@@ -107,6 +107,22 @@ two operational notes come with it:
   clear the second factor in the database and enroll again. A `master.key` that
   exists but cannot be used is preserved as `master.key.unreadable` and logged
   loudly rather than silently replaced.
+- **A damaged `kdf_params` row refuses the boot (#1992).** With
+  `GARRAIA_ADMIN_KEY` or `GARRAIA_VAULT_PASSPHRASE` set, the master key is
+  derived from the passphrase and the salt recorded in the single row of
+  `kdf_params` in `admin.db`. If that row is there but is not what the gateway
+  records (unknown version, salt that is not 32 bytes of base64, fewer than
+  600 000 iterations, unreadable column), the gateway **does not start** and
+  the error names the reason. It used to fall back to the pre-2026-08-29
+  shared salt and keep running, which opened none of the existing secrets and
+  encrypted every new one under the weaker key. The fix is to restore
+  `admin.db` from a backup; without the original salt the stored admin
+  secrets cannot be recovered, and the remaining way out is to move
+  `admin.db` aside and set the console up again. The same refusal applies
+  when the system random number generator fails while the salt or
+  `master.key` is being generated. A re-key that merely *fails* (a secret
+  does not open with the legacy key) is still deferred to the next start, not
+  refused.
 - **Locked out by the 15-minute window and do not want to disable 2FA?** Clear
   just the counter, with the gateway stopped:
   `sqlite3 "$HOME/.garraia/data/admin.db" "DELETE FROM totp_attempts;"`
