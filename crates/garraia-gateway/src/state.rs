@@ -1323,10 +1323,12 @@ impl AppState {
     /// no `auto` continua limitado pela superficie. O operador nao recebe teto.
     async fn exec_context_for_inner(&self, session_id: &str, user_id: Option<&str>) -> ExecContext {
         let mut exec = self.exec_context_base(session_id, user_id).await;
-        if exec.teto.is_none() {
-            let operador = crate::channels_view::sessao_do_operador(self, session_id).await;
-            exec.teto = crate::channels_view::teto_da_superficie(operador);
-        }
+        // Camada PROPRIA e incondicional: o teto da superficie reflete a prova
+        // de operador da sessao e nao pode ser ampliado (nem suprimido) pelo
+        // teto do principal — `exec.teto` continua sendo a camada do principal,
+        // composta por E com esta em `ToolGate`.
+        let operador = crate::channels_view::sessao_do_operador(self, session_id).await;
+        exec.teto_da_superficie = crate::channels_view::teto_da_superficie(operador);
         exec
     }
 

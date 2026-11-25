@@ -156,6 +156,19 @@ pub struct TetoDeCapacidades {
     pub politica: ToolPolicy,
 }
 
+impl TetoDeCapacidades {
+    /// O teto fail-closed de quem chega SEM prova de operador: o mesmo
+    /// `Nivel::Read` (sem escrita) que a superficie remota aplica. E o que o
+    /// [`crate::exec_context::ExecContext::default`] carrega, para que nenhuma
+    /// API de conveniencia conceda privilegio administrativo em silencio.
+    pub fn sem_prova_de_operador() -> Self {
+        Self {
+            nome: "sem prova de operador (fail-closed)".to_string(),
+            politica: politica_do_nivel(Nivel::Read, false),
+        }
+    }
+}
+
 /// Os niveis de acesso do WhatsApp (#1398), compilados em [`ToolPolicy`] por
 /// [`politica_do_nivel`]. Presets, nao modos: valem como **teto** sobre o
 /// modo que a sessao escolher.
@@ -560,6 +573,12 @@ pub struct ToolGate {
     /// O teto do principal (#1391/#1392), composto por E com o perfil: o
     /// modo libera o que o teto tambem libera. `None` = sem teto.
     teto: Option<TetoDeCapacidades>,
+    /// O teto da superficie (#1665 e follow-up de fronteira): a camada que
+    /// reflete a prova (ou ausencia) de operador da sessao, aplicada em todo
+    /// turno e que NENHUMA outra camada pode ampliar. Composta por E com
+    /// `teto` e com o perfil em [`Self::permite_com_capacidades`] — trocar de
+    /// modo, de perfil ou de principal nao abre o que ela fecha.
+    teto_da_superficie: Option<TetoDeCapacidades>,
     /// O perfil que vale neste turno, se algum vale.
     ///
     /// Guarda o perfil inteiro, e nao so a `ToolPolicy`, porque o mesmo perfil
@@ -617,6 +636,7 @@ impl ToolGate {
     pub fn sem_politica() -> Self {
         Self {
             teto: None,
+            teto_da_superficie: None,
             profile: None,
             nome: None,
         }
@@ -626,6 +646,7 @@ impl ToolGate {
     pub fn from_profile(profile: &ModeProfile) -> Self {
         Self {
             teto: None,
+            teto_da_superficie: None,
             nome: Some(profile.name.clone()),
             profile: Some(profile.clone()),
         }
@@ -633,6 +654,13 @@ impl ToolGate {
     /// O mesmo portao, com o teto do principal por cima (#1391/#1392).
     pub fn com_teto(mut self, teto: Option<TetoDeCapacidades>) -> Self {
         self.teto = teto;
+        self
+    }
+    /// O mesmo portao, com o teto da superficie por cima. Camada PROPRIA:
+    /// `com_teto` nao a toca, e sobrescrever o teto do principal nao a
+    /// amplia — as duas camadas sao compostas por E na decisao.
+    pub fn com_teto_de_superficie(mut self, teto: Option<TetoDeCapacidades>) -> Self {
+        self.teto_da_superficie = teto;
         self
     }
     /// A ferramenta pode rodar, dadas as classes dela? (#1385)
@@ -644,7 +672,9 @@ impl ToolGate {
         tool_name: &str,
         capacidades: &[crate::capacidades::Capacidade],
     ) -> bool {
-        self.modo_permite(tool_name, capacidades) && self.teto_permite(tool_name, capacidades)
+        self.modo_permite(tool_name, capacidades)
+            && self.teto_permite(tool_name, capacidades)
+            && self.superficie_permite(tool_name, capacidades)
     }
     /// A recusa do portao para esta ferramenta, **por camada** (#1915):
     /// `None` exatamente quando [`Self::permite_com_capacidades`] e `true`
@@ -677,14 +707,26 @@ impl ToolGate {
         if !self.modo_permite(tool_name, capacidades) {
             return Self::recusa(tool_name, self.nome_do_modo().unwrap_or(""));
         }
-        match self.teto.as_ref() {
-            Some(t) if !politica_permite(&t.politica, tool_name, capacidades) => format!(
-                "A ferramenta `{tool_name}` nao e permitida pela politica de acesso `{}` de quem \
-                 fala nesta conversa. Siga sem ela, ou peca ao administrador do canal.",
+        if let Some(t) = self.teto.as_ref()
+            && !politica_permite(&t.politica, tool_name, capacidades)
+        {
+            return format!(
+                "A ferramenta `{tool_name}` nao e permitida pela politica de acesso `{}` de \
+                 quem fala nesta conversa. Siga sem ela, ou peca ao administrador do canal.",
                 t.nome
-            ),
-            _ => Self::recusa(tool_name, self.nome_do_modo().unwrap_or("")),
+            );
         }
+        if let Some(t) = self.teto_da_superficie.as_ref()
+            && !politica_permite(&t.politica, tool_name, capacidades)
+        {
+            return format!(
+                "A ferramenta `{tool_name}` excede o teto da superficie desta sessao (`{}`). \
+                 Trocar de modo nao amplia este limite; use uma superficie de operador ou \
+                 peca ao administrador do canal.",
+                t.nome
+            );
+        }
+        Self::recusa(tool_name, self.nome_do_modo().unwrap_or(""))
     }
 
     /// O portao para um contexto de execucao, **sem** olhar a mensagem.
@@ -698,6 +740,7 @@ impl ToolGate {
             None => Self::sem_politica(),
         }
         .com_teto(exec.teto.clone())
+        .com_teto_de_superficie(exec.teto_da_superficie.clone())
     }
 
     /// O portao do turno: igual ao [`Self::from_exec`], exceto em `auto`.
@@ -723,7 +766,9 @@ impl ToolGate {
     /// antes de chamar e passar esse nome no `ExecContext`; este caminho e o
     /// piso, e vale para a CLI, que monta o proprio runtime.
     pub fn para_o_turno(exec: &crate::exec_context::ExecContext, user_text: &str) -> Self {
-        Self::para_o_turno_sem_teto(exec, user_text).com_teto(exec.teto.clone())
+        Self::para_o_turno_sem_teto(exec, user_text)
+            .com_teto(exec.teto.clone())
+            .com_teto_de_superficie(exec.teto_da_superficie.clone())
     }
     fn para_o_turno_sem_teto(exec: &crate::exec_context::ExecContext, user_text: &str) -> Self {
         // Modo customizado (#986) chega com o perfil pronto de quem tem banco.
@@ -781,6 +826,10 @@ impl ToolGate {
             .as_ref()
             .is_some_and(|p| restringe(&p.tool_policy))
             || self.teto.as_ref().is_some_and(|t| restringe(&t.politica))
+            || self
+                .teto_da_superficie
+                .as_ref()
+                .is_some_and(|t| restringe(&t.politica))
     }
 
     /// O perfil ligou `whitelist_mode` e deixou `allowed` vazia?
@@ -899,6 +948,18 @@ impl ToolGate {
         capacidades: &[crate::capacidades::Capacidade],
     ) -> bool {
         match self.teto.as_ref() {
+            Some(t) => politica_permite(&t.politica, tool_name, capacidades),
+            None => true,
+        }
+    }
+
+    /// A camada da superficie tambem e por E: so ela barra, ja basta.
+    fn superficie_permite(
+        &self,
+        tool_name: &str,
+        capacidades: &[crate::capacidades::Capacidade],
+    ) -> bool {
+        match self.teto_da_superficie.as_ref() {
             Some(t) => politica_permite(&t.politica, tool_name, capacidades),
             None => true,
         }

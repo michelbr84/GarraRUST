@@ -1832,14 +1832,25 @@ async fn execute_scheduled_task_inner(
     let history = state.session_history(&task.session_id);
     let continuity_key = state.continuity_key().map(|k| k.as_str().to_string());
 
+    // Fronteira de autorizacao: a tarefa agendada executa com o CONTEXTO DA
+    // SESSAO que a autorizou (superficie gravada antes do turno), nunca com um
+    // contexto privilegiado implicito. Agendamento nao eleva privilegio.
+    let exec = state
+        .exec_context_for_msg(
+            &task.session_id,
+            Some(task.user_id.as_str()),
+            Some(&task.payload),
+        )
+        .await;
     let response_text = state
         .agents
-        .process_heartbeat(
+        .process_heartbeat_with_exec(
             &task.session_id,
             &task.payload,
             &history,
             continuity_key.as_deref(),
             Some(task.user_id.as_str()),
+            &exec,
         )
         .await?;
 

@@ -137,13 +137,18 @@ pub struct RestV1FullState {
     pub sse_connections: Arc<DashMap<Uuid, Arc<AtomicUsize>>>,
     /// Plan 0240 (GAR-759): AgentRuntime shared with AppState for bot replies.
     pub agents: Arc<AgentRuntime>,
+    /// Fronteira de autorizacao (follow-up do #1666): o `AppState` inteiro, para
+    /// que o turno do bot passe pelo CONSTRUTOR CENTRAL de contexto
+    /// (`exec_context_for_msg`) como todo turno de canal — a decisao de
+    /// operador/superficie vive la, e nao pode ser duplicada aqui.
+    pub app: Arc<AppState>,
 }
 
 impl RestV1FullState {
     /// Try to build from the gateway's `AppState`. Returns `None`
     /// unless BOTH auth is configured AND `AppPool` was wired (i.e.
     /// `GARRAIA_APP_DATABASE_URL` is set and the connect succeeded).
-    pub fn from_app_state(app: &AppState) -> Option<Self> {
+    pub fn from_app_state(app: &Arc<AppState>) -> Option<Self> {
         Some(Self {
             auth: RestV1AuthState::from_app_state(app)?,
             app_pool: app.app_pool.clone()?,
@@ -151,6 +156,7 @@ impl RestV1FullState {
             chat_events: app.chat_events.clone(),
             sse_connections: app.sse_connections.clone(),
             agents: app.agents.clone(),
+            app: Arc::clone(app),
         })
     }
 

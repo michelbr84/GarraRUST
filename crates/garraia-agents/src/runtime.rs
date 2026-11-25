@@ -2081,6 +2081,12 @@ impl AgentRuntime {
     }
 
     /// Same as `process_message` but includes continuity/user context for shared memory.
+    ///
+    /// **Fail-closed**: sem `ExecContext` explicito, o turno roda sob o teto de
+    /// leitura de [`ExecContext::sem_prova_de_operador`] — nenhuma API de
+    /// conveniencia concede privilegio administrativo em silencio. Quem tem
+    /// estado de sessao usa [`Self::process_message_with_exec`] com o contexto
+    /// do construtor central.
     #[instrument(skip_all, fields(session_id = %session_id, has_user_id = user_id.is_some()))]
     pub async fn process_message_with_context(
         &self,
@@ -2100,13 +2106,19 @@ impl AgentRuntime {
             None,
             None,
             None,
-            &ExecContext::default(),
+            &ExecContext::sem_prova_de_operador(),
         )
         .await
     }
 
     /// Process a scheduled heartbeat message. Tools receive `is_heartbeat = true`
     /// so that recursive scheduling is blocked.
+    ///
+    /// **Fail-closed**: sem `ExecContext` explicito, o turno agendado roda sob o
+    /// teto de leitura de [`ExecContext::sem_prova_de_operador`] — agendamento
+    /// nunca eleva privilegio. Quem tem estado de sessao usa
+    /// [`Self::process_heartbeat_with_exec`], preservando o vinculo com quem
+    /// autorizou a tarefa.
     #[instrument(skip_all, fields(session_id = %session_id, has_user_id = user_id.is_some()))]
     pub async fn process_heartbeat(
         &self,
@@ -2123,7 +2135,59 @@ impl AgentRuntime {
             continuity_key,
             user_id,
             true,
-            &ExecContext::default(),
+            &ExecContext::sem_prova_de_operador(),
+        )
+        .await
+    }
+
+    /// Igual a [`Self::process_message_with_context`], com o `ExecContext` do
+    /// turno EXPLICITO. Caminho de producao: quem tem estado de sessao monta o
+    /// contexto no construtor central (que consulta `sessao_do_operador` e
+    /// aplica o teto da superficie) e chama este metodo.
+    pub async fn process_message_with_exec(
+        &self,
+        session_id: &str,
+        user_text: &str,
+        conversation_history: &[ChatMessage],
+        continuity_key: Option<&str>,
+        user_id: Option<&str>,
+        exec: &ExecContext,
+    ) -> Result<String> {
+        self.process_message_with_agent_config(
+            session_id,
+            user_text,
+            conversation_history,
+            continuity_key,
+            user_id,
+            None,
+            None,
+            None,
+            None,
+            exec,
+        )
+        .await
+    }
+
+    /// Igual a [`Self::process_heartbeat`], com o `ExecContext` EXPLICITO: a
+    /// tarefa agendada executa com o contexto da sessao que a autorizou, e nao
+    /// com um contexto privilegiado implicito.
+    pub async fn process_heartbeat_with_exec(
+        &self,
+        session_id: &str,
+        user_text: &str,
+        conversation_history: &[ChatMessage],
+        continuity_key: Option<&str>,
+        user_id: Option<&str>,
+        exec: &ExecContext,
+    ) -> Result<String> {
+        self.process_message_impl(
+            session_id,
+            user_text,
+            conversation_history,
+            continuity_key,
+            user_id,
+            true,
+            exec,
         )
         .await
     }
@@ -2792,7 +2856,7 @@ impl AgentRuntime {
             model_override,
             None,
             None,
-            &ExecContext::default(),
+            &ExecContext::sem_prova_de_operador(),
         )
         .await
     }

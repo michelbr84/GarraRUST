@@ -257,22 +257,31 @@ pub async fn create_task(
                     ac.max_tokens,
                     // E o `tools:` do agente, que ate aqui nao era lido por
                     // ninguem — ver `politica_do_agente`.
+                    // Excecao DECLARADA (#1666 follow-up): a rota `/a2a/*` e
+                    // gateada pelo bearer `api_key` do gateway (401 sem ele) —
+                    // o chamador carrega a credencial do administrador. Se o
+                    // A2A um dia aceitar chamadores sem essa credencial, o
+                    // teto da superficie volta a valer ANTES do dispatch.
                     &match politica_do_agente(ac) {
                         Some(p) => ExecContext::with_custom_profile(nome_do_alvo.clone(), p),
                         None => ExecContext::default(),
-                    },
+                    }
+                    .com_credencial_de_operador(),
                 )
                 .await
         }
         None => {
+            // Excecao DECLARADA: credencial de operador validada pelo
+            // middleware (rota `/a2a/*`). Ver o comentario do ramo com agente.
             state
                 .agents
-                .process_message_with_context(
+                .process_message_with_exec(
                     &session_id,
                     &user_text,
                     &history,
                     continuity_key.as_deref(),
                     None,
+                    &ExecContext::default().com_credencial_de_operador(),
                 )
                 .await
         }
