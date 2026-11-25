@@ -231,3 +231,14 @@ fn nome_com_igual_recusa() {
 fn saida_vazia_nao_gera_nada() {
     assert!(neutraliza_filtros(b"").expect("ok").is_empty());
 }
+
+/// #1909: `\r\n` do stderr no Windows e uma quebra so — sem linha so de
+/// recuo entre as linhas do git. Um `\r` solto continua abrindo linha.
+#[test]
+fn stderr_recuado_trata_crlf_como_uma_quebra() {
+    assert_eq!(
+        stderr_recuado("fatal: a\r\nhint: b\r\n"),
+        "    fatal: a\n    hint: b"
+    );
+    assert_eq!(stderr_recuado("a\rIntervalo: b"), "    a\n    Intervalo: b");
+}

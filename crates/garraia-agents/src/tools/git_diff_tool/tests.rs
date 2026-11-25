@@ -228,6 +228,12 @@ fn revisao_unica_recusa_saida_de_intervalo_e_de_falha() {
         None
     );
     // Uma linha so, mas o git morreu: nao e revisao.
+    // A forma que `run_git_command` entrega hoje: o bloco vem recuado
+    // (`stderr_recuado`), e o `fatal:` tem de ser visto assim mesmo.
+    assert_eq!(
+        revisao_unica_do_output(&format!("{a}\n\nSTDERR:\n    fatal: qualquer\n")),
+        None
+    );
     assert_eq!(
         revisao_unica_do_output(&format!("{a}\n\nSTDERR:\nfatal: qualquer\n")),
         None

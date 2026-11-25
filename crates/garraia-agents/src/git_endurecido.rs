@@ -190,8 +190,10 @@ pub(crate) fn stderr_para_o_turno(stderr: &str, working_dir: Option<&Path>) -> S
 /// coluna zero. Cada linha sai recuada e sem caractere de controle, entao
 /// nenhuma comeca onde as linhas da tool comecam.
 pub(crate) fn stderr_recuado(stderr: &str) -> String {
+    // `\r\n` e UMA quebra (stderr do git no Windows), nao duas.
     stderr
         .trim()
+        .replace("\r\n", "\n")
         .split(['\n', '\r', '\u{2028}', '\u{2029}'])
         .map(|l| {
             let limpa: String = l
