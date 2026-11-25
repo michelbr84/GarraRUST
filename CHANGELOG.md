@@ -866,6 +866,15 @@ Instalacao: `irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/ins
   teste cobria esses dois ramos: o mutante `!= -> ==` no guard de role e o
   `Debug for PurgePool -> {}` sobreviviam no piloto `cargo-mutants` (mutants.yml).
   O novo `tests/purge_pool_guard.rs` (feature `test-support`) mata os dois.
+- **Web Console: o roteador nao despacha mais para nomes herdados de `Object.prototype` (#1996).**
+  `navigate()` em `admin.html` filtrava a pagina com `if (!pages[page])`, e `pages` e um
+  objeto literal: `#__proto__`, `#constructor` e `#toString` passavam. Abrir o painel em
+  `/admin#__proto__` lancava `TypeError` e deixava a tela presa no "loading". O filtro
+  agora e por posse propria (`Object.prototype.hasOwnProperty.call`), e qualquer nome que
+  o mapa nao declare cai no dashboard. Sem execucao de codigo no caminho antigo — so o
+  travamento da tela de quem abria o link —, mas o alerta CodeQL #17
+  (`js/unvalidated-dynamic-method-call`) estava certo e a dispensa como falso-positivo
+  nao. Spec nova `tests/playwright/admin-router-hash.spec.ts`.
 
 ### Security
 - Excecao temporaria (expira 2026-12-31) para RUSTSEC-2026-0440 (astral-tokio-tar sem manutencao, apenas dev-dependency via testcontainers) em `deny.toml` e `.cargo/audit.toml`, para destravar o gate cargo-deny (#1667).
