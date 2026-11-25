@@ -185,7 +185,7 @@ pub struct WhatsAppLinkedRuntime {
 /// ([`crate::channel_send::SEND_WINDOW`], 60 s). Mais que isso no mesmo chat
 /// e rajada automatica numa conta pessoal; a resposta excedente fica no
 /// historico e o ledger diz `teto`.
-pub const MAX_ENTREGAS_AGENDADAS_POR_JANELA: usize = 3;
+pub(crate) const MAX_ENTREGAS_AGENDADAS_POR_JANELA: usize = 3;
 
 /// #2002: quanto a entrega agendada espera por vaga na fila da ponte antes de
 /// desistir. O agendador roda as tarefas em serie; uma fila travada nao pode

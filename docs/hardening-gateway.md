@@ -162,8 +162,12 @@ list`), e o gateway registra um aviso no log.
 **Entrega da resposta agendada (#2002).** Depois de persistida, a resposta e
 empurrada ao canal no Telegram, Discord, Slack, Matrix e WhatsApp vinculado; o
 ledger registra o desfecho (`delivery`). Endereco tirado do id da sessao so
-vale quando o canal gravado na sessao concorda com o prefixo do id — um
-cliente HTTP escolhe o proprio id (`X-Session-Id`). IRC e iMessage ficam fora
+vale quando o canal gravado na sessao concorda com o prefixo do id **e**
+nenhuma outra superficie escreveu na sessao: um cliente HTTP escolhe o proprio
+id (`X-Session-Id`) e pode criar `discord-<id>` antes do canal, e o canal
+gravado e so o ultimo a escrever. Mensagens, tokens e chaves do Chat Sync so
+crescem e guardam quem veio antes; sessao tocada por outra superficie nao
+recebe (`nao_entregue:origem_mista`). IRC e iMessage ficam fora
 de proposito: o IRC manda o texto cru ao servidor sem quebrar linha (quebra
 de linha na resposta viraria comando IRC), e a sessao de grupo do iMessage
 guarda o nome do grupo, nao um endereco. No WhatsApp vinculado a entrega

@@ -749,12 +749,19 @@ has no active delivery, e.g. web, API or the local console) or
 | Telegram | yes | the chat recorded for the session (`chat_session_keys`) |
 | Discord, Slack, Matrix | yes | the session id (`discord-<channel>`, `slack-<channel>`, `matrix-<room>`) |
 | Linked WhatsApp | yes, with the rules below | the session id (`whatsapp-linked-<chat>`) |
-| IRC, iMessage | no | — |
+| IRC, iMessage | no, on purpose (see below) | — |
+| Signal, Teams, Google Chat, LINE | no (unchanged; the adapter refuses without an address, `nao_entregue:falhou`) | — |
 | Web, API, local console | no channel to push to | — |
 
 An address is only taken from the session id when the session's recorded
-channel matches the id's prefix: a client of the HTTP API chooses its own
-session id (`X-Session-Id`), so the prefix alone proves nothing.
+channel matches the id's prefix **and** nothing but that channel has ever
+written to the session. A client of the HTTP API chooses its own session id
+(`X-Session-Id`) and can create `discord-<id>` before the channel does; the
+session's recorded channel is just the last writer, so once real Discord
+traffic arrives the two would agree. The messages, tokens and Chat Sync keys
+of a session only grow and remember who came first, so a session touched by
+any other surface is refused (`nao_entregue:origem_mista`). Telegram is not
+affected: its address comes from the chat the channel itself recorded.
 
 IRC and iMessage stay out on purpose. IRC sends text to the server without
 splitting lines, so a reply containing a line break would become a raw IRC

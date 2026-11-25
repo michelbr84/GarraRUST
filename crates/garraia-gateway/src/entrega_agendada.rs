@@ -11,9 +11,11 @@
 //! - **Discord, Slack, Matrix**: o id da sessao JA e o endereco
 //!   (`discord-{canal}`, `slack-{canal}`, `matrix-{sala}`, montado pelo
 //!   proprio canal no `bootstrap`). Vale so quando o `channel_id` gravado na
-//!   sessao e o prefixo do id concordam: o `channel_id` e o ULTIMO a gravar a
-//!   linha, e um cliente HTTP escolhe o id da sessao (`X-Session-Id`) — nem
-//!   um nem outro sozinho prova de onde a conversa veio.
+//!   sessao e o prefixo do id concordam E so aquele canal escreveu na sessao
+//!   ([`sessao_so_do_canal`]): o `channel_id` e o ULTIMO a gravar a linha, e
+//!   um cliente HTTP escolhe o id da sessao (`X-Session-Id`) e pode cria-la
+//!   antes do canal — nem o prefixo nem a linha sozinhos provam de onde a
+//!   conversa veio.
 //! - **WhatsApp vinculado**: pela ponte do canal (a saida mora no
 //!   [`crate::bootstrap::WhatsAppLinkedRuntime`]), com tres regras proprias —
 //!   ver abaixo.
@@ -87,6 +89,9 @@ pub(crate) enum Motivo {
     Teto,
     /// O canal recusou o envio.
     Falhou,
+    /// Outra superficie ja escreveu na sessao (ou nao da para saber quem
+    /// escreveu): o id nao prova que a conversa e daquele canal.
+    OrigemMista,
 }
 
 impl Motivo {
@@ -101,6 +106,7 @@ impl Motivo {
             Self::PonteForaDoAr => "ponte_fora_do_ar",
             Self::Teto => "teto",
             Self::Falhou => "falhou",
+            Self::OrigemMista => "origem_mista",
         }
     }
 }
@@ -134,6 +140,10 @@ pub(crate) const CANAIS_COM_ENTREGA: [&str; 4] = ["telegram", "discord", "slack"
 /// O endereco de entrega dos canais cujo id de sessao ja e o endereco.
 /// `None` quando o canal nao e um deles, quando o prefixo do id nao e o do
 /// canal ou quando o resto nao tem a forma de um endereco daquele canal.
+///
+/// Os prefixos sao os `format!("<canal>-{..}")` de `bootstrap/<canal>.rs`, os
+/// mesmos de `channels_view::PREFIXOS_DE_SESSAO`: mudou um prefixo la, muda
+/// aqui (os testes deste modulo fixam os tres).
 pub(crate) fn endereco_pela_sessao(canal: &str, session_id: &str) -> Option<serde_json::Value> {
     let (chave, prefixo, valido): (&str, &str, fn(&str) -> bool) = match canal {
         // Snowflake do Discord: o adaptador faz `parse::<u64>`.
@@ -170,6 +180,47 @@ pub(crate) fn chat_do_whatsapp<'a>(canal: &str, session_id: &'a str) -> Option<&
         .then_some(chat)
 }
 
+/// So `canal` ja escreveu nesta sessao? Exigido antes de entregar por
+/// endereco tirado do id (Discord, Slack, Matrix, WhatsApp vinculado).
+///
+/// O `channel_id` da linha e o ULTIMO a gravar, e o id da sessao pode ter sido
+/// criado por um cliente HTTP antes do canal (`X-Session-Id` numa sessao que
+/// ainda nao existia — o guard do #1462 so protege a que ja existe). Quando o
+/// trafego real do canal chega depois, prefixo e `channel_id` passam a
+/// concordar, e a entrega iria para um canal que quem criou a tarefa nao
+/// originou (achado da auditoria do #2002). As mensagens, os tokens e as
+/// chaves do Chat Sync so crescem e guardam quem veio antes — a mesma leitura
+/// de [`crate::state::sessao_alcancavel_por_id_do_cliente`], ao contrario:
+/// aqui toda marca tem de ser do proprio canal, e pelo menos um turno dele
+/// tem de existir. Metadado ilegivel recusa.
+pub(crate) fn sessao_so_do_canal(s: &garraia_db::SessionSurfaces, canal: &str) -> bool {
+    s.channel_id == canal
+        && !s.unreadable_message_metadata
+        && !s.unreadable_session_metadata
+        && s.message_channels.contains(canal)
+        && s.message_channels
+            .iter()
+            .chain(&s.token_sources)
+            .chain(&s.key_sources)
+            .all(|superficie| superficie == canal)
+}
+
+/// [`sessao_so_do_canal`] lida do `sessions.db`. Sem banco, sessao ausente
+/// ou erro de leitura: `false` — sem provar a origem, nao entrega.
+async fn origem_e_do_canal(state: &crate::state::AppState, session_id: &str, canal: &str) -> bool {
+    let Some(store) = &state.session_store else {
+        return false;
+    };
+    match store.lock().await.get_session_surfaces(session_id) {
+        Ok(Some(s)) => sessao_so_do_canal(&s, canal),
+        Ok(None) | Err(_) => false,
+    }
+}
+
+/// Quanto a entrega espera pelo adaptador. O agendador roda as tarefas em
+/// serie: um canal pendurado nao pode segurar as proximas.
+const ESPERA_DO_ADAPTADOR: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Empurra `texto` (a resposta ja persistida) ao canal da sessao da tarefa e
 /// diz o desfecho. Nunca falha: entrega e transparencia, nao controle — o
 /// teto da execucao ja valeu, e a resposta ja esta no historico.
@@ -181,6 +232,9 @@ pub(crate) async fn entregar(
     let canal = task.channel_id.as_str();
 
     if let Some(chat) = chat_do_whatsapp(canal, &task.session_id) {
+        if !origem_e_do_canal(state, &task.session_id, canal).await {
+            return Entrega::NaoEntregue(Motivo::OrigemMista);
+        }
         let settings = crate::bootstrap::whatsapp_linked_settings(&state.current_config());
         if let Err(motivo) = decidir_whatsapp(&settings, &task.user_id, chat) {
             return Entrega::NaoEntregue(motivo);
@@ -215,10 +269,15 @@ pub(crate) async fn entregar(
                 external_id.as_deref(),
             )
         }
-        "discord" | "slack" | "matrix" => match endereco_pela_sessao(canal, &task.session_id) {
-            Some(endereco) => mesclar(&task.session_metadata, endereco),
-            None => return Entrega::NaoEntregue(Motivo::SemEndereco),
-        },
+        "discord" | "slack" | "matrix" => {
+            let Some(endereco) = endereco_pela_sessao(canal, &task.session_id) else {
+                return Entrega::NaoEntregue(Motivo::SemEndereco);
+            };
+            if !origem_e_do_canal(state, &task.session_id, canal).await {
+                return Entrega::NaoEntregue(Motivo::OrigemMista);
+            }
+            mesclar(&task.session_metadata, endereco)
+        }
         // Os demais (IRC, iMessage, Signal...) seguem como estavam: o
         // adaptador recebe a metadata da sessao e decide. Ver o doc do modulo.
         _ => task.session_metadata.clone(),
@@ -243,14 +302,15 @@ pub(crate) async fn entregar(
             Entrega::SemCanal
         };
     };
-    match adaptador.send_message(&mensagem).await {
-        Ok(()) => Entrega::Entregue,
-        Err(e) => {
+    match tokio::time::timeout(ESPERA_DO_ADAPTADOR, adaptador.send_message(&mensagem)).await {
+        Ok(Ok(())) => Entrega::Entregue,
+        Ok(Err(e)) => {
             // O erro do adaptador pode citar o endereco; o id da tarefa basta
             // para o operador achar o resto.
             tracing::debug!(task = %task.id, canal, error = %e, "tarefa agendada: o canal recusou o envio");
             Entrega::NaoEntregue(Motivo::Falhou)
         }
+        Err(_) => Entrega::NaoEntregue(Motivo::Falhou),
     }
 }
 
@@ -386,6 +446,65 @@ mod tests {
             endereco_pela_sessao("imessage", "imessage-+5511999990000"),
             None
         );
+    }
+
+    // --- origem da sessao ------------------------------------------------
+
+    fn superficies(linha: &str, mensagens: &[&str]) -> garraia_db::SessionSurfaces {
+        garraia_db::SessionSurfaces {
+            tenant_id: "default".to_string(),
+            channel_id: linha.to_string(),
+            key_sources: Default::default(),
+            token_sources: Default::default(),
+            message_channels: mensagens.iter().map(|s| s.to_string()).collect(),
+            unreadable_message_metadata: false,
+            api_logout: false,
+            unreadable_session_metadata: false,
+        }
+    }
+
+    #[test]
+    fn sessao_escrita_so_pelo_canal_e_dele() {
+        assert!(sessao_so_do_canal(
+            &superficies("discord", &["discord"]),
+            "discord"
+        ));
+    }
+
+    /// O cenario da auditoria do #2002: um cliente HTTP cria `discord-<N>`
+    /// antes do canal (`X-Session-Id`, sessao nova e alcancavel), agenda a
+    /// tarefa, e o trafego real do canal N vira o `channel_id` da linha para
+    /// `discord`. O prefixo e o canal concordam; as mensagens denunciam.
+    #[test]
+    fn sessao_tocada_por_outra_superficie_nao_e_do_canal() {
+        let semeada = superficies("discord", &["vscode", "discord"]);
+        assert!(!sessao_so_do_canal(&semeada, "discord"));
+
+        let mut com_token = superficies("discord", &["discord"]);
+        com_token.token_sources.insert("api".to_string());
+        assert!(!sessao_so_do_canal(&com_token, "discord"));
+
+        let mut com_chave = superficies("discord", &["discord"]);
+        com_chave.key_sources.insert("telegram".to_string());
+        assert!(!sessao_so_do_canal(&com_chave, "discord"));
+    }
+
+    #[test]
+    fn sessao_sem_turno_do_canal_ou_ilegivel_nao_e_do_canal() {
+        assert!(
+            !sessao_so_do_canal(&superficies("discord", &[]), "discord"),
+            "nenhum turno do canal: a tarefa nao nasceu la"
+        );
+        assert!(!sessao_so_do_canal(
+            &superficies("slack", &["discord"]),
+            "discord"
+        ));
+        let mut ilegivel = superficies("discord", &["discord"]);
+        ilegivel.unreadable_message_metadata = true;
+        assert!(!sessao_so_do_canal(&ilegivel, "discord"));
+        let mut ilegivel = superficies("discord", &["discord"]);
+        ilegivel.unreadable_session_metadata = true;
+        assert!(!sessao_so_do_canal(&ilegivel, "discord"));
     }
 
     // --- WhatsApp vinculado ---------------------------------------------
@@ -608,10 +727,18 @@ mod tests {
                 falha,
             }));
         }
-        (
-            AppState::new(config, Arc::new(AgentRuntime::new()), canais),
-            enviados,
-        )
+        let mut state = AppState::new(config, Arc::new(AgentRuntime::new()), canais);
+        state.set_session_store(Arc::new(tokio::sync::Mutex::new(
+            garraia_db::SessionStore::in_memory().expect("banco em memoria"),
+        )));
+        (state, enviados)
+    }
+
+    /// O turno em que a tarefa nasceu, gravado como o canal grava.
+    async fn turno_do_canal(state: &AppState, sessao: &str, canal: &str, quem: &str) {
+        state
+            .persist_turn(sessao, Some(canal), Some(quem), "agenda isso", "agendado")
+            .await;
     }
 
     fn tarefa_em(canal: &str, sessao: &str, criador: &str) -> garraia_db::ScheduledTask {
@@ -635,6 +762,7 @@ mod tests {
     #[tokio::test]
     async fn discord_recebe_no_canal_da_sessao() {
         let (state, enviados) = estado_com(Default::default(), Some(("discord", false)));
+        turno_do_canal(&state, "discord-123456789", "discord", "u1").await;
         let task = tarefa_em("discord", "discord-123456789", "u1");
         assert_eq!(entregar(&state, &task, "pronto").await, Entrega::Entregue);
         let enviados = enviados.lock().unwrap();
@@ -656,6 +784,7 @@ mod tests {
     #[tokio::test]
     async fn canal_com_entrega_desconectado_e_offline_e_o_resto_e_sem_entrega() {
         let (state, _) = estado_com(Default::default(), None);
+        turno_do_canal(&state, "slack-C01", "slack", "u1").await;
         assert_eq!(
             entregar(&state, &tarefa_em("slack", "slack-C01", "u1"), "x").await,
             Entrega::NaoEntregue(Motivo::CanalOffline)
@@ -669,6 +798,7 @@ mod tests {
     #[tokio::test]
     async fn recusa_do_adaptador_vira_falhou() {
         let (state, _) = estado_com(Default::default(), Some(("matrix", true)));
+        turno_do_canal(&state, "matrix-!sala:x.org", "matrix", "u1").await;
         let task = tarefa_em("matrix", "matrix-!sala:x.org", "u1");
         assert_eq!(
             entregar(&state, &task, "x").await,
@@ -704,6 +834,7 @@ mod tests {
         state.whatsapp_linked.reter_saida(tx);
         state.whatsapp_linked.set_bridge(BridgeView::Connected);
         let sessao = format!("whatsapp-linked-{}", jid(DONO));
+        turno_do_canal(&state, &sessao, WHATSAPP_LINKED_CONFIG_KEY, DONO).await;
         let task = tarefa_em(WHATSAPP_LINKED_CONFIG_KEY, &sessao, DONO);
         assert_eq!(entregar(&state, &task, "pronto").await, Entrega::Entregue);
         assert!(matches!(rx.try_recv(), Ok(BridgeCommand::Send { .. })));
@@ -716,6 +847,7 @@ mod tests {
         state.whatsapp_linked.reter_saida(tx);
         state.whatsapp_linked.set_bridge(BridgeView::Connected);
         let sessao = format!("whatsapp-linked-{}", jid(BLOQUEADO));
+        turno_do_canal(&state, &sessao, WHATSAPP_LINKED_CONFIG_KEY, BLOQUEADO).await;
         let task = tarefa_em(WHATSAPP_LINKED_CONFIG_KEY, &sessao, BLOQUEADO);
         for _ in 0..=WHATSAPP_LINKED_MAX_ENTREGAS_AGENDADAS {
             assert_eq!(
@@ -724,6 +856,55 @@ mod tests {
             );
         }
         assert!(rx.try_recv().is_err(), "nada foi para a ponte");
+    }
+
+    /// O cenario da auditoria, de ponta a ponta: a sessao `discord-<N>`
+    /// nasceu de um cliente HTTP (turno `vscode`) e so depois recebeu o turno
+    /// do canal, que deixou `discord` na linha. O adaptador nem e chamado.
+    #[tokio::test]
+    async fn sessao_semeada_por_outra_superficie_nao_recebe() {
+        let (state, enviados) = estado_com(Default::default(), Some(("discord", false)));
+        turno_do_canal(&state, "discord-42", "vscode", "cliente-http").await;
+        turno_do_canal(&state, "discord-42", "discord", "u1").await;
+        let task = tarefa_em("discord", "discord-42", "cliente-http");
+        assert_eq!(
+            entregar(&state, &task, "conteudo do atacante").await,
+            Entrega::NaoEntregue(Motivo::OrigemMista)
+        );
+        assert!(enviados.lock().unwrap().is_empty());
+    }
+
+    /// Mesma regra no WhatsApp vinculado, antes da politica e da ponte.
+    #[tokio::test]
+    async fn whatsapp_semeado_por_outra_superficie_nao_recebe() {
+        let (state, _) = estado_com(config_do_whatsapp(), None);
+        let (tx, mut rx) = mpsc::channel(4);
+        state.whatsapp_linked.reter_saida(tx);
+        state.whatsapp_linked.set_bridge(BridgeView::Connected);
+        let sessao = format!("whatsapp-linked-{}", jid(DONO));
+        turno_do_canal(&state, &sessao, "web", "operador").await;
+        turno_do_canal(&state, &sessao, WHATSAPP_LINKED_CONFIG_KEY, DONO).await;
+        let task = tarefa_em(WHATSAPP_LINKED_CONFIG_KEY, &sessao, DONO);
+        assert_eq!(
+            entregar(&state, &task, "x").await,
+            Entrega::NaoEntregue(Motivo::OrigemMista)
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Sem banco nao ha como provar a origem: nao entrega.
+    #[tokio::test]
+    async fn sem_banco_de_sessoes_nao_entrega_por_id() {
+        let state = AppState::new(
+            Default::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        );
+        let task = tarefa_em("discord", "discord-42", "u1");
+        assert_eq!(
+            entregar(&state, &task, "x").await,
+            Entrega::NaoEntregue(Motivo::OrigemMista)
+        );
     }
 
     // --- ledger -----------------------------------------------------------
