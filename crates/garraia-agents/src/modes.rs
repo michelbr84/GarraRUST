@@ -681,6 +681,14 @@ impl ToolGate {
     /// (as duas leem [`recusa_da_politica`]). E o dado estruturado que o
     /// registro de capacidades relata; [`Self::explica_recusa`] continua
     /// sendo a frase que o modelo recebe no despacho.
+    ///
+    /// O campo `teto` cobre as DUAS camadas de teto — a do principal e a da
+    /// superficie. Para quem le o relatorio elas respondem a mesma pergunta
+    /// ("trocar de modo resolve?" — nao), e era nesse mesmo campo que o teto
+    /// da superficie ja aparecia quando ocupava o lugar do teto do principal.
+    /// O motivo do principal vence quando os dois barram. Sem a superficie
+    /// aqui, uma ferramenta barrada SO por ela sairia como liberada no
+    /// relatorio enquanto o turno a recusa.
     pub fn recusa_de(
         &self,
         tool_name: &str,
@@ -690,10 +698,11 @@ impl ToolGate {
             .profile
             .as_ref()
             .and_then(|p| recusa_da_politica(&p.tool_policy, tool_name, capacidades));
-        let teto = self
-            .teto
-            .as_ref()
-            .and_then(|t| recusa_da_politica(&t.politica, tool_name, capacidades));
+        let do_teto = |t: &Option<TetoDeCapacidades>| {
+            t.as_ref()
+                .and_then(|t| recusa_da_politica(&t.politica, tool_name, capacidades))
+        };
+        let teto = do_teto(&self.teto).or_else(|| do_teto(&self.teto_da_superficie));
         (modo.is_some() || teto.is_some()).then_some(RecusaDoPortao { modo, teto })
     }
     /// Por que a ferramenta foi barrada — o modo, ou o teto do principal.
@@ -3184,6 +3193,47 @@ mod recusa_por_camada_tests {
             .recusa_de("hera__hera_ask", &[Capacidade::McpWrite])
             .expect("mcp.write nao passa em read");
         assert_ne!(mutante.motivo(), Some(MotivoDaPolitica::SemClasse));
+    }
+
+    /// O teto da SUPERFICIE entra no relatorio na camada de teto: barrada so
+    /// por ele, a ferramenta nao pode sair como liberada enquanto o turno a
+    /// recusa. Vale sozinho, com o modo e com o teto do principal por cima —
+    /// e a invariante `recusa_de().is_none() == permite` segue de pe.
+    #[test]
+    fn teto_da_superficie_aparece_na_camada_de_teto() {
+        let so_superficie = ToolGate::sem_politica().com_teto_de_superficie(teto(Nivel::Read));
+        let r = recusa(&so_superficie, "bash").expect("superficie read nega bash");
+        assert_eq!(r.camada(), CamadaDaRecusa::Teto);
+        assert_eq!(r.modo, None);
+        assert!(recusa(&so_superficie, "file_read").is_none());
+
+        let com_modo = ToolGate::for_mode_name("ask").com_teto_de_superficie(teto(Nivel::Read));
+        let r = recusa(&com_modo, "file_write").expect("modo e superficie negam");
+        assert_eq!(r.camada(), CamadaDaRecusa::ModoETeto);
+
+        // Principal amplo (sem teto proprio) nao esconde a superficie.
+        let dono_remoto = ToolGate::sem_politica()
+            .com_teto(None)
+            .com_teto_de_superficie(teto(Nivel::Read));
+        assert!(recusa(&dono_remoto, "bash").is_some());
+
+        // Quando os dois tetos barram, o motivo relatado e o do principal.
+        let os_dois = ToolGate::sem_politica()
+            .com_teto(teto(Nivel::Chat))
+            .com_teto_de_superficie(teto(Nivel::Read));
+        let r = recusa(&os_dois, "file_read").expect("chat nega tudo");
+        assert_eq!(r.teto, Some(MotivoDaPolitica::SemFerramentas));
+
+        for portao in [&so_superficie, &com_modo, &dono_remoto, &os_dois] {
+            for nome in ["bash", "file_read", "file_write", "web_search"] {
+                let caps = capacidades_nativas(nome);
+                assert_eq!(
+                    portao.recusa_de(nome, caps).is_none(),
+                    portao.permite_com_capacidades(nome, caps),
+                    "relatorio e enforcement divergem em `{nome}`"
+                );
+            }
+        }
     }
 
     #[test]

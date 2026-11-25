@@ -1605,7 +1605,12 @@ mod tests {
                 (
                     crate::prova_do_dono::dono_provado_neste_turno(&st, sid, Some("7978617919")),
                     crate::channels_view::sessao_do_operador(&st, sid).await,
-                    st.exec_context_for(sid, None).await.teto.is_some(),
+                    // Camada propria desde a fronteira de autorizacao
+                    // (follow-up do #1666): e nela que o piso Read mora.
+                    st.exec_context_for(sid, None)
+                        .await
+                        .teto_da_superficie
+                        .is_some(),
                 )
             })
             .await;

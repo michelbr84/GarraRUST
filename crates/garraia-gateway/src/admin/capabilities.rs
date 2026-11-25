@@ -43,10 +43,12 @@ async fn portao_com_teto_de_superficie(
     let teto = crate::channels_view::teto_da_superficie(operador);
     match (escolhido, teto) {
         (None, None) => None,
+        // Na mesma camada em que o turno o aplica (`exec_context_for_inner`
+        // grava `teto_da_superficie`, nao o teto do principal).
         (modo, teto) => Some(
             modo.map(|m| ToolGate::for_mode_name(&m))
                 .unwrap_or_else(ToolGate::sem_politica)
-                .com_teto(teto),
+                .com_teto_de_superficie(teto),
         ),
     }
 }
@@ -84,12 +86,18 @@ pub async fn admin_capabilities(
             match super::sessoes::principal_e_piso(app, r) {
                 Some((principal, piso)) => {
                     let modo = escolhido.unwrap_or(piso);
+                    // As duas camadas que o turno do WhatsApp vinculado
+                    // aplica (`GatewaySink`): o teto do principal e o da
+                    // superficie resolvido pela prova de identidade. Sem a
+                    // segunda, o painel mostraria como liberado o que o turno
+                    // de um remetente sem identidade provada recusa.
+                    use crate::bootstrap::whatsapp_linked_politica as politica;
                     Some(
-                        garraia_agents::modes::ToolGate::for_mode_name(&modo).com_teto(
-                            crate::bootstrap::whatsapp_linked_politica::teto_do_principal(
+                        garraia_agents::modes::ToolGate::for_mode_name(&modo)
+                            .com_teto(politica::teto_do_principal(&principal))
+                            .com_teto_de_superficie(politica::teto_da_superficie_do_principal(
                                 &principal,
-                            ),
-                        ),
+                            )),
                     )
                 }
                 None => portao_com_teto_de_superficie(app, sid, escolhido).await,
