@@ -9,66 +9,6 @@
   "ledger_md": "docs/security/codeql-suppressions.md",
   "entries": [
     {
-      "alert_number": 40,
-      "rule_id": "rust/hard-coded-cryptographic-value",
-      "path": "crates/garraia-gateway/src/mobile_auth.rs",
-      "line": 763,
-      "sink_snippet": "seed_mobile_user(&store, user_id, \"argon@example.test\", &phc, \"\").await;",
-      "disposition": "dismissed-used-in-tests",
-      "dismissed_reason": "used_in_tests",
-      "justification": "Test fixture inside #[tokio::test] argon2id_register_and_login_roundtrip. The literal salt argument \"\" is a placeholder for the new-format Argon2id PHC string path which embeds its own salt; the legacy column is unused. No production code path reads or writes this value.",
-      "gar_ref": "GAR-491",
-      "ledger_md_anchor": "alert-40"
-    },
-    {
-      "alert_number": 41,
-      "rule_id": "rust/hard-coded-cryptographic-value",
-      "path": "crates/garraia-gateway/src/mobile_auth.rs",
-      "line": 774,
-      "sink_snippet": "let bad = verify_password_and_maybe_upgrade(&store, user_id, &phc, \"\", \"nope\").await;",
-      "disposition": "dismissed-used-in-tests",
-      "dismissed_reason": "used_in_tests",
-      "justification": "Test fixture inside #[tokio::test] argon2id_register_and_login_roundtrip — negative branch verifying that wrong password \"nope\" returns false. Not a real credential; intentional invalid input for assertion coverage.",
-      "gar_ref": "GAR-491",
-      "ledger_md_anchor": "alert-41"
-    },
-    {
-      "alert_number": 42,
-      "rule_id": "rust/hard-coded-cryptographic-value",
-      "path": "crates/garraia-gateway/src/mobile_auth.rs",
-      "line": 895,
-      "sink_snippet": "let password = \"seq-password-xyz\";",
-      "disposition": "dismissed-used-in-tests",
-      "dismissed_reason": "used_in_tests",
-      "justification": "Test fixture inside #[tokio::test] second_login_after_upgrade_still_works. Literal password \"seq-password-xyz\" exercises the PBKDF2 → Argon2id lazy-upgrade transactional path; never persisted, never reaches production.",
-      "gar_ref": "GAR-491",
-      "ledger_md_anchor": "alert-42"
-    },
-    {
-      "alert_number": 44,
-      "rule_id": "rust/hard-coded-cryptographic-value",
-      "path": "crates/garraia-security/src/validation.rs",
-      "line": 233,
-      "sink_snippet": "assert!(InputValidator::validate_password_length(\"short\").is_err());",
-      "disposition": "dismissed-used-in-tests",
-      "dismissed_reason": "used_in_tests",
-      "justification": "Test fixture inside #[test] validate_password_length. Literal \"short\" is intentionally below the minimum length to assert that validate_password_length returns Err. Negative-path coverage; not a real credential.",
-      "gar_ref": "GAR-491",
-      "ledger_md_anchor": "alert-44"
-    },
-    {
-      "alert_number": 45,
-      "rule_id": "rust/hard-coded-cryptographic-value",
-      "path": "crates/garraia-security/src/validation.rs",
-      "line": 234,
-      "sink_snippet": "assert!(InputValidator::validate_password_length(\"validpass123\").is_ok());",
-      "disposition": "dismissed-used-in-tests",
-      "dismissed_reason": "used_in_tests",
-      "justification": "Test fixture inside #[test] validate_password_length. Literal \"validpass123\" is intentionally above the minimum length to assert that validate_password_length returns Ok. Positive-path coverage; not a real credential.",
-      "gar_ref": "GAR-491",
-      "ledger_md_anchor": "alert-45"
-    },
-    {
       "alert_number": 149,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skins_handler.rs",
@@ -76,7 +16,7 @@
       "sink_snippet": "match tokio::fs::write(&file_path, json.as_bytes()).await {",
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "GAR-490 PR A (PR #111, squash 613510d): create_skin guards body.name via validate_skill_name (path_validation.rs) at line 60 before any FS use. Charset [A-Za-z0-9-]{1,128} ASCII-only, strict subset of garraia_skills::validate_skill convention. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::create_skin_with_path_traversal_returns_400 + create_skin_with_dot_in_name_returns_400 + create_skin_rejects_underscore_per_project_convention.",
+      "justification": "GAR-490 PR A (PR #111, squash 613510d): create_skin guards body.name via validate_skill_name (path_validation.rs) at line 59 before any FS use. Charset [A-Za-z0-9-]{1,128} ASCII-only, strict subset of garraia_skills::validate_skill convention. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::create_skin_with_path_traversal_returns_400 + create_skin_with_dot_in_name_returns_400 + create_skin_rejects_underscore_per_project_convention.",
       "gar_ref": "GAR-490",
       "ledger_md_anchor": "alert-149"
     },
@@ -88,7 +28,7 @@
       "sink_snippet": "match tokio::fs::read_to_string(&file_path).await {",
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "GAR-490 PR A (PR #111, squash 613510d): get_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 99 before format!(\"{name}.json\"). Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::get_skin_with_dot_in_name_returns_400.",
+      "justification": "GAR-490 PR A (PR #111, squash 613510d): get_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 98 before format!(\"{name}.json\"). Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::get_skin_with_dot_in_name_returns_400.",
       "gar_ref": "GAR-490",
       "ledger_md_anchor": "alert-147"
     },
@@ -100,7 +40,7 @@
       "sink_snippet": "match tokio::fs::remove_file(&file_path).await {",
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "GAR-490 PR A (PR #111, squash 613510d): delete_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 129 before tokio::fs::remove_file. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::delete_skin_with_backslash_returns_400.",
+      "justification": "GAR-490 PR A (PR #111, squash 613510d): delete_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 128 before tokio::fs::remove_file. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::delete_skin_with_backslash_returns_400.",
       "gar_ref": "GAR-490",
       "ledger_md_anchor": "alert-148"
     },
@@ -164,7 +104,7 @@
       },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "GAR-490 PR A (PR #111, squash 613510d): export_skill guards Path(name) via validate_skill_name (path_validation.rs) at line 519 before std::fs::read_to_string. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::export_skill_rejects_dot_in_name.",
+      "justification": "GAR-490 PR A (PR #111, squash 613510d): export_skill guards Path(name) via validate_skill_name (path_validation.rs) at line 518 before std::fs::read_to_string. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::export_skill_rejects_dot_in_name.",
       "gar_ref": "GAR-490",
       "ledger_md_anchor": "alert-151"
     },
@@ -208,7 +148,7 @@
       },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "GAR-490 PR A (PR #111, squash 613510d): get_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 99 before tokio::fs::read_to_string. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::get_skin_with_dot_in_name_returns_400.",
+      "justification": "GAR-490 PR A (PR #111, squash 613510d): get_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 98 before tokio::fs::read_to_string. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::get_skin_with_dot_in_name_returns_400.",
       "gar_ref": "GAR-490",
       "ledger_md_anchor": "alert-161"
     },
@@ -224,7 +164,7 @@
       },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "GAR-490 PR A (PR #111, squash 613510d): delete_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 129 before file_path.is_file() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::delete_skin_with_backslash_returns_400.",
+      "justification": "GAR-490 PR A (PR #111, squash 613510d): delete_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 128 before file_path.is_file() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::delete_skin_with_backslash_returns_400.",
       "gar_ref": "GAR-490",
       "ledger_md_anchor": "alert-162"
     },
@@ -284,7 +224,7 @@
       },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "GAR-490 PR A (PR #111, squash 613510d): export_skill guards Path(name) via validate_skill_name (path_validation.rs) at line 519 before skill_path.exists() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::export_skill_rejects_dot_in_name.",
+      "justification": "GAR-490 PR A (PR #111, squash 613510d): export_skill guards Path(name) via validate_skill_name (path_validation.rs) at line 518 before skill_path.exists() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::export_skill_rejects_dot_in_name.",
       "gar_ref": "GAR-490",
       "ledger_md_anchor": "alert-159"
     },
@@ -336,25 +276,9 @@
       "sink_snippet": "println!(\"  Cloud provider API key encrypted in vault (entry {entry}).\");",
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "`println!(\"  Cloud provider API key encrypted in vault (entry {entry}).\")` imprime o NOME da entrada do cofre, nunca o segredo. `cloud_secret` e `Option<(&str, &str)>` (wizard/mod.rs:962); o destructuring `(entry, key)` manda o `key` exclusivamente para `vault.set(entry, key)` na linha anterior, e o `println!` interpola apenas `entry`. O `entry` nem e valor de execucao: vem de `preset.env_var.to_string()` (wizard/mod.rs:761), a tabela de presets de provider fixada em compilacao. CodeQL contamina `entry` por ele vir do mesmo tuple que `key`. Re-audit 2026-08-30: esta entrada apontava para outro statement — o `eprintln!` do \"vault open failed\", hoje em wizard/mod.rs:975 —, e era o .json que estava errado; o alerta vivo sempre esteve neste `println!`. O historico de reancoragem que este texto acumulava saiu na re-auditoria de 2026-11-25: desde a #1263 a linha do sink e derivada pelo checker a partir do `sink_snippet`, e o log antigo atualizava a ancora sem atualizar as citacoes internas, que ficaram velhas.",
+      "justification": "`println!(\"  Cloud provider API key encrypted in vault (entry {entry}).\")` imprime o NOME da entrada do cofre, nunca o segredo. `cloud_secret` e `Option<(&str, &str)>` (wizard/mod.rs:962); o destructuring `(entry, key)` manda o `key` exclusivamente para `vault.set(entry, key)` na linha anterior, e o `println!` interpola apenas `entry`. CodeQL contamina `entry` por ele vir do mesmo tuple que `key`. Re-audit 2026-08-30: esta entrada apontava para a linha 640 e descrevia outro statement — o `eprintln!(\"Warning: vault open failed ({e})...\")`, hoje na linha 841. O alerta vivo sempre esteve ancorado no `println!` de :673, e o §5.3 deste ledger ja o descrevia corretamente; era o .json que estava errado. O drift passou despercebido porque `plan_rekey` pulava entradas cujo numero seguia aberto sem validar a chave — corrigido no mesmo PR. **Reancorada 2026-09-16 (PR #1252):** o sink desceu de `:769` para `:826` porque a geracao de credencial em bind exposto acrescentou linhas acima deste ponto em `wizard/mod.rs`. Mesmo statement, mesma funcao, mesmo sink — o `sink_snippet` nao mudou um byte. **Reancorada de novo 2026-09-16 (mesmo PR):** o sink desceu de `:826` para `:867` quando a credencial deixou de ser impressa e a escrita com permissao restrita entrou acima deste ponto. As duas citacoes de linha da propria justificativa tambem estavam velhas e foram corrigidas junto: a declaracao de `cloud_secret` esta em `:828` (era `:630`) e o `eprintln!` do vault em `:841` (era `:643`). Mesmo statement, mesmo sink, `sink_snippet` intocado. **Reancorada uma terceira vez 2026-09-16 (merge do #1256 com a main):** o #1256 e o #1252 reancoraram esta MESMA entrada em paralelo — aquele por 4 linhas de roteamento do `garra whatsapp`, este pela geracao de credencial. Depois do merge as duas somam, entao a linha nao e a de nenhum dos dois lados: foi RECALCULADA na arvore mesclada para `:871`. As duas citacoes internas subiram os mesmos 4: `cloud_secret` em `:828` e o `eprintln!` do vault em `:841`. Mesmo statement, mesmo sink, `sink_snippet` intocado. **Re-auditoria 2026-11-25 (#1991):** as citacoes desta justificativa tinham apodrecido de novo sem que o gate acusasse, porque ele so confere que a linha citada existe, nao o que ha nela. Na arvore de hoje: `cloud_secret` e declarado em wizard/mod.rs:962, o `eprintln!` do vault esta em wizard/mod.rs:975, o destructuring `(entry, key)` em wizard/mod.rs:1003 e o sink em wizard/mod.rs:1005. O SARIF da analise de `4d92764b` confirma o fluxo que a entrada descreve: fonte `cloud_secret`, um passo pelo `Some(...)` do destructuring, sink no `println!`.",
       "gar_ref": "GAR-491",
       "ledger_md_anchor": "alert-113"
-    },
-    {
-      "alert_number": 115,
-      "rule_id": "rust/cleartext-storage-database",
-      "path": "crates/garraia-db/src/session_store.rs",
-      "line": 2237,
-      "disposition": "dismissed-false-positive",
-      "dismissed_reason": "false_positive",
-      "justification": "Falso-positivo. A ancora e o `.prepare(` de `validate_session_token`, sobre SQL literal estatico (desde a #1309 nao ha SQL dinamico neste caminho); os unicos valores ligados a essa query estao em `session_store.rs:2251`: `params![hash_session_token(token), idle_timeout_secs]`. Ou seja, o que chega ao banco e um hash e um inteiro, nunca o token. `hash_session_token` (session_store.rs:2180) e SHA-256 hex de mao unica. O lado da escrita declara o invariante em session_store.rs:2202 (\"Only the hash is persisted; the raw token goes to the caller and is never written to disk\") e ha migracao que reescreve tokens legados em claro, detectando-os por `length(token) <> 64 OR token GLOB '*[^0-9a-f]*'` (session_store.rs:426). CodeQL marca `token: &str` como credencial e ve o parametro fluindo para a query, sem modelar que `hash_session_token` e transformacao irreversivel. O `disambiguator` existe porque o snippet `.prepare(` nao e unico no arquivo. O historico de reancoragem que este texto acumulava saiu na re-auditoria de 2026-11-25: desde a #1263 a linha do sink e derivada pelo checker a partir do `sink_snippet`, e o log antigo atualizava a ancora sem atualizar as citacoes internas, que ficaram velhas.",
-      "gar_ref": "GAR-491",
-      "ledger_md_anchor": "alert-115",
-      "sink_snippet": ".prepare(",
-      "disambiguator": {
-        "kind": "function",
-        "value": "validate_session_token"
-      }
     },
     {
       "alert_number": 144,
@@ -363,7 +287,7 @@
       "line": 228,
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "**Triagem 2026-08-30, reancorada neste PR.** O sink (`:228` aqui; o alerta vivo aponta `:279`, emitido contra a main antes de este PR encolher os sends para wrappers) esta **dentro** de `connect()`, depois do guard: `connect()` chama `ensure_url_vetted()?` antes de qualquer IO, e o `?` aborta se a URL for recusada. O `config` e clonado **antes** do `tokio::spawn` e `SignalConfig` nao tem mutabilidade interior, entao a URL do loop e o mesmo valor imutavel ja validado. CodeQL nao liga o clone a validacao anterior. O que o guard `vet_signal_cli_url` PERMITE (re-auditoria 2026-11-25, antes este texto so dizia que ele roda): `https` em qualquer host, e `http` para host cujos enderecos resolvidos sejam TODOS loopback — nome incluido, nao so IP literal. Residuo registrado, sem mudar a disposicao: o guard resolve o nome e descarta os enderecos, o veredito fica em cache pelo processo, e o `reqwest` resolve de novo a cada request, sem pinar IP; um `http://` apontando para nome que deixe de resolver para loopback mandaria numero e corpo das mensagens em claro. A URL e config do operador, nao dado de request, entao e item de endurecimento (o guard de voz dos #195-#197 fecha isso recusando nome sobre `http`), nao achado. Auditado por `security-auditor`. Este PR reforca a justificativa: o POST de resposta dentro do mesmo spawn passou a chamar `api::send_text`, que roda o guard — antes ele dependia so da ordem de execucao. Contraste com o **#143**, mesma regra e mesmo arquivo, que **nao** entrou neste ledger: era codigo morto (`receive_messages`, `#[allow(dead_code)]`, zero call sites) e foi **removido**, fechando como `Fixed`.",
+      "justification": "Falso-positivo. O que a regra acusa: `rust/cleartext-transmission` segue dado classificado como sensivel ate a URL de uma requisicao — aqui `config.phone_number`, interpolado em `format!(\"{}/v1/receive/{}\", ...)` (crates/garraia-channels/src/signal/mod.rs:222) e entregue ao `client.get(&url)` desta linha. O esquema da URL nao entra na query: o exemplo BAD da documentacao da regra e uma URL `https://`. Duas coisas sustentam a dispensa, e as duas sao necessarias. (1) TRANSPORTE: o GET so roda depois de `connect()` chamar `self.ensure_url_vetted()?` (crates/garraia-channels/src/signal/mod.rs:200), e `vet_signal_cli_url` (crates/garraia-channels/src/signal/mod.rs:133) aceita `https` em qualquer host e `http` apenas quando todos os enderecos resolvidos sao loopback. O `config` e clonado antes do `tokio::spawn` (crates/garraia-channels/src/signal/mod.rs:206) e `SignalConfig` nao tem mutabilidade interior, entao a URL do loop e o valor ja validado. O POST de resposta do mesmo spawn passa por `api::send_text` (crates/garraia-channels/src/signal/mod.rs:302), que roda o mesmo guard. (2) O DADO: o numero no caminho e o do proprio bot do operador, vindo da config, e esta ali porque e o contrato da signal-cli-rest-api (`GET /v1/receive/{number}`) — nao ha como usar o endpoint sem ele, e nenhum numero de terceiro compoe a URL. LIMITE CONHECIDO do item 1: o veredito e memoizado e a resolucao nao e pinada — um `http://nome` que resolvia para loopback na checagem e passe a resolver para fora depois nao e reavaliado (o guard de voz, em crates/garraia-gateway/src/voice_chat.rs, fecha isso aceitando `http` so para IP literal). E endurecimento, nao achado: exige o operador configurar `http://` por nome e alguem controlar a resolucao desse nome. A SUPRESSAO DEIXA DE VALER se o guard passar a aceitar `http` fora de loopback, ou se um numero que nao seja o do proprio bot passar a compor a URL. Re-auditoria 2026-11-25 (#1991): a versao anterior argumentava so o item 1 e dizia que 'CodeQL nao liga o clone a validacao anterior'. O SARIF da analise de `4d92764b` mostra outra coisa: a fonte e `config.phone_number` e a validacao de esquema nunca fez parte do fluxo, porque a regra nao olha esquema — foi por isso que o guard, acrescentado em 2026-08-30, nao fechou o alerta. Sairam tambem as referencias a 'este PR' e ao alerta em `:279`, que descreviam a arvore daquele dia. Contraste com o #143, mesma regra e mesmo arquivo, que nao entrou neste ledger: era codigo morto (`receive_messages`, zero call sites) e foi removido.",
       "gar_ref": "GAR-491",
       "ledger_md_anchor": "alert-144",
       "sink_snippet": "r = client.get(&url).timeout(Duration::from_secs(30)).send() => {"
@@ -380,7 +304,7 @@
       },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "O destino e HTTPS. A URL e `format!(\"{GRAPH_API_BASE}/{phone_number_id}/messages\")` com `const GRAPH_API_BASE: &str = \"https://graph.facebook.com/v21.0\"` (whatsapp/api.rs:5), entao o `.bearer_auth(token)` sai sempre sobre TLS para a Graph API da Meta. O esquema e constante de compilacao e nao ha caminho de config que o altere. CodeQL nao dobra a const dentro do `format!` e por isso trata o esquema como desconhecido.",
+      "justification": "Falso-positivo. O que a regra acusa: `rust/cleartext-transmission` segue dado classificado como sensivel ate a URL de uma requisicao, e a fonte no SARIF e o parametro `phone_number_id`, interpolado no caminho de `format!(\"{GRAPH_API_BASE}/{phone_number_id}/messages\")`. A heuristica casa o nome `phone_number`; o valor nao e um numero de telefone. `phone_number_id` e o identificador opaco que a Meta atribui ao numero da conta Business, vem da config do canal autenticado, e a Graph API exige que ele esteja no caminho (`POST /{phone-number-id}/messages`). O numero do destinatario (`to`) e o texto vao no corpo JSON e o token vai no header por `.bearer_auth(token)` — nenhum deles compoe a URL. O destino e HTTPS por constante de compilacao: `const GRAPH_API_BASE: &str = \"https://graph.facebook.com/v21.0\"` (crates/garraia-channels/src/whatsapp/api.rs:5), sem caminho de config que altere esquema ou host. A SUPRESSAO DEIXA DE VALER se um numero de telefone de verdade, ou qualquer segredo, passar a compor a URL. Re-auditoria 2026-11-25 (#1991): a versao anterior argumentava so que o destino e HTTPS e que 'CodeQL nao dobra a const dentro do `format!`'. Isso responde a `rust/non-https-url`, que e outra regra; esta nao olha o esquema — o exemplo BAD da documentacao dela e uma URL `https://`.",
       "gar_ref": "GAR-491",
       "ledger_md_anchor": "alert-145"
     },
@@ -396,7 +320,7 @@
       },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "Identico ao #145, no `mark_as_read`: mesma const `GRAPH_API_BASE` HTTPS (whatsapp/api.rs:5), mesmo `.bearer_auth(token)` sobre TLS. Contraste deliberado com o canal Signal (alertas 143 e 144, mesma regra): la a URL base vem da config do operador, e o que impede `http://` remoto e um guard em codigo (`vet_signal_cli_url`), nao uma constante. O #143 fechou como `Fixed` (codigo morto removido); o #144 segue neste ledger como falso-positivo, apoiado nesse guard. Corrigido em 2026-11-25: este texto dizia que 143 e 144 \"nao eram falso-positivo\", o que contradizia a entrada do #144.",
+      "justification": "Identico ao #145, em `mark_as_read`: a fonte no SARIF e o mesmo `phone_number_id` no caminho da mesma URL — identificador opaco da conta Business, exigido ali pela Graph API. O `message_id` vai no corpo JSON e o token no header. Mesma const `GRAPH_API_BASE` HTTPS (crates/garraia-channels/src/whatsapp/api.rs:5). Re-auditoria 2026-11-25 (#1991): corrigida junto com o #145, porque o argumento de so-HTTPS respondia a outra regra. A versao anterior tambem dizia que os alertas 143/144 do canal Signal 'nao eram falso-positivo' e que a URL 'foi corrigida em codigo': o #143 saiu como codigo morto, e o #144 continua vivo e dispensado neste ledger — o guard de URL que entrou naquele dia nao e o que a regra observa (ver #144).",
       "gar_ref": "GAR-491",
       "ledger_md_anchor": "alert-146"
     },
@@ -408,7 +332,7 @@
       "sink_snippet": "const LEGACY_KDF_SALT: &[u8] = b\"garraia-admin-secrets-v1\";",
       "disposition": "dismissed-wont-fix",
       "dismissed_reason": "wont_fix",
-      "justification": "LEGACY_KDF_SALT. Nao e falso-positivo nem fixture: o CodeQL esta certo, e um salt PBKDF2 constante. Ele permanece no fonte deliberadamente porque a migracao forward-only introduzida no PR #869 precisa dele para decifrar UMA ULTIMA VEZ os segredos gravados por instalacoes anteriores a 2026-08-29, antes de re-cifra-los sob a chave derivada do salt aleatorio por instalacao. Nenhuma chave nova POR INSTALACAO e derivada dele. `derive_with_passphrase` o usa em tres pontos (admin/shared.rs:204, admin/shared.rs:218, admin/shared.rs:237): como chave `legacy` no arm de migracao pendente; e como chave CORRENTE em dois fallbacks — parametros gravados ilegiveis, e falha de entropia ao gerar o salt novo. Nos dois fallbacks ele volta a ser a chave em uso, de proposito, para nao perder os ciphertexts; no de entropia a instalacao segue no salt compartilhado ate o proximo start tentar de novo (corrigido em 2026-11-25: o texto anterior listava so dois usos e dizia que nenhuma chave era derivada dele). Os parametros novos vivem na tabela kdf_params do admin.db, gravados na mesma transacao que re-cifra os segredos. A constante so pode sair quando nao houver mais instalacoes por migrar, o que este projeto nao tem como afirmar. Verificar o numero do alerta apos o merge: 165 foi atribuido na analise da branch do PR.",
+      "justification": "LEGACY_KDF_SALT. Nao e falso-positivo nem fixture: o CodeQL esta certo, e um salt PBKDF2 constante. Ele permanece no fonte porque a migracao forward-only do PR #869 precisa dele para decifrar uma ultima vez os segredos gravados por instalacoes anteriores a 2026-08-29, antes de re-cifra-los sob a chave derivada do salt aleatorio por instalacao; os parametros novos vivem na tabela kdf_params do admin.db, gravados na mesma transacao que re-cifra os segredos. CORRECAO DA RE-AUDITORIA DE 2026-11-25 (#1991): ate aqui esta entrada afirmava 'Nenhuma chave nova e derivada dele'. E FALSO. `derive_with_passphrase` (crates/garraia-gateway/src/admin/shared.rs:185) usa a constante em tres pontos, e so um deles e a migracao. (a) crates/garraia-gateway/src/admin/shared.rs:218, arm de migracao pendente: deriva a chave `legacy`, usada so para decifrar. E o uso que a entrada descrevia. (b) crates/garraia-gateway/src/admin/shared.rs:204, parametros gravados ilegiveis (base64 invalido ou zero iteracoes): a chave `current`, a que CIFRA, sai do salt constante, com `legacy: None` e `pending: None` — sem migracao a caminho. (c) crates/garraia-gateway/src/admin/shared.rs:237, falha ao gerar o salt por instalacao: idem. Nos estados (b) e (c) todo segredo novo gravado pelo admin e cifrado sob a chave do salt global, com 100k iteracoes, e o unico sinal e um `warn!`. O teste `unusable_stored_params_fall_back_to_legacy_not_to_a_third_key` afirma exatamente isso (`keys.current == legacy`). O estado (b) tem um segundo problema: parametros gravados significam que o re-key ja commitou, entao os segredos existentes estao sob a chave NOVA e a chave legada nao abre nenhum deles. ALCANCE: (b) exige a linha de kdf_params corrompida, ou adulterada por quem ja escreve no admin.db; (c) exige o CSPRNG do sistema falhar. Nenhum dos dois e caminho normal. O QUE ESTA DISPENSA COBRE: a existencia da constante, para a migracao — disposicao `wont_fix`, que continua correta. O QUE ELA NAO COBRE: os dois fallbacks, que sao comportamento a corrigir (falhar fechado em vez de cifrar sob o salt constante) e estao na issue #1992, junto com o doc comment da propria constante, que repete a afirmacao falsa ('No new derivation ever uses these'). A constante so pode sair quando nao houver mais instalacoes por migrar, o que este repositorio nao tem como afirmar.",
       "gar_ref": "PR-869",
       "ledger_md_anchor": "alert-165"
     },
@@ -423,30 +347,6 @@
       "justification": "Mensagem de sucesso do `garra whatsapp link`: `println!(\"\\u2713 {} {}.\", \"Sess\\u00e3o salva em\", store.dir().display())`. O que alcanca o stdout e um CAMINHO DE DIRETORIO, nao credencial e nao PII: `<data_dir>/whatsapp/<account>/`. O `<data_dir>` vem de `AppConfig::resolved_data_dir()` (a propria maquina do usuario). DUAS AFIRMACOES SUSTENTAM ESTA ENTRADA, E CADA UMA TEM UMA PROVA DIFERENTE. (1) O caminho nao pode sair do data dir: `SessionStore::for_data_dir` VALIDA a conta e devolve `Result`, recusando com `SessionError::InvalidAccount` qualquer coisa que nao seja um unico segmento `[A-Za-z0-9_-]{1,64}` (crates/garraia-channels/src/whatsapp_linked/session.rs, `validate_account`). Isso fecha `..`, `/`, `\\\\`, `.`, string vazia, NUL e espaco DE UMA VEZ, por allowlist. E `for_data_dir` e o UNICO construtor visivel fora da crate: a irma `SessionStore::new`, que aceita qualquer PathBuf e nao valida nada, passou a `pub(crate)` na revisao R4 de 2026-09-16 — quem impede um call site de contorna-la e o rustc, e nao a disciplina de quem o escreve. A versao anterior desta linha afirmava 'fecha por construcao, nao depende de nenhum call site' enquanto `new` era `pub`, e isso era falso: um `Context::store()` montado com `new` e conta de runtime passava nos tres testes citados aqui, tanto no traversal quanto na PII. Regressao da declaracao: `the_store_exposes_a_single_validating_constructor` (source_scan.rs), que fica vermelho no dia em que `new` voltar a ser `pub`. Prova: `an_account_that_escapes_the_data_dir_is_refused_before_any_write` (session.rs, modulo de teste) percorre dez contas maliciosas e, no braco em que a validacao aceitasse, GRAVA a sessao cifrada e afirma que o arquivo resultante esta sob o data dir — arrancar o `validate_account` faz o teste reportar o caminho real que a sessao ocupou fora dele. (2) O segmento impresso pela CLI e a constante `DEFAULT_ACCOUNT` (`pub const DEFAULT_ACCOUNT: &str = \"default\"`), e nao um valor de runtime: um numero de telefone casa a regra do item 1 e seria PII no stdout, entao a validacao sozinha nao basta aqui. Prova: `every_session_store_in_the_cli_uses_the_constant_account` (crates/garraia-cli/src/whatsapp/tests.rs) le a arvore INTEIRA de `crates/garraia-cli/src` do disco (recursiva, nao `include_str!` de um arquivo so) e exige que o segundo argumento de cada `for_data_dir` seja literalmente `DEFAULT_ACCOUNT`, lendo o argumento ate o parentese que fecha a chamada — `account.unwrap_or(DEFAULT_ACCOUNT)` e reprovado, e o proprio parser tem teste (`the_account_scan_catches_a_dynamic_account_with_a_constant_fallback`). HISTORICO, PORQUE A JUSTIFICATIVA ANTERIOR ERA FALSA: ate a revisao R4 de 2026-09-16 esta entrada afirmava que o invariante estava \"pinado\" por um teste que varria o fonte exigindo `DEFAULT_ACCOUNT` numa janela de 160 caracteres em `whatsapp.rs`. Duas mutacoes passavam por ele — conta dinamica com a constante como fallback dentro da janela, e um call site novo em outro arquivo, que a janela nem lia — e o `for_data_dir` nao validava nada, de modo que a protecao contra path traversal existia so por acidente, porque o unico chamador passava constante. Guarda textual foi substituida por validacao estrutural; a varredura ficou, corrigida, mas como prova do item 2 apenas. POR QUE SUPRESSAO E NAO CORRECAO: o mesmo segmento de conta ja aparece em mais DOIS `println!` deste comando (`store.blob_path()` no `status` e `store.archive_path()` no aviso de arquivado), e nenhum dos dois foi sinalizado. Deixar de imprimir o segmento APENAS neste sink calaria o scanner sem mudar nada do que ele diz temer, e imprimir onde a sessao foi gravada e exatamente o que a mensagem existe para fazer. A SUPRESSAO DEIXA DE VALER se a CLI passar a escolher a conta em runtime: e o teste (2) que fica vermelho nesse dia, e e ele o gatilho de reauditoria desta linha. Verificar o numero do alerta apos o merge: 173 foi atribuido na analise da branch do PR #1256. Reancorada 2026-09-16: o sink desceu de :631 para :807 porque as revisoes R3/R4 acrescentaram acima deste ponto o tratamento de erro do `for_data_dir`, o `ArchiveGuard` e a extracao de `link_paired`. Mesmo statement, mesmo sink, `sink_snippet` intocado. Reancorada de novo 2026-09-17 (revisao R4, rodada 4): o sink desceu de :807 para :994 porque a mesma rodada acrescentou acima dele o prazo do handshake com o braco de Ctrl+C (`step_with_deadline`), a saida injetavel do `ArchiveGuard` e o comando `garra whatsapp restore`. Mesmo statement, mesmo sink, `sink_snippet` intocado. Reancorada de novo 2026-09-17 (revisao R4, rodada 6): o sink desceu de :1017 para :1018 porque a rodada inverteu a ordem da prova do `restore` — ela agora roda ANTES de mover o arquivado, para que uma passphrase apenas ausente do ambiente nao consuma o `.prev`. Mesmo statement, mesmo sink, `sink_snippet` intocado. Reancorada de novo 2026-09-17 (PR #1256, rodada 9): o sink desceu de :1018 para :1067 — a rodada acrescentou acima dele o `needs_a_terminal`, a mensagem que `link` e `cloud` passaram a imprimir quando nao ha terminal, no lugar de repetirem o texto do menu e sairem 0. A linha nao foi copiada de lugar nenhum: foi RECALCULADA nesta arvore com `grep -n 'store.dir().display()'`. Mesmo statement, mesmo sink, `sink_snippet` intocado. Reancorada de novo 2026-09-17 (PR #1256, rodada 10): o sink desceu de :1067 para :1070 — entrou acima dele a constante `CONNECTING_PULSE_SECS` e o `PairUi::connecting` da `TerminalUi`, o pulso que passou a dar sinal de vida enquanto a ponte esta muda antes do primeiro QR. Linha RECALCULADA nesta arvore com `grep -n`, nao copiada. Mesmo statement, mesmo sink, `sink_snippet` intocado. Reancorada de novo 2026-09-17 (PR #1265, fatia D): o sink desceu de :1070 para :1107 — o merge da fatia D entrou acima dele a integracao de saude do `garra whatsapp status`: o `use` do modulo `health`, `DiskFacts::read` + `classify`, o bloco de `MissingDependencies` e a funcao `print_next_step`. Linha RECALCULADA nesta arvore com `grep -n 'store.dir().display()'`, nao copiada. Mesmo statement, mesmo sink, `sink_snippet` intocado.",
       "gar_ref": "PR-1256",
       "ledger_md_anchor": "alert-176"
-    },
-    {
-      "alert_number": 178,
-      "rule_id": "rust/path-injection",
-      "path": "crates/garraia-channels/src/whatsapp_linked/bridge.rs",
-      "line": 888,
-      "sink_snippet": "match std::fs::metadata(&stamp) {",
-      "disposition": "dismissed-false-positive",
-      "dismissed_reason": "false_positive",
-      "justification": "Falso-positivo de caminho vindo de config do operador, a mesma classe dos 16 `rust/path-injection` do GAR-490. O `dir` de `deps_pending` e o diretorio do bridge Node que o `prepare` recebe (#1373): `PreparoDaPonte::embutido(paths.bridge_dir)` no gateway (crates/garraia-gateway/src/bootstrap/whatsapp_linked.rs) e `ctx.bridge_dir()` na CLI (crates/garraia-cli/src/whatsapp.rs), os dois `<data_dir>/whatsapp/bridge` — so o `data_dir` vem de `AppConfig::resolved_data_dir()` do config.yml do operador; os dois segmentos finais sao constantes. O arquivo lido e o carimbo `DEPS_STAMP_FILE`, nome constante; nenhum byte de request HTTP, de mensagem de canal ou de tool call de LLM alcanca o caminho, e quem controla o config.yml ja controla o processo. O CodeQL marca caminho vindo de config como 'user-provided' porque nao distingue operador local de remetente remoto. A leitura e so `stat` + no maximo 7 bytes do marcador `pending`, sem seguir o conteudo para outro caminho. Deixa de valer se o diretorio do bridge passar a vir de request, canal ou LLM. Corrigido em 2026-11-25: este texto se apoiava no alerta 174 (\"mesma classe do 174\"), que nao tem entrada neste ledger; a classe passou a ser descrita aqui mesmo. O que houve com o 174 nao foi conferido no Security tab nessa re-auditoria.",
-      "gar_ref": "PR-1373",
-      "ledger_md_anchor": "alert-178"
-    },
-    {
-      "alert_number": 177,
-      "rule_id": "rust/path-injection",
-      "path": "crates/garraia-channels/src/whatsapp_linked/bridge.rs",
-      "line": 890,
-      "sink_snippet": "std::fs::read(&stamp).is_ok_and(|bytes| bytes == DEPS_PENDING.as_bytes())",
-      "disposition": "dismissed-false-positive",
-      "dismissed_reason": "false_positive",
-      "justification": "Falso-positivo de caminho vindo de config do operador, a mesma classe dos 16 `rust/path-injection` do GAR-490. O `dir` de `deps_pending` e o diretorio do bridge Node que o `prepare` recebe (#1373): `PreparoDaPonte::embutido(paths.bridge_dir)` no gateway (crates/garraia-gateway/src/bootstrap/whatsapp_linked.rs) e `ctx.bridge_dir()` na CLI (crates/garraia-cli/src/whatsapp.rs), os dois `<data_dir>/whatsapp/bridge` — so o `data_dir` vem de `AppConfig::resolved_data_dir()` do config.yml do operador; os dois segmentos finais sao constantes. O arquivo lido e o carimbo `DEPS_STAMP_FILE`, nome constante; nenhum byte de request HTTP, de mensagem de canal ou de tool call de LLM alcanca o caminho, e quem controla o config.yml ja controla o processo. O CodeQL marca caminho vindo de config como 'user-provided' porque nao distingue operador local de remetente remoto. A leitura e so `stat` + no maximo 7 bytes do marcador `pending`, sem seguir o conteudo para outro caminho. Deixa de valer se o diretorio do bridge passar a vir de request, canal ou LLM. Corrigido em 2026-11-25: este texto se apoiava no alerta 174 (\"mesma classe do 174\"), que nao tem entrada neste ledger; a classe passou a ser descrita aqui mesmo. O que houve com o 174 nao foi conferido no Security tab nessa re-auditoria.",
-      "gar_ref": "PR-1373",
-      "ledger_md_anchor": "alert-177"
     },
     {
       "alert_number": 181,
@@ -480,7 +380,7 @@
       "sink_snippet": ".open(staging_path)",
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "Falso positivo em `append_to_staging` (crates/garraia-gateway/src/rest_v1/uploads.rs:1244): o unico chamador e `patch_upload` (crates/garraia-gateway/src/rest_v1/uploads.rs:756), que passa o `staging_path` construido em crates/garraia-gateway/src/rest_v1/uploads.rs:755 via `staging.staging_path(upload_id)` com `upload_id: Uuid`, nunca dado cru de request (as outras duas construcoes, crates/garraia-gateway/src/rest_v1/uploads.rs:979 em `delete_upload` e crates/garraia-gateway/src/rest_v1/uploads.rs:1075 em `finalize_upload`, alimentam outros sinks). `staging_path` e `staging_dir.join(format!(\"{upload_id}.staging\"))` com `upload_id: Uuid` tipado (crates/garraia-gateway/src/rest_v1/uploads.rs:197): os handlers recebem `Path(upload_id): Path<Uuid>` (crates/garraia-gateway/src/rest_v1/uploads.rs:656 em `patch_upload`, crates/garraia-gateway/src/rest_v1/uploads.rs:875 em `delete_upload`) e o extractor do axum recusa qualquer valor que nao parseie como UUID — 400 antes do handler rodar. Forma canonica: 36 chars de `[0-9a-f-]`, sem traversal; `staging_dir` e canonicalizado no bootstrap. O CodeQL Rust pack nao modela o extractor `Path<Uuid>` como sanitizer. Regressao: `uploads.rs::staging_path_is_traversal_safe` (crates/garraia-gateway/src/rest_v1/uploads.rs:1538).",
+      "justification": "Falso positivo em `append_to_staging` (crates/garraia-gateway/src/rest_v1/uploads.rs:1244): o parametro `staging_path` e construido exclusivamente pelo chamador via `staging.staging_path(upload_id)` com `upload_id: Uuid` (crates/garraia-gateway/src/rest_v1/uploads.rs:755 em `patch_upload`, crates/garraia-gateway/src/rest_v1/uploads.rs:979 em `delete_upload`, crates/garraia-gateway/src/rest_v1/uploads.rs:1075 em `finalize_upload`), nunca de dado cru de request. `staging_path` e `staging_dir.join(format!(\"{upload_id}.staging\"))` com `upload_id: Uuid` tipado (crates/garraia-gateway/src/rest_v1/uploads.rs:197): os handlers recebem `Path(upload_id): Path<Uuid>` (crates/garraia-gateway/src/rest_v1/uploads.rs:656 em `patch_upload`, crates/garraia-gateway/src/rest_v1/uploads.rs:875 em `delete_upload`) e o extractor do axum recusa qualquer valor que nao parseie como UUID — 400 antes do handler rodar. Forma canonica: 36 chars de `[0-9a-f-]`, sem traversal; `staging_dir` e canonicalizado no bootstrap. O CodeQL Rust pack nao modela o extractor `Path<Uuid>` como sanitizer. Regressao: `uploads.rs::staging_path_is_traversal_safe` (crates/garraia-gateway/src/rest_v1/uploads.rs:1538).",
       "gar_ref": "GAR-491",
       "ledger_md_anchor": "alert-183"
     },
@@ -507,86 +407,6 @@
       "justification": "Falso positivo em `delete_upload`. `staging_path` e `staging_dir.join(format!(\"{upload_id}.staging\"))` com `upload_id: Uuid` tipado (crates/garraia-gateway/src/rest_v1/uploads.rs:197): os handlers recebem `Path(upload_id): Path<Uuid>` (crates/garraia-gateway/src/rest_v1/uploads.rs:656 em `patch_upload`, crates/garraia-gateway/src/rest_v1/uploads.rs:875 em `delete_upload`) e o extractor do axum recusa qualquer valor que nao parseie como UUID — 400 antes do handler rodar. Forma canonica: 36 chars de `[0-9a-f-]`, sem traversal; `staging_dir` e canonicalizado no bootstrap. O CodeQL Rust pack nao modela o extractor `Path<Uuid>` como sanitizer. A remocao e best-effort pos-commit do arquivo de staging do proprio upload, nomeado por UUID (crates/garraia-gateway/src/rest_v1/uploads.rs:979). Regressao: `uploads.rs::staging_path_is_traversal_safe` (crates/garraia-gateway/src/rest_v1/uploads.rs:1538).",
       "gar_ref": "GAR-491",
       "ledger_md_anchor": "alert-185"
-    },
-    {
-      "alert_number": 186,
-      "rule_id": "rust/path-injection",
-      "path": "crates/garraia-agents/src/tools/session_workspace.rs",
-      "line": 313,
-      "sink_snippet": "match std::fs::symlink_metadata(caminho) {",
-      "disambiguator": {
-        "kind": "function",
-        "value": "diretorio_de_verdade"
-      },
-      "disposition": "dismissed-false-positive",
-      "dismissed_reason": "false_positive",
-      "justification": "Falso positivo em `diretorio_de_verdade` (disambiguator `diretorio_de_verdade`). Aqui o `caminho` NAO e o subdiretorio da sessao (essa e a origem dos #187/#188): o unico chamador quente passa `self.raiz` (o workspace do operador, verificado e canonicalizado no boot), e o outro e o boot do gateway sobre o `data_dir` do operador. O CodeQL trata caminho vindo de config como 'user-provided'; a linha e checagem read-only com `symlink_metadata` — que NAO segue o link —, ou seja, a defesa contra traversal, nao a vulnerabilidade. Regressao: `session_workspace.rs::o_caminho_fica_sempre_debaixo_da_raiz` (crates/garraia-agents/src/tools/session_workspace.rs:453) e `session_workspace.rs::o_nome_do_subdiretorio_e_sempre_hex_de_32_nunca_escapa_charset` (crates/garraia-agents/src/tools/session_workspace.rs:473).",
-      "gar_ref": "GAR-491",
-      "ledger_md_anchor": "alert-186"
-    },
-    {
-      "alert_number": 187,
-      "rule_id": "rust/path-injection",
-      "path": "crates/garraia-agents/src/tools/session_workspace.rs",
-      "line": 335,
-      "sink_snippet": "match std::fs::symlink_metadata(caminho) {",
-      "disambiguator": {
-        "kind": "function",
-        "value": "garantir_raiz"
-      },
-      "disposition": "dismissed-false-positive",
-      "dismissed_reason": "false_positive",
-      "justification": "Falso positivo em `garantir_raiz` (disambiguator `garantir_raiz`). O `caminho` vem de `garantir_raiz` chamado por `garantir_para_sessao`, que monta `raiz.join(nome_do_subdiretorio(session_id))`: o nome e o digest SHA-256 de 128 bits do `session_id` formatado como 32 hex minusculos (crates/garraia-agents/src/tools/session_workspace.rs:233), charset que nao expressa `..`, separador nem caminho absoluto. O segundo chamador de `garantir_raiz` e o boot do gateway sobre o `data_dir` do operador, canonicalizado no boot. O CodeQL Rust pack nao modela SHA-256-hex como sanitizer de caminho. A linha e a checagem read-only com `symlink_metadata` (recusa `Symlink` sem seguir): e a defesa, nao a vulnerabilidade — o `mkdir` de um componente so nasce 0700 logo abaixo. Regressao: `session_workspace.rs::o_caminho_fica_sempre_debaixo_da_raiz` (crates/garraia-agents/src/tools/session_workspace.rs:453) e `session_workspace.rs::o_nome_do_subdiretorio_e_sempre_hex_de_32_nunca_escapa_charset` (crates/garraia-agents/src/tools/session_workspace.rs:473).",
-      "gar_ref": "GAR-491",
-      "ledger_md_anchor": "alert-187"
-    },
-    {
-      "alert_number": 188,
-      "rule_id": "rust/path-injection",
-      "path": "crates/garraia-agents/src/tools/session_workspace.rs",
-      "line": 352,
-      "sink_snippet": "std::fs::DirBuilder::new().mode(0o700).create(caminho)",
-      "disposition": "dismissed-false-positive",
-      "dismissed_reason": "false_positive",
-      "justification": "Falso positivo em `criar_fechado`. O `caminho` vem de `garantir_raiz` chamado por `garantir_para_sessao`, que monta `raiz.join(nome_do_subdiretorio(session_id))`: o nome e o digest SHA-256 de 128 bits do `session_id` formatado como 32 hex minusculos (crates/garraia-agents/src/tools/session_workspace.rs:233), charset que nao expressa `..`, separador nem caminho absoluto. O segundo chamador de `garantir_raiz` e o boot do gateway sobre o `data_dir` do operador, canonicalizado no boot. O CodeQL Rust pack nao modela SHA-256-hex como sanitizer de caminho. O `mkdir` e de um componente so (sem `recursive`), nasce `0700`, e um link plantado faz o `mkdir` falhar com EEXIST em vez de ser seguido. Regressao: `session_workspace.rs::o_caminho_fica_sempre_debaixo_da_raiz` (crates/garraia-agents/src/tools/session_workspace.rs:453) e `session_workspace.rs::o_nome_do_subdiretorio_e_sempre_hex_de_32_nunca_escapa_charset` (crates/garraia-agents/src/tools/session_workspace.rs:473).",
-      "gar_ref": "GAR-491",
-      "ledger_md_anchor": "alert-188"
-    },
-    {
-      "alert_number": 195,
-      "rule_id": "rust/cleartext-transmission",
-      "path": "crates/garraia-gateway/src/voice_chat.rs",
-      "line": 217,
-      "disposition": "dismissed-false-positive",
-      "dismissed_reason": "false_positive",
-      "justification": "Falso positivo em `catalog` (descoberta do catalogo de voz do OpenRouter, #1754). A URL vem de `remote()` (crates/garraia-gateway/src/voice_chat.rs:89), que so devolve `Remote` depois de `credential_safe_endpoint` (crates/garraia-gateway/src/voice_chat.rs:869) aceitar o endpoint configurado pelo operador: `https` em qualquer host, ou `http` apenas para IP literal de loopback (127.0.0.1/[::1]) — nenhum nome, entao nenhum resolver ou hosts file leva a chave para fora da maquina — e recusa URL com credencial, query ou fragmento. A chave vai so no header `Authorization` (`bearer_auth`), nunca na URL, e o cliente de voz nao segue redirect (crates/garraia-gateway/src/voice_chat.rs:72). Regra ESTRITAMENTE mais forte que a do guard `vet_signal_cli_url` do canal Signal (#144): aqui `http` exige IP literal de loopback, enquanto o guard do Signal aceita nome que resolva para loopback (corrigido em 2026-11-25: este texto dizia \"mesma regra\"). CodeQL nao modela o guard como barreira e trata o esquema da URL formatada como desconhecido. Regressao: `voice_chat.rs::credentials_go_only_to_https_or_a_loopback_ip_literal` (crates/garraia-gateway/src/voice_chat.rs:1005), `voice_chat_contract.rs::credential_never_goes_to_a_cleartext_host_name` (crates/garraia-gateway/tests/voice_chat_contract.rs:884) e `voice_chat_contract.rs::paid_provider_redirect_is_not_followed_with_credentials` (crates/garraia-gateway/tests/voice_chat_contract.rs:432).",
-      "gar_ref": "#1754",
-      "ledger_md_anchor": "alert-195",
-      "sink_snippet": ".get(format!(\"{}/models\", remote.base))"
-    },
-    {
-      "alert_number": 196,
-      "rule_id": "rust/cleartext-transmission",
-      "path": "crates/garraia-gateway/src/voice_chat.rs",
-      "line": 680,
-      "disposition": "dismissed-false-positive",
-      "dismissed_reason": "false_positive",
-      "justification": "Falso positivo em `synthesize` (TTS remoto do Voice Chat, #1754). A URL vem de `remote()` (crates/garraia-gateway/src/voice_chat.rs:89), que so devolve `Remote` depois de `credential_safe_endpoint` (crates/garraia-gateway/src/voice_chat.rs:869) aceitar o endpoint configurado pelo operador: `https` em qualquer host, ou `http` apenas para IP literal de loopback (127.0.0.1/[::1]) — nenhum nome, entao nenhum resolver ou hosts file leva a chave para fora da maquina — e recusa URL com credencial, query ou fragmento. A chave vai so no header `Authorization` (`bearer_auth`), nunca na URL, e o cliente de voz nao segue redirect (crates/garraia-gateway/src/voice_chat.rs:72). Regra ESTRITAMENTE mais forte que a do guard `vet_signal_cli_url` do canal Signal (#144): aqui `http` exige IP literal de loopback, enquanto o guard do Signal aceita nome que resolva para loopback (corrigido em 2026-11-25: este texto dizia \"mesma regra\"). CodeQL nao modela o guard como barreira e trata o esquema da URL formatada como desconhecido. Regressao: `voice_chat.rs::credentials_go_only_to_https_or_a_loopback_ip_literal` (crates/garraia-gateway/src/voice_chat.rs:1005), `voice_chat_contract.rs::credential_never_goes_to_a_cleartext_host_name` (crates/garraia-gateway/tests/voice_chat_contract.rs:884) e `voice_chat_contract.rs::paid_provider_redirect_is_not_followed_with_credentials` (crates/garraia-gateway/tests/voice_chat_contract.rs:432).",
-      "gar_ref": "#1754",
-      "ledger_md_anchor": "alert-196",
-      "sink_snippet": ".post(format!(\"{}/audio/speech\", remote.base))"
-    },
-    {
-      "alert_number": 197,
-      "rule_id": "rust/cleartext-transmission",
-      "path": "crates/garraia-gateway/src/voice_chat.rs",
-      "line": 809,
-      "disposition": "dismissed-false-positive",
-      "dismissed_reason": "false_positive",
-      "justification": "Falso positivo em `transcribe` (STT remoto do Voice Chat, #1754). A URL vem de `remote()` (crates/garraia-gateway/src/voice_chat.rs:89), que so devolve `Remote` depois de `credential_safe_endpoint` (crates/garraia-gateway/src/voice_chat.rs:869) aceitar o endpoint configurado pelo operador: `https` em qualquer host, ou `http` apenas para IP literal de loopback (127.0.0.1/[::1]) — nenhum nome, entao nenhum resolver ou hosts file leva a chave para fora da maquina — e recusa URL com credencial, query ou fragmento. A chave vai so no header `Authorization` (`bearer_auth`), nunca na URL, e o cliente de voz nao segue redirect (crates/garraia-gateway/src/voice_chat.rs:72). Regra ESTRITAMENTE mais forte que a do guard `vet_signal_cli_url` do canal Signal (#144): aqui `http` exige IP literal de loopback, enquanto o guard do Signal aceita nome que resolva para loopback (corrigido em 2026-11-25: este texto dizia \"mesma regra\"). CodeQL nao modela o guard como barreira e trata o esquema da URL formatada como desconhecido. Regressao: `voice_chat.rs::credentials_go_only_to_https_or_a_loopback_ip_literal` (crates/garraia-gateway/src/voice_chat.rs:1005), `voice_chat_contract.rs::credential_never_goes_to_a_cleartext_host_name` (crates/garraia-gateway/tests/voice_chat_contract.rs:884) e `voice_chat_contract.rs::paid_provider_redirect_is_not_followed_with_credentials` (crates/garraia-gateway/tests/voice_chat_contract.rs:432).",
-      "gar_ref": "#1754",
-      "ledger_md_anchor": "alert-197",
-      "sink_snippet": ".post(format!(\"{}/audio/transcriptions\", remote.base))"
     }
   ]
 }

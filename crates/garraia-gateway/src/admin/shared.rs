@@ -56,10 +56,10 @@ const KDF_ITERATIONS: NonZeroU32 = NonZeroU32::new(600_000).unwrap();
 /// changes shape.
 const KDF_PARAMS_VERSION: u32 = 1;
 
-/// Parameters used before 2026-08-29. Referenced **only** by the forward-only
-/// migration in [`migrate_admin_secrets_kdf`], to decrypt secrets one last time
-/// before they are re-encrypted under the per-installation key. No new
-/// derivation ever uses these.
+/// Parameters used before 2026-08-29. Kept for the forward-only migration in
+/// [`migrate_admin_secrets_kdf`], which decrypts secrets one last time before
+/// re-encrypting them under the per-installation key. `derive_with_passphrase`
+/// also falls back to them as the current key (unusable stored params, entropy).
 ///
 /// This is the sole remaining hard-coded cryptographic value in this file and
 /// it exists purely so upgrades do not lose data; see
