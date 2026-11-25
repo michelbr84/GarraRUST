@@ -741,6 +741,26 @@ between users, the safety gate recognises Windows executables (`curl.exe`,
 with the project's permanent signing key (uninstall v0.5.0 once).
 See [What's New in v0.5.1](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.5.1).
 
+**v0.5.2** (Nov 2026) is the stable cut of a series that went through seven
+release candidates. The Web Console gains continuous **Voice Chat** (`#/voice`:
+start a call once, talk without pressing a button each turn, interrupt GarraIA
+by speaking over it, swap STT/model/TTS/voice mid-call). The Desktop app sets
+up who answers without a terminal (local Ollama or OpenRouter, verified with a
+real call) and refuses to write into another Garra installation's config
+without asking. Linked WhatsApp now really converses in the "You" chat (with an
+explicit `access.self_chat` opt-in), answers messages sent during a gateway
+restart, and never drops a message silently. `garra chat` gets execution modes
+(`--mode`, `/mode`, `plan`) and an approval level (`agent.approval`:
+`always` by default, `session`, `never-confirm`, plus `--yolo`), and keeps tool
+calls and results in history across turns. Remote review and diagnostics name
+their evidence: the exact range `git_diff`/`code_review` looked at, the
+executable's SHA-256, the build's commit and tag, and which layer denied a
+tool. Alongside: a firmer safety gate that also stops blocking commands that
+merely quote a dangerous literal, installers that finish an upgrade over a
+running gateway, clean shutdown of MCP process trees, HSTS over https, and a
+round of RUSTSEC fixes (rmcp 3.9.0, wasmtime 50.0.3, SQLite 3.54).
+See [What's New in v0.5.2](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.5.2).
+
 ## Contributing
 
 GarraIA is MIT-licensed open source. Join the
