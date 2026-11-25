@@ -359,9 +359,9 @@ pub fn resolve_admin_encryption_key(store: &mut AdminStore) -> Vec<u8> {
 ///   the current one **in memory** first;
 /// * the writes land in a single SQLite transaction, so a failure mid-way
 ///   leaves the store byte-identical;
-/// * `kdf.json` is written **last**. If the process dies before that, the next
-///   boot simply derives the legacy key again and retries — the ciphertexts are
-///   still under the legacy key because the transaction never committed.
+/// * the new KDF parameters are written to `kdf_params` in that **same**
+///   transaction. If the process dies before it commits, the next boot derives
+///   the legacy key again and retries — the ciphertexts are still under it.
 ///
 /// Returns the number of rows re-encrypted, or `Ok(0)` when there is nothing to
 /// do. Errors are reported to the caller, which logs and carries on with the
