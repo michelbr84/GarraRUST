@@ -63,6 +63,12 @@ rc7, de 2026-11-03 a 2026-11-22). Em relacao a v0.5.1:
   lembradas passam a valer so para o workspace efetivo do turno, e testes
   novos provam que um "sim" e consumido uma vez so e nao sobrevive ao restart
   do gateway.
+- **Fronteira de autorizacao dos turnos** (#1985): os caminhos do runtime
+  que nao recebem contexto explicito passam a ser fail-closed (teto de
+  leitura, sem prova de operador); o teto da superficie e o teto do principal
+  viram camadas que se compoem, e nenhuma amplia a outra; a tarefa agendada
+  roda com a autoridade de quem a criou. `garra tasks list|authorize|revoke`
+  lista e reautoriza tarefas agendadas.
 - **Encerramento limpo** (#1913): servidor MCP stdio encerra a arvore inteira
   de processos, o desligamento do gateway tem teto para canais e requisicoes
   penduradas, e o caminho com TLS encerra de forma graciosa.
@@ -87,6 +93,14 @@ vez de erro do provider; `garraia start` com a porta ou a pasta de config em
 uso sai com exit 69; `plan` deixa de ser nome de modo desconhecido. O padrao
 de `agent.approval` e `always` e o de `access.self_chat` sem a chave e o
 comportamento anterior — o update nao muda nenhum dos dois.
+
+Duas mudancas pedem atencao de quem atualiza (#1985): com o gateway **sem**
+`gateway.api_key`, as tarefas de `/a2a/*` passam a rodar com teto de leitura
+(sem `bash`, escrita ou envio de mensagem) — com a chave configurada nada
+muda; e uma tarefa agendada criada antes desta versao numa sessao remota passa
+a rodar so com leitura, avisando na primeira execucao, ate o operador
+reautorizar com `garra tasks authorize <id> --yes` (sem `--yes` o comando so
+mostra a tarefa e nao muda nada). Tarefa de sessao do operador nao muda.
 
 Instalacao: `irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex`
 (Windows; o espelho que serve `text/plain`, #1873) ou
@@ -341,6 +355,15 @@ Instalacao: `irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/ins
   arestas que so nos escolhemos (`lopdf`, `poise`, `croner`) e, quando o upstream
   liberar, migrar para `jiff` com um newtype unico na fronteira do `sqlx`, que
   nao suporta `jiff`. Nenhum codigo, `deny.toml` ou `.cargo/audit.toml` muda.
+- **`garra tasks`: listar e reautorizar tarefas agendadas (#1985).** `tasks
+  list` mostra as tarefas em aberto e se cada uma tem autoridade gravada;
+  `tasks authorize <id>` mostra o texto que o agente vai receber e, com
+  `--yes`, da a tarefa acesso de operador nas proximas execucoes; `tasks
+  revoke <id>` desfaz. Le e grava o `sessions.db` direto, como o `garra runs`.
+  E a resposta da tarefa agendada passa a comecar por um aviso quando um teto
+  barra o que ela pediu, ou quando ela roda com acesso reduzido. O aviso fica
+  no historico da sessao e no ledger de runs; a entrega ativa ao canal
+  continua existindo so no Telegram.
 
 ### Changed
 - **Justificativa das excecoes de `zbus_names`/`zvariant` reavaliada (#1667).**
@@ -973,6 +996,33 @@ Instalacao: `irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/ins
   o `codeql-reapply-dismissals.sh --dry-run`, que saia com `exit 2` na `main`
   por `line` desatualizada, volta a passar. As lacunas de ferramenta que
   deixaram isso acumular estao na #1993. Nenhum codigo de producao muda.
+- Fix(security): fronteira de autorizacao dos turnos — os wrappers de conveniencia
+  do runtime sem `ExecContext` explicito (`process_message`,
+  `process_message_with_context`, `process_heartbeat` e o streaming equivalente)
+  passam a ser fail-closed (teto de leitura, sem prova de operador); o teto da
+  superficie vira camada propria composta por E com o teto do principal
+  (nenhuma camada amplia a outra — inclusive no WhatsApp vinculado); o bot do
+  workspace e as tarefas agendadas passam pelo construtor central de contexto,
+  preservando o vinculo com a sessao que autorizou o turno. A2A, MCP HTTP e CLI
+  mantem seus fluxos por confianca declarada (credencial de operador / operador
+  local). **Mudanca de comportamento:** com o gateway sem `gateway.api_key`, as
+  tarefas de `/a2a/*` passam a rodar com teto de leitura (sem `bash`, escrita ou
+  envio de mensagem), porque nesse caso a rota nao exige credencial; com a chave
+  configurada nada muda. Follow-up do #1666 (#1985).
+- **Tarefa agendada roda com a autoridade de quem a criou (#1985).** As tools
+  de agenda gravam na tarefa os tetos do turno que a criou
+  (`scheduled_tasks.authority`, coluna aditiva); na execucao valem esses tetos,
+  compostos por E com a politica de acesso ATUAL do WhatsApp vinculado para
+  quem criou a tarefa. Agendar nao eleva privilegio e tambem nao reduz: o dono
+  do WhatsApp com `full` nao perde a escrita na tarefa que agendou, e um
+  contato rebaixado ou bloqueado depois perde nas tarefas que ja tinha. Fora do
+  WhatsApp vinculado, a tarefa do operador cai para leitura se a sessao ganhar
+  um canal remoto depois da criacao (quem escreve na conversa alcanca o
+  historico que a tarefa le).
+  **Mudanca de comportamento:** tarefa criada antes deste registro, numa sessao
+  remota, passa a rodar so com leitura ate o operador reautorizar; a resposta
+  dela comeca por um aviso na primeira execucao. Tarefa de sessao do operador
+  nao muda.
 
 ## [0.5.1] - 2026-11-02
 

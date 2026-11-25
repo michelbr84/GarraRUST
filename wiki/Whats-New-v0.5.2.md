@@ -107,6 +107,11 @@ Guide: [docs/voice.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/vo
   a version in their name no longer slip through. And a command that merely
   **quotes** a dangerous literal (`echo 'never run rm -rf /'`) is no longer
   blocked.
+- **Turn authorization boundary** (#1985): runtime paths that receive no
+  explicit context are now fail-closed (read ceiling, no operator proof);
+  the surface ceiling and the principal's ceiling compose, and neither
+  widens the other; a scheduled task runs with the authority of whoever
+  created it.
 - **Approvals bound to the workspace** (#1912): switching workspaces requires
   a new approval; a "yes" is consumed once and does not survive a restart.
 - **No runtime HTTP client follows redirects** (#1792), and credentials in
@@ -117,6 +122,17 @@ Guide: [docs/voice.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/vo
 - **Dependencies:** `rmcp` 3.9.0, wasmtime 50.0.3, SQLite 3.54,
   `jsonwebtoken` 12, `rustix`, `quinn`, `url` 2.5.9 and `cookie` 0.18.3,
   closing RUSTSEC advisories.
+
+## Heads-up when updating (#1985)
+
+- **A2A without `gateway.api_key`:** `/a2a/*` tasks now run with a read
+  ceiling (no `bash`, writes or message sending), because in that setup the
+  route requires no credential. With the key configured, nothing changes.
+- **Older scheduled tasks from a remote session** now run read-only and say
+  so on their first run. To give access back: `garra tasks list` shows the
+  tasks; `garra tasks authorize <id>` prints the text the agent will receive
+  and, with `--yes`, records the authorization (`garra tasks revoke <id>`
+  undoes it). Tasks from an operator session are unchanged.
 
 ## Install or update
 

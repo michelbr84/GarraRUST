@@ -757,8 +757,10 @@ their evidence: the exact range `git_diff`/`code_review` looked at, the
 executable's SHA-256, the build's commit and tag, and which layer denied a
 tool. Alongside: a firmer safety gate that also stops blocking commands that
 merely quote a dangerous literal, installers that finish an upgrade over a
-running gateway, clean shutdown of MCP process trees, HSTS over https, and a
-round of RUSTSEC fixes (rmcp 3.9.0, wasmtime 50.0.3, SQLite 3.54).
+running gateway, clean shutdown of MCP process trees, HSTS over https, a
+fail-closed authorization boundary for turns (scheduled tasks run with their
+creator's authority; `garra tasks` re-authorizes older ones), and a round of
+RUSTSEC fixes (rmcp 3.9.0, wasmtime 50.0.3, SQLite 3.54).
 See [What's New in v0.5.2](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.5.2).
 
 ## Contributing

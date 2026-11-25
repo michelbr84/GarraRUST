@@ -104,6 +104,11 @@ Guia: [docs/voice.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/voi
   comando (`DEBUG=1 node server.js`), código pelo stdin e interpretador com
   versão no nome deixam de passar livres. E um comando que só **cita** um
   literal perigoso (`echo 'nunca rode rm -rf /'`) deixa de ser bloqueado.
+- **Fronteira de autorização dos turnos** (#1985): os caminhos do runtime
+  que não recebem contexto explícito passam a ser fail-closed (teto de
+  leitura, sem prova de operador); o teto da superfície e o teto do
+  principal se compõem, e nenhum amplia o outro; a tarefa agendada roda com
+  a autoridade de quem a criou.
 - **Aprovações vinculadas ao workspace** (#1912): trocar de workspace exige
   nova aprovação; um "sim" é consumido uma vez e não sobrevive ao restart.
 - **Nenhum cliente HTTP do runtime segue redirect** (#1792), e credencial em
@@ -115,6 +120,18 @@ Guia: [docs/voice.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/voi
 - **Dependências:** `rmcp` 3.9.0, wasmtime 50.0.3, SQLite 3.54,
   `jsonwebtoken` 12, `rustix`, `quinn`, `url` 2.5.9 e `cookie` 0.18.3,
   fechando advisories RUSTSEC.
+
+## Atenção ao atualizar (#1985)
+
+- **A2A sem `gateway.api_key`:** as tarefas de `/a2a/*` passam a rodar com
+  teto de leitura (sem `bash`, escrita ou envio de mensagem), porque nesse
+  caso a rota não exige credencial. Com a chave configurada, nada muda.
+- **Tarefas agendadas antigas de sessão remota** passam a rodar só com
+  leitura e avisam isso na primeira execução. Para devolver o acesso:
+  `garra tasks list` mostra as tarefas; `garra tasks authorize <id>` exibe
+  o texto que o agente vai receber e, com `--yes`, grava a autorização
+  (`garra tasks revoke <id>` desfaz). Tarefa de sessão do operador não
+  muda.
 
 ## Instalar ou atualizar
 

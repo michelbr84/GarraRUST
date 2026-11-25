@@ -31,7 +31,8 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
   (#1813–#1815, #1822); `garra chat --mode` e nível de aprovação
   `agent.approval` (#1858); diagnóstico com SHA-256, commit e tag do build
   (#1914); gate de comandos mais firme e sem falso positivo de literal
-  citado (#1791, #1861); HSTS, `rmcp` 3.9.0, wasmtime 50.0.3 e SQLite 3.54.
+  citado (#1791, #1861); fronteira de autorização dos turnos fail-closed e
+  `garra tasks` (#1985); HSTS, `rmcp` 3.9.0, wasmtime 50.0.3 e SQLite 3.54.
 - **[v0.5.1 — Novidades](Novidades-v0.5.1)** · **[What's New in v0.5.1 (English)](Whats-New-v0.5.1)**
   — o **GarraIA usa o seu plano do ChatGPT**, sem API key, pelo Sign in with
   ChatGPT oficial da OpenAI (#1796): cartão **Continuar com ChatGPT** na

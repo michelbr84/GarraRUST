@@ -616,7 +616,8 @@
       "summary": "Agenda o retorno do agente após um intervalo (schedule_heartbeat).",
       "prerequisites": [],
       "limitations": [
-        "não há API HTTP de scheduling: o tile automations do mobile não aparece, de propósito"
+        "não há API HTTP de scheduling: o tile automations do mobile não aparece, de propósito",
+        "a tarefa roda com a autoridade de quem a criou; tarefa de sessão remota criada antes desse registro roda só com leitura até o operador reautorizar (garra tasks list|authorize|revoke)"
       ],
       "availability": "disponivel",
       "tool": "schedule_heartbeat"
@@ -628,7 +629,8 @@
       "summary": "Agenda tarefas recorrentes e disparos por webhook (schedule_recurring).",
       "prerequisites": [],
       "limitations": [
-        "não há API HTTP de scheduling: o tile automations do mobile não aparece, de propósito"
+        "não há API HTTP de scheduling: o tile automations do mobile não aparece, de propósito",
+        "a tarefa roda com a autoridade de quem a criou; tarefa de sessão remota criada antes desse registro roda só com leitura até o operador reautorizar (garra tasks list|authorize|revoke)"
       ],
       "availability": "disponivel",
       "tool": "schedule_recurring"
