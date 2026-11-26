@@ -148,18 +148,30 @@ impl AdminStore {
         };
         match existed_before {
             Ok(false) => {
+                // O `open` pode ter criado o arquivo antes de falhar. Ele nao e
+                // apagado aqui (nada de remocao automatica no boot), entao o
+                // aviso diz ao operador o que o proximo boot vai encontrar.
                 tracing::warn!(
                     "admin store nao pode ser criado em {} ({open_err}); \
-                     console em memoria ate o proximo boot",
+                     console em memoria ate o proximo boot. Se o arquivo ficou \
+                     criado, apague-o antes do proximo boot: ele nunca teve dados \
+                     e, existindo, o boot sera recusado",
                     db_path.display()
                 );
                 Self::in_memory()
             }
-            Ok(true) | Err(_) => Err(format!(
+            Ok(true) => Err(format!(
                 "{} existe mas nao abre ({open_err}). O gateway recusa o boot em vez \
                  de subir um console sem usuarios, cujo setup aceitaria um admin novo \
                  sem autenticacao. Corrija permissao/espaco em disco ou restaure o \
                  arquivo de um backup.",
+                db_path.display()
+            )),
+            Err(exists_err) => Err(format!(
+                "nao foi possivel verificar se {} existe ({exists_err}) e ele nao abre \
+                 ({open_err}). O gateway recusa o boot em vez de subir um console sem \
+                 usuarios, cujo setup aceitaria um admin novo sem autenticacao. Corrija \
+                 a permissao do diretorio do arquivo.",
                 db_path.display()
             )),
         }
