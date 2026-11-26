@@ -204,12 +204,16 @@ privado num ponto so, pelo `CHANTYPES` do servidor (padrao `#&`; prefixo fora
 de `#&!+` e descartado, e anuncio sem nenhum conhecido fica no padrao), e a
 resposta e a sessao seguem a mesma decisao; `STATUSMSG` (`@#canal`) e broadcast
 (`$*`) ficam com quem mandou, sem resposta ao canal inteiro. No
-canal a sessao continua `irc-<canal>`; no privado e `irc-@<nick>`, uma por
-pessoa, com o nick normalizado pelo `CASEMAPPING` anunciado (sem anuncio fica
-`ascii`, que nunca junta duas pessoas que o servidor separa). O `@` nao aparece
-em nick nem em prefixo de canal aceito, entao o id nao colide com o de um
-canal nem com o `irc-<nick do bot>` antigo, que fica como esta e nao recebe
-turno novo. **Limite:** o nick continua sendo a unica identidade do IRC; quem
+canal a sessao continua `irc-<canal>`; no privado e `irc-@<nick>@<conexao>`,
+uma por pessoa em cada conexao IRC da config, com o nick normalizado pelo
+`CASEMAPPING` anunciado (sem anuncio fica `ascii`, que nunca junta duas pessoas
+que o servidor separa). A `conexao` e o nome da entrada `type = "irc"` na
+config: o nick so identifica alguem dentro da propria rede, e cada conexao
+aponta para uma (apontar o mesmo nome para outra rede junta os nicks das
+duas). O `@` nao aparece em nick nem em prefixo de canal aceito, entao o
+primeiro `@` depois de `irc-@` separa o nick da conexao, e o id nao colide com
+o de um canal nem com o `irc-<nick do bot>` antigo, que fica como esta e nao
+recebe turno novo. **Limite:** o nick continua sendo a unica identidade do IRC; quem
 tomar o nick de alguem (servidor sem NickServ) passa a ver o historico privado
 daquele nick, o mesmo modelo de confianca da allowlist, que ja admite aquele
 nick como aquela pessoa.

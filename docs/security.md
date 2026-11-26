@@ -100,33 +100,21 @@ two operational notes come with it:
   rotation carries it along automatically — the re-key re-encrypts
   `admin_users.totp_secret_enc` in the same transaction as everything else — but
   *losing* the key is different. If `<config_dir>/admin/master.key` is deleted,
-  truncated, or the vault passphrase changes, the secret stops decrypting and
-  the console answers **HTTP 500 on login**, not "2FA disabled". That is
-  deliberate (an unreadable second factor must never degrade into no second
-  factor), and the way out is the same break-glass `UPDATE` documented above:
-  clear the second factor in the database and enroll again. A `master.key` that
-  exists but cannot be used is preserved as `master.key.unreadable` and logged
-  loudly rather than silently replaced.
-- **A damaged `kdf_params` row refuses the boot (#1992).** With
-  `GARRAIA_ADMIN_KEY` or `GARRAIA_VAULT_PASSPHRASE` set, the master key is
-  derived from the passphrase and the salt recorded in the single row of
-  `kdf_params` in `admin.db`. If that row is there but is not what the gateway
-  records (unknown version, salt that is not 32 bytes of base64, fewer than
-  600 000 iterations, unreadable column), the gateway **does not start** and
-  the error names the reason. In the foreground (`garraia start`) that is the
-  command's error; with `garraia start -d` the parent has already reported the
-  daemon as started by then, so the refusal is only in the log file
-  (`garraia.log`) — check it when the daemon is not listening. It used to fall back to the pre-2026-08-29
-  shared salt and keep running, which opened none of the existing secrets and
-  encrypted every new one under the weaker key. The fix is to restore
-  `admin.db` from a backup; without the original salt the stored admin
-  secrets cannot be recovered, and the remaining way out is to move
-  `admin.db` aside and set the console up again. The same refusal applies
-  when the system random number generator fails while the salt or
-  `master.key` is being generated. A re-key that merely *fails* (a secret
-  does not open with the legacy key) is still deferred to the next start, not
-  refused — which also means a *removed* row (as opposed to a damaged one)
-  still ends on the legacy key; that is tracked in #1999.
+  truncated, or the vault passphrase changes, the boot finds that the key it
+  resolved opens none of the stored secrets and the whole console answers
+  **HTTP 503** (#2013; see
+  [Admin console answering 503](#admin-console-answering-503-master-key-unavailable)),
+  never "2FA disabled". If only the 2FA seed is unreadable while other secrets
+  still open, that login answers **HTTP 500**. Both are deliberate (an
+  unreadable second factor must never degrade into no second factor). Going
+  back to the original key is the fix; without it, the way out is the
+  break-glass `UPDATE` documented above: clear the second factor in the
+  database and enroll again.
+- **A damaged or removed `kdf_params` row disables the console, not the
+  gateway (#1992, #1999).** The console answers HTTP 503 and the stored
+  secrets are left untouched; see
+  [Admin console answering 503](#admin-console-answering-503-master-key-unavailable)
+  below for the causes and the way back.
 - **Locked out by the 15-minute window and do not want to disable 2FA?** Clear
   just the counter, with the gateway stopped:
   `sqlite3 "$HOME/.garraia/data/admin.db" "DELETE FROM totp_attempts;"`
@@ -149,6 +137,99 @@ Two things this does **not** change, worth being explicit about:
   cheap way to burn CPU). `/admin/api/recovery/*` already sits behind a rate
   limiter; the login route does not. This is the one piece of #1140 that the
   durable counter did **not** deliver.
+
+#### Admin console answering 503 (master key unavailable)
+
+With `GARRAIA_ADMIN_KEY` or `GARRAIA_VAULT_PASSPHRASE` set, the admin master key
+is derived from that passphrase and from the per-installation salt recorded in
+the single row of the `kdf_params` table in `admin.db`; without either, it is
+the random `<config_dir>/admin/master.key`. When the boot cannot
+produce a key that is safe to use, the gateway still starts — chat, channels
+and `/api/*` keep working — but `/admin` and everything under it answer
+**HTTP 503** with `{"error": "admin_unavailable"}`. The reason is in the
+gateway log, on an `ERROR` line that starts with `admin panel disabled`; the
+HTTP response does not carry it.
+
+These cases used to fall back to the pre-2026-08-29 shared salt and keep the
+console running. That opened none of the existing secrets, and every secret the
+console wrote from then on (provider keys, 2FA seeds) was encrypted under the
+weaker key and became unreadable once the real parameters were read again. The
+503 replaces that silent loss (#1992, #1999). The log line names one of these
+causes:
+
+- **The `kdf_params` row cannot be used**: unknown version, a salt that is not
+  32 bytes of base64, an iteration count outside the range this code writes
+  (600 000 to 10 000 000), or a column that cannot be read. The row is damaged
+  or was edited. Restore `admin.db` from a backup taken while the console
+  worked.
+- **No KDF parameters are recorded, and the stored secrets could not be shown
+  to be under the legacy key**: usually a secret does not decrypt with it,
+  because the row was removed after the re-key or the passphrase changed
+  (including a passphrase turned on over secrets that were encrypted under
+  `<config_dir>/admin/master.key`). Restore the backup, or go back to the
+  passphrase (or to `master.key`) the secrets were encrypted with. If the log
+  shows a read error instead (database locked, I/O), restart once `admin.db`
+  is readable; nothing was written.
+- **Entropy failure**: the system random number generator failed while the
+  salt or `master.key` was being generated. Fix the host and restart; no secret
+  could be encrypted safely without it anyway.
+- **The resolved key opens none of the stored secrets** (#2013): the
+  `kdf_params` row is fine, but none of the stored admin secrets (provider
+  keys, archived versions, 2FA seeds) decrypts with the key derived from it,
+  or with a well-formed `master.key`. The usual cause is a passphrase changed
+  after the secrets were encrypted, or a `master.key` replaced by another one.
+  Set back the passphrase (or `master.key`) the secrets were encrypted with.
+  The rule is "none opens", not "one does not": a single damaged row only
+  fails its own read and does not take the console down. The flip side: in a
+  store that already mixes two keys, a key that opens only the minority still
+  passes, so when recovering, go back to the key that opens the provider keys,
+  not just an old 2FA seed.
+- **`master.key` is missing or the wrong length while secrets are stored**
+  (#2013): with no passphrase set, the console used to mint a new random
+  `master.key` here, which opened none of the stored secrets. It no longer
+  does, and it leaves the file untouched. Restore `master.key` from a backup,
+  or set again the passphrase the secrets were encrypted with. With no admin
+  secret stored, a lost `master.key` is still replaced by a new one, since
+  there is nothing under it to lose; a wrong-length file is kept as
+  `master.key.unreadable` (or `.unreadable.N`, never overwriting an earlier
+  copy).
+- **`master.key` exists but cannot be read** (permissions, I/O): never
+  replaced, stored secrets or not, since that is no proof it is damaged. Make
+  it readable by the gateway's user (mode 0600) and restart.
+- **A new `master.key` could not be written**: the console does not run on a
+  key the next boot would not have. Make `<config_dir>/admin` writable and
+  restart. The new file is created owner-only (0600) from the first byte and
+  never replaces a file that appeared in the meantime.
+- **The stored secrets could not be read** to check them against the key
+  (database locked, I/O error): restart once `admin.db` is readable; nothing
+  was written.
+
+An installation with no admin secret stored yet boots as before, whatever the
+passphrase: there is nothing to check the key against.
+
+Do not "repair" the row by hand with made-up values: a key derived from
+anything other than the recorded parameters opens none of the stored secrets.
+Without a backup the stored admin secrets cannot be recovered, and the way back
+is to start over. Either move `admin.db` aside (the next boot creates an empty
+store, and the console is set up again from scratch), or keep the admin users
+and clear only what was encrypted, with the gateway stopped, as in the 2FA
+break-glass above:
+
+```bash
+sqlite3 "$HOME/.garraia/data/admin.db" \
+  "DELETE FROM secret_versions; DELETE FROM secrets; DELETE FROM kdf_params;
+   UPDATE admin_users SET totp_enabled = 0, totp_secret = NULL,
+     totp_secret_enc = NULL, totp_secret_nonce = NULL;"
+```
+
+The next boot then re-keys an empty store and the console comes back. Each
+admin signs in with their password, enrolls 2FA again, and re-enters the
+provider keys.
+
+One case stays fail-soft on purpose. If the migration away from the legacy salt
+opens every stored secret but fails to write (disk full, database locked), the
+console keeps working on the legacy key and the next boot retries. The data is
+provably under that key, so nothing is at risk.
 
 ### Input Validation
 

@@ -35,21 +35,41 @@
 //!
 //! Exactly one thing: derive the key of an installation that has **never** been
 //! re-keyed, so its ciphertexts can be opened and moved. Until #1992 the
-//! derivation also fell back to it in two states that are not that one —
-//! recorded parameters that cannot be used, and a failed salt generation — and
-//! in both it became the key that *encrypts*, with a `warn!` as the only sign.
-//! Both now refuse to start ([`AdminKeyError`]) instead.
+//! derivation also fell back to it in states that are not that one — recorded
+//! parameters that cannot be used, a failed salt generation, and (#1999) a
+//! missing row over secrets the legacy key does not open — and in all of them
+//! it became the key that *encrypts*, with a `warn!` as the only sign.
+//!
+//! # When there is no safe key (#1992, #1999)
+//!
+//! None of those states hands out a key any more ([`AdminKeyError`]). The
+//! gateway still starts — chat, channels and `/api/*` do not depend on this
+//! key — but [`resolve_admin_encryption_key`] returns [`AdminKey::Unavailable`]
+//! and `/admin`, page and API, answers 503 until `admin.db` is fixed. The
+//! reason goes to the log once, at boot, and never into an HTTP response.
+//!
+//! # A key must open what is stored (#2013)
+//!
+//! A usable source is not proof of the right key: a passphrase changed after
+//! the re-key, or a `master.key` swapped for another one, derives a key that
+//! opens nothing. So whenever admin secrets are stored, the resolved key must
+//! open **at least one** of them, and a missing or broken `master.key` is only
+//! replaced while nothing is stored. Otherwise the panel goes to 503 the same
+//! way.
 
+use std::fmt;
 use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
-use super::store::{AdminStore, StoredKdfParams};
+use super::store::{
+    AdminStore, SecretCiphertext, SecretVersionCiphertext, StoredKdfParams, TotpSecretCiphertext,
+};
 use crate::state::SharedState;
 
 /// AES-256-GCM key length. Also the PBKDF2 output length.
@@ -69,10 +89,11 @@ const KDF_PARAMS_VERSION: u32 = 1;
 /// KDF parameters recorded yet, i.e. an installation whose ciphertexts may
 /// still be under this salt. There the key opens them one last time so
 /// [`migrate_admin_secrets_kdf`] can re-encrypt under the per-installation key;
-/// if that re-key fails, the process stays on this key (the one the data is
-/// under) and the next start retries. Once parameters are recorded, nothing
-/// derives from these again — unusable parameters and a failed salt generation
-/// refuse to start rather than fall back here (#1992).
+/// if that re-key opens every ciphertext and only its write fails, the process
+/// stays on this key (the one the data is under) and the next start retries.
+/// Once parameters are recorded, nothing derives from these again — unusable
+/// parameters, a failed salt generation and a ciphertext this key does not open
+/// leave the admin panel unavailable rather than fall back here (#1992, #1999).
 ///
 /// This is the sole remaining hard-coded cryptographic value in this file and
 /// it exists purely so upgrades do not lose data; see
@@ -85,10 +106,16 @@ const LEGACY_KDF_ITERATIONS: NonZeroU32 = NonZeroU32::new(100_000).unwrap();
 /// Deliberately **not** tied to [`KDF_ITERATIONS`]: raising that one day must
 /// not turn every existing installation's row into a refused boot.
 const MIN_STORED_KDF_ITERATIONS: u32 = 600_000;
+/// Ceiling for the same count. This code has only ever recorded 600 000; a row
+/// above this was not written by us either, and an unbounded count read from
+/// an unauthenticated row is a boot that spends hours inside PBKDF2 (`u32::MAX`
+/// is ~7 000x the cost of the real count).
+const MAX_STORED_KDF_ITERATIONS: u32 = 10_000_000;
 
-/// Why the admin master key could not be resolved. Every variant refuses the
-/// boot: the alternative in each case was to hand back a key derived from
-/// [`LEGACY_KDF_SALT`] and encrypt new secrets under it (#1992).
+/// Why the admin master key could not be resolved. Every variant leaves the
+/// admin panel unavailable — the gateway starts, `/admin` answers 503: the
+/// alternative in each case was to hand back a key derived from
+/// [`LEGACY_KDF_SALT`] and encrypt new secrets under it (#1992, #1999).
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AdminKeyError {
     /// `kdf_params` holds a row, so the re-key already committed and every
@@ -98,20 +125,105 @@ pub enum AdminKeyError {
     /// whatever is written next.
     #[error(
         "the admin KDF parameters recorded in admin.db (table `kdf_params`) are unusable: \
-         {0}. Refusing to start: the stored admin secrets are encrypted under the key derived \
-         from the original parameters, and deriving a different key would open none of them \
-         while encrypting new secrets under weaker parameters. Fix: restore admin.db from a \
-         backup taken before the row was damaged. Without the original salt the stored admin \
-         secrets cannot be recovered; in that case move admin.db aside to start from an empty \
-         admin store, then recreate the admin user and re-enter the provider keys"
+         {0}. The admin console stays disabled (HTTP 503): the stored admin secrets are \
+         encrypted under the key derived from the original parameters, and deriving a \
+         different key would open none of them while encrypting new secrets under weaker \
+         parameters. Fix: restore admin.db from a backup taken before the row was damaged. \
+         Without the original salt the stored admin secrets cannot be recovered; in that case \
+         move admin.db aside to start from an empty admin store, then recreate the admin user \
+         and re-enter the provider keys"
     )]
     StoredParamsUnusable(String),
+    /// No parameters are recorded, which is what a never-re-keyed installation
+    /// looks like — but the stored ciphertexts could not be shown to open with
+    /// the legacy key (#1999). Usually one does not open, so the data is under
+    /// some other key, and running on the legacy key would encrypt everything
+    /// written next under a third one. A ciphertext that could not even be
+    /// *read* lands here too: nothing proves the data is under the legacy key,
+    /// and the next boot tries again.
+    #[error(
+        "no admin KDF parameters are recorded in admin.db (table `kdf_params`), and the stored \
+         admin secrets could not be shown to be under the legacy key: {0}. If that is a \
+         decryption failure, either the `kdf_params` row was removed after the re-key, or the \
+         passphrase changed (GARRAIA_ADMIN_KEY / GARRAIA_VAULT_PASSPHRASE, including a \
+         passphrase turned on over secrets encrypted under master.key); if it is a read error \
+         (database locked, I/O), restart once admin.db is readable. The admin console stays \
+         disabled (HTTP 503). Fix: restore admin.db from a backup, or go back to the passphrase \
+         (or master.key) the secrets were encrypted with"
+    )]
+    NotUnderLegacyKey(String),
+    /// The key was resolved from a usable source — recorded KDF parameters
+    /// plus the passphrase, or a well-formed `master.key` — but admin secrets
+    /// are stored and **none** of them opens with it (#2013). The usual cause is
+    /// a passphrase changed after the secrets were encrypted, or a `master.key`
+    /// swapped for another installation's. Handing the key out would answer 500
+    /// on every read (and on the login of every admin with 2FA) while encrypting
+    /// whatever is written next under a key the old data is not under.
+    ///
+    /// "None", not "some": one damaged row must not take the whole panel down.
+    #[error(
+        "the admin master key derived from {key_source} opens none of the {count} admin \
+         secret(s) stored in admin.db (provider keys, archived versions, 2FA seeds). The most \
+         likely cause is that {cause}. The admin console stays disabled (HTTP 503) rather \
+         than encrypt new secrets under a key the stored ones are not under. Fix: {fix}, or \
+         restore admin.db from a backup that matches the current key",
+        cause = .key_source.likely_cause(),
+        fix = .key_source.fix()
+    )]
+    KeyOpensNoStoredSecret {
+        key_source: MasterKeySource,
+        count: usize,
+    },
+    /// No passphrase is set and `<config_dir>/admin/master.key` is missing or
+    /// the wrong length, while admin secrets are stored (#2013).
+    /// Minting a fresh key here — the behaviour before #2013 — opened none of
+    /// them and encrypted everything written next under a third key.
+    #[error(
+        "no admin passphrase is set and <config_dir>/admin/master.key is {state}, but \
+         admin.db stores {count} admin secret(s) encrypted under some key. The admin console \
+         stays disabled (HTTP 503) and the file was left untouched, rather than replace it \
+         with a new random key that opens none of them. Fix: restore master.key from a \
+         backup, or set again the passphrase (GARRAIA_ADMIN_KEY / GARRAIA_VAULT_PASSPHRASE) \
+         the secrets were encrypted with; without either, follow \"Admin console answering \
+         503\" in docs/security.md to start the admin store over"
+    )]
+    MasterKeyFileLost { state: &'static str, count: usize },
+    /// No passphrase is set and `<config_dir>/admin/master.key` exists but
+    /// could not be read (permissions, I/O). That is no proof the file is
+    /// damaged, so it is never replaced (#2013).
+    #[error(
+        "no admin passphrase is set and <config_dir>/admin/master.key exists but could not \
+         be read: {0}. The admin console stays disabled (HTTP 503) and the file was left \
+         untouched. Fix: make the file readable by the gateway's user (owner-only, mode \
+         0600) and restart"
+    )]
+    MasterKeyFileUnreadable(String),
+    /// A new `master.key` was generated but could not be written. A key kept
+    /// only in memory would encrypt this session's secrets under something the
+    /// next boot cannot read (#2013).
+    #[error(
+        "a new admin master key was generated but <config_dir>/admin/master.key could not \
+         be written: {0}. The admin console stays disabled (HTTP 503) rather than encrypt \
+         secrets under a key the next boot would not have. Fix: make <config_dir>/admin \
+         writable by the gateway's user (or remove a file that appeared there) and restart"
+    )]
+    MasterKeyFileNotPersisted(String),
+    /// The admin ciphertexts could not be read back, so nothing proves the
+    /// resolved key is the one they are under (#2013).
+    #[error(
+        "the admin secrets stored in admin.db could not be read to check them against \
+         the admin master key: {0}. The admin console stays disabled (HTTP 503); nothing \
+         was written. Fix: restart the gateway once admin.db is readable (database locked, \
+         I/O error)"
+    )]
+    StoredSecretsUnreadable(String),
     /// The system CSPRNG failed while minting a per-installation salt or the
     /// random `master.key`.
     #[error(
-        "the system random number generator failed while generating {0}. Refusing to start \
-         rather than protect admin secrets with a key that is not unique to this installation. \
-         Fix: restore the host's entropy source and start again"
+        "the system random number generator failed while generating {0}. The admin console \
+         stays disabled (HTTP 503) rather than protect admin secrets with a key that is not \
+         unique to this installation. Fix: restore the host's entropy source and restart the \
+         gateway"
     )]
     Entropy(&'static str),
 }
@@ -123,6 +235,45 @@ pub struct AdminState {
     pub app_state: SharedState,
     /// Master encryption key (derived or loaded at startup) for secrets encryption.
     pub encryption_key: Arc<Vec<u8>>,
+}
+
+/// The admin master key as the boot resolved it.
+#[derive(Clone)]
+pub enum AdminKey {
+    /// The key every admin encrypt and decrypt uses.
+    Ready(Arc<Vec<u8>>),
+    /// No key can be handed out without risking the stored secrets
+    /// ([`AdminKeyError`]). The gateway still boots; `/admin` and everything
+    /// under it answer 503. The reason went to the log at boot and never into
+    /// an HTTP response.
+    Unavailable,
+}
+
+impl From<Arc<Vec<u8>>> for AdminKey {
+    fn from(key: Arc<Vec<u8>>) -> Self {
+        Self::Ready(key)
+    }
+}
+
+/// Why [`migrate_admin_secrets_kdf`] did not commit. The split decides whether
+/// the legacy key may stay the working key (#1999).
+#[derive(Debug)]
+enum RekeyError {
+    /// A stored ciphertext did not open with the legacy key, could not be read,
+    /// or could not be re-encrypted. Nothing proves the data is under the legacy
+    /// key, so it cannot be handed out.
+    Unverified(String),
+    /// Every ciphertext opened with the legacy key and was re-encrypted; only the
+    /// write failed. The data is still under the legacy key.
+    Deferred(String),
+}
+
+impl fmt::Display for RekeyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unverified(e) | Self::Deferred(e) => f.write_str(e),
+        }
+    }
 }
 
 /// Persisted PBKDF2 parameters for the admin master key.
@@ -203,7 +354,7 @@ fn admin_passphrase() -> Option<String> {
 /// environment so this can be driven deterministically from tests.
 ///
 /// `stored` is the installation's recorded KDF parameters. Two outcomes, two
-/// refusals:
+/// failures:
 ///
 /// 1. Parameters exist and are usable -> derive with them. Steady state,
 ///    nothing pending.
@@ -235,7 +386,7 @@ fn derive_with_passphrase(
         .map_err(|_| AdminKeyError::Entropy("the per-installation KDF salt"))?;
     // Decoding what `generate` encoded a line ago cannot fail; if it somehow
     // does, there is no per-installation salt to derive from, which is the
-    // same refusal.
+    // same failure.
     let salt = params
         .salt_bytes()
         .map_err(|_| AdminKeyError::Entropy("the per-installation KDF salt"))?;
@@ -251,8 +402,9 @@ fn derive_with_passphrase(
 }
 
 /// Accept a `kdf_params` row only if it has the shape this code records:
-/// a schema version this build reads, a [`KDF_SALT_LEN`]-byte salt, and at least
-/// [`MIN_STORED_KDF_ITERATIONS`] iterations.
+/// a schema version this build reads, a [`KDF_SALT_LEN`]-byte salt, and an
+/// iteration count between [`MIN_STORED_KDF_ITERATIONS`] and
+/// [`MAX_STORED_KDF_ITERATIONS`].
 ///
 /// Strict on purpose. The row is not authenticated, so whoever can write to
 /// `admin.db` can rewrite it; accepting "any base64, any non-zero count" would
@@ -289,80 +441,13 @@ fn usable_stored_params(stored: &StoredKdfParams) -> Result<(Vec<u8>, NonZeroU32
                  {MIN_STORED_KDF_ITERATIONS} this installation was created with"
             )
         })?;
+    if iterations.get() > MAX_STORED_KDF_ITERATIONS {
+        return Err(format!(
+            "the iteration count is {iterations}, above the maximum of \
+             {MAX_STORED_KDF_ITERATIONS} this code accepts"
+        ));
+    }
     Ok((salt, iterations))
-}
-
-/// No passphrase configured: a random 32-byte key persisted at
-/// `<config_dir>/admin/master.key`. This path never used a salt, so it needs no
-/// migration.
-fn master_key_file_keys() -> Result<AdminKeys, AdminKeyError> {
-    let key_path = admin_dir().join("master.key");
-
-    if let Ok(data) = std::fs::read(&key_path)
-        && data.len() == MASTER_KEY_LEN
-    {
-        return Ok(AdminKeys {
-            current: data,
-            legacy: None,
-            pending: None,
-        });
-    }
-
-    // Chegar aqui com o arquivo EXISTINDO significa que ele esta ilegivel ou
-    // com tamanho errado, e a chave nova logo abaixo vai substitui-lo. Antes
-    // do #1141 isso custava as chaves de provider; agora custa tambem o
-    // segredo do 2FA de todo admin que tem 2FA ligado — o login passa a
-    // responder 500 e o dono so volta pelo break-glass de `docs/security.md`.
-    // Guardar o arquivo antigo em vez de sobrescrever nao recupera a chave
-    // (32 bytes truncados nao voltam), mas tira o "silenciosamente": o
-    // operador ve o aviso e encontra o arquivo preservado ao lado.
-    if key_path.exists() {
-        let preservado = key_path.with_extension("key.unreadable");
-        let movido = std::fs::rename(&key_path, &preservado).is_ok();
-        warn!(
-            preserved = movido,
-            "admin master.key exists but is unreadable or has the wrong length; \
-             generating a new one. Every secret encrypted under the old key — \
-             provider keys AND admin 2FA secrets — becomes unreadable. Admins \
-             with 2FA will get HTTP 500 on login until the second factor is \
-             cleared; see docs/security.md"
-        );
-    }
-
-    // Without entropy there is no key to hand back: refuse, like the salt path.
-    let key = garraia_security::random_bytes::<MASTER_KEY_LEN>()
-        .map_err(|_| AdminKeyError::Entropy("the admin master key"))?
-        .to_vec();
-
-    if let Some(parent) = key_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if std::fs::write(&key_path, &key).is_ok() {
-        // This file *is* the AES-256-GCM master key. Under the usual 0o022
-        // umask `fs::write` would leave it 0o644 — readable by every local
-        // user. Narrow it immediately.
-        restrict_to_owner(&key_path);
-    }
-
-    Ok(AdminKeys {
-        current: key,
-        legacy: None,
-        pending: None,
-    })
-}
-
-/// Best-effort `chmod 0600`. Non-Unix targets have no equivalent and are left
-/// to the platform's own ACL defaults.
-fn restrict_to_owner(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
-            warn!("could not restrict {} to owner-only: {e}", path.display());
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = path;
 }
 
 /// Resolve the master encryption key for the admin secrets store, running the
@@ -379,19 +464,36 @@ fn restrict_to_owner(path: &Path) {
 ///
 /// Two different failures, two different answers:
 ///
-/// * the **re-key** fails (a ciphertext does not open with the legacy key, the
-///   transaction does not commit) -> fail-soft. Returns the **legacy** key, the
-///   one the stored ciphertexts are actually under, and the next boot retries.
-///   Nothing was written, so nothing is lost by waiting.
-/// * the key **cannot be resolved** at all (recorded parameters unusable, no
-///   entropy) -> `Err`, and the caller refuses to start. There is no key the
-///   data is under to fall back to; see [`AdminKeyError`].
-pub fn resolve_admin_encryption_key(store: &mut AdminStore) -> Result<Vec<u8>, AdminKeyError> {
+/// * the **re-key write** fails after every stored ciphertext opened with the
+///   legacy key (disk full, database locked) -> fail-soft. Returns the
+///   **legacy** key, the one the data is provably under, and the next boot
+///   retries. Nothing was written, so nothing is lost by waiting.
+/// * anything else (recorded parameters unusable, no entropy, a ciphertext the
+///   legacy key does not open, stored secrets none of which opens with the
+///   resolved key, a lost `master.key` over stored secrets) ->
+///   [`AdminKey::Unavailable`], logged here once
+///   with the reason. The gateway boots and the admin panel answers 503: there
+///   is no key the data is under to hand out; see [`AdminKeyError`].
+pub fn resolve_admin_encryption_key(store: &mut AdminStore) -> AdminKey {
+    match resolve_admin_key(store) {
+        Ok(key) => AdminKey::Ready(Arc::new(key)),
+        Err(e) => {
+            error!(
+                "admin panel disabled: {e}. The rest of the gateway keeps running; /admin \
+                 answers 503 until this is fixed. See docs/security.md, \"Admin console \
+                 answering 503\""
+            );
+            AdminKey::Unavailable
+        }
+    }
+}
+
+fn resolve_admin_key(store: &mut AdminStore) -> Result<Vec<u8>, AdminKeyError> {
     match admin_passphrase() {
         Some(passphrase) => resolve_with_passphrase(store, &passphrase),
         // The recorded parameters play no part here, so a damaged row must not
         // block an installation that does not derive from a passphrase.
-        None => Ok(master_key_file_keys()?.current),
+        None => master_key_file_key(store, &admin_dir().join("master.key")),
     }
 }
 
@@ -406,19 +508,28 @@ fn resolve_with_passphrase(
         .map_err(AdminKeyError::StoredParamsUnusable)?;
     let keys = derive_with_passphrase(stored, passphrase)?;
     let (Some(legacy), Some(_)) = (keys.legacy.as_ref(), keys.pending.as_ref()) else {
+        // Steady state: the recorded parameters are usable, but that says
+        // nothing about the passphrase. A changed one derives a key that opens
+        // none of the stored secrets (#2013).
+        check_key_opens_store(store, &keys.current, MasterKeySource::Passphrase)?;
         return Ok(keys.current);
     };
     let legacy = legacy.clone();
 
     match migrate_admin_secrets_kdf(store, &keys) {
         Ok(_) => Ok(keys.current),
-        Err(e) => {
+        Err(RekeyError::Deferred(e)) => {
             warn!(
                 "admin master-key re-key deferred ({e}); staying on the legacy \
                  shared salt, will retry on next start"
             );
             Ok(legacy)
         }
+        // No parameters recorded AND a ciphertext the legacy key does not open:
+        // the data is under some other key (row removed after the re-key, a new
+        // passphrase over old secrets). Staying on the legacy key would encrypt
+        // everything written next under a key that is not theirs (#1999).
+        Err(RekeyError::Unverified(e)) => Err(AdminKeyError::NotUnderLegacyKey(e)),
     }
 }
 
@@ -441,13 +552,65 @@ fn resolve_with_passphrase(
 ///   the legacy key again and retries — the ciphertexts are still under it.
 ///
 /// Returns the number of rows re-encrypted, or `Ok(0)` when there is nothing to
-/// do. Errors are reported to the caller, which logs and carries on with the
-/// legacy key rather than refusing to boot.
-fn migrate_admin_secrets_kdf(store: &mut AdminStore, keys: &AdminKeys) -> Result<usize, String> {
+/// do. A failure before the write is [`RekeyError::Unverified`]; a failure of
+/// the write itself, with every ciphertext already opened by the legacy key, is
+/// [`RekeyError::Deferred`]. Only the second lets the caller stay on the legacy
+/// key (#1999).
+fn migrate_admin_secrets_kdf(
+    store: &mut AdminStore,
+    keys: &AdminKeys,
+) -> Result<usize, RekeyError> {
     let (Some(legacy), Some(params)) = (keys.legacy.as_ref(), keys.pending.as_ref()) else {
         return Ok(0);
     };
+    // Everything up to the write proves (or fails to prove) that the data is
+    // under the legacy key; none of it may leave the process on that key.
+    let rekeyed = reencrypt_under_current(store, keys, legacy)
+        .map_err(RekeyError::Unverified)
+        .and_then(|(new_secrets, new_versions, new_totp)| {
+            // Ciphertexts and the parameters that describe them land together or
+            // not at all. An earlier revision committed the SQL and then wrote a
+            // `kdf.json`; a crash or a failed write in between left the data
+            // under a key nothing recorded, and the next boot would mint a third
+            // salt and open nothing.
+            store
+                .apply_secret_rekey(
+                    &new_secrets,
+                    &new_versions,
+                    &new_totp,
+                    &(params.version, params.salt.clone(), params.iterations.get()),
+                )
+                .map_err(RekeyError::Deferred)
+        })?;
 
+    if rekeyed > 0 {
+        info!(
+            rekeyed,
+            "admin secrets re-encrypted under a per-installation master key"
+        );
+    } else {
+        info!("admin master key now uses per-installation KDF parameters");
+    }
+    Ok(rekeyed)
+}
+
+/// Rows re-encrypted under `keys.current`, ready for
+/// [`AdminStore::apply_secret_rekey`]: live secrets, archived versions and the
+/// panel's TOTP secrets.
+type ReencryptedRows = (
+    Vec<SecretCiphertext>,
+    Vec<SecretVersionCiphertext>,
+    Vec<TotpSecretCiphertext>,
+);
+
+/// Read every admin ciphertext, open it with `legacy` and re-encrypt it under
+/// `keys.current`, in memory only. Any `Err` means the store's contents are
+/// not provably under `legacy`.
+fn reencrypt_under_current(
+    store: &AdminStore,
+    keys: &AdminKeys,
+    legacy: &[u8],
+) -> Result<ReencryptedRows, String> {
     let secrets = store.secret_ciphertexts()?;
     let versions = store.secret_version_ciphertexts()?;
     let totp_secrets = store.totp_secret_ciphertexts()?;
@@ -486,27 +649,12 @@ fn migrate_admin_secrets_kdf(store: &mut AdminStore, keys: &AdminKeys) -> Result
         new_totp.push((user_id.clone(), re_encrypted, new_nonce));
     }
 
-    // Ciphertexts and the parameters that describe them land together or not at
-    // all. An earlier revision committed the SQL and then wrote a `kdf.json`;
-    // a crash or a failed write in between left the data under a key nothing
-    // recorded, and the next boot would mint a third salt and open nothing.
-    let rekeyed = store.apply_secret_rekey(
-        &new_secrets,
-        &new_versions,
-        &new_totp,
-        &(params.version, params.salt.clone(), params.iterations.get()),
-    )?;
-
-    if rekeyed > 0 {
-        info!(
-            rekeyed,
-            "admin secrets re-encrypted under a per-installation master key"
-        );
-    } else {
-        info!("admin master key now uses per-installation KDF parameters");
-    }
-    Ok(rekeyed)
+    Ok((new_secrets, new_versions, new_totp))
 }
+
+mod master_key;
+pub use master_key::MasterKeySource;
+use master_key::{check_key_opens_store, master_key_file_key};
 
 #[cfg(test)]
 mod tests;
