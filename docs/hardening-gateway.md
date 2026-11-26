@@ -135,11 +135,64 @@ vier do **mesmo remetente**, na **mesma sessao** e no **mesmo canal**:
 
 Continuam **sem** retomada, e ali a pausa e terminal de proposito: A2A,
 OpenClaw, `POST /api/sessions/{id}/messages`, a resposta do agente no chat
-do workspace (`rest_v1`), as tarefas agendadas (`process_heartbeat`),
+do workspace (`rest_v1`), as tarefas agendadas (`process_heartbeat_with_exec`),
 `garraia ask` e o `garra_agent` do `garraia mcp-server` — ou quem fala e
 outro agente, ou nao ha remetente que o servidor possa provar. Qualquer mensagem no meio encerra o pedido, e
 reiniciar o gateway cancela todos. Detalhes em
 [`security/threat-model.md`](security/threat-model.md) §5.16.
+
+**Autoridade das tarefas agendadas (#1985).** A tarefa roda com a autoridade
+de quem a criou, gravada na criacao: agendar nao eleva privilegio e tambem
+nao reduz. As tools de agenda gravam na tarefa os tetos do turno (o do
+principal e o da superficie); na execucao valem esses, e nao os que a sessao
+teria hoje. Por cima vai a politica de acesso **atual** do canal para quem
+criou a tarefa — no WhatsApp vinculado, rebaixar ou bloquear um contato vale
+tambem para as tarefas que ele ja tinha. Fora do WhatsApp vinculado, uma
+sessao que deixou de ser so do operador depois da criacao (console
+compartilhado com um canal remoto) derruba a tarefa para leitura: quem
+escreve na conversa alcanca o historico que a tarefa le. Tarefa sem autoridade gravada
+(anterior a esse registro) roda pelo canal da sessao: sessao do operador
+segue como estava, sessao remota roda so com leitura, ate o operador
+reautorizar com `garraia tasks authorize <id>` — que mostra o texto da
+tarefa e so grava com `--yes`. Quando um teto barra o que a tarefa pediu, ou
+ela roda com acesso reduzido, a resposta da tarefa comeca pelo aviso. A
+resposta fica sempre no historico da sessao e no ledger (`garraia runs
+list`), e o gateway registra um aviso no log.
+
+**Entrega da resposta agendada (#2002).** Depois de persistida, a resposta e
+empurrada ao canal no Telegram, Discord, Slack, Matrix e WhatsApp vinculado; o
+ledger registra o desfecho (`delivery`). Endereco tirado do id da sessao so
+vale quando o canal gravado na sessao concorda com o prefixo do id **e**
+nenhuma outra superficie escreveu na sessao: um cliente HTTP escolhe o proprio
+id (`X-Session-Id`) e pode criar `discord-<id>` antes do canal, e o canal
+gravado e so o ultimo a escrever. Mensagens, tokens e chaves do Chat Sync so
+crescem e guardam quem veio antes; sessao tocada por outra superficie nao
+recebe (`nao_entregue:origem_mista`). IRC e iMessage ficam fora
+de proposito: no IRC as mensagens privadas de todos caem numa sessao so
+(`irc-<nick do bot>`), e a sessao de grupo do iMessage guarda o nome do grupo,
+nao um endereco.
+
+**IRC: texto do modelo nunca vira comando (#2007).** Toda escrita de texto
+**do modelo** no socket do IRC passa por um ponto so
+(`IrcChannel::enviar_privmsg`); `NICK`, `USER`, `JOIN` e `QUIT` vem da config
+ou sao fixos, e o `PONG` ecoa o token do servidor sem caractere de controle. O
+texto e
+quebrado em `\r\n`, `\n` **e** `\r` isolado (varios servidores tratam
+qualquer um como fim de mensagem), perde `\0` e o delimitador de CTCP
+`\x01`, e cada linha sai como `PRIVMSG <alvo> :<linha>`, cortada sem partir
+caractere em ate 400 bytes de corpo — menos com alvo longo, para a linha
+caber nos 512 bytes do protocolo com folga para o prefixo que o servidor
+acrescenta ao repassar. Alvo com espaco, virgula, `:` inicial ou controle e
+recusado. E `send_raw` recusa qualquer linha com `\r`, `\n` ou `\0`
+embutido, para nenhum chamador futuro reabrir o caminho. Antes, a resposta do
+turno separava so em `\n`, e um `\r` isolado vindo do modelo (influenciavel
+por injecao de prompt) virava comando num servidor que separa em `\r`. No WhatsApp vinculado a entrega
+reconsulta a config viva — canal ligado, grupo com resposta ligada, quem criou
+a tarefa ainda admitido (bloqueado ou removido nao recebe) —, so sai com a
+ponte conectada, tem teto proprio de 3 por chat por minuto (separado da
+cadencia dos turnos) e leva a marca invisivel de auto-conversa. Nada desse
+caminho loga o id da sessao, que no WhatsApp vinculado carrega o telefone.
+Detalhes em [`configuration.md`](configuration.md#where-a-scheduled-reply-is-delivered).
 
 **Nível de aprovação: `agent.approval` e `--yolo` (#1858).** O que acontece
 com o tier arriscado (a segunda linha da tabela) é um knob declarado pelo
@@ -292,6 +345,15 @@ Arquivo completo comentado, validado com `garra config check`:
    `/api/*`, sem resolução de identidade nenhuma, e é por elas que o
    runtime executa as tools do GarraIA na máquina do dono. Quem
    configurava a chave acreditava tê-las fechado.
+
+   **Sem a chave, o A2A roda só com leitura (#1985).** Com
+   `gateway.api_key` configurada, quem chega ao `/a2a/*` já apresentou a
+   credencial do administrador e a tarefa roda sem teto de superfície.
+   Sem ela a rota fica aberta para quem alcança a porta, e a tarefa A2A
+   recebe o mesmo teto de leitura das superfícies remotas: `bash`,
+   escrita de arquivo e envio de mensagem ficam fora, com ou sem agente
+   nomeado. Para delegar trabalho com escrita entre agentes, configure a
+   chave.
 
    **E o socket do papagaio (`/ws/parrot`), desde a auditoria R4 do PR
    #1251.** Ele roda um turno completo do agente — com as tools e a chave

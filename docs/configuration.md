@@ -699,3 +699,114 @@ truncated to 500 characters and no column links a run back to its task.
 Resuming is left out until a real consumer of the sub-agent coordinator
 exists; when it does, it must require explicit confirmation and create a new
 run that references the original.
+
+## Scheduled task authority (`tasks`)
+
+A scheduled task (`schedule_heartbeat`, `schedule_recurring`) runs with the
+authority of whoever created it, recorded when it is created (#1985).
+Scheduling never raises privilege, and it does not lower it either.
+
+- **Recorded at creation.** The task stores the capability ceilings of the
+  turn that created it (`scheduled_tasks.authority`). A task created from the
+  local console keeps operator access; a task created by a WhatsApp contact
+  keeps exactly that contact's access.
+- **Composed with today's channel policy.** On the linked WhatsApp channel the
+  executor also applies the creator's **current** access
+  (`channels.whatsapp_linked.access`). Lowering or blocking a contact applies
+  to the tasks that contact already scheduled; a contact removed from the
+  config runs with no tools.
+- **A session that stopped being operator-only.** A task runs with its
+  session's history. If the operator scheduled a task and the session later
+  gained a remote channel (a console session shared with Telegram, for
+  example), whoever writes there reaches what the task reads, so the task
+  drops to read-only and says so. This does not apply to the linked WhatsApp
+  channel, where the session is the creator's own chat and the creator's
+  identity is re-checked on every run, nor to a task the operator
+  re-authorized.
+- **Tasks with no recorded authority.** A task created before this record
+  exists runs by its session's channel: operator sessions are unchanged, and
+  a remote session runs read-only (no file writes, no commands, no outgoing
+  messages).
+- **A notice when a limit gets in the way.** When a ceiling blocks a tool the
+  task asked for, or the task runs with reduced access, the task's reply
+  starts with a notice naming the limit and what to do. The reduced-access
+  notice is added once per task per gateway start; a blocked tool is reported
+  every time. The reply is always stored in the session history and its start
+  in the runs ledger (`garraia runs list`), and the gateway logs a warning
+  with the task id.
+
+### Where a scheduled reply is delivered
+
+The reply is stored in the session history first; pushing it to the channel
+comes after and never undoes that. The runs ledger records the outcome in
+`delivery` (`garraia runs list` shows it on its own line, `--json` and
+`GET /api/runs` as a field): `entregue`, `sem_entrega` (the session's channel
+has no active delivery, e.g. web, API or the local console) or
+`nao_entregue:<reason>`.
+
+| Channel | Delivered | Address comes from |
+|---|---|---|
+| Telegram | yes | the chat recorded for the session (`chat_session_keys`) |
+| Discord, Slack, Matrix | yes | the session id (`discord-<channel>`, `slack-<channel>`, `matrix-<room>`) |
+| Linked WhatsApp | yes, with the rules below | the session id (`whatsapp-linked-<chat>`) |
+| IRC, iMessage | no, on purpose (see below) | — |
+| Signal, Teams, Google Chat, LINE | no (unchanged; the adapter refuses without an address, `nao_entregue:falhou`) | — |
+| Web, API, local console | no channel to push to | — |
+
+An address is only taken from the session id when the session's recorded
+channel matches the id's prefix **and** nothing but that channel has ever
+written to the session. A client of the HTTP API chooses its own session id
+(`X-Session-Id`) and can create `discord-<id>` before the channel does; the
+session's recorded channel is just the last writer, so once real Discord
+traffic arrives the two would agree. The messages, tokens and Chat Sync keys
+of a session only grow and remember who came first, so a session touched by
+any other surface is refused (`nao_entregue:origem_mista`). Telegram is not
+affected: its address comes from the chat the channel itself recorded.
+
+IRC and iMessage stay out on purpose. On IRC every private message shares one
+session (`irc-<bot nick>`), so the session id does not say who to deliver to.
+(IRC used to send a reply's line breaks raw to the server, which would turn
+them into IRC commands; that was fixed in #2007.) An iMessage group
+session stores the group's *name*, which is not an address. Both behave as
+before: the adapter refuses, and the ledger says `nao_entregue:falhou`.
+
+**Linked WhatsApp.** A scheduled reply is the channel's first *proactive*
+send, so the live configuration is checked again at delivery time:
+
+- the channel must be enabled, and a group must still have replies enabled;
+- whoever created the task must still be admitted by the access policy — a
+  contact blocked or removed after scheduling gets nothing
+  (`nao_entregue:nao_admitido`), the same silence a refused turn gets;
+- the bridge must be connected: messages sent while it is down are dropped
+  by design, so nothing is queued (`nao_entregue:ponte_fora_do_ar`);
+- at most 3 scheduled replies per chat per minute, a budget separate from the
+  per-chat turn cadence, so a recurring task never eats the person's own turns
+  (`nao_entregue:teto`);
+- every scheduled reply starts with the invisible marker the channel uses in
+  the "You" chat, so another GarraIA linked to the same account does not
+  answer it. In any other chat the marker changes nothing.
+
+### `garraia tasks`
+
+Reads and writes `sessions.db` directly, like `garraia runs`; it does not
+need the gateway to be running.
+
+```bash
+garraia tasks list                 # open tasks, soonest first
+garraia tasks list --all --json    # include finished ones, stable JSON
+garraia tasks authorize <id>       # preview only: shows the task, changes nothing
+garraia tasks authorize <id> --yes # grant operator access to its future runs
+garraia tasks revoke <id>          # remove the recorded authority again
+```
+
+`authorize` grants file writes, command execution and outgoing messages to
+**every future run** of that task. The task text may have been written by
+someone talking to the agent on a remote channel, so the command shows the
+full text first and only records the grant with `--yes`. The id must match
+exactly; a prefix is not accepted. The channel's current access policy still
+applies on top of the grant. A re-authorized task keeps operator access even
+on a remote session, so messages written in that conversation before the task
+fires are part of what it acts on: grant it only for conversations you trust.
+
+Exit codes: `0` ok (including the preview), `2` unknown id or a task that
+already finished, `74` the database exists but cannot be opened.

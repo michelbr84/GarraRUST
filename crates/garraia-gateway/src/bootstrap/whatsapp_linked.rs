@@ -84,7 +84,8 @@ pub mod numero;
 pub mod politica;
 pub mod rejeicoes;
 pub use politica::{
-    Admission, Alcance, EntradaDeUsuario, PoliticaDeAcesso, principal_do_turno, teto_do_principal,
+    Admission, Alcance, EntradaDeUsuario, PoliticaDeAcesso, principal_do_turno,
+    teto_da_superficie_do_principal, teto_do_principal,
 };
 
 /// Chave da secao de config. Vem do proprio canal para nao existir um segundo
@@ -169,7 +170,27 @@ pub struct WhatsAppLinkedRuntime {
     /// [`GatewaySink`] usa (embutida aqui para o diagnostico alcancar a
     /// memoria viva sem que o estado precise saber do sink).
     cadencia: std::sync::Arc<std::sync::Mutex<cadencia::Cadencia>>,
+    /// #2002: o lado de saida da ponte, retido pelo supervisor
+    /// ([`supervisionar`]) para a entrega de tarefa agendada — o unico envio
+    /// do canal que nao nasce de uma mensagem recebida, e por isso o unico
+    /// que nao passa pelo [`GatewaySink`]. `None` ate o supervisor subir.
+    saida: std::sync::Mutex<Option<mpsc::Sender<BridgeCommand>>>,
+    /// #2002: orcamento PROPRIO das entregas agendadas, por chat. Separado da
+    /// [`Self::cadencia`] dos turnos: uma tarefa recorrente nao gasta o teto
+    /// do humano da conversa. Ver [`MAX_ENTREGAS_AGENDADAS_POR_JANELA`].
+    entregas_agendadas: crate::channel_send::SendBudget,
 }
+
+/// #2002: entregas de tarefa agendada por chat por janela
+/// ([`crate::channel_send::SEND_WINDOW`], 60 s). Mais que isso no mesmo chat
+/// e rajada automatica numa conta pessoal; a resposta excedente fica no
+/// historico e o ledger diz `teto`.
+pub(crate) const MAX_ENTREGAS_AGENDADAS_POR_JANELA: usize = 3;
+
+/// #2002: quanto a entrega agendada espera por vaga na fila da ponte antes de
+/// desistir. O agendador roda as tarefas em serie; uma fila travada nao pode
+/// segurar as proximas.
+const ESPERA_DA_FILA_DE_SAIDA: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl Default for WhatsAppLinkedRuntime {
     fn default() -> Self {
@@ -180,6 +201,10 @@ impl Default for WhatsAppLinkedRuntime {
             rejeicoes: std::sync::Mutex::new(rejeicoes::Rejeicoes::default()),
             saude: std::sync::Mutex::new(SaudeDoCanal::default()),
             cadencia: std::sync::Arc::new(std::sync::Mutex::new(cadencia::Cadencia::default())),
+            saida: std::sync::Mutex::new(None),
+            entregas_agendadas: crate::channel_send::SendBudget::with_max(
+                MAX_ENTREGAS_AGENDADAS_POR_JANELA as u32,
+            ),
         }
     }
 }
@@ -346,9 +371,67 @@ impl WhatsAppLinkedRuntime {
 
     /// Encerra o supervisor graciosamente. `false` quando nao havia nenhum.
     pub fn cancelar(&self) -> bool {
+        // A saida vai junto: depois do desligamento nenhuma entrega agendada
+        // deve achar uma fila para escrever.
+        self.saida.lock().unwrap_or_else(|e| e.into_inner()).take();
         match self.cancel.lock().unwrap_or_else(|e| e.into_inner()).take() {
             Some(tx) => tx.send(true).is_ok(),
             None => false,
+        }
+    }
+
+    /// #2002: retem o lado de saida da ponte para a entrega de tarefa
+    /// agendada. Chamado pelo supervisor ao montar o [`GatewaySink`].
+    pub(crate) fn reter_saida(&self, saida: mpsc::Sender<BridgeCommand>) {
+        *self.saida.lock().unwrap_or_else(|e| e.into_inner()) = Some(saida);
+    }
+
+    /// #2002: empurra a resposta de uma tarefa agendada para `chat`.
+    ///
+    /// Quem chama ja decidiu a POLITICA (canal ligado, grupo, quem criou a
+    /// tarefa ainda admitido — `entrega_agendada::decidir_whatsapp`); aqui
+    /// ficam as regras da PONTE:
+    ///
+    /// - so com a ponte conectada: o `runner` descarta de proposito o que
+    ///   chega com ela caida, entao enfileirar esconderia que nao foi;
+    /// - orcamento proprio por chat ([`MAX_ENTREGAS_AGENDADAS_POR_JANELA`]),
+    ///   cobrado so quando a ponte pode mandar;
+    /// - sempre com [`MARCA_DO_GARRA`]: o executor nao sabe se o chat e a
+    ///   conversa "Voce" (o JID da propria conta vive na ponte), e a marca
+    ///   invisivel e inofensiva fora dela — mensagem da propria conta fora da
+    ///   conversa "Voce" nunca vira turno.
+    ///
+    /// Nada aqui loga: o chat e o telefone do contato. O desfecho volta para
+    /// o executor, que loga o id da tarefa.
+    pub(crate) async fn entregar_agendada(
+        &self,
+        chat: &str,
+        texto: &str,
+    ) -> Result<(), crate::entrega_agendada::Motivo> {
+        use crate::entrega_agendada::Motivo;
+        let saida = self.saida.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some(saida) = saida else {
+            return Err(Motivo::PonteForaDoAr);
+        };
+        if self.bridge() != BridgeView::Connected {
+            return Err(Motivo::PonteForaDoAr);
+        }
+        if self
+            .entregas_agendadas
+            .try_consume(chat, std::time::Instant::now())
+            .is_err()
+        {
+            return Err(Motivo::Teto);
+        }
+        let comando = BridgeCommand::Send {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            chat_jid: Jid::new(chat),
+            text: format!("{MARCA_DO_GARRA}{texto}"),
+        };
+        match saida.send_timeout(comando, ESPERA_DA_FILA_DE_SAIDA).await {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::SendTimeoutError::Closed(_)) => Err(Motivo::PonteForaDoAr),
+            Err(mpsc::error::SendTimeoutError::Timeout(_)) => Err(Motivo::Falhou),
         }
     }
 }
@@ -1948,8 +2031,16 @@ impl GatewaySink {
         );
         // ADR 0025 §2: o teto do principal, composto por E com o modo em todo
         // ponto do runtime. So tira, nunca poe: `write on` nao desliga
-        // sandbox, jail nem confirmacao. O dono nao tem teto.
+        // sandbox, jail nem confirmacao. O dono nao tem teto DE PRINCIPAL —
+        // mas o teto da SUPERFICIE e camada propria que esta atribuicao nao
+        // toca, e o `ToolGate` compoe os dois por E: nenhuma camada amplia a
+        // outra. Aqui a camada da superficie e RESOLVIDA com a prova de
+        // identidade do principal (este canal autentica o remetente):
+        // identidade provada => a fronteira e o teto do principal; sem
+        // identidade provada (`admission: open`) => leitura (fail-closed),
+        // mesmo que o default do canal seja `full`.
         exec.teto = teto_do_principal(&principal);
+        exec.teto_da_superficie = teto_da_superficie_do_principal(&principal);
         let exec = crate::approval_scope::com_escopo(exec, CONFIG_KEY, &sid, &remetente);
 
         let resposta = state
@@ -2608,6 +2699,9 @@ pub(crate) fn supervisionar(
     runtime.set_bridge(BridgeView::NotStarted);
 
     let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CAPACITY);
+    // #2002: a entrega de tarefa agendada escreve na MESMA fila que as
+    // respostas dos turnos — uma saida so, uma ordem so.
+    runtime.reter_saida(outbound_tx.clone());
     // O `GatewaySink` monta o [`PortaoDoCanal`] a partir destes `settings`: as
     // identidades do `allow` ficam **neste** canal, e nao no `allowlist.json`
     // da instalacao. Ver o docblock de `PortaoDoCanal`.

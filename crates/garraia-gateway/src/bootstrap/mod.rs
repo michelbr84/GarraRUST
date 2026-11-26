@@ -74,6 +74,9 @@ pub use whatsapp_linked::doctor as whatsapp_linked_doctor;
 pub use whatsapp_linked::motivo_da_recusa as whatsapp_linked_motivo_da_recusa;
 /// #1403: a validacao de numero, uma so, para a CLI e a API admin.
 pub use whatsapp_linked::numero as whatsapp_linked_numero;
+/// #1985: o piso de modo do canal, para a tarefa agendada de uma sessao do
+/// WhatsApp rodar sob o mesmo piso que o turno aplica.
+pub(crate) use whatsapp_linked::piso_somente_leitura as whatsapp_linked_piso_somente_leitura;
 /// ADR 0025 (#1388): a Access Policy v2 do canal — `PoliticaDeAcesso`,
 /// `Principal`, `Alcance`, `principal_do_turno`, `teto_do_principal`. E o
 /// MESMO motor que o turno usa; a CLI, a API admin e o Web Console leem e
@@ -104,6 +107,14 @@ pub use whatsapp_linked::{
 pub use whatsapp_linked::{
     LinkedSettings as WhatsAppLinkedSettings, chave_do_portao as whatsapp_linked_chave_do_portao,
     normalizar_identidade as whatsapp_linked_normalizar_identidade,
+};
+/// #2002: os testes da entrega ativa de tarefa agendada
+/// (`crate::entrega_agendada`) conferem a marca de auto-conversa e o teto de
+/// entregas por chat do canal.
+#[cfg(test)]
+pub(crate) use whatsapp_linked::{
+    MARCA_DO_GARRA as WHATSAPP_LINKED_MARCA_DO_GARRA,
+    MAX_ENTREGAS_AGENDADAS_POR_JANELA as WHATSAPP_LINKED_MAX_ENTREGAS_AGENDADAS,
 };
 /// #1409: o piso de modo do turno por principal, para o admin dizer o modo
 /// EFETIVO de uma sessao do WhatsApp (o mesmo que `turno` calcula).

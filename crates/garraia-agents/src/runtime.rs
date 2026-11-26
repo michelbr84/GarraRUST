@@ -2081,6 +2081,12 @@ impl AgentRuntime {
     }
 
     /// Same as `process_message` but includes continuity/user context for shared memory.
+    ///
+    /// **Fail-closed**: sem `ExecContext` explicito, o turno roda sob o teto de
+    /// leitura de [`ExecContext::sem_prova_de_operador`] — nenhuma API de
+    /// conveniencia concede privilegio administrativo em silencio. Quem tem
+    /// estado de sessao usa [`Self::process_message_with_exec`] com o contexto
+    /// do construtor central.
     #[instrument(skip_all, fields(session_id = %session_id, has_user_id = user_id.is_some()))]
     pub async fn process_message_with_context(
         &self,
@@ -2100,13 +2106,19 @@ impl AgentRuntime {
             None,
             None,
             None,
-            &ExecContext::default(),
+            &ExecContext::sem_prova_de_operador(),
         )
         .await
     }
 
     /// Process a scheduled heartbeat message. Tools receive `is_heartbeat = true`
     /// so that recursive scheduling is blocked.
+    ///
+    /// **Fail-closed**: sem `ExecContext` explicito, o turno agendado roda sob o
+    /// teto de leitura de [`ExecContext::sem_prova_de_operador`] — agendamento
+    /// nunca eleva privilegio. Quem tem estado de sessao usa
+    /// [`Self::process_heartbeat_with_exec`], preservando o vinculo com quem
+    /// autorizou a tarefa.
     #[instrument(skip_all, fields(session_id = %session_id, has_user_id = user_id.is_some()))]
     pub async fn process_heartbeat(
         &self,
@@ -2123,7 +2135,59 @@ impl AgentRuntime {
             continuity_key,
             user_id,
             true,
-            &ExecContext::default(),
+            &ExecContext::sem_prova_de_operador(),
+        )
+        .await
+    }
+
+    /// Igual a [`Self::process_message_with_context`], com o `ExecContext` do
+    /// turno EXPLICITO. Caminho de producao: quem tem estado de sessao monta o
+    /// contexto no construtor central (que consulta `sessao_do_operador` e
+    /// aplica o teto da superficie) e chama este metodo.
+    pub async fn process_message_with_exec(
+        &self,
+        session_id: &str,
+        user_text: &str,
+        conversation_history: &[ChatMessage],
+        continuity_key: Option<&str>,
+        user_id: Option<&str>,
+        exec: &ExecContext,
+    ) -> Result<String> {
+        self.process_message_with_agent_config(
+            session_id,
+            user_text,
+            conversation_history,
+            continuity_key,
+            user_id,
+            None,
+            None,
+            None,
+            None,
+            exec,
+        )
+        .await
+    }
+
+    /// Igual a [`Self::process_heartbeat`], com o `ExecContext` EXPLICITO: a
+    /// tarefa agendada executa com o contexto da sessao que a autorizou, e nao
+    /// com um contexto privilegiado implicito.
+    pub async fn process_heartbeat_with_exec(
+        &self,
+        session_id: &str,
+        user_text: &str,
+        conversation_history: &[ChatMessage],
+        continuity_key: Option<&str>,
+        user_id: Option<&str>,
+        exec: &ExecContext,
+    ) -> Result<String> {
+        self.process_message_impl(
+            session_id,
+            user_text,
+            conversation_history,
+            continuity_key,
+            user_id,
+            true,
+            exec,
         )
         .await
     }
@@ -2792,7 +2856,7 @@ impl AgentRuntime {
             model_override,
             None,
             None,
-            &ExecContext::default(),
+            &ExecContext::sem_prova_de_operador(),
         )
         .await
     }
@@ -3794,6 +3858,11 @@ impl AgentRuntime {
                 neutralizar_marcadores(&portao.explica_recusa(name, self.capacidades_de(name)));
             // #1438: rejeicao de politica, contada por ferramenta.
             self.observar_recusa(name, Desfecho::NegadaPelaPolitica);
+            // #1985: quando quem barrou foi um TETO, quem abriu o coletor
+            // (a execucao de tarefa agendada) fica sabendo e avisa o canal.
+            if let Some(teto) = portao.teto_que_barra(name, self.capacidades_de(name)) {
+                crate::tools::turn_tools::registrar_bloqueio_de_teto(name, teto);
+            }
             // #1226 (achado de revisao): fecha o `tool_started` de cima.
             // Sem isto, um passo negado dentro de um `tool_program` deixava
             // um inicio sem fim entre o par do proprio programa — a UI de
@@ -4027,6 +4096,24 @@ impl AgentRuntime {
                         portao.restringe_por_whitelist(),
                         execucao,
                     );
+                    // #1985: quem agenda grava na tarefa as camadas de teto
+                    // DESTE turno. So para tool que declara a classe de
+                    // agenda: as outras nao tem o que fazer com isso, e a
+                    // copia das politicas nao e de graca.
+                    let agenda = self
+                        .capacidades_de(name)
+                        .contains(&crate::capacidades::Capacidade::Scheduling);
+                    let execucao = async {
+                        if agenda {
+                            crate::tools::turn_tools::com_autoridade_do_turno(
+                                portao.autoridade_do_turno(),
+                                execucao,
+                            )
+                            .await
+                        } else {
+                            execucao.await
+                        }
+                    };
                     // #1780: ferramenta que declara teto proprio (LLM por
                     // dentro, p.ex. o `code_review`) nao morre no teto do
                     // modo antes do bound que ela mesma respeita — ver

@@ -26,7 +26,8 @@ pub use memory_store::{
 pub use project_store::{DataRetentionRecord, Project, ProjectFile, ProjectTemplate};
 pub use retention::{CompactionPreview, LastCleanup, MemoryRetentionSnapshot, RunLedgerSnapshot};
 pub use session_store::{
-    MobileUser, ScheduledTask, SessionStore, SessionSurfaces, StoredMessage, log_recovered_leases,
+    MobileUser, ScheduledTask, ScheduledTaskSummary, SessionStore, SessionSurfaces, StoredMessage,
+    log_recovered_leases,
 };
 pub use sqlite_db::SqliteDb;
 pub use vector_store::{VecIndexInventory, VectorStore};

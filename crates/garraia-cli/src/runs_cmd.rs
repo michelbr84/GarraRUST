@@ -177,6 +177,9 @@ pub(crate) fn run_json(run: &AgentRunRow) -> serde_json::Value {
         "finished_at": run.finished_at.as_deref().map(iso8601_utc),
         "result_snippet": run.result_snippet.as_ref().map(redigir),
         "error_snippet": run.error_snippet.as_ref().map(redigir),
+        // #2002: `entregue`, `sem_entrega` ou `nao_entregue:<motivo>`; `null`
+        // para run que nao entrega nada.
+        "delivery": run.delivery.as_deref().map(sanitize_control_chars),
     })
 }
 
@@ -202,7 +205,7 @@ pub(crate) fn run_line(run: &AgentRunRow) -> String {
         None => "—                   ".to_string(),
     };
     let modo = sanitize_control_chars(run.mode.as_deref().unwrap_or("—"));
-    format!(
+    let mut linha = format!(
         "{:<11}  {}  {}  {:<10}  {}\n    {}",
         run.status.as_str(),
         iso8601_utc(&run.started_at),
@@ -210,7 +213,14 @@ pub(crate) fn run_line(run: &AgentRunRow) -> String {
         modo,
         sanitize_control_chars(&run.id),
         preview(&run.goal, GOAL_PREVIEW_CHARS),
-    )
+    );
+    // #2002: a entrega em linha propria, para nao pendurar campo depois do
+    // objetivo truncado. So aparece em run que passou por uma.
+    if let Some(entrega) = run.delivery.as_deref() {
+        linha.push_str("\n    entrega: ");
+        linha.push_str(&sanitize_control_chars(entrega));
+    }
+    linha
 }
 
 /// `garra runs list` — os runs mais recentes do ledger, do mais novo ao mais
@@ -417,6 +427,7 @@ mod tests {
             finished_at: None,
             result_snippet: None,
             error_snippet: None,
+            delivery: None,
         };
         let linha = run_line(&run);
         assert!(!linha.contains('\x1b'), "ESC cru na linha: {linha:?}");
@@ -441,6 +452,7 @@ mod tests {
             finished_at: Some("2026-09-21 12:35:10".to_string()),
             result_snippet: Some("chave sk-or-v1-abc123def456 no resultado".to_string()),
             error_snippet: Some("401 from sk-or-v1-abc123def456".to_string()),
+            delivery: None,
         };
 
         let texto = serde_json::to_string(&run_json(&run)).expect("serializa");
@@ -576,6 +588,7 @@ mod tests {
                 "finished_at",
                 "result_snippet",
                 "error_snippet",
+                "delivery",
             ] {
                 assert!(item.get(chave).is_some(), "falta `{chave}` em {item}");
             }
@@ -654,6 +667,7 @@ mod tests {
             finished_at: Some("2026-09-21 12:35:10".to_string()),
             result_snippet: None,
             error_snippet: None,
+            delivery: None,
         };
         let linha = run_line(&run);
         assert!(linha.contains("2026-09-21T12:34:56Z"), "{linha}");
@@ -676,5 +690,33 @@ mod tests {
         let linha = run_line(&aberto);
         assert!(linha.contains("running"), "{linha}");
         assert!(!linha.contains("12:35:10"), "{linha}");
+        assert!(
+            !linha.contains("entrega"),
+            "sem entrega, sem linha: {linha}"
+        );
+    }
+
+    /// #2002: a tarefa agendada diz se a resposta chegou ao canal ou ficou so
+    /// no historico — na linha humana e no `--json`.
+    #[test]
+    fn run_agendado_mostra_a_entrega() {
+        let run = AgentRunRow {
+            id: "run-1".to_string(),
+            session_id: Some("s-1".to_string()),
+            goal: "relatorio".to_string(),
+            mode: Some("heartbeat".to_string()),
+            status: RunStatus::Done,
+            started_at: "2026-09-21 12:34:56".to_string(),
+            finished_at: Some("2026-09-21 12:35:10".to_string()),
+            result_snippet: Some("pronto".to_string()),
+            error_snippet: None,
+            delivery: Some("nao_entregue:ponte_fora_do_ar".to_string()),
+        };
+        let linha = run_line(&run);
+        assert!(
+            linha.ends_with("\n    entrega: nao_entregue:ponte_fora_do_ar"),
+            "{linha}"
+        );
+        assert_eq!(run_json(&run)["delivery"], "nao_entregue:ponte_fora_do_ar");
     }
 }

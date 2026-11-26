@@ -35,7 +35,8 @@
         "modos custom: PATCH /api/modes/custom/{id} com Bearer api_key"
       ],
       "limitations": [
-        "o modo efetivo da sessão está em garra_status → session.mode"
+        "o modo efetivo da sessão está em garra_status → session.mode",
+        "na CLI: garra chat --mode <nome> e /mode <nome> (/mode off volta ao sem política); plan é apelido de architect, somente leitura"
       ],
       "availability": "configuravel"
     },
@@ -46,7 +47,8 @@
       "summary": "Ferramentas mutantes podem pedir confirmação humana vinculada ao pedido que foi aprovado.",
       "prerequisites": [],
       "limitations": [
-        "vale conforme a política do modo atual; a aprovação é vinculada à ferramenta e ao assunto aprovados, não ao turno inteiro"
+        "vale conforme a política do modo atual; a aprovação é vinculada à ferramenta e ao assunto aprovados, não ao turno inteiro",
+        "nível em agent.approval: always (padrão) pergunta sempre; session não repete a pergunta do mesmo pedido já aprovado na sessão; never-confirm dispensa o pedido onde há canal de confirmação (garra chat --yolo é o atalho da sessão, nunca persiste); o bloqueio definitivo de comandos e o fail-closed sem canal de confirmação não mudam em nenhum nível"
       ],
       "availability": "disponivel"
     },
@@ -361,7 +363,8 @@
         "recusa subir com tool MCP registrada fora do piso somente leitura do canal",
         "pareamento pendente é memória do processo: restart do gateway o descarta",
         "cadência entre turnos por chat: acima de channels.whatsapp_linked.max_turnos_per_minute (padrão 20 em 60s) o turno é cortado como possível loop entre agentes, com backoff crescente",
-        "garraia whatsapp self-test prova que a ponte carrega (Node + Baileys), não que o aparelho está pareado"
+        "garraia whatsapp self-test prova que a ponte carrega (Node + Baileys), não que o aparelho está pareado",
+        "conversa \"Você\" (o dono no próprio número): garraia whatsapp access self-chat on|off grava o opt-in explícito; off mantém a conversa como bloco de notas, e sem a escolha gravada ela vira turno quando o portão admite o próprio número"
       ],
       "availability": "configuravel",
       "channel": "whatsapp_linked"
@@ -613,7 +616,8 @@
       "summary": "Agenda o retorno do agente após um intervalo (schedule_heartbeat).",
       "prerequisites": [],
       "limitations": [
-        "não há API HTTP de scheduling: o tile automations do mobile não aparece, de propósito"
+        "não há API HTTP de scheduling: o tile automations do mobile não aparece, de propósito",
+        "a tarefa roda com a autoridade de quem a criou; tarefa de sessão remota criada antes desse registro roda só com leitura até o operador reautorizar (garra tasks list|authorize|revoke)"
       ],
       "availability": "disponivel",
       "tool": "schedule_heartbeat"
@@ -625,7 +629,8 @@
       "summary": "Agenda tarefas recorrentes e disparos por webhook (schedule_recurring).",
       "prerequisites": [],
       "limitations": [
-        "não há API HTTP de scheduling: o tile automations do mobile não aparece, de propósito"
+        "não há API HTTP de scheduling: o tile automations do mobile não aparece, de propósito",
+        "a tarefa roda com a autoridade de quem a criou; tarefa de sessão remota criada antes desse registro roda só com leitura até o operador reautorizar (garra tasks list|authorize|revoke)"
       ],
       "availability": "disponivel",
       "tool": "schedule_recurring"
@@ -637,7 +642,8 @@
       "summary": "Skills (procedimentos reutilizáveis) e aprendizado do agente (/api/skills, /api/learning).",
       "prerequisites": [],
       "limitations": [
-        "o conteúdo das skills vive no diretório de dados da instalação"
+        "o conteúdo das skills vive no diretório de dados da instalação",
+        "na CLI, sem gateway: garra skills mine (minera os logs de sessão em candidatos), garra skills candidates e garra skills list"
       ],
       "availability": "disponivel"
     },
