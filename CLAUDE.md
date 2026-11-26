@@ -377,8 +377,9 @@ benches/
 17. **O site `garraia.org` NÃO está neste repositório.** Ele vive em
     `michelbr84/garraia-74c335d5` (Vite + React + shadcn, publicado pelo Lovable).
     Editar `install.sh`/`install.ps1` aqui **não** muda o que `garraia.org` serve.
-    O hosting da Lovable **IGNORA** `public/_redirects`: `/install.sh` e
-    `/install.ps1` só funcionam porque existem **cópias estáticas em `public/`**
+    O hosting da Lovable **IGNORA** `public/_redirects` (ele é servido como
+    arquivo comum em `/_redirects`; um `_headers` cairia no fallback SPA):
+    `/install.sh` e `/install.ps1` só funcionam porque existem **cópias estáticas em `public/`**
     daquele repo (o Vite copia `public/*` para a raiz do build), mantidas em
     sincronia com o raw do `main` daqui pelo workflow de sync do site
     (`sync-install-sh.yml`, cron diário). Publicar em produção é um passo
@@ -391,11 +392,33 @@ benches/
     Ao adicionar um instalador novo, adicione **junto** o arquivo estático + a
     entrada no sync do repo do site, e republique. O `_redirects` e o
     `infra/nginx.conf` de lá são future-proofing para self-hosting, não o
-    mecanismo vivo. O workflow `install-endpoints.yml` (agendado, não é gate de
+    mecanismo vivo.
+    **Windows não instala pelo `garraia.org` (#2016).** A borda Cloudflare da
+    Lovable responde **403 com `cf-mitigated: challenge`** ao cliente HTTP do
+    PowerShell em todo host dela (inclusive fora de datacenter), e o `irm` não
+    resolve desafio de navegador. A Lovable não deixa configurar cabeçalho
+    nem regra de bot — o tipo vem da extensão, e `.ps1` sai como
+    `application/octet-stream`. **Esse tipo não é o problema:** o
+    `Invoke-RestMethod` decodifica qualquer resposta como texto (tenta
+    XML/JSON e cai em string), então octet-stream chega como `[string]`; não
+    "conserte" o tipo achando que conserta o `irm`. Por isso o one-liner
+    Windows é `irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex`
+    — no site (constante `WINDOWS_INSTALL_URL`), no README e na ajuda do
+    `install.ps1` — e o `public/install.ps1` do site segue servido só como
+    cópia. Linux/macOS/Termux seguem em `garraia.org/install.sh`: o `curl`
+    passa pela borda.
+    O workflow `install-endpoints.yml` (agendado, não é gate de
     PR) sonda todas as URLs documentadas, imprime o código HTTP de cada sonda,
-    roda todas antes de falhar e verifica o contrato real do Windows com
-    `Invoke-RestMethod`. O Worker em `deploy/installer-worker/` está
-    descontinuado e nunca serviu o `garraia.org`.
+    roda todas antes de falhar e verifica o contrato real do Windows com o
+    próprio `Invoke-RestMethod`, sem fallback para outro cliente e sem
+    asserir o `Content-Type`. Nas URLs que a documentação ensina ao Windows
+    (raw, jsDelivr, GitHub Releases), qualquer falha do `irm` — o desafio da
+    borda inclusive — reprova o run; o `garraia.org/install.ps1`, fora da
+    documentação, só gera aviso, para o vermelho diário da borda da Lovable
+    não esconder uma quebra no raw (as suítes `documented_urls` impedem que
+    ele volte a ser ensinado). O Worker em
+    `deploy/installer-worker/` está descontinuado e nunca serviu o
+    `garraia.org`.
 18. **NUNCA** cherry-pickar ou misturar arquivos de migration (`crates/garraia-workspace/migrations/`) entre repositórios diferentes sem verificar a numeração estrita e linear. Os esquemas e numerações de migrations são independentes e forward-only.
 
 ## Framework de Desenvolvimento: Superpowers
