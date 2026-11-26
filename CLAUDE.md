@@ -410,8 +410,13 @@ benches/
     O workflow `install-endpoints.yml` (agendado, não é gate de
     PR) sonda todas as URLs documentadas, imprime o código HTTP de cada sonda,
     roda todas antes de falhar e verifica o contrato real do Windows com o
-    próprio `Invoke-RestMethod`, sem fallback para outro cliente: o desafio
-    da borda é falha, e o `Content-Type` não é asserido. O Worker em
+    próprio `Invoke-RestMethod`, sem fallback para outro cliente e sem
+    asserir o `Content-Type`. Nas URLs que a documentação ensina ao Windows
+    (raw, jsDelivr, GitHub Releases), qualquer falha do `irm` — o desafio da
+    borda inclusive — reprova o run; o `garraia.org/install.ps1`, fora da
+    documentação, só gera aviso, para o vermelho diário da borda da Lovable
+    não esconder uma quebra no raw (as suítes `documented_urls` impedem que
+    ele volte a ser ensinado). O Worker em
     `deploy/installer-worker/` está descontinuado e nunca serviu o
     `garraia.org`.
 18. **NUNCA** cherry-pickar ou misturar arquivos de migration (`crates/garraia-workspace/migrations/`) entre repositórios diferentes sem verificar a numeração estrita e linear. Os esquemas e numerações de migrations são independentes e forward-only.

@@ -34,14 +34,16 @@
 #      o host — e não só a partir de datacenter: de máquina residencial o
 #      pwsh 7.4 também leva o desafio. O `irm` não resolve desafio de
 #      navegador, então o one-liner morre antes de baixar o script. ESSE é o
-#      modo de falha do usuário, e por isso o passo irm abaixo trata o
-#      desafio como falha, nunca como aviso.
+#      modo de falha do usuário — e o passo irm abaixo o reprova em toda URL
+#      que a documentação ensina.
 # A Lovable não deixa configurar cabeçalho nem regra de bot, então o
 # Windows deixou de ser mandado ao garraia.org: o site
 # (michelbr84/garraia-74c335d5#15) e a ajuda do install.ps1 ensinam o raw do
 # `main`, como o README.md e o docs/installation.md já faziam desde o #1873.
-# A sonda irm do garraia.org continua aqui para dizer quando a borda voltar a
-# servir o PowerShell — e fica vermelha enquanto não servir.
+# A sonda irm do garraia.org continua no passo irm, mas como AVISO: a URL não
+# é mais ensinada, e a borda a desafia em boa parte dos dias. Reprovar por ela
+# deixaria este workflow vermelho quase todo dia e esconderia uma quebra de
+# verdade no raw, que é o que o usuário roda.
 #
 # Por que NÃO é gate de PR: estas asserções falam do estado *implantado*, que
 # um PR não tem como consertar. Um deploy ruim do site travaria todo PR do
@@ -230,36 +232,61 @@ jobs:
           # [string] igual ao text/plain do raw (#2016). O que quebra o
           # one-liner é NÃO receber o script — em especial o 403 com
           # `cf-mitigated: challenge` da borda Cloudflare da Lovable, um
-          # desafio de navegador que o irm não resolve. Isso é falha.
+          # desafio de navegador que o irm não resolve.
+          #
+          # Duas severidades, como o probe() do passo curl (sem
+          # continue-on-error, que o repo proíbe):
+          #   error — as URLs que a documentação manda o Windows usar. Qualquer
+          #           falha do irm aqui é falha do usuário real e reprova o run
+          #           (e o D8 do runbook de release).
+          #   warn  — o garraia.org/install.ps1, fora da documentação desde
+          #           #2016. A borda da Lovable desafia o PowerShell em boa
+          #           parte dos dias, e o site não tem como desligar isso;
+          #           reprovar por ele deixaria este workflow vermelho quase
+          #           todo dia e esconderia uma quebra de verdade no raw. Ele
+          #           vira aviso, e um `::notice` quando a borda voltar a
+          #           servir o PowerShell. O que impede alguém de voltar a
+          #           ensinar essa URL sem passar por aqui são as suítes
+          #           documented_urls (sh e ps1), que proíbem
+          #           `irm https://garraia.org/install.ps1` no install.ps1.
           #
           # (Restrição que continua valendo: install.ps1 precisa continuar
           # ASCII puro — o irm do PowerShell 5.1 decodifica ISO-8859-1 quando
           # o servidor não manda charset, como o garraia.org.)
           $failures = 0
-          $urls = @(
+          $probes = @(
             # o que o site, o README e a ajuda do install.ps1 ensinam
-            'https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1',
+            @{ Url = 'https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1'; Mode = 'error' },
             # os espelhos listados para o Windows
-            'https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1',
-            'https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1',
-            # fora da documentação desde #2016; fica para avisar quando a
-            # borda da Lovable voltar a servir o PowerShell
-            'https://garraia.org/install.ps1'
+            @{ Url = 'https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1'; Mode = 'error' },
+            @{ Url = 'https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1'; Mode = 'error' },
+            # fora da documentação (#2016): só aviso
+            @{ Url = 'https://garraia.org/install.ps1'; Mode = 'warn' }
           )
-          foreach ($url in $urls) {
-            Write-Host "::group::irm $url"
+
+          # Report <url> <mode> <mensagem> — ::error e conta, ou ::warning.
+          function Report([string]$url, [string]$mode, [string]$message) {
+            if ($mode -eq 'warn') {
+              Write-Host "::warning ::irm ${url}: $message (fora da documentação; tolerado)"
+            } else {
+              Write-Host "::error ::irm ${url}: $message"
+              $script:failures++
+            }
+          }
+
+          foreach ($probe in $probes) {
+            $url = $probe.Url; $mode = $probe.Mode
+            Write-Host "::group::irm $url ($mode)"
             try {
               $body = Invoke-RestMethod -Uri $url `
                 -MaximumRetryCount 3 -RetryIntervalSec 2 -TimeoutSec 60
               if ($body -isnot [string]) {
                 # Só acontece se o corpo parsear como XML/JSON: aí o irm
                 # devolve um objeto e o `| iex` recebe o objeto, não o script.
-                Write-Host "::error ::irm ${url}: devolveu $($body.GetType().Name), não [string] — o corpo virou objeto (parseou como XML/JSON?)"
-                $failures++
+                Report $url $mode "devolveu $($body.GetType().Name), não [string] — o corpo virou objeto (parseou como XML/JSON?)"
               } elseif (-not $body.StartsWith('<#')) {
                 $head = $body.Substring(0, [Math]::Min(80, $body.Length)) -replace "`r?`n", ' '
-                Write-Host "::error ::irm ${url}: corpo não começa com '<#' (início: $head)"
-                $failures++
+                Report $url $mode "corpo não começa com '<#' (início: $head)"
               } else {
                 # O `iex` parseia antes de executar: um corpo truncado ou
                 # corrompido passa na assinatura e quebra aqui.
@@ -267,10 +294,12 @@ jobs:
                 [void][System.Management.Automation.Language.Parser]::ParseInput(
                   $body, [ref]$tokens, [ref]$parseErrors)
                 if ($parseErrors.Count) {
-                  Write-Host "::error ::irm ${url}: o script não parseia ($($parseErrors.Count) erro(s); primeiro: $($parseErrors[0].Message))"
-                  $failures++
+                  Report $url $mode "o script não parseia ($($parseErrors.Count) erro(s); primeiro: $($parseErrors[0].Message))"
                 } else {
                   Write-Host "OK — [string] de $($body.Length) chars, começa com '<#' e parseia"
+                  if ($mode -eq 'warn') {
+                    Write-Host "::notice ::irm ${url}: a borda serviu o PowerShell neste run — se isso se repetir, dá para reavaliar a URL (#2016)"
+                  }
                 }
               }
             } catch {
@@ -278,12 +307,12 @@ jobs:
               $code = try { [int]$response.StatusCode } catch { 'n/a' }
               $mitigated = try { $response.Headers.GetValues('cf-mitigated') -join ',' } catch { '' }
               if ($mitigated -eq 'challenge') {
-                Write-Host "::error ::irm ${url}: HTTP $code com cf-mitigated: challenge — a borda desafia o cliente HTTP do PowerShell; 'irm | iex' morre antes de baixar o script"
+                Report $url $mode "HTTP $code com cf-mitigated: challenge — a borda desafia o cliente HTTP do PowerShell; 'irm | iex' morre antes de baixar o script"
               } else {
-                Write-Host "::error ::irm ${url}: HTTP $code — $($_.Exception.Message)"
+                Report $url $mode "HTTP $code — $($_.Exception.Message)"
               }
-              $failures++
             }
             Write-Host '::endgroup::'
           }
           if ($failures -ne 0) { exit 1 }
+          Write-Host 'Todas as URLs que a documentação ensina servem o script ao irm.'

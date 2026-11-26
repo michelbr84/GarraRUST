@@ -5,5 +5,6 @@
   `irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex`,
   como o README e o site ja fazem. O `Content-Type` `application/octet-stream`
   nao era a causa: o `Invoke-RestMethod` decodifica qualquer resposta como
-  texto. A sonda `install-endpoints.yml` passa a tratar o desafio da borda como
-  falha e deixa de asserir o `Content-Type`.
+  texto. A sonda `install-endpoints.yml` deixa de asserir o `Content-Type` e
+  usa o proprio `irm`: falha em qualquer URL que a documentacao ensina ao
+  Windows, e so avisa no `garraia.org/install.ps1`, que saiu da documentacao.
