@@ -116,7 +116,7 @@ fn remote(state: &SharedState, provider: &str) -> VoiceResult<Remote> {
         || url.query().is_some()
         || url.fragment().is_some()
         // https anywhere; http only to a loopback IP literal, never a name
-        // (same rule as the Signal guard; see the CodeQL ledger).
+        // (stricter than the Signal guard, which accepts a name resolving to loopback).
         || !credential_safe_endpoint(&url)
     {
         return Err(bad_request(
