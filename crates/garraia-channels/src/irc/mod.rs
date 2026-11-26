@@ -20,13 +20,30 @@ use garraia_common::{Error, Message, MessageContent, Result};
 
 pub use config::IrcConfig;
 
+/// Com quem o bot fala numa mensagem recebida (#2011).
+///
+/// O alvo de um `PRIVMSG` recebido e o canal ou, no privado, o **nick do
+/// bot** — o mesmo para todo mundo. Quem decide a conversa e este tipo, nao o
+/// alvo cru: antes o gateway montava a sessao do alvo, e as conversas
+/// privadas de todas as pessoas caiam juntas em `irc-<nick do bot>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConversaIrc {
+    /// Num canal (`#garra`, `&local`): quem esta no canal divide a conversa.
+    /// O nome vem como o servidor mandou.
+    Canal(String),
+    /// No privado: a conversa e com quem mandou. O nick vem normalizado pelo
+    /// `CASEMAPPING` do servidor, para a mesma pessoa ser a mesma conversa
+    /// (`Ana` e `ana`).
+    Privado(String),
+}
+
 /// Callback invoked when a PRIVMSG is received from IRC.
 ///
-/// Arguments: `(channel_name, nick, user_name, text, delta_tx)`.
+/// Arguments: `(conversa, nick, user_name, text, delta_tx)`.
 /// Return `Err("__blocked__")` to silently drop unauthorized messages.
 pub type IrcOnMessageFn = Arc<
     dyn Fn(
-            String,
+            ConversaIrc,
             String,
             String,
             String,
@@ -180,6 +197,9 @@ impl Channel for IrcChannel {
             let mut buf_reader = BufReader::new(reader);
             let mut line = String::new();
             let mut registered = false;
+            // O que o servidor anuncia no 005; chega no registro, antes de
+            // qualquer PRIVMSG.
+            let mut suporte = Suporte::default();
 
             loop {
                 line.clear();
@@ -210,6 +230,8 @@ impl Channel for IrcChannel {
                                     continue;
                                 }
 
+                                suporte.aplicar_isupport(trimmed);
+
                                 // Detect end of MOTD (RPL_ENDOFMOTD or ERR_NOMOTD)
                                 if !registered && (trimmed.contains(" 376 ") || trimmed.contains(" 422 ")) {
                                     registered = true;
@@ -230,7 +252,7 @@ impl Channel for IrcChannel {
                                 // Format: :nick!user@host PRIVMSG #channel :message text
                                 if let Some(privmsg_data) = parse_privmsg(trimmed) {
                                     let (source_nick, target, text) = privmsg_data;
-                                    if text.trim().is_empty() {
+                                    if text.trim().is_empty() || source_nick.is_empty() {
                                         continue;
                                     }
 
@@ -238,14 +260,17 @@ impl Channel for IrcChannel {
 
                                     let cb = Arc::clone(&on_message);
                                     let reply_writer = Arc::clone(&ping_writer);
-                                    let reply_target = if target.starts_with('#') {
-                                        target.clone()
-                                    } else {
-                                        source_nick.clone()
+                                    // #2011: canal ou privado se decide num
+                                    // ponto so, e a resposta e a sessao seguem
+                                    // a mesma decisao.
+                                    let conversa = suporte.conversa(&target, &source_nick);
+                                    let reply_target = match &conversa {
+                                        ConversaIrc::Canal(canal) => canal.clone(),
+                                        ConversaIrc::Privado(_) => source_nick.clone(),
                                     };
 
                                     tokio::spawn(async move {
-                                        match cb(target, source_nick.clone(), source_nick, text, None).await {
+                                        match cb(conversa, source_nick.clone(), source_nick, text, None).await {
                                             Ok(reply) => {
                                                 // #2007: o mesmo saneamento do
                                                 // `send_privmsg` — `str::lines()`
@@ -346,9 +371,11 @@ fn parse_privmsg(line: &str) -> Option<(String, String, String)> {
         return None;
     }
 
+    // O prefixo pode ser `nick!user@host`, `nick@host` ou so `nick`: o nick
+    // termina no primeiro `!` ou `@` (#2011 — senao `ana@h` viraria o nick).
     let nick = parts[0]
         .trim_start_matches(':')
-        .split('!')
+        .split(['!', '@'])
         .next()?
         .to_string();
 
@@ -356,6 +383,135 @@ fn parse_privmsg(line: &str) -> Option<(String, String, String)> {
     let text = parts[3].trim_start_matches(':').to_string();
 
     Some((nick, target, text))
+}
+
+/// Prefixos de canal que este cliente aceita do `CHANTYPES`. Um alvo com
+/// outro prefixo e conversa privada: assim nenhum canal comeca com `@`, que o
+/// gateway usa para separar a sessao privada da sessao de canal.
+const CHANTYPES_CONHECIDOS: [char; 4] = ['#', '&', '!', '+'];
+/// `CHANTYPES` sem anuncio do servidor (o padrao do `RPL_ISUPPORT`).
+const CHANTYPES_PADRAO: [char; 2] = ['#', '&'];
+
+/// Como o servidor compara nicks (`CASEMAPPING`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Casemapping {
+    /// So `A-Z` equivale a `a-z`.
+    Ascii,
+    /// `ascii` mais `[]\~` equivalendo a `{}|^`.
+    Rfc1459,
+    /// `ascii` mais `[]\` equivalendo a `{}|` (o `~` fica).
+    Rfc1459Strict,
+}
+
+/// O que o servidor anunciou no `RPL_ISUPPORT` (005) e decide de quem e uma
+/// mensagem recebida (#2011).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Suporte {
+    chantypes: Vec<char>,
+    casemapping: Casemapping,
+}
+
+impl Default for Suporte {
+    /// Sem anuncio, `CASEMAPPING` fica `ascii`, e nao o `rfc1459` do padrao do
+    /// protocolo: `ascii` so junta o que todo servidor junta. Juntar a mais
+    /// poria duas pessoas numa conversa; separar a mais so parte a conversa
+    /// de uma pessoa em duas.
+    fn default() -> Self {
+        Self {
+            chantypes: CHANTYPES_PADRAO.to_vec(),
+            casemapping: Casemapping::Ascii,
+        }
+    }
+}
+
+impl Suporte {
+    /// Le uma linha `:<servidor> 005 <nick> TOKEN[=valor] ... :<texto>`; as
+    /// demais linhas passam sem efeito.
+    fn aplicar_isupport(&mut self, linha: &str) {
+        if !linha.starts_with(':') {
+            return;
+        }
+        let mut partes = linha.split(' ').filter(|p| !p.is_empty());
+        let (Some(_), Some("005"), Some(_)) = (partes.next(), partes.next(), partes.next()) else {
+            return;
+        };
+        for token in partes {
+            if token.starts_with(':') {
+                break;
+            }
+            // `-TOKEN`: o servidor retirou o anuncio, volta ao padrao.
+            if let Some(nome) = token.strip_prefix('-') {
+                match nome {
+                    "CHANTYPES" => self.chantypes = CHANTYPES_PADRAO.to_vec(),
+                    "CASEMAPPING" => self.casemapping = Casemapping::Ascii,
+                    _ => {}
+                }
+                continue;
+            }
+            let (nome, valor) = token.split_once('=').unwrap_or((token, ""));
+            match nome {
+                "CHANTYPES" => {
+                    let conhecidos: Vec<char> = valor
+                        .chars()
+                        .filter(|c| CHANTYPES_CONHECIDOS.contains(c))
+                        .collect();
+                    // Anuncio sem nenhum prefixo conhecido (vazio, ou so
+                    // `@`/lixo de um servidor degenerado) fica no padrao:
+                    // lista vazia faria todo alvo, inclusive canal de
+                    // verdade, virar privado (auditoria do #2011).
+                    self.chantypes = if conhecidos.is_empty() {
+                        CHANTYPES_PADRAO.to_vec()
+                    } else {
+                        conhecidos
+                    };
+                }
+                "CASEMAPPING" => {
+                    self.casemapping = match valor {
+                        "rfc1459" => Casemapping::Rfc1459,
+                        "rfc1459-strict" | "strict-rfc1459" => Casemapping::Rfc1459Strict,
+                        // `ascii`, e o que nao conhecemos (`rfc7613`...):
+                        // `ascii` e subconjunto de todos.
+                        _ => Casemapping::Ascii,
+                    };
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// O nick como o servidor o compara.
+    fn normalizar_nick(&self, nick: &str) -> String {
+        let rfc1459 = matches!(
+            self.casemapping,
+            Casemapping::Rfc1459 | Casemapping::Rfc1459Strict
+        );
+        nick.chars()
+            .map(|c| match c {
+                'A'..='Z' => c.to_ascii_lowercase(),
+                '[' if rfc1459 => '{',
+                ']' if rfc1459 => '}',
+                '\\' if rfc1459 => '|',
+                '~' if self.casemapping == Casemapping::Rfc1459 => '^',
+                _ => c,
+            })
+            .collect()
+    }
+
+    /// De quem e a mensagem que `remetente` mandou para `alvo`: o canal, se o
+    /// alvo tem prefixo de canal; senao, a conversa privada com o remetente.
+    ///
+    /// De proposito, alvo que nao e canal nem o nick do bot tambem e privado:
+    /// `STATUSMSG` (`@#canal`, so para os ops do canal) e broadcast de
+    /// servidor (`$*`). A mensagem vai para a sessao de quem mandou e a
+    /// resposta, para o privado dele — nunca para o canal inteiro, que nao
+    /// recebeu a mensagem original.
+    fn conversa(&self, alvo: &str, remetente: &str) -> ConversaIrc {
+        if alvo.starts_with(|c| self.chantypes.contains(&c)) {
+            ConversaIrc::Canal(alvo.to_string())
+        } else {
+            ConversaIrc::Privado(self.normalizar_nick(remetente))
+        }
+    }
 }
 
 /// Teto do corpo de um `PRIVMSG`, em bytes. O corpo efetivo e menor quando o
@@ -767,6 +923,177 @@ mod tests {
     fn parse_privmsg_invalid() {
         let line = "not a valid irc line";
         assert!(parse_privmsg(line).is_none());
+    }
+
+    // --- de quem e a mensagem (#2011) ---------------------------------------
+
+    /// O prefixo `nick@host` (sem `!user`) e valido no protocolo: o nick
+    /// termina no `@`.
+    #[test]
+    fn parse_privmsg_tira_o_host_sem_user() {
+        let (nick, _, _) = parse_privmsg(":ana@host PRIVMSG garrabot :oi").expect("parse");
+        assert_eq!(nick, "ana");
+        let (nick, _, _) = parse_privmsg(":ana PRIVMSG garrabot :oi").expect("parse");
+        assert_eq!(nick, "ana");
+    }
+
+    #[test]
+    fn isupport_le_chantypes_e_casemapping() {
+        let mut s = Suporte::default();
+        s.aplicar_isupport(
+            ":srv 005 garrabot PREFIX=(ov)@+ CHANTYPES=#&! CASEMAPPING=rfc1459 :are supported",
+        );
+        assert_eq!(s.chantypes, ['#', '&', '!']);
+        assert_eq!(s.casemapping, Casemapping::Rfc1459);
+
+        s.aplicar_isupport(":srv 005 garrabot CASEMAPPING=strict-rfc1459 :are supported");
+        assert_eq!(s.casemapping, Casemapping::Rfc1459Strict);
+        s.aplicar_isupport(":srv 005 garrabot CASEMAPPING=rfc7613 :are supported");
+        assert_eq!(s.casemapping, Casemapping::Ascii, "desconhecido vira ascii");
+
+        s.aplicar_isupport(":srv 005 garrabot -CHANTYPES :are supported");
+        assert_eq!(s.chantypes, CHANTYPES_PADRAO);
+    }
+
+    /// Prefixo de canal fora dos conhecidos e descartado: um canal nunca
+    /// comeca com `@`, que o gateway usa no id da sessao privada.
+    #[test]
+    fn isupport_descarta_chantypes_desconhecido() {
+        let mut s = Suporte::default();
+        s.aplicar_isupport(":srv 005 garrabot CHANTYPES=#@a :are supported");
+        assert_eq!(s.chantypes, ['#']);
+        assert_eq!(s.conversa("@x", "ana"), ConversaIrc::Privado("ana".into()));
+
+        // Sem nenhum prefixo conhecido, o padrao: canal continua canal.
+        for degenerado in ["CHANTYPES=", "CHANTYPES", "CHANTYPES=@$"] {
+            let mut s = Suporte::default();
+            s.aplicar_isupport(&format!(":srv 005 garrabot {degenerado} :are supported"));
+            assert_eq!(s.chantypes, CHANTYPES_PADRAO, "{degenerado}");
+            assert_eq!(
+                s.conversa("#garra", "ana"),
+                ConversaIrc::Canal("#garra".into()),
+                "{degenerado}"
+            );
+        }
+    }
+
+    /// `STATUSMSG` e broadcast nao sao canal nem o privado com o bot: ficam
+    /// com quem mandou, e a resposta nao vai ao canal inteiro.
+    #[test]
+    fn statusmsg_e_broadcast_ficam_com_quem_mandou() {
+        let s = Suporte::default();
+        assert_eq!(
+            s.conversa("@#garra", "Ana"),
+            ConversaIrc::Privado("ana".into())
+        );
+        assert_eq!(s.conversa("$*", "Ana"), ConversaIrc::Privado("ana".into()));
+    }
+
+    /// Texto que imita o 005 dentro de outra linha nao muda nada.
+    #[test]
+    fn isupport_ignora_outras_linhas() {
+        let mut s = Suporte::default();
+        s.aplicar_isupport(":ana!a@h PRIVMSG garrabot :005 x CHANTYPES=+ CASEMAPPING=rfc1459");
+        s.aplicar_isupport(":srv 001 garrabot :Welcome CHANTYPES=+");
+        s.aplicar_isupport("005 garrabot CHANTYPES=+");
+        assert_eq!(s, Suporte::default());
+    }
+
+    #[test]
+    fn nick_normalizado_pelo_casemapping() {
+        let mut s = Suporte::default();
+        assert_eq!(s.normalizar_nick("Ana[x]\\~"), "ana[x]\\~", "ascii");
+        s.casemapping = Casemapping::Rfc1459;
+        assert_eq!(s.normalizar_nick("Ana[x]\\~"), "ana{x}|^");
+        s.casemapping = Casemapping::Rfc1459Strict;
+        assert_eq!(s.normalizar_nick("Ana[x]\\~"), "ana{x}|~");
+    }
+
+    #[test]
+    fn conversa_separa_canal_de_privado() {
+        let mut s = Suporte::default();
+        assert_eq!(
+            s.conversa("#Garra", "Ana"),
+            ConversaIrc::Canal("#Garra".into()),
+            "o nome do canal vem como o servidor mandou"
+        );
+        assert_eq!(
+            s.conversa("&local", "ana"),
+            ConversaIrc::Canal("&local".into())
+        );
+        // No privado o alvo e o nick do bot, o mesmo para todos: a conversa
+        // e com quem mandou.
+        assert_eq!(
+            s.conversa("garrabot", "Ana"),
+            ConversaIrc::Privado("ana".into())
+        );
+        assert_eq!(
+            s.conversa("garrabot", "bruno"),
+            ConversaIrc::Privado("bruno".into())
+        );
+        // Com `CHANTYPES=#` o `&` nao e canal.
+        s.aplicar_isupport(":srv 005 garrabot CHANTYPES=# :are supported");
+        assert_eq!(
+            s.conversa("&local", "ana"),
+            ConversaIrc::Privado("ana".into())
+        );
+    }
+
+    /// O callback recebe a conversa, nao o alvo cru: no privado, quem mandou,
+    /// e nunca o nick do bot.
+    #[tokio::test]
+    async fn callback_recebe_a_conversa_e_nao_o_alvo() {
+        let ouvinte = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let porta = ouvinte.local_addr().expect("addr").port();
+        let (tx, mut rx) = mpsc::unbounded_channel::<ConversaIrc>();
+        let on_msg: IrcOnMessageFn = Arc::new(move |conversa, _nick, _user, _text, _delta_tx| {
+            let _ = tx.send(conversa);
+            Box::pin(async { Err("__blocked__".to_string()) })
+        });
+        let mut canal = IrcChannel::new(
+            IrcConfig {
+                server: "127.0.0.1".into(),
+                port: porta,
+                nick: "garrabot".into(),
+                channels: vec![],
+                use_tls: false,
+            },
+            on_msg,
+        );
+        let conexao = tokio::spawn(async move { ouvinte.accept().await.map(|(s, _)| s) });
+        canal.connect().await.expect("conecta");
+        let mut servidor = conexao.await.expect("join").expect("accept");
+
+        servidor
+            .write_all(
+                b":srv 005 garrabot CASEMAPPING=rfc1459 :are supported\r\n\
+                  :Ana!a@h PRIVMSG garrabot :oi\r\n\
+                  :[bia]@h PRIVMSG garrabot :oi\r\n\
+                  :ana!a@h PRIVMSG #garra :oi\r\n",
+            )
+            .await
+            .expect("escreve");
+
+        let mut recebidas = Vec::new();
+        for _ in 0..3 {
+            let c = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("callback chamado")
+                .expect("canal aberto");
+            recebidas.push(c);
+        }
+        // Cada PRIVMSG vira uma tarefa: a ordem das chamadas nao e garantida.
+        for esperada in [
+            ConversaIrc::Privado("ana".into()),
+            ConversaIrc::Privado("{bia}".into()),
+            ConversaIrc::Canal("#garra".into()),
+        ] {
+            assert!(
+                recebidas.contains(&esperada),
+                "{esperada:?} em {recebidas:?}"
+            );
+        }
+        canal.disconnect().await.expect("desconecta");
     }
 
     #[test]
