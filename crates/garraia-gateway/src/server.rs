@@ -454,7 +454,10 @@ impl GatewayServer {
         // fail-closed for the admin panel only: the gateway boots and `/admin`
         // answers 503, with the reason in the log (#1992, #1999). See
         // admin/shared.rs.
-        let admin_key = admin::handlers::resolve_admin_encryption_key(&mut admin_store_owned);
+        let admin_key = admin::handlers::resolve_admin_encryption_key(
+            &mut admin_store_owned,
+            &admin::handlers::default_admin_dir(),
+        );
         let admin_store = Arc::new(Mutex::new(admin_store_owned));
 
         let sessions_db = data_dir.join("sessions.db");
@@ -1396,7 +1399,7 @@ pub async fn build_router_for_test_with_storage(
     // Minimal collaborators expected by the production router.
     let mut admin_store_owned =
         admin::store::AdminStore::in_memory().expect("in-memory admin store should work");
-    let admin_key = admin::handlers::resolve_admin_encryption_key(&mut admin_store_owned);
+    let admin_key = admin_key_for_test_router(&mut admin_store_owned);
     let admin_store = Arc::new(Mutex::new(admin_store_owned));
 
     build_router(
@@ -1405,6 +1408,33 @@ pub async fn build_router_for_test_with_storage(
         admin_store,
         admin_key,
     )
+}
+
+/// The admin master key of the test router (#2021).
+///
+/// Never resolved against the operator's `<config_dir>/admin`. The test store
+/// is in-memory and always empty, and over an empty store a wrong-length
+/// `master.key` is replaced by a new one (#2013): a test run moved the
+/// operator's key to `master.key.unreadable` and wrote another in its place,
+/// and the real gateway, with secrets in its `admin.db`, answered 503. The
+/// `master.key` written here lands in a throwaway directory removed right
+/// after; the key itself stays in memory, which is all this router needs.
+#[cfg(feature = "test-helpers")]
+pub fn admin_key_for_test_router(
+    store: &mut crate::admin::store::AdminStore,
+) -> crate::admin::handlers::AdminKey {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let scratch = std::env::temp_dir().join(format!(
+        "garraia-test-admin-key-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let key = crate::admin::handlers::resolve_admin_encryption_key(store, &scratch);
+    // Best-effort: what is left behind is a test key in the temp dir.
+    let _ = std::fs::remove_dir_all(&scratch);
+    key
 }
 
 /// Upper bound for cancelling MCP services at shutdown. A server that ignores

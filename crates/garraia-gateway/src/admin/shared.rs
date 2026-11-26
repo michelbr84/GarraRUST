@@ -59,7 +59,7 @@
 
 use std::fmt;
 use std::num::NonZeroU32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use base64::Engine;
@@ -337,7 +337,12 @@ fn pbkdf2_key(salt: &[u8], iterations: NonZeroU32, passphrase: &str) -> Vec<u8> 
     key
 }
 
-fn admin_dir() -> PathBuf {
+/// `<config_dir>/admin`, where the operator's random `master.key` lives.
+///
+/// Only the production boot passes this to [`resolve_admin_encryption_key`].
+/// The test router passes a throwaway directory instead: resolving against the
+/// real one let a test run replace the operator's `master.key` (#2021).
+pub fn default_admin_dir() -> PathBuf {
     garraia_config::ConfigLoader::default_config_dir().join("admin")
 }
 
@@ -460,7 +465,10 @@ fn usable_stored_params(stored: &StoredKdfParams) -> Result<(Vec<u8>, NonZeroU32
 ///
 /// Key source: `GARRAIA_ADMIN_KEY` / `GARRAIA_VAULT_PASSPHRASE` when set
 /// (PBKDF2 with the installation's recorded parameters), otherwise the random
-/// `master.key` file, which never used a salt and needs no migration.
+/// `master.key` file in `admin_dir`, which never used a salt and needs no
+/// migration. The directory is a parameter, not looked up here, so no caller
+/// reaches the operator's `<config_dir>/admin` by accident: the production
+/// boot passes [`default_admin_dir`], tests pass their own (#2021).
 ///
 /// Two different failures, two different answers:
 ///
@@ -474,8 +482,8 @@ fn usable_stored_params(stored: &StoredKdfParams) -> Result<(Vec<u8>, NonZeroU32
 ///   [`AdminKey::Unavailable`], logged here once
 ///   with the reason. The gateway boots and the admin panel answers 503: there
 ///   is no key the data is under to hand out; see [`AdminKeyError`].
-pub fn resolve_admin_encryption_key(store: &mut AdminStore) -> AdminKey {
-    match resolve_admin_key(store) {
+pub fn resolve_admin_encryption_key(store: &mut AdminStore, admin_dir: &Path) -> AdminKey {
+    match resolve_admin_key(store, admin_dir) {
         Ok(key) => AdminKey::Ready(Arc::new(key)),
         Err(e) => {
             error!(
@@ -488,12 +496,12 @@ pub fn resolve_admin_encryption_key(store: &mut AdminStore) -> AdminKey {
     }
 }
 
-fn resolve_admin_key(store: &mut AdminStore) -> Result<Vec<u8>, AdminKeyError> {
+fn resolve_admin_key(store: &mut AdminStore, admin_dir: &Path) -> Result<Vec<u8>, AdminKeyError> {
     match admin_passphrase() {
         Some(passphrase) => resolve_with_passphrase(store, &passphrase),
         // The recorded parameters play no part here, so a damaged row must not
         // block an installation that does not derive from a passphrase.
-        None => master_key_file_key(store, &admin_dir().join("master.key")),
+        None => master_key_file_key(store, &admin_dir.join("master.key")),
     }
 }
 

@@ -16,7 +16,7 @@ use super::secrets::redact_config_secrets;
 // forward-only re-key — deriving separately in two places is a correctness bug
 // when `kdf.json` is absent, because each derivation mints a fresh random salt.
 // #1992: it returns `AdminKey`, whose `Unavailable` arm puts the panel in 503.
-pub use super::shared::{AdminKey, AdminState, resolve_admin_encryption_key};
+pub use super::shared::{AdminKey, AdminState, default_admin_dir, resolve_admin_encryption_key};
 
 // Slice 9.b (GAR-470): provider console handlers extracted to `admin::providers`.
 // Re-exported so `routes.rs` paths (`handlers::admin_list_providers`, etc.) keep resolving.
