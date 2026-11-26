@@ -218,6 +218,27 @@ tomar o nick de alguem (servidor sem NickServ) passa a ver o historico privado
 daquele nick, o mesmo modelo de confianca da allowlist, que ja admite aquele
 nick como aquela pessoa.
 
+**IRC: a allowlist reconhece a mesma pessoa que a sessao (#2015).** A
+allowlist comparava o nick com a caixa exata, enquanto a sessao usa o nick
+normalizado: `Ana` admitida era barrada em silencio ao voltar como `ana` (e
+`[bia]` como `{bia}` sob `rfc1459`), e precisava de outro codigo de `/pair`.
+Agora as entradas do IRC no `allowlist.json` sao `irc:<nick como veio>`,
+inclusive a do dono pareado pelo IRC, e o `garraia-channels` entrega ao
+gateway quem mandou junto com o `CASEMAPPING` anunciado quando a mensagem
+chegou. A comparacao normaliza os dois lados por ele, a mesma regra da sessao.
+O nick fica gravado como veio porque a forma normalizada perderia informacao:
+`[bia]`, gravada como `{bia}` sob `rfc1459`, casaria com outra pessoa se o
+servidor passasse a anunciar `ascii`. Comparando na hora, a equivalencia
+nunca e maior que a do servidor naquele momento. So as entradas `irc:` sao
+comparadas assim: as dos outros canais continuam exatas, e uma entrada `irc:`
+nao admite ninguem fora do IRC. Uma entrada antiga, sem prefixo, pode ser de
+qualquer canal: ela vale exata, como antes, e na primeira admissao ganha a
+forma `irc:`, e as duas ficam. **Para tirar alguem do IRC, apague as duas.**
+Os erros de codigo de `/pair` contam por nick normalizado, entao trocar so a
+caixa nao zera a contagem. O historico e o escopo de aprovacao seguem com o
+nick como veio: no escopo, o "sim" de `Ana` nao aprova um pedido de `ana`, e a
+pessoa e perguntada de novo.
+
 **Nível de aprovação: `agent.approval` e `--yolo` (#1858).** O que acontece
 com o tier arriscado (a segunda linha da tabela) é um knob declarado pelo
 operador — nunca um default de fábrica:
@@ -306,7 +327,9 @@ Usuários desconhecidos nos canais precisam de código de pareamento
 `~/.config/garraia/allowlist.json`) — e vale para **todos** os canais:
 um usuário aprovado no Telegram também está aprovado no Discord. O
 primeiro usuário a parear vira `owner`. Revise a lista periodicamente
-(`/users` no chat).
+(`/users` no chat). As entradas do IRC são a exceção: ficam como
+`irc:<nick>`, valem só no IRC e comparam o nick pelo `CASEMAPPING` do
+servidor (#2015, ver §2).
 
 ## 5. Secrets: cofre para MCP e chaves de provider
 

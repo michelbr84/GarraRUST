@@ -90,6 +90,21 @@ impl Allowlist {
         }
     }
 
+    /// Como [`Self::is_allowed`], mas quem chama decide quais entradas sao a
+    /// pessoa: no modo restrito, admite se alguma entrada satisfaz `casa`.
+    ///
+    /// Para canal cuja identidade nao e comparada por igualdade exata (o IRC
+    /// compara nicks pelo `CASEMAPPING` do servidor, #2015). A allowlist e
+    /// uma so para todos os canais, entao `casa` precisa reconhecer as
+    /// entradas do proprio canal (um prefixo como `irc:`) e recusar as demais:
+    /// os outros canais continuam no [`Self::is_allowed`], exato.
+    pub fn is_allowed_where(&self, casa: impl Fn(&str) -> bool) -> bool {
+        match self.mode {
+            AllowlistMode::Open => true,
+            AllowlistMode::Restricted => self.allowed_users.iter().any(|u| casa(u)),
+        }
+    }
+
     /// Returns true if no owner has been set yet (first user should auto-claim).
     pub fn needs_owner(&self) -> bool {
         self.mode == AllowlistMode::Restricted && self.owner.is_none()
@@ -196,6 +211,28 @@ mod tests {
         assert!(allowlist.remove("new-user"));
         assert!(!allowlist.is_allowed("new-user"));
         assert!(!allowlist.remove("new-user"));
+    }
+
+    /// #2015: quem chama decide quais entradas casam; `is_allowed` segue exato.
+    #[test]
+    fn is_allowed_where_consulta_as_entradas_com_o_criterio_de_quem_chama() {
+        let lista = Allowlist::restricted(vec!["irc:Ana".to_string(), "U012".to_string()]);
+        let do_irc_sem_caixa = |nick: &'static str| {
+            move |e: &str| {
+                e.strip_prefix("irc:")
+                    .is_some_and(|n| n.eq_ignore_ascii_case(nick))
+            }
+        };
+        assert!(lista.is_allowed_where(do_irc_sem_caixa("ana")));
+        assert!(!lista.is_allowed_where(do_irc_sem_caixa("u012")));
+        assert!(!lista.is_allowed_where(|_| false));
+        // Os outros canais continuam exatos, e o prefixo nao vaza para eles.
+        assert!(!lista.is_allowed("Ana"));
+        assert!(!lista.is_allowed("ana"));
+        assert!(lista.is_allowed("U012"));
+
+        assert!(Allowlist::open().is_allowed_where(|_| false));
+        assert!(!Allowlist::restricted(Vec::<String>::new()).is_allowed_where(|_| true));
     }
 
     #[test]
