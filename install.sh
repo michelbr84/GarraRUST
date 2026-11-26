@@ -5,9 +5,9 @@
 #
 # If raw.githubusercontent.com answers 429 (per-IP rate limit — common on
 # cloud pods whose egress IP is shared by many users), the same script is
-# published through two alternative channels:
+# published through the release CDN, which serves the script that shipped
+# with the latest release:
 #   curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
-#   curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
 #
 # Plan 0127 (PR-B, 2026-05-14): after install_binary the installer
 # auto-runs `garraia init` and `garraia start` when a TTY is available.
@@ -915,8 +915,6 @@ rate_limit_hint() {
     echo "  * retry in a few minutes, or" >&2
     echo "  * fetch the installer from the release CDN instead:" >&2
     echo "      curl -fsSL https://github.com/${REPO}/releases/latest/download/install.sh | sh" >&2
-    echo "  * or from the jsDelivr mirror:" >&2
-    echo "      curl -fsSL https://cdn.jsdelivr.net/gh/${REPO}@main/install.sh | sh" >&2
 }
 
 # Library mode (plan 0127 §M1.3): when sourced by the test runner with

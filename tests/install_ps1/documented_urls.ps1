@@ -8,10 +8,16 @@
 # website repo; the canonical URL and the mirror list are documented HERE, and
 # the two must not drift apart.
 #
-# Since #2016 the Windows source is the raw `main` URL, not garraia.org: the
-# site's edge (Lovable/Cloudflare) answers PowerShell's HTTP client with a 403
+# Windows does not use garraia.org (#2016): the site's edge (Lovable/
+# Cloudflare) answers PowerShell's HTTP client with a 403
 # `cf-mitigated: challenge`, so `irm https://garraia.org/install.ps1 | iex`
-# dies before downloading. install.sh keeps garraia.org (curl gets through).
+# dies before downloading. The Windows one-liner fetches the install.ps1 of
+# the latest release, with the raw `main` URL as mirror. install.sh keeps
+# garraia.org (curl gets through).
+#
+# jsDelivr is not a mirror (#2023): it refuses GitHub repositories over
+# 50 MB, and GarraRUST sits at that limit, so `@main` alternates between
+# 403 and a stale cache.
 #
 # These assertions read the script text -- never the network -- so CI stays
 # hermetic. The live-endpoint probe is .github/workflows/install-endpoints.yml,
@@ -28,8 +34,8 @@ $shBody  = Get-Content -Path $installSh  -Raw
 
 Write-Host 'install.ps1: canonical URL and mirrors'
 
-Assert-True 'ensina o raw do main como fonte do irm' `
-    $ps1Body.Contains('irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex')
+Assert-True 'ensina o GitHub Releases como fonte do irm' `
+    $ps1Body.Contains('irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex')
 
 # Cobre as duas formas (`irm ... | iex` e o scriptblock com `(irm ...)`).
 Assert-False 'nao ensina irm do garraia.org (#2016)' `
@@ -37,11 +43,16 @@ Assert-False 'nao ensina irm do garraia.org (#2016)' `
 
 foreach ($mirror in @(
     'https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1',
-    'https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1',
-    'https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1'
+    'https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1'
 )) {
     Assert-True "lista o espelho $mirror" $ps1Body.Contains($mirror)
 }
+
+Write-Host ''
+Write-Host 'jsDelivr nao e espelho (#2023)'
+
+Assert-False 'install.ps1 nao recomenda o jsDelivr' $ps1Body.Contains('cdn.jsdelivr.net')
+Assert-False 'install.sh nao recomenda o jsDelivr' $shBody.Contains('cdn.jsdelivr.net')
 
 Write-Host ''
 Write-Host 'install.ps1: nunca ensina a forma Unix'
@@ -66,8 +77,7 @@ Assert-False 'install.sh nao ensina irm/iex' $shBody.Contains('| iex')
 
 foreach ($mirror in @(
     'https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh',
-    'https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh',
-    'https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh'
+    'https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh'
 )) {
     Assert-True "install.sh lista o espelho $mirror" $shBody.Contains($mirror)
 }

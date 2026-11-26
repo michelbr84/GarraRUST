@@ -125,7 +125,6 @@ curl -fsSL https://garraia.org/install.sh | sh
 > ```bash
 > curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
 > curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
-> curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
 > ```
 
 Desde plan 0127 (PR-B, 2026-05-14) o instalador encadeia automaticamente:
@@ -170,7 +169,7 @@ Em contextos sem TTY real (docker build, CI puro), o instalador imprime os "Next
 <summary>Instalar via script (Windows) — <code>irm | iex</code></summary>
 
 ```powershell
-irm https://garraia.org/install.ps1 | iex
+irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 ```
 
 Irmão Windows do `install.sh`, em paridade de comportamento: detecta a
@@ -179,16 +178,17 @@ instala `garraia.exe` em `%LOCALAPPDATA%\Programs\GarraIA` junto com o shim
 `garra.cmd` (para `garra` também funcionar), registra o diretório no PATH do
 usuário e encadeia `init` + `start`. Não exige privilégio de administrador.
 
-> Mesmos canais alternativos do `install.sh`:
+> Os comandos acima baixam o `install.ps1` da última release, o mesmo script
+> que saiu com os binários que ele instala. Espelho, para uma correção que já
+> está na `main` mas ainda não saiu em release:
 >
 > ```powershell
 > irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
-> irm https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1 | iex
-> irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 > ```
 >
-> O espelho do release CDN só resolve a partir da `v0.3.4`: o `install.ps1`
-> entrou depois da tag `v0.3.3`. Detalhes em
+> O `garraia.org/install.ps1` não serve ao
+> `irm`: a borda do site responde 403 (`cf-mitigated: challenge`) ao cliente
+> HTTP do PowerShell (#2016). Detalhes em
 > [`docs/installation.md`](docs/installation.md).
 
 **Passando flags.** `irm | iex` avalia o script **sem argumentos** — não existe
@@ -196,7 +196,7 @@ equivalente PowerShell do `sh -s --`. Para passar flags, transforme o texto
 baixado em scriptblock:
 
 ```powershell
-& ([scriptblock]::Create((irm https://garraia.org/install.ps1))) -SkipSetup
+& ([scriptblock]::Create((irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1))) -SkipSetup
 ```
 
 Variáveis de ambiente funcionam nas duas formas e costumam ser mais simples em
@@ -204,7 +204,7 @@ automação:
 
 ```powershell
 $env:GARRAIA_SKIP_INIT=1; $env:GARRAIA_SKIP_START=1
-irm https://garraia.org/install.ps1 | iex
+irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 ```
 
 As flags espelham as do shell (`-SkipSetup`, `-SkipInit`, `-SkipStart`,
