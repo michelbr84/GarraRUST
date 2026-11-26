@@ -17,6 +17,9 @@
 //! quem tomar o nick de alguém também vê o histórico privado daquele nick — o
 //! mesmo modelo de confiança da allowlist. E é por nick **em cada conexão** da
 //! config: um nick só identifica alguém dentro da própria rede.
+//!
+//! Na allowlist, as entradas do IRC são `irc:<nick>`, e o nick é comparado
+//! pelo `CASEMAPPING` do servidor, como na sessão ([`admissao`], #2015).
 
 use std::sync::Arc;
 
@@ -149,6 +152,57 @@ pub(crate) fn sessao_da_conversa(
     }
 }
 
+/// Prefixo das entradas do IRC na allowlist (#2015).
+///
+/// A allowlist e uma so para todos os canais (`channel_gates`, #1189), e os
+/// ids dos outros sao comparados por igualdade exata (os do Slack, por
+/// exemplo, tem maiusculas). O prefixo diz quais entradas sao nicks de IRC,
+/// as unicas comparadas pelo `CASEMAPPING` do servidor ([`admissao`]).
+const PREFIXO_DA_ALLOWLIST: &str = "irc:";
+
+/// A entrada da allowlist de quem mandou: `irc:<nick como veio>`.
+///
+/// O nick fica como veio, e nao normalizado, porque a comparacao normaliza os
+/// dois lados pelo `CASEMAPPING` da hora. Guardar a forma normalizada perderia
+/// informacao: `[bia]`, gravada como `{bia}` sob `rfc1459`, casaria com outra
+/// pessoa chamada `{bia}` se o servidor passasse a anunciar `ascii`.
+fn entrada_da_allowlist(remetente: &garraia_channels::NickIrc) -> String {
+    format!("{PREFIXO_DA_ALLOWLIST}{}", remetente.como_veio())
+}
+
+/// Por que a allowlist admite (ou nao) quem mandou (#2015).
+#[derive(Debug, PartialEq, Eq)]
+enum Admissao {
+    /// Uma entrada `irc:` e o mesmo nick para o servidor, pelo `CASEMAPPING`
+    /// anunciado quando a mensagem chegou.
+    PeloIrc,
+    /// So uma entrada antiga, sem prefixo, igual ao nick como veio. Ela pode
+    /// ser de qualquer canal, entao so vale exata, como antes da #2015.
+    Antiga,
+    Barrado,
+}
+
+/// Decide a [`Admissao`] de `remetente`. So as entradas `irc:` sao comparadas
+/// pelo `CASEMAPPING`; a equivalencia nunca e maior que a do servidor agora,
+/// entao separar demais so bloqueia e nunca admite outra pessoa.
+fn admissao(
+    lista: &garraia_security::Allowlist,
+    remetente: &garraia_channels::NickIrc,
+) -> Admissao {
+    let pelo_irc = lista.is_allowed_where(|entrada| {
+        entrada
+            .strip_prefix(PREFIXO_DA_ALLOWLIST)
+            .is_some_and(|nick| remetente.mesmo_nick(nick))
+    });
+    if pelo_irc {
+        Admissao::PeloIrc
+    } else if lista.is_allowed(remetente.como_veio()) {
+        Admissao::Antiga
+    } else {
+        Admissao::Barrado
+    }
+}
+
 /// O callback de cada `PRIVMSG` recebido: allowlist, sessao e turno.
 /// `conexao` e o nome da entrada IRC na config, que entra no id da sessao
 /// privada ([`sessao_da_conversa`]).
@@ -164,7 +218,7 @@ fn callback_irc(state: &SharedState, conexao: &str) -> garraia_channels::IrcOnMe
 
     Arc::new(
         move |conversa: garraia_channels::ConversaIrc,
-              nick: String,
+              remetente: garraia_channels::NickIrc,
               user_name: String,
               text: String,
               delta_tx: Option<tokio::sync::mpsc::Sender<String>>| {
@@ -179,35 +233,57 @@ fn callback_irc(state: &SharedState, conexao: &str) -> garraia_channels::IrcOnMe
                 {
                     let mut list = allowlist.lock().unwrap();
                     if list.needs_owner() {
-                        list.claim_owner(&nick);
-                        info!("irc: auto-paired owner {nick}");
+                        list.claim_owner(entrada_da_allowlist(&remetente));
+                        info!("irc: auto-paired owner {remetente}");
                         return Ok(format!(
                             "Welcome, {user_name}! You are now the owner of this GarraIA \
                              bot. Use /pair to generate a code for adding other users."
                         ));
                     }
 
-                    if !list.is_allowed(&nick) {
-                        let trimmed = text.trim();
-                        if trimmed.len() == 6 && trimmed.chars().all(|c| c.is_ascii_digit()) {
-                            let claimed = pairing.lock().unwrap().claim(trimmed, &nick);
-                            if claimed.is_some() {
-                                list.add(&nick);
-                                info!("irc: paired user {nick} via code");
-                                return Ok(format!(
-                                    "Welcome, {user_name}! You now have access to this bot."
-                                ));
-                            }
+                    match admissao(&list, &remetente) {
+                        Admissao::PeloIrc => {}
+                        // Entrada de antes da #2015: vale exata, como antes,
+                        // e ganha a forma `irc:`, para a mesma pessoa passar
+                        // em outra grafia. A antiga fica: sem prefixo, nao da
+                        // para saber se e so do IRC.
+                        Admissao::Antiga => {
+                            list.add(entrada_da_allowlist(&remetente));
+                            info!("irc: legacy allowlist entry migrated to the irc: form");
                         }
+                        Admissao::Barrado => {
+                            let trimmed = text.trim();
+                            if trimmed.len() == 6 && trimmed.chars().all(|c| c.is_ascii_digit()) {
+                                // Os erros de codigo contam por pessoa do
+                                // servidor (o nick normalizado), e com o
+                                // prefixo, separados dos ids dos outros canais.
+                                let quem =
+                                    format!("{PREFIXO_DA_ALLOWLIST}{}", remetente.normalizado());
+                                let claimed = pairing.lock().unwrap().claim(trimmed, &quem);
+                                if claimed.is_some() {
+                                    list.add(entrada_da_allowlist(&remetente));
+                                    info!("irc: paired user {remetente} via code");
+                                    return Ok(format!(
+                                        "Welcome, {user_name}! You now have access to this bot."
+                                    ));
+                                }
+                            }
 
-                        let onde = match &conversa {
-                            garraia_channels::ConversaIrc::Canal(canal) => canal.as_str(),
-                            garraia_channels::ConversaIrc::Privado(_) => "privado",
-                        };
-                        warn!("irc: unauthorized nick {nick} in {onde}");
-                        return Err("__blocked__".to_string());
+                            let onde = match &conversa {
+                                garraia_channels::ConversaIrc::Canal(canal) => canal.as_str(),
+                                garraia_channels::ConversaIrc::Privado(_) => "privado",
+                            };
+                            warn!("irc: unauthorized nick {remetente} in {onde}");
+                            return Err("__blocked__".to_string());
+                        }
                     }
                 }
+
+                // Daqui em diante, o nick como veio: o historico e o escopo de
+                // aprovacao seguem como antes da #2015 (no escopo, o "sim" de
+                // `Ana` nao aprova um pedido de `ana`, e a pessoa e perguntada
+                // de novo: fail-closed).
+                let nick = remetente.como_veio().to_string();
 
                 let session_id = sessao_da_conversa(&conexao, &conversa);
 
@@ -331,15 +407,18 @@ mod tests {
     /// O nome da conexao IRC na config dos testes que usam [`conecta`].
     const CONEXAO: &str = "teste";
 
-    /// Estado com o modelo que guarda e a allowlist com `permitidos` (o
-    /// primeiro e o dono, para nenhum turno virar o boas-vindas do pareamento).
+    /// Estado com o modelo que guarda e a allowlist com as `entradas` como
+    /// ficam no `allowlist.json` (`irc:<nick>`, ou sem prefixo, como as
+    /// antigas e as dos outros canais). A primeira e o dono, para nenhum turno
+    /// virar o boas-vindas do pareamento; sem entradas, a allowlist fica sem
+    /// dono.
     ///
     /// A allowlist e a do proprio `AppState` (o gate que o `channel_gates`
     /// entrega ao canal), preenchida pela API dela: construir outra aqui cairia
     /// em `config::tests::nenhum_canal_constroi_gate_proprio`, que varre o
     /// fonte deste arquivo. O `with_config_dir` aponta o `allowlist.json` para
     /// o tempdir do teste.
-    fn estado(dir: &tempfile::TempDir, permitidos: &[&str]) -> (SharedState, Arc<ModeloQueGuarda>) {
+    fn estado(dir: &tempfile::TempDir, entradas: &[&str]) -> (SharedState, Arc<ModeloQueGuarda>) {
         let config = AppConfig {
             data_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
@@ -356,12 +435,28 @@ mod tests {
         {
             let mut lista = state.allowlist.lock().expect("lock");
             assert!(lista.needs_owner(), "allowlist nova, restrita e sem dono");
-            assert!(lista.claim_owner(permitidos[0]));
-            for nick in permitidos {
-                lista.add(*nick);
+            if let Some(dono) = entradas.first() {
+                assert!(lista.claim_owner(*dono));
+            }
+            for entrada in entradas {
+                lista.add(*entrada);
             }
         }
         (state, modelo)
+    }
+
+    /// As entradas da allowlist, em ordem, para comparar.
+    fn entradas(state: &SharedState) -> Vec<String> {
+        let mut v: Vec<String> = state
+            .allowlist
+            .lock()
+            .expect("lock")
+            .list_users()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        v.sort();
+        v
     }
 
     /// Sobe o canal com o callback de producao contra um servidor falso e
@@ -416,12 +511,27 @@ mod tests {
         }
     }
 
+    /// Manda `linha`, de alguem que a allowlist deve barrar, e confirma que o
+    /// texto dela (`marca`) nao chegou ao modelo. Barrado e silencio, entao a
+    /// prova e uma sonda do dono (`irc:dono`) logo depois: o runtime do teste
+    /// tem uma thread so, e as tarefas de cada `PRIVMSG` rodam na ordem em
+    /// que o laco de leitura as criou, a da `linha` antes da sonda.
+    async fn barrado(servidor: &mut TcpStream, modelo: &ModeloQueGuarda, linha: &str, marca: &str) {
+        escreve(servidor, linha).await;
+        turno(servidor, ":dono!d@h PRIVMSG garrabot :sonda", "dono").await;
+        let pedidos = modelo.pedidos();
+        assert!(
+            !pedidos.iter().any(|p| p.contains(marca)),
+            "a allowlist deixou passar `{linha}`: {pedidos:?}"
+        );
+    }
+
     /// O vazamento da #2011: o modelo recebia as mensagens privadas da Ana no
     /// turno do Bruno, e a sessao `irc-<nick do bot>` juntava todo mundo.
     #[tokio::test]
     async fn conversas_privadas_de_pessoas_diferentes_nao_se_misturam() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (state, modelo) = estado(&dir, &["ana", "bruno"]);
+        let (state, modelo) = estado(&dir, &["irc:ana", "irc:bruno"]);
         let (mut canal, mut servidor) = conecta(&state).await;
 
         turno(
@@ -489,7 +599,7 @@ mod tests {
     #[tokio::test]
     async fn a_mesma_pessoa_continua_a_conversa_mesmo_trocando_a_caixa() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (state, modelo) = estado(&dir, &["Ana", "ana", "[bia]", "{bia}"]);
+        let (state, modelo) = estado(&dir, &["irc:Ana", "irc:ana", "irc:[bia]", "irc:{bia}"]);
         let (mut canal, mut servidor) = conecta(&state).await;
         escreve(
             &mut servidor,
@@ -525,7 +635,7 @@ mod tests {
     #[tokio::test]
     async fn casemapping_ascii_separa_colchete_de_chave() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (state, modelo) = estado(&dir, &["[a]", "{a}"]);
+        let (state, modelo) = estado(&dir, &["irc:[a]", "irc:{a}"]);
         let (mut canal, mut servidor) = conecta(&state).await;
         escreve(
             &mut servidor,
@@ -556,7 +666,7 @@ mod tests {
     #[tokio::test]
     async fn canal_continua_na_sessao_do_canal() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (state, modelo) = estado(&dir, &["ana", "bruno"]);
+        let (state, modelo) = estado(&dir, &["irc:ana", "irc:bruno"]);
         let (mut canal, mut servidor) = conecta(&state).await;
 
         turno(
@@ -579,7 +689,7 @@ mod tests {
     #[tokio::test]
     async fn canal_com_e_comercial_e_respondido_no_canal() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (state, _modelo) = estado(&dir, &["ana"]);
+        let (state, _modelo) = estado(&dir, &["irc:ana"]);
         let (mut canal, mut servidor) = conecta(&state).await;
 
         turno(&mut servidor, ":ana!a@h PRIVMSG &local :oi", "&local").await;
@@ -608,7 +718,7 @@ mod tests {
     #[tokio::test]
     async fn cada_conexao_tem_as_proprias_conversas_privadas() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (state, modelo) = estado(&dir, &["ana"]);
+        let (state, modelo) = estado(&dir, &["irc:ana"]);
 
         let rede_a = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let rede_b = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -663,5 +773,247 @@ mod tests {
         for canal in &mut canais {
             canal.disconnect().await.expect("desconecta");
         }
+    }
+
+    // #2015: a allowlist reconhece a mesma pessoa que a sessao reconhece. As
+    // entradas do IRC sao `irc:<nick como veio>`, comparadas pelo
+    // `CASEMAPPING` que o servidor anuncia na hora.
+
+    /// `CASEMAPPING=rfc1459`: `Ana` admitida faz `ana` passar, e `[bia]`
+    /// admitida faz `{bia}` passar. Antes, as duas eram barradas em silencio.
+    #[tokio::test]
+    async fn allowlist_admite_a_mesma_pessoa_em_outra_grafia() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, modelo) = estado(&dir, &["irc:dono", "irc:Ana", "irc:[bia]"]);
+        let (mut canal, mut servidor) = conecta(&state).await;
+        escreve(
+            &mut servidor,
+            ":srv 005 garrabot CASEMAPPING=rfc1459 :are supported by this server",
+        )
+        .await;
+
+        turno(&mut servidor, ":ana!a@h PRIVMSG garrabot :oi-da-ana", "ana").await;
+        turno(
+            &mut servidor,
+            ":{bia}!b@h PRIVMSG garrabot :oi-da-bia",
+            "{bia}",
+        )
+        .await;
+
+        let pedidos = modelo.pedidos();
+        assert_eq!(pedidos.len(), 2, "{pedidos:?}");
+        assert!(pedidos[0].contains("oi-da-ana"), "{}", pedidos[0]);
+        assert!(pedidos[1].contains("oi-da-bia"), "{}", pedidos[1]);
+        canal.disconnect().await.expect("desconecta");
+    }
+
+    /// Sem anuncio (fica `ascii`) e com `CASEMAPPING=ascii`, `[bia]` e `{bia}`
+    /// sao duas pessoas no servidor: a entrada de uma nao admite a outra.
+    #[tokio::test]
+    async fn sem_rfc1459_colchete_e_chave_sao_pessoas_diferentes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, modelo) = estado(&dir, &["irc:dono", "irc:[bia]"]);
+        let (mut canal, mut servidor) = conecta(&state).await;
+
+        barrado(
+            &mut servidor,
+            &modelo,
+            ":{bia}!b@h PRIVMSG garrabot :marca-sem-anuncio",
+            "marca-sem-anuncio",
+        )
+        .await;
+        escreve(
+            &mut servidor,
+            ":srv 005 garrabot CASEMAPPING=ascii :are supported by this server",
+        )
+        .await;
+        barrado(
+            &mut servidor,
+            &modelo,
+            ":{bia}!b@h PRIVMSG garrabot :marca-ascii",
+            "marca-ascii",
+        )
+        .await;
+        // A caixa continua valendo em `ascii`.
+        turno(&mut servidor, ":[BIA]!b@h PRIVMSG garrabot :oi", "[BIA]").await;
+        canal.disconnect().await.expect("desconecta");
+    }
+
+    /// A entrada guarda o nick como veio, e a comparacao usa o `CASEMAPPING`
+    /// da hora: `[bia]`, pareada sob `rfc1459`, nao admite `{bia}` quando o
+    /// servidor passa a anunciar `ascii`. Gravar a forma normalizada (`{bia}`)
+    /// admitiria, em `ascii`, outra pessoa.
+    #[tokio::test]
+    async fn entrada_gravada_sob_rfc1459_nao_vale_para_outra_grafia_em_ascii() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, modelo) = estado(&dir, &["irc:dono"]);
+        let (mut canal, mut servidor) = conecta(&state).await;
+        escreve(
+            &mut servidor,
+            ":srv 005 garrabot CASEMAPPING=rfc1459 :are supported by this server",
+        )
+        .await;
+
+        let codigo = state.pairing.lock().expect("lock").generate("irc");
+        turno(
+            &mut servidor,
+            &format!(":[bia]!b@h PRIVMSG garrabot :{codigo}"),
+            "[bia]",
+        )
+        .await;
+        assert_eq!(entradas(&state), ["irc:[bia]", "irc:dono"]);
+        turno(&mut servidor, ":{bia}!b@h PRIVMSG garrabot :oi", "{bia}").await;
+
+        escreve(
+            &mut servidor,
+            ":srv 005 garrabot CASEMAPPING=ascii :are supported by this server",
+        )
+        .await;
+        barrado(
+            &mut servidor,
+            &modelo,
+            ":{bia}!b@h PRIVMSG garrabot :marca-chave",
+            "marca-chave",
+        )
+        .await;
+        turno(&mut servidor, ":[bia]!b@h PRIVMSG garrabot :oi", "[bia]").await;
+        canal.disconnect().await.expect("desconecta");
+    }
+
+    /// So entradas `irc:` sao comparadas pelo `CASEMAPPING`. Uma entrada sem
+    /// prefixo pode ser de qualquer canal (os ids do Slack tem maiusculas, por
+    /// exemplo) e continua exata; e uma entrada `irc:` nao admite ninguem dos
+    /// outros canais, que consultam a allowlist por igualdade exata.
+    #[tokio::test]
+    async fn so_entradas_do_irc_sao_comparadas_pelo_casemapping() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, modelo) = estado(&dir, &["irc:dono", "Ana", "irc:Bruno"]);
+        let (mut canal, mut servidor) = conecta(&state).await;
+        escreve(
+            &mut servidor,
+            ":srv 005 garrabot CASEMAPPING=rfc1459 :are supported by this server",
+        )
+        .await;
+
+        barrado(
+            &mut servidor,
+            &modelo,
+            ":ana!a@h PRIVMSG garrabot :marca-da-ana",
+            "marca-da-ana",
+        )
+        .await;
+        assert!(
+            !entradas(&state).iter().any(|e| e == "irc:ana"),
+            "uma entrada sem prefixo nao pode virar `irc:` por outra grafia"
+        );
+
+        {
+            let lista = state.allowlist.lock().expect("lock");
+            for de_outro_canal in ["Bruno", "bruno", "dono"] {
+                assert!(
+                    !lista.is_allowed(de_outro_canal),
+                    "a entrada `irc:` admitiu `{de_outro_canal}` fora do IRC"
+                );
+            }
+        }
+        canal.disconnect().await.expect("desconecta");
+    }
+
+    /// Os erros de codigo do `/pair` contam por pessoa do servidor: trocar so
+    /// a caixa do nick nao zera a contagem. Cinco erros em grafias diferentes
+    /// travam o nick, e o codigo certo depois nao entra.
+    #[tokio::test]
+    async fn erros_de_codigo_contam_pelo_nick_normalizado() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, _modelo) = estado(&dir, &["irc:dono"]);
+        let (mut canal, mut servidor) = conecta(&state).await;
+
+        let codigo = state.pairing.lock().expect("lock").generate("irc");
+        let errado = if codigo == "123456" {
+            "654321"
+        } else {
+            "123456"
+        };
+        for grafia in ["Eve", "EVE", "eve", "eVe", "evE"] {
+            escreve(
+                &mut servidor,
+                &format!(":{grafia}!e@h PRIVMSG garrabot :{errado}"),
+            )
+            .await;
+        }
+        escreve(
+            &mut servidor,
+            &format!(":Eve!e@h PRIVMSG garrabot :{codigo}"),
+        )
+        .await;
+        // A sonda do dono vem depois das seis, na mesma ordem.
+        turno(&mut servidor, ":dono!d@h PRIVMSG garrabot :sonda", "dono").await;
+
+        assert_eq!(
+            entradas(&state),
+            ["irc:dono"],
+            "o codigo certo entrou depois de cinco erros do mesmo nick"
+        );
+        canal.disconnect().await.expect("desconecta");
+    }
+
+    /// Entrada antiga, sem prefixo (gravada antes da #2015): vale por
+    /// igualdade exata, como antes, e na primeira admissao ganha a forma
+    /// `irc:`. Dai em diante a mesma pessoa passa em qualquer grafia. A antiga
+    /// fica: sem prefixo, nao da para saber se e so do IRC.
+    #[tokio::test]
+    async fn entrada_antiga_vale_exata_e_ganha_a_forma_do_irc() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, modelo) = estado(&dir, &["irc:dono", "Ana"]);
+        let (mut canal, mut servidor) = conecta(&state).await;
+        escreve(
+            &mut servidor,
+            ":srv 005 garrabot CASEMAPPING=rfc1459 :are supported by this server",
+        )
+        .await;
+
+        barrado(
+            &mut servidor,
+            &modelo,
+            ":ana!a@h PRIVMSG garrabot :marca-antes",
+            "marca-antes",
+        )
+        .await;
+        turno(&mut servidor, ":Ana!a@h PRIVMSG garrabot :oi", "Ana").await;
+        assert_eq!(entradas(&state), ["Ana", "irc:Ana", "irc:dono"]);
+        turno(&mut servidor, ":ana!a@h PRIVMSG garrabot :de-novo", "ana").await;
+        assert!(
+            modelo.pedidos().iter().any(|p| p.contains("de-novo")),
+            "{:?}",
+            modelo.pedidos()
+        );
+        canal.disconnect().await.expect("desconecta");
+    }
+
+    /// O dono pareado automaticamente tambem e `irc:<nick>`, e volta em outra
+    /// grafia: o pareamento automatico ja nao vale para ele.
+    #[tokio::test]
+    async fn dono_volta_em_outra_grafia() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, modelo) = estado(&dir, &[]);
+        let (mut canal, mut servidor) = conecta(&state).await;
+        escreve(
+            &mut servidor,
+            ":srv 005 garrabot CASEMAPPING=rfc1459 :are supported by this server",
+        )
+        .await;
+
+        turno(&mut servidor, ":Ana!a@h PRIVMSG garrabot :oi", "Ana").await;
+        assert_eq!(
+            state.allowlist.lock().expect("lock").owner(),
+            Some("irc:Ana")
+        );
+        turno(&mut servidor, ":ana!a@h PRIVMSG garrabot :voltei", "ana").await;
+        assert!(
+            modelo.pedidos().iter().any(|p| p.contains("voltei")),
+            "{:?}",
+            modelo.pedidos()
+        );
+        canal.disconnect().await.expect("desconecta");
     }
 }

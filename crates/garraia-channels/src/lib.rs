@@ -72,7 +72,7 @@ pub use discord::{DiscordChannel, DiscordOnMessageFn};
 #[cfg(feature = "google_chat")]
 pub use google_chat::{GoogleChatChannel, GoogleChatConfig, GoogleChatOnMessageFn};
 #[cfg(feature = "irc")]
-pub use irc::{ConversaIrc, IrcChannel, IrcConfig, IrcOnMessageFn};
+pub use irc::{ConversaIrc, IrcChannel, IrcConfig, IrcOnMessageFn, NickIrc};
 #[cfg(feature = "line")]
 pub use line_channel::{LineChannel, LineConfig, LineOnMessageFn, signature as line_signature};
 #[cfg(feature = "matrix")]
