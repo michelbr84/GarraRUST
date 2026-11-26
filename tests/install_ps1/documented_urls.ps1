@@ -8,6 +8,11 @@
 # website repo; the canonical URL and the mirror list are documented HERE, and
 # the two must not drift apart.
 #
+# Since #2016 the Windows source is the raw `main` URL, not garraia.org: the
+# site's edge (Lovable/Cloudflare) answers PowerShell's HTTP client with a 403
+# `cf-mitigated: challenge`, so `irm https://garraia.org/install.ps1 | iex`
+# dies before downloading. install.sh keeps garraia.org (curl gets through).
+#
 # These assertions read the script text -- never the network -- so CI stays
 # hermetic. The live-endpoint probe is .github/workflows/install-endpoints.yml,
 # which is scheduled, not a PR gate.
@@ -23,11 +28,12 @@ $shBody  = Get-Content -Path $installSh  -Raw
 
 Write-Host 'install.ps1: canonical URL and mirrors'
 
-Assert-True 'documenta a URL canonica garraia.org' `
-    $ps1Body.Contains('https://garraia.org/install.ps1')
+Assert-True 'ensina o raw do main como fonte do irm' `
+    $ps1Body.Contains('irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex')
 
-Assert-True 'documenta a forma irm | iex' `
-    $ps1Body.Contains('irm https://garraia.org/install.ps1 | iex')
+# Cobre as duas formas (`irm ... | iex` e o scriptblock com `(irm ...)`).
+Assert-False 'nao ensina irm do garraia.org (#2016)' `
+    $ps1Body.Contains('irm https://garraia.org/install.ps1')
 
 foreach ($mirror in @(
     'https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1',
