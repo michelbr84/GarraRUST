@@ -15,7 +15,8 @@
 //! não é conveniência aqui: é o único controle de acesso que existe neste
 //! canal, e vale a pena dizer isso em voz alta. A sessão privada é por nick, então
 //! quem tomar o nick de alguém também vê o histórico privado daquele nick — o
-//! mesmo modelo de confiança da allowlist.
+//! mesmo modelo de confiança da allowlist. E é por nick **em cada conexão** da
+//! config: um nick só identifica alguém dentro da própria rede.
 
 use std::sync::Arc;
 
@@ -97,7 +98,7 @@ pub fn build_irc_channels(
             .map(str::to_string)
             .unwrap_or_else(|| "garrabot".to_string());
 
-        let on_message = callback_irc(state);
+        let on_message = callback_irc(state, name);
 
         let channel = garraia_channels::IrcChannel::new(
             garraia_channels::IrcConfig {
@@ -120,21 +121,38 @@ pub fn build_irc_channels(
 ///
 /// - **Canal:** `irc-<canal>`, como sempre foi; quem esta no canal divide a
 ///   conversa, como num grupo de qualquer outro canal.
-/// - **Privado:** `irc-@<nick normalizado>`, uma sessao por pessoa. Antes era
-///   `irc-<nick do bot>` para todo mundo, e o modelo recebia as mensagens
-///   privadas de uma pessoa no turno de outra. O `@` nao aparece em nick nem
-///   nos prefixos de canal que o `garraia-channels` aceita, entao o id nunca
-///   colide com o de um canal nem com o `irc-<nick do bot>` antigo, que fica
-///   como esta e nao recebe turno novo.
-pub(crate) fn sessao_da_conversa(conversa: &garraia_channels::ConversaIrc) -> String {
+/// - **Privado:** `irc-@<nick normalizado>@<conexao>`, uma sessao por pessoa
+///   em cada conexao IRC da config. Antes era `irc-<nick do bot>` para todo
+///   mundo, e o modelo recebia as mensagens privadas de uma pessoa no turno de
+///   outra. A `conexao` e o nome da entrada `type = "irc"` na config: o nick so
+///   identifica alguem dentro da propria rede, e cada conexao aponta para uma.
+///
+/// O id privado e injetivo e nao colide com nenhum outro: o nick nunca tem
+/// `@` (o `garraia-channels` o corta no primeiro `!` ou `@` do prefixo), entao
+/// o primeiro `@` depois de `irc-@` separa o nick da conexao, por mais que o
+/// nome da conexao tenha `@`. Nenhum canal comeca com `@` (os prefixos aceitos
+/// sao `#&!+`), e o `irc-<nick do bot>` antigo e o `irc-@<nick>` sem conexao
+/// ficam como estao e nao recebem turno novo.
+pub(crate) fn sessao_da_conversa(
+    conexao: &str,
+    conversa: &garraia_channels::ConversaIrc,
+) -> String {
     match conversa {
         garraia_channels::ConversaIrc::Canal(canal) => format!("irc-{canal}"),
-        garraia_channels::ConversaIrc::Privado(nick) => format!("irc-@{nick}"),
+        garraia_channels::ConversaIrc::Privado(nick) => {
+            // A injetividade do id depende disto, que e garantido no
+            // `garraia-channels` (`parse_privmsg`); a assercao pega nos testes
+            // uma mudanca la que deixe `@` chegar ate aqui.
+            debug_assert!(!nick.contains('@'), "nick com `@` quebra o id privado");
+            format!("irc-@{nick}@{conexao}")
+        }
     }
 }
 
 /// O callback de cada `PRIVMSG` recebido: allowlist, sessao e turno.
-fn callback_irc(state: &SharedState) -> garraia_channels::IrcOnMessageFn {
+/// `conexao` e o nome da entrada IRC na config, que entra no id da sessao
+/// privada ([`sessao_da_conversa`]).
+fn callback_irc(state: &SharedState, conexao: &str) -> garraia_channels::IrcOnMessageFn {
     // #1189: gates compartilhados com o AppState -- instancias
     // proprias fazem o `/pair` nunca casar com o `claim()`.
     let (allowlist, pairing) = channel_gates(state);
@@ -142,6 +160,7 @@ fn callback_irc(state: &SharedState) -> garraia_channels::IrcOnMessageFn {
     let state_for_cb = Arc::clone(state);
     let allowlist_for_cb = Arc::clone(&allowlist);
     let pairing_for_cb = Arc::clone(&pairing);
+    let conexao_for_cb: Arc<str> = Arc::from(conexao);
 
     Arc::new(
         move |conversa: garraia_channels::ConversaIrc,
@@ -152,6 +171,7 @@ fn callback_irc(state: &SharedState) -> garraia_channels::IrcOnMessageFn {
             let state = Arc::clone(&state_for_cb);
             let allowlist = Arc::clone(&allowlist_for_cb);
             let pairing = Arc::clone(&pairing_for_cb);
+            let conexao = Arc::clone(&conexao_for_cb);
             Box::pin(async move {
                 // No IRC o nick e a unica identidade que existe, e num
                 // servidor sem NickServ qualquer um pode toma-lo. A
@@ -189,7 +209,7 @@ fn callback_irc(state: &SharedState) -> garraia_channels::IrcOnMessageFn {
                     }
                 }
 
-                let session_id = sessao_da_conversa(&conversa);
+                let session_id = sessao_da_conversa(&conexao, &conversa);
 
                 let text = garraia_security::InputValidator::sanitize(&text);
                 if garraia_security::InputValidator::check_prompt_injection(&text) {
@@ -308,6 +328,9 @@ mod tests {
         }
     }
 
+    /// O nome da conexao IRC na config dos testes que usam [`conecta`].
+    const CONEXAO: &str = "teste";
+
     /// Estado com o modelo que guarda e a allowlist com `permitidos` (o
     /// primeiro e o dono, para nenhum turno virar o boas-vindas do pareamento).
     ///
@@ -342,7 +365,7 @@ mod tests {
     }
 
     /// Sobe o canal com o callback de producao contra um servidor falso e
-    /// devolve o lado do servidor.
+    /// devolve o lado do servidor. A conexao se chama [`CONEXAO`] na config.
     async fn conecta(state: &SharedState) -> (garraia_channels::IrcChannel, TcpStream) {
         let ouvinte = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let porta = ouvinte.local_addr().expect("addr").port();
@@ -354,7 +377,7 @@ mod tests {
                 channels: vec![],
                 use_tls: false,
             },
-            callback_irc(state),
+            callback_irc(state, CONEXAO),
         );
         let conexao = tokio::spawn(async move { ouvinte.accept().await.map(|(s, _)| s) });
         canal.connect().await.expect("conecta");
@@ -421,24 +444,43 @@ mod tests {
             !state.sessions.contains_key("irc-garrabot"),
             "a sessao antiga `irc-<nick do bot>` recebeu turno novo"
         );
-        assert!(state.sessions.contains_key("irc-@ana"));
-        assert!(state.sessions.contains_key("irc-@bruno"));
+        assert!(state.sessions.contains_key("irc-@ana@teste"));
+        assert!(state.sessions.contains_key("irc-@bruno@teste"));
         canal.disconnect().await.expect("desconecta");
     }
 
     #[test]
     fn sessao_da_conversa_separa_canal_de_privado() {
         use garraia_channels::ConversaIrc::{Canal, Privado};
-        assert_eq!(sessao_da_conversa(&Canal("#garra".into())), "irc-#garra");
-        assert_eq!(sessao_da_conversa(&Canal("&local".into())), "irc-&local");
-        assert_eq!(sessao_da_conversa(&Privado("ana".into())), "irc-@ana");
-        // O id privado nunca e o de um canal nem o `irc-<nick do bot>` antigo.
+        let sessao = sessao_da_conversa;
+        assert_eq!(sessao("libera", &Canal("#garra".into())), "irc-#garra");
+        assert_eq!(sessao("libera", &Canal("&local".into())), "irc-&local");
+        assert_eq!(sessao("libera", &Privado("ana".into())), "irc-@ana@libera");
+        // O id privado nunca e o de um canal, o `irc-<nick do bot>` antigo nem
+        // o `irc-@<nick>` sem conexao.
         assert_ne!(
-            sessao_da_conversa(&Privado("garrabot".into())),
+            sessao("libera", &Privado("garrabot".into())),
             "irc-garrabot"
         );
+        assert_ne!(sessao("libera", &Privado("ana".into())), "irc-@ana");
         // O prefixo do canal continua `irc-` (channels_view::PREFIXOS_DE_SESSAO).
-        assert!(sessao_da_conversa(&Privado("ana".into())).starts_with("irc-"));
+        assert!(sessao("libera", &Privado("ana".into())).starts_with("irc-"));
+    }
+
+    /// O mesmo nick em conexoes diferentes e outra pessoa, e o id privado e
+    /// injetivo mesmo com `@` no nome da conexao: o nick nunca tem `@`, entao
+    /// o primeiro `@` depois de `irc-@` separa os dois.
+    #[test]
+    fn sessao_privada_diz_de_qual_conexao_e() {
+        use garraia_channels::ConversaIrc::Privado;
+        let sessao = sessao_da_conversa;
+        assert_ne!(
+            sessao("libera", &Privado("ana".into())),
+            sessao("oftc", &Privado("ana".into()))
+        );
+        // ("ana", "b@c") e ("ana@b", "c") dariam o mesmo texto, mas `ana@b`
+        // nao chega como nick: o `garraia-channels` corta o prefixo no `@`.
+        assert_eq!(sessao("b@c", &Privado("ana".into())), "irc-@ana@b@c");
     }
 
     /// A mesma pessoa continua a mesma conversa, com o nick na caixa que for:
@@ -544,5 +586,82 @@ mod tests {
 
         assert!(state.sessions.contains_key("irc-&local"));
         canal.disconnect().await.expect("desconecta");
+    }
+
+    /// Uma conexao IRC da config apontando para um servidor falso nesta porta.
+    fn conexao_irc(porta: u16) -> garraia_config::ChannelConfig {
+        garraia_config::ChannelConfig {
+            channel_type: "irc".into(),
+            enabled: None,
+            settings: std::collections::HashMap::from([
+                ("server".to_string(), serde_json::json!("127.0.0.1")),
+                ("port".to_string(), serde_json::json!(porta)),
+                ("channels".to_string(), serde_json::json!(["#garra"])),
+            ]),
+        }
+    }
+
+    /// Duas conexoes IRC na config, cada uma num servidor: o nick so identifica
+    /// alguem dentro da propria rede, entao a conversa privada de cada conexao
+    /// e uma sessao. Os canais saem do `build_irc_channels`, como no boot, para
+    /// o nome da conexao vir da config.
+    #[tokio::test]
+    async fn cada_conexao_tem_as_proprias_conversas_privadas() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, modelo) = estado(&dir, &["ana"]);
+
+        let rede_a = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let rede_b = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let config = AppConfig {
+            channels: std::collections::HashMap::from([
+                (
+                    "rede-a".to_string(),
+                    conexao_irc(rede_a.local_addr().expect("addr").port()),
+                ),
+                (
+                    "rede-b".to_string(),
+                    conexao_irc(rede_b.local_addr().expect("addr").port()),
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        let mut canais = build_irc_channels(&config, &state);
+        assert_eq!(canais.len(), 2, "uma conexao por entrada `type = irc`");
+        let aceita_a = tokio::spawn(async move { rede_a.accept().await.map(|(s, _)| s) });
+        let aceita_b = tokio::spawn(async move { rede_b.accept().await.map(|(s, _)| s) });
+        for canal in &mut canais {
+            canal.connect().await.expect("conecta");
+        }
+        let mut servidor_a = aceita_a.await.expect("join").expect("accept");
+        let mut servidor_b = aceita_b.await.expect("join").expect("accept");
+
+        turno(
+            &mut servidor_a,
+            ":ana!a@h PRIVMSG garrabot :segredo-da-rede-a",
+            "ana",
+        )
+        .await;
+        turno(&mut servidor_b, ":ana!a@h PRIVMSG garrabot :oi", "ana").await;
+        turno(&mut servidor_a, ":ana!a@h PRIVMSG garrabot :e ai", "ana").await;
+
+        let pedidos = modelo.pedidos();
+        assert_eq!(pedidos.len(), 3, "{pedidos:?}");
+        assert!(
+            !pedidos[1].contains("segredo-da-rede-a"),
+            "a conversa privada da conexao `rede-b` recebeu a da `rede-a`: {}",
+            pedidos[1]
+        );
+        assert!(
+            pedidos[2].contains("segredo-da-rede-a"),
+            "a conversa da `rede-a` continua: {}",
+            pedidos[2]
+        );
+        assert!(state.sessions.contains_key("irc-@ana@rede-a"));
+        assert!(state.sessions.contains_key("irc-@ana@rede-b"));
+        assert!(!state.sessions.contains_key("irc-@ana"));
+        for canal in &mut canais {
+            canal.disconnect().await.expect("desconecta");
+        }
     }
 }

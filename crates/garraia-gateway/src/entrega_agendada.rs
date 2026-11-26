@@ -20,7 +20,7 @@
 //!   [`crate::bootstrap::WhatsAppLinkedRuntime`]), com tres regras proprias —
 //!   ver abaixo.
 //! - **IRC e iMessage ficam fora**, de proposito. No IRC cada conversa
-//!   privada ja tem sessao propria (`irc-@<nick>`, #2011), mas entregar a um
+//!   privada ja tem sessao propria (`irc-@<nick>@<conexao>`, #2011), mas entregar a um
 //!   nick em hora marcada chega a quem estiver com ele naquele momento: sem
 //!   NickServ, o nick nao e identidade estavel. A entrega no IRC (canal; no
 //!   privado, so com conta identificada) ainda nao foi ligada. No
@@ -444,6 +444,7 @@ mod tests {
     fn irc_e_imessage_nao_ganham_endereco() {
         assert_eq!(endereco_pela_sessao("irc", "irc-#garra"), None);
         assert_eq!(endereco_pela_sessao("irc", "irc-@ana"), None);
+        assert_eq!(endereco_pela_sessao("irc", "irc-@ana@libera"), None);
         assert_eq!(
             endereco_pela_sessao("imessage", "imessage-+5511999990000"),
             None
