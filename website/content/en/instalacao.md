@@ -16,7 +16,7 @@ release checksums, then chains into `init` and `start`.
 ## Install via script (Windows)
 
 ```powershell
-irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
+irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 ```
 
 The Windows sibling of `install.sh`, at behavioral parity with it.
