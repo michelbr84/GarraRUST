@@ -62,7 +62,7 @@ Detalhes, build a partir do fonte no aparelho (atenção ao LTO/OOM) e troublesh
 ## Instalação em 1 comando (Windows)
 
 ```powershell
-irm https://garraia.org/install.ps1 | iex
+irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
 ```
 
 Irmão Windows do `install.sh`: verifica o SHA-256, instala `garraia.exe` em
@@ -73,15 +73,20 @@ também funcionar), registra o diretório no PATH do usuário e encadeia
 Para passar flags — `irm | iex` não recebe argumentos:
 
 ```powershell
-& ([scriptblock]::Create((irm https://garraia.org/install.ps1))) -SkipSetup
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1))) -SkipSetup
 ```
 
 Espelhos:
 
 ```powershell
 irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
-irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
+irm https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1 | iex
 ```
+
+O `garraia.org/install.ps1` não serve ao `irm`: a borda do site responde 403
+(`cf-mitigated: challenge`) ao cliente HTTP do PowerShell
+([#2016](https://github.com/michelbr84/GarraRUST/issues/2016)). No Linux e no
+macOS, o `garraia.org/install.sh` segue valendo.
 
 Os binários e instaladores não são assinados, então o SmartScreen avisa na
 primeira execução do MSI do desktop. Detalhes em
