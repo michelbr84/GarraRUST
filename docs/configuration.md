@@ -763,9 +763,10 @@ of a session only grow and remember who came first, so a session touched by
 any other surface is refused (`nao_entregue:origem_mista`). Telegram is not
 affected: its address comes from the chat the channel itself recorded.
 
-IRC and iMessage stay out on purpose. IRC sends text to the server without
-splitting lines, so a reply containing a line break would become a raw IRC
-command, and every private message shares one session. An iMessage group
+IRC and iMessage stay out on purpose. On IRC every private message shares one
+session (`irc-<bot nick>`), so the session id does not say who to deliver to.
+(IRC used to send a reply's line breaks raw to the server, which would turn
+them into IRC commands; that was fixed in #2007.) An iMessage group
 session stores the group's *name*, which is not an address. Both behave as
 before: the adapter refuses, and the ledger says `nao_entregue:falhou`.
 
