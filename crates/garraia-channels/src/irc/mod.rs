@@ -37,14 +37,54 @@ pub enum ConversaIrc {
     Privado(String),
 }
 
+/// Quem mandou uma mensagem recebida, com o `CASEMAPPING` que o servidor
+/// anunciava quando ela chegou (#2015).
+///
+/// O nick fica como veio no prefixo ([`Self::como_veio`]). "E a mesma
+/// pessoa?" se responde por [`Self::mesmo_nick`], que normaliza os dois lados
+/// pelo `CASEMAPPING` deste remetente, a mesma regra que da o nick de
+/// [`ConversaIrc::Privado`]. Assim a sessao e a allowlist do gateway
+/// concordam sobre quem e a mesma pessoa, e isso se decide num ponto so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NickIrc {
+    como_veio: String,
+    casemapping: Casemapping,
+}
+
+impl NickIrc {
+    /// O nick como veio no prefixo da mensagem.
+    pub fn como_veio(&self) -> &str {
+        &self.como_veio
+    }
+
+    /// O nick como o servidor o compara: o mesmo de [`ConversaIrc::Privado`].
+    pub fn normalizado(&self) -> String {
+        self.casemapping.normalizar(&self.como_veio)
+    }
+
+    /// Se `outro` e o mesmo nick para o servidor, pelo `CASEMAPPING` deste
+    /// remetente. Nunca junta mais do que o servidor junta: sem anuncio, so a
+    /// caixa ASCII (ver [`Suporte`]).
+    pub fn mesmo_nick(&self, outro: &str) -> bool {
+        self.normalizado() == self.casemapping.normalizar(outro)
+    }
+}
+
+impl std::fmt::Display for NickIrc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.como_veio)
+    }
+}
+
 /// Callback invoked when a PRIVMSG is received from IRC.
 ///
-/// Arguments: `(conversa, nick, user_name, text, delta_tx)`.
+/// Arguments: `(conversa, remetente, user_name, text, delta_tx)`. O
+/// `user_name` e o nick como veio.
 /// Return `Err("__blocked__")` to silently drop unauthorized messages.
 pub type IrcOnMessageFn = Arc<
     dyn Fn(
             ConversaIrc,
-            String,
+            NickIrc,
             String,
             String,
             Option<mpsc::Sender<String>>,
@@ -264,13 +304,17 @@ impl Channel for IrcChannel {
                                     // ponto so, e a resposta e a sessao seguem
                                     // a mesma decisao.
                                     let conversa = suporte.conversa(&target, &source_nick);
+                                    // #2015: quem mandou, com o CASEMAPPING
+                                    // desta hora, para o gateway comparar o
+                                    // nick como a sessao compara.
+                                    let remetente = suporte.remetente(&source_nick);
                                     let reply_target = match &conversa {
                                         ConversaIrc::Canal(canal) => canal.clone(),
                                         ConversaIrc::Privado(_) => source_nick.clone(),
                                     };
 
                                     tokio::spawn(async move {
-                                        match cb(conversa, source_nick.clone(), source_nick, text, None).await {
+                                        match cb(conversa, remetente, source_nick, text, None).await {
                                             Ok(reply) => {
                                                 // #2007: o mesmo saneamento do
                                                 // `send_privmsg` — `str::lines()`
@@ -403,6 +447,23 @@ enum Casemapping {
     Rfc1459Strict,
 }
 
+impl Casemapping {
+    /// O nick como o servidor o compara sob este `CASEMAPPING`.
+    fn normalizar(self, nick: &str) -> String {
+        let rfc1459 = matches!(self, Casemapping::Rfc1459 | Casemapping::Rfc1459Strict);
+        nick.chars()
+            .map(|c| match c {
+                'A'..='Z' => c.to_ascii_lowercase(),
+                '[' if rfc1459 => '{',
+                ']' if rfc1459 => '}',
+                '\\' if rfc1459 => '|',
+                '~' if self == Casemapping::Rfc1459 => '^',
+                _ => c,
+            })
+            .collect()
+    }
+}
+
 /// O que o servidor anunciou no `RPL_ISUPPORT` (005) e decide de quem e uma
 /// mensagem recebida (#2011).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -481,20 +542,15 @@ impl Suporte {
 
     /// O nick como o servidor o compara.
     fn normalizar_nick(&self, nick: &str) -> String {
-        let rfc1459 = matches!(
-            self.casemapping,
-            Casemapping::Rfc1459 | Casemapping::Rfc1459Strict
-        );
-        nick.chars()
-            .map(|c| match c {
-                'A'..='Z' => c.to_ascii_lowercase(),
-                '[' if rfc1459 => '{',
-                ']' if rfc1459 => '}',
-                '\\' if rfc1459 => '|',
-                '~' if self.casemapping == Casemapping::Rfc1459 => '^',
-                _ => c,
-            })
-            .collect()
+        self.casemapping.normalizar(nick)
+    }
+
+    /// Quem mandou, com o `CASEMAPPING` anunciado agora (#2015).
+    fn remetente(&self, nick: &str) -> NickIrc {
+        NickIrc {
+            como_veio: nick.to_string(),
+            casemapping: self.casemapping,
+        }
     }
 
     /// De quem e a mensagem que `remetente` mandou para `alvo`: o canal, se o
@@ -1046,10 +1102,13 @@ mod tests {
         let ouvinte = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let porta = ouvinte.local_addr().expect("addr").port();
         let (tx, mut rx) = mpsc::unbounded_channel::<ConversaIrc>();
-        let on_msg: IrcOnMessageFn = Arc::new(move |conversa, _nick, _user, _text, _delta_tx| {
-            let _ = tx.send(conversa);
-            Box::pin(async { Err("__blocked__".to_string()) })
-        });
+        let (tx_rem, mut rx_rem) = mpsc::unbounded_channel::<(ConversaIrc, NickIrc)>();
+        let on_msg: IrcOnMessageFn =
+            Arc::new(move |conversa, remetente, _user, _text, _delta_tx| {
+                let _ = tx_rem.send((conversa.clone(), remetente));
+                let _ = tx.send(conversa);
+                Box::pin(async { Err("__blocked__".to_string()) })
+            });
         let mut canal = IrcChannel::new(
             IrcConfig {
                 server: "127.0.0.1".into(),
@@ -1093,7 +1152,50 @@ mod tests {
                 "{esperada:?} em {recebidas:?}"
             );
         }
+        // #2015: o remetente chega como veio, com o CASEMAPPING da hora, e
+        // normaliza para o mesmo nick da conversa privada.
+        for _ in 0..3 {
+            let (conversa, remetente) = rx_rem.try_recv().expect("remetente de cada chamada");
+            assert!(
+                ["Ana", "[bia]", "ana"].contains(&remetente.como_veio()),
+                "{remetente:?}"
+            );
+            if let ConversaIrc::Privado(nick) = conversa {
+                assert_eq!(remetente.normalizado(), nick);
+                assert!(remetente.mesmo_nick(&nick));
+            }
+        }
         canal.disconnect().await.expect("desconecta");
+    }
+
+    /// #2015: `mesmo_nick` compara os dois lados pelo `CASEMAPPING` do
+    /// remetente, e nunca junta mais do que o servidor junta.
+    #[test]
+    fn mesmo_nick_segue_o_casemapping_do_remetente() {
+        let mut s = Suporte::default();
+        let sem_anuncio = s.remetente("[Bia]");
+        assert_eq!(sem_anuncio.como_veio(), "[Bia]");
+        assert_eq!(sem_anuncio.to_string(), "[Bia]");
+        assert!(sem_anuncio.mesmo_nick("[bia]"), "a caixa ASCII vale sempre");
+        assert!(!sem_anuncio.mesmo_nick("{bia}"), "sem anuncio fica ascii");
+
+        s.aplicar_isupport(":srv 005 garrabot CASEMAPPING=rfc1459 :are supported");
+        let rfc1459 = s.remetente("[Bia]~");
+        assert!(rfc1459.mesmo_nick("{bia}^"));
+        assert!(rfc1459.mesmo_nick("[BIA]~"));
+        assert!(!rfc1459.mesmo_nick("{bia}"), "outro nick");
+        // O remetente guarda o CASEMAPPING de quando chegou.
+        assert!(!sem_anuncio.mesmo_nick("{bia}"));
+
+        s.aplicar_isupport(":srv 005 garrabot CASEMAPPING=rfc1459-strict :are supported");
+        let estrito = s.remetente("[Bia]~");
+        assert!(estrito.mesmo_nick("{bia}~"));
+        assert!(!estrito.mesmo_nick("{bia}^"), "no estrito o `~` fica");
+
+        s.aplicar_isupport(":srv 005 garrabot CASEMAPPING=ascii :are supported");
+        let ascii = s.remetente("[Bia]");
+        assert!(!ascii.mesmo_nick("{bia}"));
+        assert_eq!(ascii.normalizado(), "[bia]");
     }
 
     #[test]
