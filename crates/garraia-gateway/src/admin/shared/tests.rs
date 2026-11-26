@@ -574,11 +574,11 @@ fn every_admin_key_error_says_the_console_is_disabled_and_how_to_fix_it() {
         AdminKeyError::StoredParamsUnusable("x".into()),
         AdminKeyError::NotUnderLegacyKey("x".into()),
         AdminKeyError::KeyOpensNoStoredSecret {
-            key_source: KeySource::Passphrase,
+            key_source: MasterKeySource::Passphrase,
             count: 1,
         },
         AdminKeyError::KeyOpensNoStoredSecret {
-            key_source: KeySource::MasterKeyFile,
+            key_source: MasterKeySource::MasterKeyFile,
             count: 1,
         },
         AdminKeyError::MasterKeyFileLost {
@@ -586,6 +586,8 @@ fn every_admin_key_error_says_the_console_is_disabled_and_how_to_fix_it() {
             count: 1,
         },
         AdminKeyError::StoredSecretsUnreadable("x".into()),
+        AdminKeyError::MasterKeyFileUnreadable("x".into()),
+        AdminKeyError::MasterKeyFileNotPersisted("x".into()),
         AdminKeyError::Entropy("x"),
     ] {
         // Mensagem acionavel e sem segredo: nomeia o que esta errado e a saida.
@@ -614,7 +616,7 @@ fn a_changed_passphrase_over_stored_secrets_disables_the_panel() {
     assert_eq!(
         err,
         AdminKeyError::KeyOpensNoStoredSecret {
-            key_source: KeySource::Passphrase,
+            key_source: MasterKeySource::Passphrase,
             count: 1,
         }
     );
@@ -658,7 +660,7 @@ fn a_changed_passphrase_over_a_totp_seed_alone_disables_the_panel() {
         matches!(
             err,
             AdminKeyError::KeyOpensNoStoredSecret {
-                key_source: KeySource::Passphrase,
+                key_source: MasterKeySource::Passphrase,
                 count: 1
             }
         ),
@@ -731,7 +733,7 @@ fn a_swapped_master_key_disables_the_panel() {
     assert_eq!(
         err,
         AdminKeyError::KeyOpensNoStoredSecret {
-            key_source: KeySource::MasterKeyFile,
+            key_source: MasterKeySource::MasterKeyFile,
             count: 1,
         }
     );
@@ -802,5 +804,132 @@ fn a_lost_master_key_over_an_empty_store_is_regenerated() {
     assert_eq!(
         std::fs::read(path.with_extension("key.unreadable")).expect("preservado"),
         vec![9u8; 5]
+    );
+}
+
+/// As versoes arquivadas entram na varredura: aqui so a versao antiga abre com
+/// a chave, e isso basta. Se `secret_versions` saisse de `stored_ciphertexts`,
+/// a chave seria recusada (o segredo vivo esta sob outra).
+#[test]
+fn an_archived_version_alone_is_enough_to_prove_the_key() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("master.key");
+    let key = vec![1u8; MASTER_KEY_LEN];
+    std::fs::write(&path, &key).expect("write");
+
+    let store = store_with_a_secret_under(&key);
+    let (ct, nonce) =
+        super::super::secrets::encrypt_value(b"sk-novo", &[6u8; MASTER_KEY_LEN]).expect("enc");
+    store
+        .set_secret("default", "openai", "api_key", &ct, &nonce, None)
+        .expect("a versao antiga vai para secret_versions");
+    assert_eq!(store.secret_version_ciphertexts().expect("le").len(), 1);
+
+    assert_eq!(
+        master_key_file_key(&store, &path).expect("a versao abre"),
+        key
+    );
+}
+
+/// Sem conseguir ler os ciphertexts, nada prova que a chave e a certa.
+#[test]
+fn ciphertexts_that_cannot_be_read_disable_the_panel() {
+    let mut store = migrated_store_with_a_secret();
+    store
+        .execute_raw_for_test("DROP TABLE secret_versions")
+        .expect("drop");
+    let err = resolve_with_passphrase(&mut store, PASS).expect_err("must refuse");
+    assert!(
+        matches!(err, AdminKeyError::StoredSecretsUnreadable(_)),
+        "{err:?}"
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("master.key");
+    let err = master_key_file_key(&store, &path).expect_err("must refuse");
+    assert!(
+        matches!(err, AdminKeyError::StoredSecretsUnreadable(_)),
+        "{err:?}"
+    );
+    assert!(
+        !path.exists(),
+        "nenhuma chave nova sem saber o que esta gravado"
+    );
+}
+
+/// Um `master.key` que existe mas nao se le nao prova corrupcao: nunca e
+/// trocado, nem com o store vazio.
+#[test]
+fn a_master_key_that_exists_but_cannot_be_read_is_never_replaced() {
+    let store = AdminStore::in_memory().expect("in-memory store");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("master.key");
+    // Um diretorio no lugar do arquivo: `read` falha sem ser NotFound, mesmo
+    // como root (que ignoraria um chmod 000).
+    std::fs::create_dir(&path).expect("dir");
+
+    let err = master_key_file_key(&store, &path).expect_err("must refuse");
+    assert!(
+        matches!(err, AdminKeyError::MasterKeyFileUnreadable(_)),
+        "{err:?}"
+    );
+    assert!(path.is_dir(), "intocado");
+    assert!(!path.with_extension("key.unreadable").exists());
+}
+
+/// Uma copia preservada antes nunca e sobrescrita.
+#[test]
+fn an_earlier_preserved_copy_is_never_overwritten() {
+    let store = AdminStore::in_memory().expect("in-memory store");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("master.key");
+    std::fs::write(path.with_extension("key.unreadable"), b"primeira").expect("write");
+    std::fs::write(&path, b"segunda").expect("write");
+
+    master_key_file_key(&store, &path).expect("regenerada");
+
+    assert_eq!(
+        std::fs::read(path.with_extension("key.unreadable")).expect("le"),
+        b"primeira"
+    );
+    assert_eq!(
+        std::fs::read(path.with_extension("key.unreadable.1")).expect("le"),
+        b"segunda"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_new_master_key_is_owner_only_from_creation() {
+    use std::os::unix::fs::PermissionsExt;
+    let store = AdminStore::in_memory().expect("in-memory store");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("admin").join("master.key");
+
+    master_key_file_key(&store, &path).expect("criada");
+
+    let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+}
+
+/// Uma chave que so existiria em memoria cifraria os segredos desta sessao sob
+/// algo que o proximo boot nao tem. Aqui um symlink pendurado ocupa o caminho:
+/// `read` diz NotFound, mas `create_new` nao passa por cima dele.
+#[cfg(unix)]
+#[test]
+fn a_master_key_that_cannot_be_written_disables_the_panel() {
+    let store = AdminStore::in_memory().expect("in-memory store");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("master.key");
+    std::os::unix::fs::symlink(dir.path().join("nao-existe"), &path).expect("symlink");
+
+    let err = master_key_file_key(&store, &path).expect_err("must refuse");
+    assert!(
+        matches!(err, AdminKeyError::MasterKeyFileNotPersisted(_)),
+        "{err:?}"
+    );
+    assert!(
+        !dir.path().join("nao-existe").exists(),
+        "nada seguiu o symlink"
     );
 }

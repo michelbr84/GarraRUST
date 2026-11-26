@@ -170,9 +170,12 @@ pub enum AdminKeyError {
         cause = .key_source.likely_cause(),
         fix = .key_source.fix()
     )]
-    KeyOpensNoStoredSecret { key_source: KeySource, count: usize },
-    /// No passphrase is set and `<config_dir>/admin/master.key` is missing,
-    /// unreadable or the wrong length, while admin secrets are stored (#2013).
+    KeyOpensNoStoredSecret {
+        key_source: MasterKeySource,
+        count: usize,
+    },
+    /// No passphrase is set and `<config_dir>/admin/master.key` is missing or
+    /// the wrong length, while admin secrets are stored (#2013).
     /// Minting a fresh key here — the behaviour before #2013 — opened none of
     /// them and encrypted everything written next under a third key.
     #[error(
@@ -185,6 +188,26 @@ pub enum AdminKeyError {
          503\" in docs/security.md to start the admin store over"
     )]
     MasterKeyFileLost { state: &'static str, count: usize },
+    /// No passphrase is set and `<config_dir>/admin/master.key` exists but
+    /// could not be read (permissions, I/O). That is no proof the file is
+    /// damaged, so it is never replaced (#2013).
+    #[error(
+        "no admin passphrase is set and <config_dir>/admin/master.key exists but could not \
+         be read: {0}. The admin console stays disabled (HTTP 503) and the file was left \
+         untouched. Fix: make the file readable by the gateway's user (owner-only, mode \
+         0600) and restart"
+    )]
+    MasterKeyFileUnreadable(String),
+    /// A new `master.key` was generated but could not be written. A key kept
+    /// only in memory would encrypt this session's secrets under something the
+    /// next boot cannot read (#2013).
+    #[error(
+        "a new admin master key was generated but <config_dir>/admin/master.key could not \
+         be written: {0}. The admin console stays disabled (HTTP 503) rather than encrypt \
+         secrets under a key the next boot would not have. Fix: make <config_dir>/admin \
+         writable by the gateway's user (or remove a file that appeared there) and restart"
+    )]
+    MasterKeyFileNotPersisted(String),
     /// The admin ciphertexts could not be read back, so nothing proves the
     /// resolved key is the one they are under (#2013).
     #[error(
@@ -207,7 +230,7 @@ pub enum AdminKeyError {
 
 /// Where the admin master key came from, for [`AdminKeyError::KeyOpensNoStoredSecret`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeySource {
+pub enum MasterKeySource {
     /// `GARRAIA_ADMIN_KEY` / `GARRAIA_VAULT_PASSPHRASE` with the recorded
     /// `kdf_params`.
     Passphrase,
@@ -215,7 +238,7 @@ pub enum KeySource {
     MasterKeyFile,
 }
 
-impl KeySource {
+impl MasterKeySource {
     fn likely_cause(self) -> &'static str {
         match self {
             Self::Passphrase => {
@@ -245,7 +268,7 @@ impl KeySource {
     }
 }
 
-impl fmt::Display for KeySource {
+impl fmt::Display for MasterKeySource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Passphrase => "the admin passphrase and the recorded KDF parameters",
@@ -481,21 +504,22 @@ fn usable_stored_params(stored: &StoredKdfParams) -> Result<(Vec<u8>, NonZeroU32
 /// migration.
 ///
 /// A well-formed file must open the stored secrets ([`check_key_opens_store`]).
-/// A missing, unreadable or wrong-length file is replaced by a new random key
-/// **only** while `admin.db` stores no admin secret: then nothing is under the
-/// old key and nothing is lost. With secrets stored, minting a key would open
-/// none of them and encrypt the next ones under a third key, so the panel goes
-/// to 503 and the file is left as it is ([`AdminKeyError::MasterKeyFileLost`],
-/// #2013).
+/// A missing or wrong-length file is replaced by a new random key **only**
+/// while `admin.db` stores no admin secret: then nothing is under the old key
+/// and nothing is lost. With secrets stored, minting a key would open none of
+/// them and encrypt the next ones under a third key, so the panel goes to 503
+/// and the file is left as it is ([`AdminKeyError::MasterKeyFileLost`], #2013).
+/// A file that exists but cannot be read (permissions, I/O) is never replaced:
+/// that is no proof it is damaged, and the next boot reads it again.
 fn master_key_file_key(store: &AdminStore, key_path: &Path) -> Result<Vec<u8>, AdminKeyError> {
     let state = match std::fs::read(key_path) {
         Ok(data) if data.len() == MASTER_KEY_LEN => {
-            check_key_opens_store(store, &data, KeySource::MasterKeyFile)?;
+            check_key_opens_store(store, &data, MasterKeySource::MasterKeyFile)?;
             return Ok(data);
         }
         Ok(_) => "the wrong length",
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "missing",
-        Err(_) => "unreadable",
+        Err(e) => return Err(AdminKeyError::MasterKeyFileUnreadable(e.to_string())),
     };
 
     let stored = stored_ciphertexts(store).map_err(AdminKeyError::StoredSecretsUnreadable)?;
@@ -506,16 +530,15 @@ fn master_key_file_key(store: &AdminStore, key_path: &Path) -> Result<Vec<u8>, A
         });
     }
 
-    // Chegar aqui com o arquivo EXISTINDO significa que ele esta ilegivel ou
-    // com tamanho errado, e a chave nova logo abaixo vai substitui-lo. Desde o
-    // #2013 isso so acontece com o `admin.db` sem nenhum segredo cifrado, entao
-    // nada fica para tras; o arquivo antigo ainda e guardado ao lado, para o
-    // operador ver o que aconteceu.
+    // Chegar aqui com o arquivo EXISTINDO significa que ele tem tamanho
+    // errado, e a chave nova logo abaixo vai substitui-lo. Desde o #2013 isso
+    // so acontece com o `admin.db` sem nenhum segredo cifrado, entao nada fica
+    // para tras; o arquivo antigo ainda e guardado ao lado, sem sobrescrever
+    // uma copia preservada antes, para o operador ver o que aconteceu.
     if key_path.exists() {
-        let preservado = key_path.with_extension("key.unreadable");
-        let movido = std::fs::rename(key_path, &preservado).is_ok();
+        let preserved = preserve_aside(key_path);
         warn!(
-            preserved = movido,
+            preserved = preserved.is_some(),
             "admin master.key exists but is {state}; no admin secret is stored, so \
              nothing is lost: generating a new one"
         );
@@ -526,17 +549,58 @@ fn master_key_file_key(store: &AdminStore, key_path: &Path) -> Result<Vec<u8>, A
         .map_err(|_| AdminKeyError::Entropy("the admin master key"))?
         .to_vec();
 
-    if let Some(parent) = key_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if std::fs::write(key_path, &key).is_ok() {
-        // This file *is* the AES-256-GCM master key. Under the usual 0o022
-        // umask `fs::write` would leave it 0o644 — readable by every local
-        // user. Narrow it immediately.
-        restrict_to_owner(key_path);
-    }
-
+    // A key that only lives in memory would encrypt this session's secrets
+    // under something the next boot cannot read back: refuse instead.
+    write_new_key_file(key_path, &key)
+        .map_err(|e| AdminKeyError::MasterKeyFileNotPersisted(e.to_string()))?;
     Ok(key)
+}
+
+/// Move a damaged `master.key` aside as `master.key.unreadable`, or
+/// `master.key.unreadable.N` when an earlier copy is already there: a copy
+/// preserved before is never overwritten. Best-effort; `None` when it stayed.
+fn preserve_aside(key_path: &Path) -> Option<PathBuf> {
+    (0..100u32).find_map(|n| {
+        let aside = if n == 0 {
+            key_path.with_extension("key.unreadable")
+        } else {
+            key_path.with_extension(format!("key.unreadable.{n}"))
+        };
+        // `hard_link` fails when `aside` exists, unlike `rename`, which would
+        // replace it.
+        std::fs::hard_link(key_path, &aside).ok()?;
+        match std::fs::remove_file(key_path) {
+            Ok(()) => Some(aside),
+            Err(_) => {
+                let _ = std::fs::remove_file(&aside);
+                None
+            }
+        }
+    })
+}
+
+/// Create `master.key` with `key`, never replacing a file that appeared in the
+/// meantime (`create_new`: two gateways booting on the same config dir cannot
+/// both win), and on Unix owner-only from the first byte — the file *is* the
+/// AES-256-GCM master key, and `fs::write` followed by a `chmod` left it 0o644
+/// under the usual umask for a moment. A failure mid-write leaves a file of the
+/// wrong length, which the next boot over the same empty store sets aside.
+fn write_new_key_file(key_path: &Path, key: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if let Some(parent) = key_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(key_path)?;
+    file.write_all(key)?;
+    file.sync_all()
 }
 
 /// One stored admin ciphertext, as `(encrypted, nonce)`.
@@ -578,7 +642,7 @@ fn stored_ciphertexts(store: &AdminStore) -> Result<Vec<Ciphertext>, String> {
 fn check_key_opens_store(
     store: &AdminStore,
     key: &[u8],
-    key_source: KeySource,
+    key_source: MasterKeySource,
 ) -> Result<(), AdminKeyError> {
     let stored = stored_ciphertexts(store).map_err(AdminKeyError::StoredSecretsUnreadable)?;
     if stored.is_empty()
@@ -592,20 +656,6 @@ fn check_key_opens_store(
         key_source,
         count: stored.len(),
     })
-}
-
-/// Best-effort `chmod 0600`. Non-Unix targets have no equivalent and are left
-/// to the platform's own ACL defaults.
-fn restrict_to_owner(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
-            warn!("could not restrict {} to owner-only: {e}", path.display());
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = path;
 }
 
 /// Resolve the master encryption key for the admin secrets store, running the
@@ -669,7 +719,7 @@ fn resolve_with_passphrase(
         // Steady state: the recorded parameters are usable, but that says
         // nothing about the passphrase. A changed one derives a key that opens
         // none of the stored secrets (#2013).
-        check_key_opens_store(store, &keys.current, KeySource::Passphrase)?;
+        check_key_opens_store(store, &keys.current, MasterKeySource::Passphrase)?;
         return Ok(keys.current);
     };
     let legacy = legacy.clone();

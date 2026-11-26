@@ -9,8 +9,12 @@
   como nos outros casos do #1992, com uma linha `ERROR` que aponta a causa
   provavel e a saida. A regra e "nenhum abre", e nao "algum nao abre": uma
   linha corrompida sozinha nao derruba o painel. Sem frase-senha, um
-  `master.key` ausente, ilegivel ou de tamanho errado deixa de ser trocado por
+  `master.key` ausente ou de tamanho errado deixa de ser trocado por
   uma chave aleatoria nova quando ha segredos gravados (o arquivo fica
   intocado e o painel em 503); sem nenhum segredo gravado a regeneracao
   continua, porque nao ha o que perder. Instalacao sem ciphertext sobe como
   antes. Ver `docs/security.md`, "Admin console answering 503".
+  Um `master.key` que existe mas nao se le nunca e trocado; a chave nova e
+  criada com `create_new` e modo 0600 desde o primeiro byte (antes ficava
+  0644 ate o `chmod`), e falhar ao grava-la deixa o painel em 503 em vez de
+  rodar com uma chave que so existe em memoria.

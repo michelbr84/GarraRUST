@@ -180,15 +180,26 @@ causes:
   after the secrets were encrypted, or a `master.key` replaced by another one.
   Set back the passphrase (or `master.key`) the secrets were encrypted with.
   The rule is "none opens", not "one does not": a single damaged row only
-  fails its own read and does not take the console down.
-- **`master.key` is missing, unreadable or the wrong length while secrets are
-  stored** (#2013): with no passphrase set, the console used to mint a new
-  random `master.key` here, which opened none of the stored secrets. It no
-  longer does, and it leaves the file untouched. Restore `master.key` from a
-  backup, or set again the passphrase the secrets were encrypted with. With no
-  admin secret stored, a lost `master.key` is still replaced by a new one (the
-  old file is kept as `master.key.unreadable`), since there is nothing under
-  it to lose.
+  fails its own read and does not take the console down. The flip side: in a
+  store that already mixes two keys, a key that opens only the minority still
+  passes, so when recovering, go back to the key that opens the provider keys,
+  not just an old 2FA seed.
+- **`master.key` is missing or the wrong length while secrets are stored**
+  (#2013): with no passphrase set, the console used to mint a new random
+  `master.key` here, which opened none of the stored secrets. It no longer
+  does, and it leaves the file untouched. Restore `master.key` from a backup,
+  or set again the passphrase the secrets were encrypted with. With no admin
+  secret stored, a lost `master.key` is still replaced by a new one, since
+  there is nothing under it to lose; a wrong-length file is kept as
+  `master.key.unreadable` (or `.unreadable.N`, never overwriting an earlier
+  copy).
+- **`master.key` exists but cannot be read** (permissions, I/O): never
+  replaced, stored secrets or not, since that is no proof it is damaged. Make
+  it readable by the gateway's user (mode 0600) and restart.
+- **A new `master.key` could not be written**: the console does not run on a
+  key the next boot would not have. Make `<config_dir>/admin` writable and
+  restart. The new file is created owner-only (0600) from the first byte and
+  never replaces a file that appeared in the meantime.
 - **The stored secrets could not be read** to check them against the key
   (database locked, I/O error): restart once `admin.db` is readable; nothing
   was written.
