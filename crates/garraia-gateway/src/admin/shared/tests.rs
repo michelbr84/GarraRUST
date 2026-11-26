@@ -573,6 +573,19 @@ fn every_admin_key_error_says_the_console_is_disabled_and_how_to_fix_it() {
     for err in [
         AdminKeyError::StoredParamsUnusable("x".into()),
         AdminKeyError::NotUnderLegacyKey("x".into()),
+        AdminKeyError::KeyOpensNoStoredSecret {
+            key_source: KeySource::Passphrase,
+            count: 1,
+        },
+        AdminKeyError::KeyOpensNoStoredSecret {
+            key_source: KeySource::MasterKeyFile,
+            count: 1,
+        },
+        AdminKeyError::MasterKeyFileLost {
+            state: "missing",
+            count: 1,
+        },
+        AdminKeyError::StoredSecretsUnreadable("x".into()),
         AdminKeyError::Entropy("x"),
     ] {
         // Mensagem acionavel e sem segredo: nomeia o que esta errado e a saida.
@@ -580,4 +593,214 @@ fn every_admin_key_error_says_the_console_is_disabled_and_how_to_fix_it() {
         assert!(msg.contains("admin console stays disabled"), "{msg}");
         assert!(msg.contains("Fix:"), "{msg}");
     }
+}
+
+// ── #2013: a chave resolvida tem que abrir o que esta gravado ────────
+
+/// Frase-senha trocada numa instalacao ja re-chaveada. Antes da #2013 a linha
+/// de `kdf_params` era valida, a chave saia derivada dela e o painel subia
+/// com uma chave que nao abria nada: 500 em toda leitura, 500 no login de
+/// quem tem 2FA, e os segredos novos cifrados sob a chave errada.
+#[test]
+fn a_changed_passphrase_over_stored_secrets_disables_the_panel() {
+    let mut store = migrated_store_with_a_secret();
+    let antes = store
+        .get_secret_raw("default", "openai", "api_key")
+        .expect("segredo presente");
+    let linha = store.kdf_params().expect("readable");
+
+    let err = resolve_with_passphrase(&mut store, "outra frase-senha").expect_err("must refuse");
+
+    assert_eq!(
+        err,
+        AdminKeyError::KeyOpensNoStoredSecret {
+            key_source: KeySource::Passphrase,
+            count: 1,
+        }
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("passphrase"), "{msg}");
+    assert!(msg.contains("changed"), "a causa provavel: {msg}");
+    assert!(msg.contains("admin console stays disabled"), "{msg}");
+    assert_eq!(
+        store
+            .get_secret_raw("default", "openai", "api_key")
+            .expect("segredo presente"),
+        antes,
+        "a recusa nao reescreve o ciphertext"
+    );
+    assert_eq!(store.kdf_params().expect("readable"), linha);
+
+    // A frase-senha certa de volta e o painel volta.
+    let key = resolve_with_passphrase(&mut store, PASS).expect("frase-senha original");
+    let (ct, nonce) = antes;
+    assert_eq!(
+        super::super::secrets::decrypt_value(&ct, &nonce, &key).expect("abre"),
+        b"sk-live-do-not-leak"
+    );
+}
+
+/// O segredo do 2FA sozinho tambem conta: e ele que trava o login do dono.
+#[test]
+fn a_changed_passphrase_over_a_totp_seed_alone_disables_the_panel() {
+    let mut store = AdminStore::in_memory().expect("in-memory store");
+    let key = resolve_with_passphrase(&mut store, PASS).expect("primeiro boot");
+    let user = store
+        .create_user("dono", "senha", super::super::rbac::Role::Admin)
+        .expect("usuario");
+    store
+        .set_pending_totp_secret(&user.id, "JBSWY3DPEHPK3PXP", &key)
+        .expect("segredo do 2FA");
+    store.enable_totp(&user.id).expect("2fa ligado");
+
+    let err = resolve_with_passphrase(&mut store, "outra").expect_err("must refuse");
+    assert!(
+        matches!(
+            err,
+            AdminKeyError::KeyOpensNoStoredSecret {
+                key_source: KeySource::Passphrase,
+                count: 1
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+/// Instalacao sem nenhum ciphertext continua subindo, com qualquer frase-senha:
+/// nao ha o que conferir nem o que perder.
+#[test]
+fn a_store_without_ciphertexts_boots_with_any_passphrase() {
+    let mut store = AdminStore::in_memory().expect("in-memory store");
+    let first = resolve_with_passphrase(&mut store, PASS).expect("primeiro boot");
+    assert!(store.kdf_params().expect("readable").is_some());
+
+    let other = resolve_with_passphrase(&mut store, "outra").expect("sem segredo gravado");
+    assert_ne!(first, other);
+}
+
+/// "Nenhum abre", e nao "algum nao abre": uma linha corrompida nao derruba o
+/// painel inteiro quando as outras abrem com a chave.
+#[test]
+fn one_damaged_ciphertext_does_not_take_the_panel_down() {
+    let mut store = migrated_store_with_a_secret();
+    let key = resolve_with_passphrase(&mut store, PASS).expect("steady state");
+    let (lixo, nonce) =
+        super::super::secrets::encrypt_value(b"x", &[4u8; MASTER_KEY_LEN]).expect("encrypt");
+    store
+        .set_secret("default", "acme", "token", &lixo, &nonce, None)
+        .expect("seed");
+
+    assert_eq!(
+        resolve_with_passphrase(&mut store, PASS).expect("um abre, basta"),
+        key
+    );
+}
+
+// ── #2013 item 2: master.key ─────────────────────────────────────────
+
+fn store_with_a_secret_under(key: &[u8]) -> AdminStore {
+    let store = AdminStore::in_memory().expect("in-memory store");
+    let (ct, nonce) = super::super::secrets::encrypt_value(b"sk-live", key).expect("encrypt");
+    store
+        .set_secret("default", "openai", "api_key", &ct, &nonce, None)
+        .expect("seed");
+    store
+}
+
+#[test]
+fn a_master_key_that_opens_the_stored_secrets_is_used() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("master.key");
+    let key = vec![1u8; MASTER_KEY_LEN];
+    std::fs::write(&path, &key).expect("write");
+    let store = store_with_a_secret_under(&key);
+
+    assert_eq!(master_key_file_key(&store, &path).expect("abre"), key);
+}
+
+/// `master.key` trocado por outro arquivo bem-formado: tamanho certo, chave
+/// errada.
+#[test]
+fn a_swapped_master_key_disables_the_panel() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("master.key");
+    std::fs::write(&path, [2u8; MASTER_KEY_LEN]).expect("write");
+    let store = store_with_a_secret_under(&[1u8; MASTER_KEY_LEN]);
+
+    let err = master_key_file_key(&store, &path).expect_err("must refuse");
+    assert_eq!(
+        err,
+        AdminKeyError::KeyOpensNoStoredSecret {
+            key_source: KeySource::MasterKeyFile,
+            count: 1,
+        }
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("arquivo intacto"),
+        vec![2u8; MASTER_KEY_LEN]
+    );
+}
+
+/// Antes da #2013 um `master.key` ilegivel ou ausente virava uma chave
+/// aleatoria nova, e tudo o que estava cifrado, 2FA incluido, deixava de abrir.
+/// Com segredos gravados o painel vai a 503 e o arquivo fica como esta.
+#[test]
+fn a_lost_master_key_over_stored_secrets_disables_the_panel_and_touches_nothing() {
+    let store = store_with_a_secret_under(&[1u8; MASTER_KEY_LEN]);
+
+    // Tamanho errado: o arquivo continua la, byte a byte, sem `.unreadable`.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("master.key");
+    std::fs::write(&path, [1u8; 7]).expect("write");
+    let err = master_key_file_key(&store, &path).expect_err("must refuse");
+    assert_eq!(
+        err,
+        AdminKeyError::MasterKeyFileLost {
+            state: "the wrong length",
+            count: 1,
+        }
+    );
+    assert_eq!(std::fs::read(&path).expect("intacto"), vec![1u8; 7]);
+    assert!(!path.with_extension("key.unreadable").exists());
+
+    // Ausente: nenhuma chave nova e criada.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("master.key");
+    let err = master_key_file_key(&store, &path).expect_err("must refuse");
+    assert_eq!(
+        err,
+        AdminKeyError::MasterKeyFileLost {
+            state: "missing",
+            count: 1,
+        }
+    );
+    assert!(!path.exists(), "nenhuma chave nova sobre segredos antigos");
+    let msg = err.to_string();
+    assert!(msg.contains("restore master.key"), "{msg}");
+    assert!(msg.contains("admin console stays disabled"), "{msg}");
+}
+
+/// Sem nada gravado a regeneracao continua: nao ha o que perder.
+#[test]
+fn a_lost_master_key_over_an_empty_store_is_regenerated() {
+    let store = AdminStore::in_memory().expect("in-memory store");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("master.key");
+    let key = master_key_file_key(&store, &path).expect("instalacao nova");
+    assert_eq!(key.len(), MASTER_KEY_LEN);
+    assert_eq!(std::fs::read(&path).expect("gravado"), key);
+    assert_eq!(
+        master_key_file_key(&store, &path).expect("segundo boot"),
+        key,
+        "o proximo boot le a mesma chave"
+    );
+
+    std::fs::write(&path, [9u8; 5]).expect("corrompe");
+    let nova = master_key_file_key(&store, &path).expect("regenerada");
+    assert_ne!(nova, key);
+    assert_eq!(
+        std::fs::read(path.with_extension("key.unreadable")).expect("preservado"),
+        vec![9u8; 5]
+    );
 }

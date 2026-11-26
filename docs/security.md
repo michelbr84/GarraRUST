@@ -100,13 +100,16 @@ two operational notes come with it:
   rotation carries it along automatically — the re-key re-encrypts
   `admin_users.totp_secret_enc` in the same transaction as everything else — but
   *losing* the key is different. If `<config_dir>/admin/master.key` is deleted,
-  truncated, or the vault passphrase changes, the secret stops decrypting and
-  the console answers **HTTP 500 on login**, not "2FA disabled". That is
-  deliberate (an unreadable second factor must never degrade into no second
-  factor), and the way out is the same break-glass `UPDATE` documented above:
-  clear the second factor in the database and enroll again. A `master.key` that
-  exists but cannot be used is preserved as `master.key.unreadable` and logged
-  loudly rather than silently replaced.
+  truncated, or the vault passphrase changes, the boot finds that the key it
+  resolved opens none of the stored secrets and the whole console answers
+  **HTTP 503** (#2013; see
+  [Admin console answering 503](#admin-console-answering-503-master-key-unavailable)),
+  never "2FA disabled". If only the 2FA seed is unreadable while other secrets
+  still open, that login answers **HTTP 500**. Both are deliberate (an
+  unreadable second factor must never degrade into no second factor). Going
+  back to the original key is the fix; without it, the way out is the
+  break-glass `UPDATE` documented above: clear the second factor in the
+  database and enroll again.
 - **A damaged or removed `kdf_params` row disables the console, not the
   gateway (#1992, #1999).** The console answers HTTP 503 and the stored
   secrets are left untouched; see
@@ -139,7 +142,8 @@ Two things this does **not** change, worth being explicit about:
 
 With `GARRAIA_ADMIN_KEY` or `GARRAIA_VAULT_PASSPHRASE` set, the admin master key
 is derived from that passphrase and from the per-installation salt recorded in
-the single row of the `kdf_params` table in `admin.db`. When the boot cannot
+the single row of the `kdf_params` table in `admin.db`; without either, it is
+the random `<config_dir>/admin/master.key`. When the boot cannot
 produce a key that is safe to use, the gateway still starts — chat, channels
 and `/api/*` keep working — but `/admin` and everything under it answer
 **HTTP 503** with `{"error": "admin_unavailable"}`. The reason is in the
@@ -169,6 +173,28 @@ causes:
 - **Entropy failure**: the system random number generator failed while the
   salt or `master.key` was being generated. Fix the host and restart; no secret
   could be encrypted safely without it anyway.
+- **The resolved key opens none of the stored secrets** (#2013): the
+  `kdf_params` row is fine, but none of the stored admin secrets (provider
+  keys, archived versions, 2FA seeds) decrypts with the key derived from it,
+  or with a well-formed `master.key`. The usual cause is a passphrase changed
+  after the secrets were encrypted, or a `master.key` replaced by another one.
+  Set back the passphrase (or `master.key`) the secrets were encrypted with.
+  The rule is "none opens", not "one does not": a single damaged row only
+  fails its own read and does not take the console down.
+- **`master.key` is missing, unreadable or the wrong length while secrets are
+  stored** (#2013): with no passphrase set, the console used to mint a new
+  random `master.key` here, which opened none of the stored secrets. It no
+  longer does, and it leaves the file untouched. Restore `master.key` from a
+  backup, or set again the passphrase the secrets were encrypted with. With no
+  admin secret stored, a lost `master.key` is still replaced by a new one (the
+  old file is kept as `master.key.unreadable`), since there is nothing under
+  it to lose.
+- **The stored secrets could not be read** to check them against the key
+  (database locked, I/O error): restart once `admin.db` is readable; nothing
+  was written.
+
+An installation with no admin secret stored yet boots as before, whatever the
+passphrase: there is nothing to check the key against.
 
 Do not "repair" the row by hand with made-up values: a key derived from
 anything other than the recorded parameters opens none of the stored secrets.
@@ -193,13 +219,6 @@ One case stays fail-soft on purpose. If the migration away from the legacy salt
 opens every stored secret but fails to write (disk full, database locked), the
 console keeps working on the legacy key and the next boot retries. The data is
 provably under that key, so nothing is at risk.
-
-Two limits remain, tracked in #2013. Valid parameters are not checked against
-the stored secrets, so a changed passphrase on an already re-keyed installation
-still derives a key that opens nothing (login answers 500 with 2FA on, provider
-keys stop decrypting), though never a weaker one. And an unreadable
-`master.key` is still replaced by a new one, preserved as
-`master.key.unreadable`.
 
 ### Input Validation
 
