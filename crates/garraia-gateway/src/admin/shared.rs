@@ -537,8 +537,13 @@ fn master_key_file_key(store: &AdminStore, key_path: &Path) -> Result<Vec<u8>, A
     // uma copia preservada antes, para o operador ver o que aconteceu.
     if key_path.exists() {
         let preserved = preserve_aside(key_path);
+        let preserved_as = preserved
+            .as_deref()
+            .and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().into_owned());
         warn!(
             preserved = preserved.is_some(),
+            preserved_as = preserved_as.as_deref().unwrap_or("-"),
             "admin master.key exists but is {state}; no admin secret is stored, so \
              nothing is lost: generating a new one"
         );
@@ -600,6 +605,14 @@ fn write_new_key_file(key_path: &Path, key: &[u8]) -> std::io::Result<()> {
     }
     let mut file = options.open(key_path)?;
     file.write_all(key)?;
+    // The `open` mode is masked by the umask; this one is not. A umask that
+    // strips the owner's read bit would otherwise leave a key the next boot
+    // cannot read.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
     file.sync_all()
 }
 
