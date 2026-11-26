@@ -105,9 +105,13 @@ it would leave an orphan daemon on the port while the unit restart-loops
 irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
 ```
 
-Piping into `iex` requires a `text/plain` source. The raw mirror (and jsDelivr)
-serve it as text; `garraia.org` and the GitHub release CDN serve it as
-`application/octet-stream`, which breaks the one-liner (#1873).
+Use the raw mirror (or one of the mirrors below), not `garraia.org`: the
+site's edge answers PowerShell's HTTP client with a 403 browser challenge
+(`cf-mitigated: challenge`), and `irm` cannot solve it, so the one-liner fails
+before the script is downloaded (#2016). The `Content-Type` is not the issue:
+`Invoke-RestMethod` decodes any response as text, so the
+`application/octet-stream` served by the GitHub release CDN works the same as
+the raw mirror's `text/plain`. (This corrects the diagnosis in #1873.)
 
 `install.ps1` is the Windows sibling of `install.sh` and behaves the same way:
 it detects the platform, resolves the latest release, downloads the binary,
@@ -132,8 +136,7 @@ irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1
 > **Release-CDN caveat.** `install.ps1` landed after the `v0.3.3` tag, so
 > `releases/latest/download/install.ps1` returns 404 until the next release is
 > cut. `release.yml` already uploads it, so this resolves itself from `v0.3.4`
-> onward. Until then, use raw or jsDelivr on Windows (the sources that serve
-> `text/plain`; see the note above). The
+> onward. Until then, use raw or jsDelivr on Windows. The
 > shell installer is unaffected -- `install.sh` has shipped as a release asset
 > for several versions.
 >

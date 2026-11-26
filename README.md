@@ -199,12 +199,15 @@ needed. Upgrading over a running gateway works here too: the running
 `garraia.exe` is renamed aside and the new one renamed in, and the installer
 prints the restart command instead of re-running the wizard.
 
-The one-liners above use the `raw.githubusercontent.com` mirror because piping
-into `iex` requires a `text/plain` source: `garraia.org` and the GitHub release
-CDN serve `install.ps1` as `application/octet-stream`, which breaks `irm | iex`
-(#1873). Mirrors (same script, auto-synced): `raw.githubusercontent.com`,
-jsDelivr (`https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1`),
-`garraia.org`, and the GitHub release CDN
+The one-liners above use the `raw.githubusercontent.com` mirror, not
+`garraia.org`: the site's edge answers PowerShell's HTTP client with a 403
+browser challenge (`cf-mitigated: challenge`), so `irm | iex` fails there
+before the script is downloaded (#2016). The `Content-Type` does not matter —
+`Invoke-RestMethod` decodes any response as text, so the
+`application/octet-stream` that the GitHub release CDN serves works too.
+Mirrors (same script, auto-synced): jsDelivr
+(`https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1`) and the
+GitHub release CDN
 `https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1`
 — the release CDN mirror only resolves from `v0.3.4` onward, since `install.ps1`
 landed after the `v0.3.3` tag. See [`docs/installation.md`](docs/installation.md).
