@@ -172,8 +172,11 @@ pub fn build_router(
     state: SharedState,
     push: crate::push_channels::PushChannelStates,
     admin_store: Arc<Mutex<admin::store::AdminStore>>,
-    admin_encryption_key: Arc<Vec<u8>>,
+    // `impl Into` para os testes seguirem passando `Arc<Vec<u8>>` direto; o
+    // boot passa o `AdminKey` que `resolve_admin_encryption_key` devolveu.
+    admin_key: impl Into<admin::handlers::AdminKey>,
 ) -> Router {
+    let admin_key: admin::handlers::AdminKey = admin_key.into();
     // Clonado antes de os campos irem para o `.with_state()` de cada rota de
     // webhook: o `/api/channels` precisa das mesmas listas para saber quais
     // canais push subiram (#1079). E `Arc<Vec<_>>` dos dois lados, entao o
@@ -599,7 +602,17 @@ pub fn build_router(
                 ),
             ),
         )
-        .route("/admin", get(admin_page))
+        // #1992: sem chave mestra utilizavel, a pagina do painel responde 503
+        // junto com a API dele, em vez de carregar uma SPA que so falharia.
+        .route(
+            "/admin",
+            match &admin_key {
+                admin::handlers::AdminKey::Ready(_) => get(admin_page),
+                admin::handlers::AdminKey::Unavailable => {
+                    axum::routing::any(admin::routes::admin_unavailable)
+                }
+            },
+        )
         .with_state(state.clone())
         .merge(whatsapp_routes)
         .merge(google_chat_routes)
@@ -640,7 +653,14 @@ pub fn build_router(
         ))
         .nest(
             "/admin",
-            admin::routes::build_admin_router(state, admin_store, admin_encryption_key),
+            match admin_key {
+                admin::handlers::AdminKey::Ready(key) => {
+                    admin::routes::build_admin_router(state, admin_store, key)
+                }
+                admin::handlers::AdminKey::Unavailable => {
+                    admin::routes::build_admin_unavailable_router()
+                }
+            },
         )
         // #1045: o gate de `gateway.api_key` sobre `/api/*`. Vem **depois**
         // de todos os `merge`/`nest` para cobrir tambem o que
