@@ -54,10 +54,13 @@ is common on cloud pods whose egress IP is shared by many users):
 # Official mirror — GitHub release CDN (no aggressive per-IP limits):
 curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
 
-# Repository main branch (raw) and community CDN mirror:
+# Repository main branch (raw):
 curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
-curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
 ```
+
+jsDelivr is not a mirror any more (#2023): it refuses GitHub repositories over
+50 MB, and GarraRUST sits at that limit, so its `@main` URL alternates between
+HTTP 403 (`Package size exceeded`) and a stale cached copy.
 
 ### Pinning a version (prereleases included)
 
@@ -102,12 +105,20 @@ it would leave an orphan daemon on the port while the unit restart-loops
 ### Windows
 
 ```powershell
-irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
+irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 ```
 
-Piping into `iex` requires a `text/plain` source. The raw mirror (and jsDelivr)
-serve it as text; `garraia.org` and the GitHub release CDN serve it as
-`application/octet-stream`, which breaks the one-liner (#1873).
+The one-liner fetches the `install.ps1` of the latest release from the GitHub
+release CDN: the script that shipped with the binaries it installs, from the
+same `github.com` host the installer already resolves the version and
+downloads the binary from.
+
+Not `garraia.org`: the site's edge answers PowerShell's HTTP client with a 403
+browser challenge (`cf-mitigated: challenge`), and `irm` cannot solve it, so
+the one-liner fails before the script is downloaded (#2016). The
+`Content-Type` is not the issue: `Invoke-RestMethod` decodes any response as
+text, so the release CDN's `application/octet-stream` works the same as the
+raw mirror's `text/plain`. (This corrects the diagnosis in #1873.)
 
 `install.ps1` is the Windows sibling of `install.sh` and behaves the same way:
 it detects the platform, resolves the latest release, downloads the binary,
@@ -118,25 +129,13 @@ PATH, and then chains into `garraia init` and `garraia start`. It never needs
 administrator rights. A pre-existing `garra.exe`, or a `garra.cmd` the installer
 did not write, is left untouched with a warning.
 
-Same mirrors as the shell installer:
+Mirror, for a fix that is already on `main` but not released yet:
 
 ```powershell
-# Repository main branch (raw) and community CDN mirror:
+# Repository main branch (raw):
 irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
-irm https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1 | iex
-
-# GitHub release CDN (no aggressive per-IP limits) - see the caveat below:
-irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 ```
 
-> **Release-CDN caveat.** `install.ps1` landed after the `v0.3.3` tag, so
-> `releases/latest/download/install.ps1` returns 404 until the next release is
-> cut. `release.yml` already uploads it, so this resolves itself from `v0.3.4`
-> onward. Until then, use raw or jsDelivr on Windows (the sources that serve
-> `text/plain`; see the note above). The
-> shell installer is unaffected -- `install.sh` has shipped as a release asset
-> for several versions.
->
 > The `Install endpoints` workflow probes every URL on this page daily, so a
 > broken mirror surfaces without anyone having to notice by hand.
 
@@ -145,14 +144,14 @@ is no PowerShell equivalent of `sh -s --`. To pass flags, turn the downloaded
 text into a scriptblock and invoke that:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1))) -SkipSetup
+& ([scriptblock]::Create((irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1))) -SkipSetup
 ```
 
 Environment variables work in both forms and are usually simpler in automation:
 
 ```powershell
 $env:GARRAIA_SKIP_INIT=1; $env:GARRAIA_SKIP_START=1
-irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
+irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 ```
 
 | Flag | Environment variable | Effect |
@@ -795,16 +794,13 @@ anything. Retry in a few minutes, or use one of the alternative channels:
 ```bash
 # Official mirror — GitHub release CDN:
 curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
-
-# Community CDN mirror of main:
-curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
 ```
 
-On Windows the same mirrors serve `install.ps1`:
+On Windows the one-liner already uses the release CDN; retrying is the answer
+there:
 
 ```powershell
 irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
-irm https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1 | iex
 ```
 
 Inside the installer itself, downloads retry automatically and the release

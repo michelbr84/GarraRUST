@@ -37,13 +37,18 @@
 #      modo de falha do usuário — e o passo irm abaixo o reprova em toda URL
 #      que a documentação ensina.
 # A Lovable não deixa configurar cabeçalho nem regra de bot, então o
-# Windows deixou de ser mandado ao garraia.org: o site
-# (michelbr84/garraia-74c335d5#15) e a ajuda do install.ps1 ensinam o raw do
-# `main`, como o README.md e o docs/installation.md já faziam desde o #1873.
+# Windows deixou de ser mandado ao garraia.org. O one-liner do Windows (site,
+# README, docs, ajuda do install.ps1) baixa o install.ps1 da última release
+# (`releases/latest/download`), com o raw do `main` como espelho.
 # A sonda irm do garraia.org continua no passo irm, mas como AVISO: a URL não
 # é mais ensinada, e a borda a desafia em boa parte dos dias. Reprovar por ela
 # deixaria este workflow vermelho quase todo dia e esconderia uma quebra de
-# verdade no raw, que é o que o usuário roda.
+# verdade no que o usuário roda.
+#
+# O jsDelivr deixou de ser espelho e de ser sondado (#2023): ele recusa
+# repositório do GitHub acima de 50 MB, e o GarraRUST está no limite. O
+# `@main` alternava entre HTTP 403 (`Package size exceeded`) e uma cópia velha
+# do cache.
 #
 # Por que NÃO é gate de PR: estas asserções falam do estado *implantado*, que
 # um PR não tem como consertar. Um deploy ruim do site travaria todo PR do
@@ -202,10 +207,6 @@ jobs:
             "https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh" "#!/bin/sh"
           probe "raw/install.ps1" \
             "https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1" "<#"
-          probe "jsdelivr/install.sh" \
-            "https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh" "#!/bin/sh"
-          probe "jsdelivr/install.ps1" \
-            "https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1" "<#"
           probe "release-cdn/install.sh" \
             "https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh" "#!/bin/sh"
           probe "release-cdn/install.ps1" \
@@ -243,7 +244,8 @@ jobs:
           #           #2016. A borda da Lovable desafia o PowerShell em boa
           #           parte dos dias, e o site não tem como desligar isso;
           #           reprovar por ele deixaria este workflow vermelho quase
-          #           todo dia e esconderia uma quebra de verdade no raw. Ele
+          #           todo dia e esconderia uma quebra de verdade no
+          #           one-liner documentado. Ele
           #           vira aviso, e um `::notice` quando a borda voltar a
           #           servir o PowerShell. O que impede alguém de voltar a
           #           ensinar essa URL sem passar por aqui são as suítes
@@ -255,11 +257,10 @@ jobs:
           # o servidor não manda charset, como o garraia.org.)
           $failures = 0
           $probes = @(
-            # o que o site, o README e a ajuda do install.ps1 ensinam
-            @{ Url = 'https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1'; Mode = 'error' },
-            # os espelhos listados para o Windows
-            @{ Url = 'https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1'; Mode = 'error' },
+            # o one-liner que o site, o README e a ajuda do install.ps1 ensinam
             @{ Url = 'https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1'; Mode = 'error' },
+            # o espelho listado para o Windows (o `main`, antes da release)
+            @{ Url = 'https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1'; Mode = 'error' },
             # fora da documentação (#2016): só aviso
             @{ Url = 'https://garraia.org/install.ps1'; Mode = 'warn' }
           )
