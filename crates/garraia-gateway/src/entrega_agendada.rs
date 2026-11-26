@@ -19,10 +19,11 @@
 //! - **WhatsApp vinculado**: pela ponte do canal (a saida mora no
 //!   [`crate::bootstrap::WhatsAppLinkedRuntime`]), com tres regras proprias —
 //!   ver abaixo.
-//! - **IRC e iMessage ficam fora**, de proposito: o IRC manda o texto cru ao
-//!   servidor sem quebrar linha (`IrcChannel::send_privmsg`), e uma resposta
-//!   do modelo com quebra de linha viraria comando IRC; e as mensagens
-//!   privadas de todo mundo caem numa sessao so (`irc-<nick do bot>`). No
+//! - **IRC e iMessage ficam fora**, de proposito: no IRC as mensagens
+//!   privadas de todo mundo caem numa sessao so (`irc-<nick do bot>`), entao
+//!   o id da sessao nao diz a quem entregar. (O outro motivo, o
+//!   `IrcChannel::send_privmsg` mandar quebra de linha crua ao servidor, foi
+//!   corrigido no #2007.) No
 //!   iMessage a sessao de grupo guarda o NOME do grupo, que nao e endereco.
 //!   Os dois continuam como estavam: o adaptador e chamado sem endereco e
 //!   recusa, e o ledger registra `nao_entregue:falhou`.
@@ -435,8 +436,7 @@ mod tests {
         assert_eq!(endereco_pela_sessao("matrix", "matrix-!sala\n:x.org"), None);
     }
 
-    /// IRC e iMessage ficam fora (#2002): o IRC manda a resposta crua ao
-    /// servidor sem quebrar linha (`send_privmsg`), e as mensagens privadas de
+    /// IRC e iMessage ficam fora (#2002): no IRC as mensagens privadas de
     /// todos caem numa sessao so (`irc-<nick do bot>`); no iMessage a sessao
     /// de grupo guarda o NOME do grupo, que nao e endereco de envio.
     #[test]
