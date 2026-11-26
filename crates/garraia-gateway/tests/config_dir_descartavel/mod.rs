@@ -25,9 +25,14 @@ pub fn isolar() {
             .prefix("garraia-teste-config-")
             .tempdir()
             .expect("criar o config dir descartavel");
-        // SAFETY: `get_or_init` roda isto uma vez so, e os testes que usam
-        // este modulo chamam `isolar()` antes de subir o gateway, que e quem
-        // le a variavel. Mesmo padrao do harness em `tests/common`.
+        // SAFETY: `set_var` so e sound sem nenhuma outra thread lendo ou
+        // escrevendo o environ no mesmo instante, e isso nao da para provar
+        // num binario de teste: outro teste em paralelo pode estar num
+        // `getenv` (tokio, reqwest) agora. O risco fica pequeno porque a
+        // escrita e unica (`get_or_init`) e vem antes de qualquer teste deste
+        // arquivo subir o gateway. E o mesmo compromisso do harness em
+        // `tests/common`, e nao ha saida sem env: o `GatewayServer` so le o
+        // config dir de `GARRAIA_CONFIG_DIR`.
         unsafe {
             std::env::set_var("GARRAIA_CONFIG_DIR", dir.path());
         }

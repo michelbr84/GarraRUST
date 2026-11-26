@@ -10,6 +10,12 @@
 //! O teste varre os `tests/` de todas as crates. Quem chama
 //! `GatewayServer::new` precisa chamar `config_dir_descartavel::isolar()` ou
 //! apontar `GARRAIA_CONFIG_DIR` para um diretorio proprio.
+//!
+//! A checagem e textual, por arquivo, e erra para o lado seguro: um teste que
+//! isole por outro caminho (um helper em outro modulo) e reprovado ate
+//! `isola_o_config_dir` aprender esse caminho. Ela nao confere a ordem (isolar
+//! depois de subir passaria) nem pega quem abre o `admin.db` real sem subir o
+//! gateway.
 
 use std::path::{Path, PathBuf};
 
