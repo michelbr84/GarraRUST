@@ -168,9 +168,16 @@ id (`X-Session-Id`) e pode criar `discord-<id>` antes do canal, e o canal
 gravado e so o ultimo a escrever. Mensagens, tokens e chaves do Chat Sync so
 crescem e guardam quem veio antes; sessao tocada por outra superficie nao
 recebe (`nao_entregue:origem_mista`). IRC e iMessage ficam fora
-de proposito: no IRC as mensagens privadas de todos caem numa sessao so
-(`irc-<nick do bot>`), e a sessao de grupo do iMessage guarda o nome do grupo,
-nao um endereco.
+de proposito: no IRC, entregar a um nick em hora marcada chega a quem estiver
+com o nick naquele momento, e sem NickServ o nick nao e identidade estavel; a
+sessao de grupo do iMessage guarda o nome do grupo, nao um endereco. No
+WhatsApp vinculado a entrega
+reconsulta a config viva — canal ligado, grupo com resposta ligada, quem criou
+a tarefa ainda admitido (bloqueado ou removido nao recebe) —, so sai com a
+ponte conectada, tem teto proprio de 3 por chat por minuto (separado da
+cadencia dos turnos) e leva a marca invisivel de auto-conversa. Nada desse
+caminho loga o id da sessao, que no WhatsApp vinculado carrega o telefone.
+Detalhes em [`configuration.md`](configuration.md#where-a-scheduled-reply-is-delivered).
 
 **IRC: texto do modelo nunca vira comando (#2007).** Toda escrita de texto
 **do modelo** no socket do IRC passa por um ponto so
@@ -186,13 +193,26 @@ acrescenta ao repassar. Alvo com espaco, virgula, `:` inicial ou controle e
 recusado. E `send_raw` recusa qualquer linha com `\r`, `\n` ou `\0`
 embutido, para nenhum chamador futuro reabrir o caminho. Antes, a resposta do
 turno separava so em `\n`, e um `\r` isolado vindo do modelo (influenciavel
-por injecao de prompt) virava comando num servidor que separa em `\r`. No WhatsApp vinculado a entrega
-reconsulta a config viva — canal ligado, grupo com resposta ligada, quem criou
-a tarefa ainda admitido (bloqueado ou removido nao recebe) —, so sai com a
-ponte conectada, tem teto proprio de 3 por chat por minuto (separado da
-cadencia dos turnos) e leva a marca invisivel de auto-conversa. Nada desse
-caminho loga o id da sessao, que no WhatsApp vinculado carrega o telefone.
-Detalhes em [`configuration.md`](configuration.md#where-a-scheduled-reply-is-delivered).
+por injecao de prompt) virava comando num servidor que separa em `\r`.
+
+**IRC: uma sessao por conversa privada (#2011).** No privado, o alvo do
+`PRIVMSG` recebido e o nick do bot, o mesmo para todo mundo, e a sessao era
+montada dele: as conversas privadas de todas as pessoas caiam juntas em
+`irc-<nick do bot>`, e o modelo recebia as mensagens de uma no turno de outra
+(o historico nao guarda quem falou). Agora o `garraia-channels` decide canal ou
+privado num ponto so, pelo `CHANTYPES` do servidor (padrao `#&`; prefixo fora
+de `#&!+` e descartado, e anuncio sem nenhum conhecido fica no padrao), e a
+resposta e a sessao seguem a mesma decisao; `STATUSMSG` (`@#canal`) e broadcast
+(`$*`) ficam com quem mandou, sem resposta ao canal inteiro. No
+canal a sessao continua `irc-<canal>`; no privado e `irc-@<nick>`, uma por
+pessoa, com o nick normalizado pelo `CASEMAPPING` anunciado (sem anuncio fica
+`ascii`, que nunca junta duas pessoas que o servidor separa). O `@` nao aparece
+em nick nem em prefixo de canal aceito, entao o id nao colide com o de um
+canal nem com o `irc-<nick do bot>` antigo, que fica como esta e nao recebe
+turno novo. **Limite:** o nick continua sendo a unica identidade do IRC; quem
+tomar o nick de alguem (servidor sem NickServ) passa a ver o historico privado
+daquele nick, o mesmo modelo de confianca da allowlist, que ja admite aquele
+nick como aquela pessoa.
 
 **Nível de aprovação: `agent.approval` e `--yolo` (#1858).** O que acontece
 com o tier arriscado (a segunda linha da tabela) é um knob declarado pelo

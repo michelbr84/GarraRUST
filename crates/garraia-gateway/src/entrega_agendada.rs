@@ -19,11 +19,11 @@
 //! - **WhatsApp vinculado**: pela ponte do canal (a saida mora no
 //!   [`crate::bootstrap::WhatsAppLinkedRuntime`]), com tres regras proprias —
 //!   ver abaixo.
-//! - **IRC e iMessage ficam fora**, de proposito: no IRC as mensagens
-//!   privadas de todo mundo caem numa sessao so (`irc-<nick do bot>`), entao
-//!   o id da sessao nao diz a quem entregar. (O outro motivo, o
-//!   `IrcChannel::send_privmsg` mandar quebra de linha crua ao servidor, foi
-//!   corrigido no #2007.) No
+//! - **IRC e iMessage ficam fora**, de proposito. No IRC cada conversa
+//!   privada ja tem sessao propria (`irc-@<nick>`, #2011), mas entregar a um
+//!   nick em hora marcada chega a quem estiver com ele naquele momento: sem
+//!   NickServ, o nick nao e identidade estavel. A entrega no IRC (canal; no
+//!   privado, so com conta identificada) ainda nao foi ligada. No
 //!   iMessage a sessao de grupo guarda o NOME do grupo, que nao e endereco.
 //!   Os dois continuam como estavam: o adaptador e chamado sem endereco e
 //!   recusa, e o ledger registra `nao_entregue:falhou`.
@@ -436,12 +436,14 @@ mod tests {
         assert_eq!(endereco_pela_sessao("matrix", "matrix-!sala\n:x.org"), None);
     }
 
-    /// IRC e iMessage ficam fora (#2002): no IRC as mensagens privadas de
-    /// todos caem numa sessao so (`irc-<nick do bot>`); no iMessage a sessao
-    /// de grupo guarda o NOME do grupo, que nao e endereco de envio.
+    /// IRC e iMessage ficam fora (#2002): no IRC a entrega a um nick em hora
+    /// marcada chega a quem estiver com ele, e o nick nao e identidade
+    /// estavel (a sessao privada por pessoa veio no #2011); no iMessage a
+    /// sessao de grupo guarda o NOME do grupo, que nao e endereco de envio.
     #[test]
     fn irc_e_imessage_nao_ganham_endereco() {
         assert_eq!(endereco_pela_sessao("irc", "irc-#garra"), None);
+        assert_eq!(endereco_pela_sessao("irc", "irc-@ana"), None);
         assert_eq!(
             endereco_pela_sessao("imessage", "imessage-+5511999990000"),
             None
