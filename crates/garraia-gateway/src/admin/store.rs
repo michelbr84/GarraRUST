@@ -1796,4 +1796,14 @@ fn generate_random_token<const N: usize>() -> Result<String, String> {
 }
 
 #[cfg(test)]
+impl AdminStore {
+    /// Raw SQL for tests in sibling modules (`admin::shared`) that need a
+    /// state no public method writes: a deleted or corrupt `kdf_params` row,
+    /// a trigger that fails the re-key write. Never compiled outside tests.
+    pub(crate) fn execute_raw_for_test(&self, sql: &str) -> Result<(), String> {
+        self.conn.execute_batch(sql).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
 mod tests;

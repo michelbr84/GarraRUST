@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
-use axum::Router;
+use axum::http::StatusCode;
 use axum::middleware as axum_mw;
-use axum::response::Html;
-use axum::routing::{delete, get, post, put};
+use axum::response::{Html, IntoResponse, Response};
+use axum::routing::{any, delete, get, post, put};
+use axum::{Json, Router};
 use tokio::sync::Mutex;
 
 use super::handlers::{self, AdminState};
@@ -232,6 +233,35 @@ pub fn build_admin_router(
         .merge(recovery_routes)
         .merge(auth_routes)
         .layer(axum_mw::from_fn(security_headers))
+}
+
+/// What everything under `/admin/` answers when the boot could not resolve a
+/// usable admin master key (#1992). The gateway is up; only the panel is not.
+/// `/admin` itself is a top-level route in `router.rs` and answers through
+/// [`admin_unavailable`] too.
+///
+/// Every path and method gets the same body, and it says nothing about *why*:
+/// the reason went to the log at boot, and these routes are reachable without
+/// a session.
+pub fn build_admin_unavailable_router() -> Router {
+    Router::new()
+        .route("/{*resto}", any(admin_unavailable))
+        .layer(axum_mw::from_fn(security_headers))
+}
+
+/// 503 for the admin panel while the master key is unavailable (#1992).
+pub async fn admin_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "error": "admin_unavailable",
+            "message": "The admin console is disabled: the admin master key could not be \
+                        resolved without risking the stored secrets. The rest of the \
+                        gateway is running. See the gateway log and docs/security.md \
+                        (\"Admin console answering 503\").",
+        })),
+    )
+        .into_response()
 }
 
 /// Serve the admin SPA. Called both from nested router (/) and top-level (/admin).

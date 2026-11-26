@@ -67,9 +67,16 @@ fn good_row() -> StoredKdfParams {
 /// legacy key opened none of them: the fallback bought nothing and cost a
 /// KDF downgrade on every secret written afterwards.
 #[test]
-fn unusable_stored_params_refuse_instead_of_falling_back_to_the_legacy_key() {
+fn unusable_stored_params_disable_the_panel_instead_of_falling_back_to_the_legacy_key() {
     let (version, salt, iterations) = good_row();
     let cases = [
+        // Not written by us either, and an unbounded count is a boot spent in
+        // PBKDF2. Just past the ceiling, so a regression costs seconds, not the
+        // ~half hour `u32::MAX` would.
+        (
+            (version, salt.clone(), MAX_STORED_KDF_ITERATIONS + 1),
+            "above the maximum",
+        ),
         (
             (version, "!!!not base64!!!".to_string(), iterations),
             "not valid base64",
@@ -105,9 +112,9 @@ fn unusable_stored_params_refuse_instead_of_falling_back_to_the_legacy_key() {
         );
         let msg = err.to_string();
         assert!(msg.contains(reason), "{bad:?}: {msg}");
-        // Actionable: names the table, says it refuses, says what to do.
+        // Actionable: names the table, says what is off, says what to do.
         assert!(msg.contains("kdf_params"), "{msg}");
-        assert!(msg.contains("Refusing to start"), "{msg}");
+        assert!(msg.contains("admin console stays disabled"), "{msg}");
         assert!(msg.contains("restore admin.db from a backup"), "{msg}");
     }
 }
@@ -116,6 +123,7 @@ fn unusable_stored_params_refuse_instead_of_falling_back_to_the_legacy_key() {
 #[test]
 fn a_row_as_recorded_by_the_rekey_is_usable() {
     const _: () = assert!(KDF_ITERATIONS.get() >= MIN_STORED_KDF_ITERATIONS);
+    const _: () = assert!(KDF_ITERATIONS.get() <= MAX_STORED_KDF_ITERATIONS);
     const _: () = assert!(LEGACY_KDF_ITERATIONS.get() < MIN_STORED_KDF_ITERATIONS);
 
     let keys = derive_with_passphrase(Some(good_row()), PASS).expect("usable");
@@ -316,7 +324,8 @@ fn a_totp_secret_that_does_not_decrypt_aborts_the_rekey() {
         .expect("segredo sob uma chave alheia");
 
     let err = migrate_admin_secrets_kdf(&mut store, &keys).expect_err("must refuse");
-    assert!(err.contains("totp secret"), "{err}");
+    assert!(matches!(err, RekeyError::Unverified(_)), "{err:?}");
+    assert!(err.to_string().contains("totp secret"), "{err}");
     assert!(
         store.kdf_params().expect("readable").is_none(),
         "params nao podem ser gravados quando o re-key falhou"
@@ -361,7 +370,8 @@ fn failed_migration_writes_nothing_at_all() {
         .expect("seed");
 
     let err = migrate_admin_secrets_kdf(&mut store, &keys).expect_err("must refuse");
-    assert!(err.contains("does not decrypt"), "{err}");
+    assert!(matches!(err, RekeyError::Unverified(_)), "{err:?}");
+    assert!(err.to_string().contains("does not decrypt"), "{err}");
 
     let (stored, stored_nonce) = store
         .get_secret_raw("default", "acme", "token")
@@ -374,14 +384,16 @@ fn failed_migration_writes_nothing_at_all() {
     );
 }
 
-/// The one fallback that stays (#1992 keeps it on purpose): no parameters
-/// recorded, and a ciphertext the legacy key does not open. The re-key is
-/// deferred and the process runs on the legacy key — the key the data of a
-/// never-re-keyed install is under — until a later boot can migrate.
+// ── #1999: sem parametros gravados, so fica na legada quem abre com ela ──
+
+/// Antes da #1999 este caso devolvia a chave legada (o teste antigo,
+/// `resolve_falls_back_to_the_legacy_key_when_the_migration_fails`, fixava
+/// isso). Sem parametros gravados e com um segredo que a legada nao abre, o
+/// dado esta sob outra chave; seguir na legada cifraria o resto sob uma
+/// terceira.
 #[test]
-fn resolve_falls_back_to_the_legacy_key_when_the_migration_fails() {
+fn resolve_refuses_when_a_stored_secret_does_not_open_with_the_legacy_key() {
     let mut store = AdminStore::in_memory().expect("in-memory store");
-    let legacy = pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, PASS);
 
     let unrelated = vec![9u8; MASTER_KEY_LEN];
     let (ciphertext, nonce) =
@@ -390,10 +402,182 @@ fn resolve_falls_back_to_the_legacy_key_when_the_migration_fails() {
         .set_secret("default", "acme", "token", &ciphertext, &nonce, None)
         .expect("seed");
 
-    let key = resolve_with_passphrase(&mut store, PASS).expect("deferred, not refused");
-    assert_eq!(key, legacy, "must hand back the key the data is under");
+    let err = resolve_with_passphrase(&mut store, PASS).expect_err("must refuse");
+    assert!(
+        matches!(err, AdminKeyError::NotUnderLegacyKey(_)),
+        "{err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("could not be shown to be under the legacy key"),
+        "{msg}"
+    );
+    // O detalhe da falha chega ao operador: aqui, qual segredo nao abriu.
+    assert!(msg.contains("does not decrypt"), "{msg}");
+    assert!(msg.contains("admin console stays disabled"), "{msg}");
+    assert!(
+        store.kdf_params().expect("readable").is_none(),
+        "nada gravado"
+    );
+    let (stored, stored_nonce) = store
+        .get_secret_raw("default", "acme", "token")
+        .expect("still present");
+    assert_eq!(stored, ciphertext, "ciphertext must be byte-identical");
+    assert_eq!(stored_nonce, nonce);
+}
+
+/// O caminho feliz pelo ponto de entrada: instalacao legada, re-key no
+/// boot, e o segredo passa a abrir com a chave nova.
+#[test]
+fn resolve_migrates_a_legacy_install_and_records_the_params() {
+    let mut store = AdminStore::in_memory().expect("in-memory store");
+    let legacy = pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, PASS);
+    let (ciphertext, nonce) =
+        super::super::secrets::encrypt_value(b"sk-legacy", &legacy).expect("encrypt");
+    store
+        .set_secret("default", "openai", "api_key", &ciphertext, &nonce, None)
+        .expect("seed");
+
+    let key = resolve_with_passphrase(&mut store, PASS).expect("migrated");
+
+    assert_ne!(key, legacy);
+    assert!(
+        store.kdf_params().expect("readable").is_some(),
+        "params gravados"
+    );
+    let (stored, stored_nonce) = store
+        .get_secret_raw("default", "openai", "api_key")
+        .expect("segredo presente");
+    assert_eq!(
+        super::super::secrets::decrypt_value(&stored, &stored_nonce, &key).expect("abre"),
+        b"sk-legacy"
+    );
+}
+
+/// Instalacao ja migrada, com um segredo gravado sob a chave dela.
+fn migrated_store_with_a_secret() -> AdminStore {
+    let mut store = AdminStore::in_memory().expect("in-memory store");
+    let key = resolve_with_passphrase(&mut store, PASS).expect("primeiro boot");
+    let (ciphertext, nonce) =
+        super::super::secrets::encrypt_value(b"sk-live-do-not-leak", &key).expect("encrypt");
+    store
+        .set_secret("default", "openai", "api_key", &ciphertext, &nonce, None)
+        .expect("seed");
+    store
+}
+
+/// O invariante inteiro, ponta a ponta pelo SQL: com o re-key commitado, os
+/// segredos estao sob a chave da instalacao, e se a linha que descreve essa
+/// chave some ou fica ilegivel o boot nao entrega chave nenhuma. A linha
+/// APAGADA e o caso da #1999: antes desta correcao ela terminava na chave
+/// legada, e tudo o que o painel gravasse dali em diante ficaria sob o salt
+/// compartilhado. Nos outros casos a recusa ja vinha da #1992; aqui eles
+/// provam tambem que nada e reescrito.
+#[test]
+fn a_deleted_or_corrupt_kdf_row_leaves_the_panel_without_a_key_and_writes_nothing() {
+    for (caso, sql) in [
+        ("linha apagada", "DELETE FROM kdf_params"),
+        (
+            "salt que nao e base64",
+            "UPDATE kdf_params SET salt = '!!!not base64!!!'",
+        ),
+        ("zero iteracoes", "UPDATE kdf_params SET iterations = 0"),
+        ("salt vazio", "UPDATE kdf_params SET salt = ''"),
+        (
+            "iteracoes rebaixadas",
+            "UPDATE kdf_params SET iterations = 1",
+        ),
+        (
+            "iteracoes negativas",
+            "UPDATE kdf_params SET iterations = -1",
+        ),
+        (
+            "iteracoes que nao sao numero",
+            "UPDATE kdf_params SET iterations = 'muitas'",
+        ),
+        (
+            "iteracoes acima do teto",
+            "UPDATE kdf_params SET iterations = 10000001",
+        ),
+    ] {
+        let mut store = migrated_store_with_a_secret();
+        let antes = store
+            .get_secret_raw("default", "openai", "api_key")
+            .expect("segredo presente");
+        let linha_antes = store.kdf_params();
+        store.execute_raw_for_test(sql).expect(caso);
+        let linha_depois = store.kdf_params();
+        assert_ne!(
+            linha_antes, linha_depois,
+            "{caso}: o SQL tem que mudar a linha"
+        );
+
+        assert!(
+            resolve_with_passphrase(&mut store, PASS).is_err(),
+            "{caso}: o boot nao pode entregar chave nenhuma"
+        );
+        assert_eq!(
+            store
+                .get_secret_raw("default", "openai", "api_key")
+                .expect("segredo presente"),
+            antes,
+            "{caso}: o ciphertext tem que ficar byte-identico"
+        );
+        assert_eq!(
+            store.kdf_params(),
+            linha_depois,
+            "{caso}: a recusa nao pode reescrever a linha"
+        );
+    }
+}
+
+/// O fail-soft legitimo continua: instalacao legada, todos os ciphertexts
+/// abrem com a chave legada, e o re-key falha so na hora de gravar (disco
+/// cheio, banco travado). Os dados seguem sob a legada, entao ela e a chave
+/// certa ate o proximo boot tentar de novo.
+#[test]
+fn a_rekey_that_fails_only_on_write_keeps_the_legacy_key() {
+    let mut store = AdminStore::in_memory().expect("in-memory store");
+    let legacy = pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, PASS);
+    let (ciphertext, nonce) =
+        super::super::secrets::encrypt_value(b"sk-legacy", &legacy).expect("encrypt");
+    store
+        .set_secret("default", "openai", "api_key", &ciphertext, &nonce, None)
+        .expect("seed");
+    store
+        .execute_raw_for_test(
+            "CREATE TRIGGER disco_cheio BEFORE INSERT ON kdf_params
+             BEGIN SELECT RAISE(ABORT, 'disco cheio simulado'); END;",
+        )
+        .expect("trigger");
+
+    let key = resolve_with_passphrase(&mut store, PASS).expect("adiado, nao recusado");
+
+    assert_eq!(key, legacy, "dados sob a legada: ela segue valendo");
     assert!(
         store.kdf_params().expect("readable").is_none(),
         "a deferred re-key records nothing, so the next boot retries"
     );
+    let (stored, stored_nonce) = store
+        .get_secret_raw("default", "openai", "api_key")
+        .expect("segredo presente");
+    assert_eq!(stored, ciphertext, "nada foi reescrito");
+    assert_eq!(stored_nonce, nonce);
+}
+
+/// Cada `AdminKeyError` vira a linha `error!` do boot. Ela tem que dizer o que
+/// o operador ve (o painel em 503, o resto no ar) e a saida; a recusa de boot
+/// que estas mensagens anunciavam antes nao existe mais.
+#[test]
+fn every_admin_key_error_says_the_console_is_disabled_and_how_to_fix_it() {
+    for err in [
+        AdminKeyError::StoredParamsUnusable("x".into()),
+        AdminKeyError::NotUnderLegacyKey("x".into()),
+        AdminKeyError::Entropy("x"),
+    ] {
+        // Mensagem acionavel e sem segredo: nomeia o que esta errado e a saida.
+        let msg = err.to_string();
+        assert!(msg.contains("admin console stays disabled"), "{msg}");
+        assert!(msg.contains("Fix:"), "{msg}");
+    }
 }
