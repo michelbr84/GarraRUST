@@ -598,15 +598,28 @@ de peso:
    que rodasse o checker sem `--no-rewrite`, como a §2 manda, quebraria o
    `--apply` na primeira entrada da tabela.
 
-**O que a saída não faz.** Os 14 alertas continuam `dismissed` no GitHub, como
-o #43 e os outros 52 dispensados sem entrada (na maior parte duplicatas
-aposentadas por renumeração e fixtures dispensadas em 2026-05-12). Se uma versão futura do
-CodeQL voltar a detectar um deles com o mesmo fingerprint, ele reaparece já
-dispensado e sem linha neste ledger. O fecho correto é reabri-los
-(`gh api -X PATCH repos/michelbr84/GarraRUST/code-scanning/alerts/<N> -f state=open`),
-para que passem a `fixed` e uma eventual volta chegue como alerta aberto. Isso
-**não foi feito** nesta passagem: é escrita em alerta de segurança, e fica para
-decisão do dono.
+**O que a saída não fez.** Tirar a linha do ledger não muda nada no GitHub: no
+merge, os 14 alertas continuavam `dismissed`, como o #43 e os outros 52
+dispensados sem entrada (na maior parte duplicatas aposentadas por renumeração e
+fixtures dispensadas em 2026-05-12). Nesse estado, se uma versão futura do
+CodeQL voltasse a detectar um deles com o mesmo fingerprint, ele reapareceria já
+dispensado e sem linha neste ledger. O fecho é reabri-los, e por ser escrita em
+alerta de segurança ficou fora do PR, para decisão do dono.
+
+**Reabertos em 2026-11-25, depois do merge, por decisão do dono.** Os 14 foram
+reabertos com
+`gh api -X PATCH repos/michelbr84/GarraRUST/code-scanning/alerts/<N> -f state=open`,
+e o GitHub classificou cada um como `fixed` na própria resposta, sem passar por
+`open`, porque a análise mais recente do `main` não os detecta. O
+`dismissed_reason` foi apagado, e o `fixed_at` ficou com a data da primeira
+análise que deixou de detectá-los (UTC): 2026-08-29 (#40, #41, #42, #44, #45),
+2026-09-21 (#115), 2026-09-27 (#177, #178), 2026-11-03 (#195, #196, #197) e
+2026-11-20 (#186, #187, #188). O estado foi conferido relendo cada alerta na API
+depois da alteração. Os dispensados do repositório caíram de 96 para 82 — as 29
+entradas deste ledger, o #43 e os outros 52 — e o `--dry-run` de reaplicação
+seguiu com `skipped: 29`, `errors: 0`. Uma volta agora chega pelo tratamento que
+o GitHub dá a alerta `fixed` detectado de novo, que é reabri-lo, e não mais
+calada.
 
 #### O que estava quebrado sem ninguém ver
 
@@ -630,6 +643,20 @@ decisão do dono.
   (`#__proto__` lança exceção e deixa o painel preso em "loading"). Não há
   execução de código, e a correção é de uma linha: issue
   [#1996](https://github.com/michelbr84/GarraRUST/issues/1996).
+
+  **Reaberto em 2026-11-25, depois do #1998.** O PR #1998 corrigiu o
+  comportamento (filtro por posse própria), mas não o alerta: a análise do
+  `main` em `6ecd688e` ainda o acusava em `admin.html:778`. São duas razões,
+  verificadas com o CodeQL 2.27.6 (o mesmo da análise) contra variantes do
+  arquivo: a forma reflexiva `Object.prototype.hasOwnProperty.call(...)` não é
+  barreira para esta query, e `if (!guard) page = 'dashboard'` não sanitiza o
+  uso de `page` depois da junção, nem com um guard que o CodeQL reconhece. A
+  justificativa de 2026-05-12 era falsa, então o #17 foi reaberto em vez de
+  ganhar outra; passou a `open`, e os dispensados caíram de 82 para 81. O
+  filtro virou `page = Object.hasOwn(pages, page) ? page : 'dashboard';`, que
+  o CodeQL enxerga: na suíte `javascript-code-scanning` inteira o arquivo vai
+  de 1 resultado para 0. Issue
+  [#2008](https://github.com/michelbr84/GarraRUST/issues/2008).
 
 As duas primeiras, mais a cegueira para alerta que deixou de ser detectado, são
 lacuna de ferramenta e estão na issue

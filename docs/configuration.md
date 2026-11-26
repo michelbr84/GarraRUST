@@ -733,11 +733,57 @@ Scheduling never raises privilege, and it does not lower it either.
   notice is added once per task per gateway start; a blocked tool is reported
   every time. The reply is always stored in the session history and its start
   in the runs ledger (`garraia runs list`), and the gateway logs a warning
-  with the task id. **Where it is pushed depends on the channel:** the
-  scheduler only delivers a task's reply on Telegram today. On the linked
-  WhatsApp channel, Discord and the local console the reply (notice included)
-  is not pushed; it is there the next time the conversation is opened, and in
-  the ledger.
+  with the task id.
+
+### Where a scheduled reply is delivered
+
+The reply is stored in the session history first; pushing it to the channel
+comes after and never undoes that. The runs ledger records the outcome in
+`delivery` (`garraia runs list` shows it on its own line, `--json` and
+`GET /api/runs` as a field): `entregue`, `sem_entrega` (the session's channel
+has no active delivery, e.g. web, API or the local console) or
+`nao_entregue:<reason>`.
+
+| Channel | Delivered | Address comes from |
+|---|---|---|
+| Telegram | yes | the chat recorded for the session (`chat_session_keys`) |
+| Discord, Slack, Matrix | yes | the session id (`discord-<channel>`, `slack-<channel>`, `matrix-<room>`) |
+| Linked WhatsApp | yes, with the rules below | the session id (`whatsapp-linked-<chat>`) |
+| IRC, iMessage | no, on purpose (see below) | — |
+| Signal, Teams, Google Chat, LINE | no (unchanged; the adapter refuses without an address, `nao_entregue:falhou`) | — |
+| Web, API, local console | no channel to push to | — |
+
+An address is only taken from the session id when the session's recorded
+channel matches the id's prefix **and** nothing but that channel has ever
+written to the session. A client of the HTTP API chooses its own session id
+(`X-Session-Id`) and can create `discord-<id>` before the channel does; the
+session's recorded channel is just the last writer, so once real Discord
+traffic arrives the two would agree. The messages, tokens and Chat Sync keys
+of a session only grow and remember who came first, so a session touched by
+any other surface is refused (`nao_entregue:origem_mista`). Telegram is not
+affected: its address comes from the chat the channel itself recorded.
+
+IRC and iMessage stay out on purpose. IRC sends text to the server without
+splitting lines, so a reply containing a line break would become a raw IRC
+command, and every private message shares one session. An iMessage group
+session stores the group's *name*, which is not an address. Both behave as
+before: the adapter refuses, and the ledger says `nao_entregue:falhou`.
+
+**Linked WhatsApp.** A scheduled reply is the channel's first *proactive*
+send, so the live configuration is checked again at delivery time:
+
+- the channel must be enabled, and a group must still have replies enabled;
+- whoever created the task must still be admitted by the access policy — a
+  contact blocked or removed after scheduling gets nothing
+  (`nao_entregue:nao_admitido`), the same silence a refused turn gets;
+- the bridge must be connected: messages sent while it is down are dropped
+  by design, so nothing is queued (`nao_entregue:ponte_fora_do_ar`);
+- at most 3 scheduled replies per chat per minute, a budget separate from the
+  per-chat turn cadence, so a recurring task never eats the person's own turns
+  (`nao_entregue:teto`);
+- every scheduled reply starts with the invisible marker the channel uses in
+  the "You" chat, so another GarraIA linked to the same account does not
+  answer it. In any other chat the marker changes nothing.
 
 ### `garraia tasks`
 

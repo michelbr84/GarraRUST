@@ -58,20 +58,14 @@ jobs:
           path: website/build
           if-no-files-found: error
 
-  deploy:
-    # Push na main (ou dispatch): publica no GitHub Pages.
+  build-pages:
+    # Push na main (ou dispatch): compila o site e sobe o artifact
+    # `github-pages`. Quem publica e o job `deploy`, abaixo — e por que ficam
+    # separados esta no comentario dele.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
-      pages: write
-      id-token: write
       contents: read
-    concurrency:
-      group: pages
-      cancel-in-progress: false
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -88,12 +82,48 @@ jobs:
       - name: Build
         run: npm run build
         working-directory: website
-      - name: Configure Pages
-        uses: actions/configure-pages@v6
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
           path: website/build
+
+  deploy:
+    # Publica no GitHub Pages o artifact que o `build-pages` subiu.
+    #
+    # Job separado de proposito. Com upload e deploy no mesmo job, o
+    # `actions/deploy-pages` lista os artifacts do run uns 0,4 s depois de o
+    # `upload-pages-artifact` finalizar o `github-pages`, e a listagem do
+    # servico de artifacts as vezes ainda nao o enxerga: o passo falha com
+    # "Found 0 artifact(s)" com o artifact ja finalizado e visivel na API logo
+    # em seguida. Foram quatro falhas assim em 2026-11-25, intercaladas com
+    # deploys que passaram na mesma distancia — corrida, nao configuracao.
+    # O `needs` so deixa este job comecar depois que o `build-pages` termina,
+    # e um runner novo leva segundos para subir: tempo de sobra para a listagem
+    # alcancar o upload. E o arranjo do exemplo do README do `deploy-pages`.
+    #
+    # Se mesmo assim falhar, "Re-run failed jobs" passa a ser o conserto: so o
+    # `deploy` roda de novo e reaproveita o artifact. No arranjo antigo o
+    # re-run subia um segundo `github-pages` no mesmo run e o deploy falhava
+    # com "Multiple artifacts" — so um run novo resolvia.
+    #
+    # Retry automatico no proprio passo nao e opcao: tentar de novo exigiria
+    # `continue-on-error` na primeira tentativa, que este repo proibe.
+    needs: build-pages
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5

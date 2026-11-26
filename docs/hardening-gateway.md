@@ -157,10 +157,26 @@ reautorizar com `garraia tasks authorize <id>` — que mostra o texto da
 tarefa e so grava com `--yes`. Quando um teto barra o que a tarefa pediu, ou
 ela roda com acesso reduzido, a resposta da tarefa comeca pelo aviso. A
 resposta fica sempre no historico da sessao e no ledger (`garraia runs
-list`), e o gateway registra um aviso no log; **entrega ativa ao canal so
-existe hoje no Telegram** — no WhatsApp vinculado, no Discord e no console
-local o aviso nao e empurrado, aparece quando a conversa e aberta.
-Detalhes em [`configuration.md`](configuration.md#scheduled-task-authority-tasks).
+list`), e o gateway registra um aviso no log.
+
+**Entrega da resposta agendada (#2002).** Depois de persistida, a resposta e
+empurrada ao canal no Telegram, Discord, Slack, Matrix e WhatsApp vinculado; o
+ledger registra o desfecho (`delivery`). Endereco tirado do id da sessao so
+vale quando o canal gravado na sessao concorda com o prefixo do id **e**
+nenhuma outra superficie escreveu na sessao: um cliente HTTP escolhe o proprio
+id (`X-Session-Id`) e pode criar `discord-<id>` antes do canal, e o canal
+gravado e so o ultimo a escrever. Mensagens, tokens e chaves do Chat Sync so
+crescem e guardam quem veio antes; sessao tocada por outra superficie nao
+recebe (`nao_entregue:origem_mista`). IRC e iMessage ficam fora
+de proposito: o IRC manda o texto cru ao servidor sem quebrar linha (quebra
+de linha na resposta viraria comando IRC), e a sessao de grupo do iMessage
+guarda o nome do grupo, nao um endereco. No WhatsApp vinculado a entrega
+reconsulta a config viva — canal ligado, grupo com resposta ligada, quem criou
+a tarefa ainda admitido (bloqueado ou removido nao recebe) —, so sai com a
+ponte conectada, tem teto proprio de 3 por chat por minuto (separado da
+cadencia dos turnos) e leva a marca invisivel de auto-conversa. Nada desse
+caminho loga o id da sessao, que no WhatsApp vinculado carrega o telefone.
+Detalhes em [`configuration.md`](configuration.md#where-a-scheduled-reply-is-delivered).
 
 **Nível de aprovação: `agent.approval` e `--yolo` (#1858).** O que acontece
 com o tier arriscado (a segunda linha da tabela) é um knob declarado pelo

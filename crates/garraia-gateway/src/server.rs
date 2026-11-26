@@ -1779,16 +1779,17 @@ async fn ledger_inicia_run_agendado(
 }
 
 /// Fecha a linha do run com desfecho terminal: `done` com snippet da
-/// resposta, ou `error` com o snippet do erro. O ramo de retry do
-/// `run_scheduler` continua dono da politica de reexecucao — aqui so fica
-/// a trilha.
+/// resposta e o destino dela (#2002: `entregue`, `sem_entrega` ou
+/// `nao_entregue:<motivo>`), ou `error` com o snippet do erro. O ramo de
+/// retry do `run_scheduler` continua dono da politica de reexecucao — aqui
+/// so fica a trilha.
 async fn ledger_fecha_run_agendado(
     store_mutex: &Arc<Mutex<SessionStore>>,
     run_id: &str,
-    resultado: &Result<String>,
+    resultado: &Result<(String, crate::entrega_agendada::Entrega)>,
 ) {
     let (status, result_snippet, error_snippet) = match resultado {
-        Ok(texto) => (garraia_db::RunStatus::Done, Some(texto.as_str()), None),
+        Ok((texto, _)) => (garraia_db::RunStatus::Done, Some(texto.as_str()), None),
         Err(e) => (garraia_db::RunStatus::Error, None, Some(e.to_string())),
     };
     let store = store_mutex.lock().await;
@@ -1796,13 +1797,19 @@ async fn ledger_fecha_run_agendado(
     {
         tracing::warn!(erro = %e, "run ledger: falhou ao fechar run da tarefa agendada");
     }
+    if let Ok((_, entrega)) = resultado
+        && let Err(e) = store.set_agent_run_delivery(run_id, &entrega.para_o_ledger())
+    {
+        tracing::warn!(erro = %e, "run ledger: falhou ao gravar a entrega da tarefa agendada");
+    }
 }
 
+/// Executa a tarefa e devolve a resposta e o destino dela (#2002).
 async fn execute_scheduled_task_inner(
     state: &AppState,
     store_mutex: &Arc<Mutex<SessionStore>>,
     task: &garraia_db::ScheduledTask,
-) -> Result<String> {
+) -> Result<(String, crate::entrega_agendada::Entrega)> {
     let channel_type = &task.channel_id;
 
     let message = Message {
@@ -1891,47 +1898,10 @@ async fn execute_scheduled_task_inner(
             );
             // O aviso ABRE a resposta: e o que cabe no snippet do ledger
             // (`garra runs`) e o que o canal le primeiro quando ha entrega
-            // (passo 4, hoje so o Telegram).
+            // (passo 4, `entrega_agendada`).
             format!("{aviso}\n\n{response_text}")
         }
         None => response_text,
-    };
-
-    // Issue #921: `task.session_metadata` is written by `AppState::persist_turn`
-    // as `{}` or `{"continuity_key": …}` — it never carried a channel address,
-    // so step 4 below has been failing on every scheduled Telegram task with
-    // "missing telegram_chat_id in metadata", swallowed by a `tracing::error!`.
-    // The address lives in `chat_session_keys`, written by `resolve_session`;
-    // this is the first code that reads it back.
-    let external_id = match (&state.chat_session_manager, channel_type.as_str()) {
-        (Some(mgr), "telegram") => mgr
-            .external_key_for(&task.session_id, garraia_db::ChatSource::Telegram)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(
-                    session = %task.session_id,
-                    error = %e,
-                    "scheduled task: failed to resolve channel address"
-                );
-                None
-            }),
-        _ => None,
-    };
-    let outgoing_metadata = crate::channel_send::with_channel_address(
-        &task.session_metadata,
-        channel_type,
-        external_id.as_deref(),
-    );
-
-    let response_msg = Message {
-        id: uuid::Uuid::new_v4().to_string(),
-        session_id: SessionId::from_string(&task.session_id),
-        channel_id: ChannelId::from_string(channel_type),
-        user_id: UserId::from_string("genesis"),
-        direction: MessageDirection::Outgoing,
-        content: MessageContent::Text(response_text.clone()),
-        timestamp: chrono::Utc::now(),
-        metadata: outgoing_metadata,
     };
 
     // 3. Persist assistant response regardless of outbound channel availability.
@@ -1941,30 +1911,34 @@ async fn execute_scheduled_task_inner(
             &task.session_id,
             "assistant",
             &response_text,
-            response_msg.timestamp,
+            chrono::Utc::now(),
             &task.session_metadata,
         )?;
     }
 
-    // 4. Best-effort delivery to channel adapter.
-    if let Some(channel) = state.channels.read().await.get(channel_type.as_str()) {
-        if let Err(e) = channel.send_message(&response_msg).await {
-            // Issue #921: this used to fire on *every* scheduled Telegram task
-            // and nobody noticed, because the response was already persisted
-            // above and the task counted as done. Log the address resolution
-            // alongside the error so the next failure is diagnosable.
-            tracing::error!(
-                session = %task.session_id,
-                channel = %channel_type,
-                addressed = external_id.is_some(),
-                "Failed to send scheduled response: {e}"
-            );
-        }
-    } else {
-        tracing::warn!(
-            "Scheduled response persisted but no channel adapter registered for: {}",
-            channel_type
-        );
+    // 4. Entrega ativa ao canal (#2002), best-effort e DEPOIS de persistir:
+    // a resposta ja esta no historico, e entregar e transparencia, nao
+    // controle. O desfecho vai ao ledger (`agent_runs.delivery`) e ao log —
+    // com o id da tarefa e o canal, nunca o id da sessao, que no WhatsApp
+    // vinculado carrega o telefone do contato.
+    let entrega = crate::entrega_agendada::entregar(state, task, &response_text).await;
+    match entrega {
+        crate::entrega_agendada::Entrega::Entregue => info!(
+            task = %task.id,
+            canal = %channel_type,
+            "tarefa agendada: resposta entregue ao canal"
+        ),
+        crate::entrega_agendada::Entrega::SemCanal => tracing::debug!(
+            task = %task.id,
+            canal = %channel_type,
+            "tarefa agendada: o canal da sessao nao tem entrega ativa; resposta no historico"
+        ),
+        crate::entrega_agendada::Entrega::NaoEntregue(motivo) => tracing::warn!(
+            task = %task.id,
+            canal = %channel_type,
+            motivo = motivo.as_str(),
+            "tarefa agendada: resposta nao entregue ao canal; ficou no historico"
+        ),
     }
 
     // 5. Complete the task — or arm the next occurrence when recurring.
@@ -1984,7 +1958,7 @@ async fn execute_scheduled_task_inner(
         }
     }
 
-    Ok(response_text)
+    Ok((response_text, entrega))
 }
 
 /// Plan 0044 (GAR-395 slice 2): construct the ObjectStore backend +
@@ -3139,7 +3113,17 @@ mod tests {
         let task = tarefa_fixura();
 
         let run_id = ledger_inicia_run_agendado(&store, &task).await;
-        ledger_fecha_run_agendado(&store, &run_id, &Ok("resposta do heartbeat".to_string())).await;
+        ledger_fecha_run_agendado(
+            &store,
+            &run_id,
+            &Ok((
+                "resposta do heartbeat".to_string(),
+                crate::entrega_agendada::Entrega::NaoEntregue(
+                    crate::entrega_agendada::Motivo::PonteForaDoAr,
+                ),
+            )),
+        )
+        .await;
 
         let runs = store.lock().await.list_recent_agent_runs(10).unwrap();
         assert_eq!(runs.len(), 1, "uma execucao, uma linha");
@@ -3148,6 +3132,11 @@ mod tests {
         assert_eq!(
             runs[0].result_snippet.as_deref(),
             Some("resposta do heartbeat")
+        );
+        // #2002: o ledger diz se a resposta chegou ao canal.
+        assert_eq!(
+            runs[0].delivery.as_deref(),
+            Some("nao_entregue:ponte_fora_do_ar")
         );
     }
 
@@ -3171,6 +3160,7 @@ mod tests {
 
         let runs = store.lock().await.list_recent_agent_runs(10).unwrap();
         assert_eq!(runs[0].status, garraia_db::RunStatus::Error);
+        assert_eq!(runs[0].delivery, None, "erro nao chega a entregar");
         assert!(
             runs[0].error_snippet.as_deref().unwrap().contains("boom"),
             "snippet de erro presente"
