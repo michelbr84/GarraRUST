@@ -634,6 +634,20 @@ calada.
   execução de código, e a correção é de uma linha: issue
   [#1996](https://github.com/michelbr84/GarraRUST/issues/1996).
 
+  **Reaberto em 2026-11-25, depois do #1998.** O PR #1998 corrigiu o
+  comportamento (filtro por posse própria), mas não o alerta: a análise do
+  `main` em `6ecd688e` ainda o acusava em `admin.html:778`. São duas razões,
+  verificadas com o CodeQL 2.27.6 (o mesmo da análise) contra variantes do
+  arquivo: a forma reflexiva `Object.prototype.hasOwnProperty.call(...)` não é
+  barreira para esta query, e `if (!guard) page = 'dashboard'` não sanitiza o
+  uso de `page` depois da junção, nem com um guard que o CodeQL reconhece. A
+  justificativa de 2026-05-12 era falsa, então o #17 foi reaberto em vez de
+  ganhar outra; passou a `open`, e os dispensados caíram de 82 para 81. O
+  filtro virou `page = Object.hasOwn(pages, page) ? page : 'dashboard';`, que
+  o CodeQL enxerga: na suíte `javascript-code-scanning` inteira o arquivo vai
+  de 1 resultado para 0. Issue
+  [#2008](https://github.com/michelbr84/GarraRUST/issues/2008).
+
 As duas primeiras, mais a cegueira para alerta que deixou de ser detectado, são
 lacuna de ferramenta e estão na issue
 [#1993](https://github.com/michelbr84/GarraRUST/issues/1993). Enquanto ela não

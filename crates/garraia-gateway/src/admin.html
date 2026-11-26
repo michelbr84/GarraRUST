@@ -767,7 +767,10 @@ function navigate(page) {
   // `pages['__proto__']`, `pages['constructor']` e `pages['toString']` tambem
   // sao verdadeiros. `page` vem de `location.hash`, ou seja, de qualquer link
   // que o admin abrir (#1996, alerta CodeQL js/unvalidated-dynamic-method-call).
-  if (!Object.prototype.hasOwnProperty.call(pages, page)) page = 'dashboard';
+  // A forma tambem importa (#2008): o CodeQL so trata o filtro como barreira
+  // com `Object.hasOwn` (a forma reflexiva `hasOwnProperty.call` nao conta) e
+  // com o ternario; `if (!...) page = 'dashboard'` mantem o alerta aberto.
+  page = Object.hasOwn(pages, page) ? page : 'dashboard';
   currentPage = page;
   location.hash = '#' + page;
   document.getElementById('page-title').textContent = pageTitle(page);
