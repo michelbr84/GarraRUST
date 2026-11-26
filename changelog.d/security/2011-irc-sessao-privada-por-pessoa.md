@@ -5,8 +5,10 @@
   de outra (com a allowlist em modo `open`, de qualquer nick da rede). Agora o
   canal decide canal ou privado num ponto so, pelo `CHANTYPES` que o servidor
   anuncia, e a resposta e a sessao seguem a mesma decisao: no canal a sessao
-  continua `irc-<canal>`; no privado e `irc-@<nick>`, uma por pessoa, com o
-  nick normalizado pelo `CASEMAPPING` anunciado (sem anuncio, `ascii`). A
-  sessao antiga `irc-<nick do bot>` fica como esta e nao recebe turno novo. De
+  continua `irc-<canal>`; no privado e `irc-@<nick>@<conexao>`, uma por
+  pessoa em cada conexao IRC da config (o nick so identifica alguem dentro da
+  propria rede), com o nick normalizado pelo `CASEMAPPING` anunciado (sem
+  anuncio, `ascii`). A sessao antiga `irc-<nick do bot>` fica como esta e nao
+  recebe turno novo. De
   quebra, uma mensagem num canal `&local` passa a ser respondida no canal, e
   nao no privado de quem falou.
