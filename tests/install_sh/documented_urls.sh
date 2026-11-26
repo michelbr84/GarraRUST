@@ -7,6 +7,11 @@
 # endpoint fix lives in the website repo, but the canonical URL and the
 # mirror list are documented HERE, and the two must not drift apart.
 #
+# Since #2016 the Windows source is the raw `main` URL, not garraia.org: the
+# site's edge (Lovable/Cloudflare) answers PowerShell's HTTP client with a 403
+# `cf-mitigated: challenge`, so `irm https://garraia.org/install.ps1 | iex`
+# dies before downloading. install.sh keeps garraia.org (curl gets through).
+#
 # These assertions are deliberately about *text in the script*, not about
 # the network: CI must stay hermetic. The live-endpoint probe lives in
 # `.github/workflows/install-endpoints.yml`, which is scheduled, not a gate.
@@ -69,8 +74,8 @@ echo "documented_urls.sh"
 # --- canonical one-liners ---------------------------------------------------
 assert_contains "install.sh documenta a URL canônica garraia.org" \
     "${sh_body}" "https://garraia.org/install.sh"
-assert_contains "install.ps1 documenta a URL canônica garraia.org" \
-    "${ps1_body}" "https://garraia.org/install.ps1"
+assert_contains "install.ps1 ensina o raw do main como fonte do irm" \
+    "${ps1_body}" "irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex"
 
 # --- mirrors stay listed ----------------------------------------------------
 for mirror in \
@@ -107,8 +112,9 @@ else
     fi
 fi
 
-assert_contains "install.ps1 documenta a forma irm | iex" \
-    "${ps1_body}" "irm https://garraia.org/install.ps1 | iex"
+# Cobre as duas formas (`irm ... | iex` e o scriptblock com `(irm ...)`).
+assert_not_contains "install.ps1 não ensina irm do garraia.org (#2016)" \
+    "${ps1_body}" "irm https://garraia.org/install.ps1"
 assert_not_contains "install.sh não ensina irm/iex" \
     "${sh_body}" "| iex"
 

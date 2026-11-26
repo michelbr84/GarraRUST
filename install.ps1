@@ -13,27 +13,32 @@
     `garraia start`.
 
 .EXAMPLE
-    irm https://garraia.org/install.ps1 | iex
+    irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
 
     The standard one-liner. `irm | iex` evaluates the script with no arguments,
     so every parameter below takes its default.
 
 .EXAMPLE
-    & ([scriptblock]::Create((irm https://garraia.org/install.ps1))) -SkipSetup
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1))) -SkipSetup
 
     The only way to pass flags through the pipe - the PowerShell analogue of
     `curl ... | sh -s -- --skip-setup`.
 
 .EXAMPLE
-    $env:GARRAIA_SKIP_INIT=1; irm https://garraia.org/install.ps1 | iex
+    $env:GARRAIA_SKIP_INIT=1; irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
 
     Environment variables work in both forms and are the portable option.
 
 .NOTES
     Mirrors (same script, auto-synced by release.yml):
       irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
-      irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
       irm https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1 | iex
+
+    Not a source for irm: https://garraia.org/install.ps1 serves a copy of this
+    script, but the site's edge answers the PowerShell HTTP client with a 403
+    browser challenge (cf-mitigated: challenge), so `irm | iex` fails there
+    before the script is downloaded (issue #2016). Linux and macOS keep using
+    https://garraia.org/install.sh, which curl can fetch.
 
     Environment variables (an env var set by the caller always wins over the
     matching parameter, mirroring install.sh:47):
@@ -130,8 +135,8 @@ function Show-Usage {
 GarraIA installer (Windows)
 
 Usage:
-  irm https://garraia.org/install.ps1 | iex
-  & ([scriptblock]::Create((irm https://garraia.org/install.ps1))) [options]
+  irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
+  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1))) [options]
 
 Options:
   -SkipSetup            Install only: skip both `garraia init` and `garraia start`.
