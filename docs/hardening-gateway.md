@@ -172,12 +172,17 @@ de proposito: no IRC as mensagens privadas de todos caem numa sessao so
 (`irc-<nick do bot>`), e a sessao de grupo do iMessage guarda o nome do grupo,
 nao um endereco.
 
-**IRC: texto do modelo nunca vira comando (#2007).** Toda escrita de texto no
-socket do IRC passa por um ponto so (`IrcChannel::enviar_privmsg`): o texto e
+**IRC: texto do modelo nunca vira comando (#2007).** Toda escrita de texto
+**do modelo** no socket do IRC passa por um ponto so
+(`IrcChannel::enviar_privmsg`); `NICK`, `USER`, `JOIN` e `QUIT` vem da config
+ou sao fixos, e o `PONG` ecoa o token do servidor sem caractere de controle. O
+texto e
 quebrado em `\r\n`, `\n` **e** `\r` isolado (varios servidores tratam
 qualquer um como fim de mensagem), perde `\0` e o delimitador de CTCP
-`\x01`, e cada linha sai como `PRIVMSG <alvo> :<linha>`, cortada em 400 bytes
-sem partir caractere. Alvo com espaco, virgula, `:` inicial ou controle e
+`\x01`, e cada linha sai como `PRIVMSG <alvo> :<linha>`, cortada sem partir
+caractere em ate 400 bytes de corpo — menos com alvo longo, para a linha
+caber nos 512 bytes do protocolo com folga para o prefixo que o servidor
+acrescenta ao repassar. Alvo com espaco, virgula, `:` inicial ou controle e
 recusado. E `send_raw` recusa qualquer linha com `\r`, `\n` ou `\0`
 embutido, para nenhum chamador futuro reabrir o caminho. Antes, a resposta do
 turno separava so em `\n`, e um `\r` isolado vindo do modelo (influenciavel

@@ -111,7 +111,7 @@ impl IrcChannel {
         if !alvo_valido(alvo) {
             return Err(Error::Channel("irc: alvo de PRIVMSG invalido".into()));
         }
-        for linha in linhas_do_privmsg(texto, MAX_CORPO_PRIVMSG) {
+        for linha in linhas_do_privmsg(texto, corpo_max(alvo)) {
             Self::send_raw(writer, &format!("PRIVMSG {alvo} :{linha}")).await?;
         }
         Ok(())
@@ -195,8 +195,14 @@ impl Channel for IrcChannel {
                                 let trimmed = line.trim_end();
 
                                 // Handle PING/PONG
-                                if trimmed.starts_with("PING ") {
-                                    let pong = trimmed.replacen("PING", "PONG", 1);
+                                if let Some(token) = trimmed.strip_prefix("PING ") {
+                                    // #2007 (auditoria): o token vem do
+                                    // servidor; um `\r` ou `\0` no meio dele
+                                    // faria o `send_raw` recusar o PONG e o
+                                    // laco morrer. Sai sem controle.
+                                    let token: String =
+                                        token.chars().filter(|c| !c.is_control()).collect();
+                                    let pong = format!("PONG {token}");
                                     if let Err(e) = IrcChannel::send_raw(&ping_writer, &pong).await {
                                         error!("irc: failed to send PONG: {e}");
                                         return;
@@ -352,9 +358,25 @@ fn parse_privmsg(line: &str) -> Option<(String, String, String)> {
     Some((nick, target, text))
 }
 
-/// Limite do corpo de um `PRIVMSG`, em bytes: a linha inteira do protocolo
-/// cabe em 512, e o prefixo `PRIVMSG <alvo> :` e o `\r\n` ficam de fora.
+/// Teto do corpo de um `PRIVMSG`, em bytes. O corpo efetivo e menor quando o
+/// alvo e longo: ver [`corpo_max`].
 const MAX_CORPO_PRIVMSG: usize = 400;
+/// Uma linha do protocolo IRC tem no maximo 512 bytes, `\r\n` incluso.
+const MAX_LINHA: usize = 510;
+/// Folga para o prefixo `:nick!user@host ` que o servidor acrescenta ao
+/// repassar a mensagem a quem esta no canal: sem ela, quem recebe ve o fim
+/// cortado.
+const RESERVA_DO_PREFIXO: usize = 100;
+
+/// O corpo que cabe num `PRIVMSG <alvo> :<corpo>` sem a linha passar de
+/// [`MAX_LINHA`] menos [`RESERVA_DO_PREFIXO`] (achado da auditoria do #2007:
+/// com o teto fixo de 400 e um alvo de 200 bytes, a linha tinha 610). Com o
+/// alvo mais longo que [`alvo_valido`] aceita, sobram 200 bytes de corpo.
+fn corpo_max(alvo: &str) -> usize {
+    (MAX_LINHA - RESERVA_DO_PREFIXO)
+        .saturating_sub("PRIVMSG ".len() + alvo.len() + " :".len())
+        .min(MAX_CORPO_PRIVMSG)
+}
 
 /// Controles que sao FORMATACAO de texto do IRC (negrito, cor, cor hex,
 /// reset, monoespacado, inverso, italico, riscado, sublinhado) e o tab: nao
@@ -550,6 +572,62 @@ mod tests {
         assert!(!corpo.is_empty());
         for l in &corpo {
             assert!(l.starts_with("PRIVMSG #canal :"), "comando injetado: {l:?}");
+        }
+    }
+
+    /// Achado da auditoria do #2007: um PING com `\r` ou `\0` no meio (servidor
+    /// hostil, ou quem esta no meio da conexao, que e texto puro) ecoava no
+    /// PONG, a barreira do `send_raw` recusava, e o laco de leitura morria sem
+    /// reconexao. O PONG sai limpo e a conexao segue respondendo.
+    #[tokio::test]
+    async fn ping_com_controle_embutido_nao_derruba_a_conexao() {
+        let ouvinte = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let porta = ouvinte.local_addr().expect("addr").port();
+        let mut canal = canal_de_teste(porta, "FIM");
+        let conexao = tokio::spawn(async move { ouvinte.accept().await.map(|(s, _)| s) });
+        canal.connect().await.expect("conecta");
+        let mut servidor = conexao.await.expect("join").expect("accept");
+
+        servidor
+            .write_all(b"PING :tok\rQUIT\r\nPING :a\0b\r\n:ana!a@h PRIVMSG #canal :oi\r\n")
+            .await
+            .expect("escreve");
+        let linhas = linhas_recebidas(&mut servidor, "FIM").await;
+        assert!(linhas.iter().any(|l| l == "PONG :tokQUIT"), "{linhas:?}");
+        assert!(linhas.iter().any(|l| l == "PONG :ab"), "{linhas:?}");
+        assert!(
+            linhas.iter().any(|l| l == "PRIVMSG #canal :FIM"),
+            "a conexao continuou viva: {linhas:?}"
+        );
+        assert!(linhas.iter().all(|l| l != "QUIT"), "{linhas:?}");
+        canal.disconnect().await.expect("desconecta");
+    }
+
+    /// A linha inteira cabe no limite do protocolo com folga para o prefixo
+    /// `:nick!user@host ` que o servidor acrescenta ao repassar — tambem com
+    /// o alvo mais longo que [`alvo_valido`] aceita.
+    #[tokio::test]
+    async fn linha_cabe_no_limite_mesmo_com_alvo_longo() {
+        let ouvinte = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let porta = ouvinte.local_addr().expect("addr").port();
+        let mut canal = canal_de_teste(porta, "x");
+        let conexao = tokio::spawn(async move { ouvinte.accept().await.map(|(s, _)| s) });
+        canal.connect().await.expect("conecta");
+        let mut servidor = conexao.await.expect("join").expect("accept");
+
+        let alvo = format!("#{}", "a".repeat(199));
+        assert!(alvo_valido(&alvo));
+        canal
+            .send_privmsg(&alvo, &format!("{}FIM", "ç".repeat(500)))
+            .await
+            .expect("envia");
+        let linhas = linhas_recebidas(&mut servidor, "FIM").await;
+        for l in linhas.iter().filter(|l| l.starts_with("PRIVMSG ")) {
+            assert!(
+                l.len() <= MAX_LINHA - RESERVA_DO_PREFIXO,
+                "{} bytes",
+                l.len()
+            );
         }
     }
 
