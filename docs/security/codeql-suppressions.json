@@ -328,7 +328,7 @@
       "alert_number": 165,
       "rule_id": "rust/hard-coded-cryptographic-value",
       "path": "crates/garraia-gateway/src/admin/shared.rs",
-      "line": 92,
+      "line": 101,
       "sink_snippet": "const LEGACY_KDF_SALT: &[u8] = b\"garraia-admin-secrets-v1\";",
       "disposition": "dismissed-wont-fix",
       "dismissed_reason": "wont_fix",
