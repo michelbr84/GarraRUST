@@ -168,9 +168,20 @@ id (`X-Session-Id`) e pode criar `discord-<id>` antes do canal, e o canal
 gravado e so o ultimo a escrever. Mensagens, tokens e chaves do Chat Sync so
 crescem e guardam quem veio antes; sessao tocada por outra superficie nao
 recebe (`nao_entregue:origem_mista`). IRC e iMessage ficam fora
-de proposito: o IRC manda o texto cru ao servidor sem quebrar linha (quebra
-de linha na resposta viraria comando IRC), e a sessao de grupo do iMessage
-guarda o nome do grupo, nao um endereco. No WhatsApp vinculado a entrega
+de proposito: no IRC as mensagens privadas de todos caem numa sessao so
+(`irc-<nick do bot>`), e a sessao de grupo do iMessage guarda o nome do grupo,
+nao um endereco.
+
+**IRC: texto do modelo nunca vira comando (#2007).** Toda escrita de texto no
+socket do IRC passa por um ponto so (`IrcChannel::enviar_privmsg`): o texto e
+quebrado em `\r\n`, `\n` **e** `\r` isolado (varios servidores tratam
+qualquer um como fim de mensagem), perde `\0` e o delimitador de CTCP
+`\x01`, e cada linha sai como `PRIVMSG <alvo> :<linha>`, cortada em 400 bytes
+sem partir caractere. Alvo com espaco, virgula, `:` inicial ou controle e
+recusado. E `send_raw` recusa qualquer linha com `\r`, `\n` ou `\0`
+embutido, para nenhum chamador futuro reabrir o caminho. Antes, a resposta do
+turno separava so em `\n`, e um `\r` isolado vindo do modelo (influenciavel
+por injecao de prompt) virava comando num servidor que separa em `\r`. No WhatsApp vinculado a entrega
 reconsulta a config viva — canal ligado, grupo com resposta ligada, quem criou
 a tarefa ainda admitido (bloqueado ou removido nao recebe) —, so sai com a
 ponte conectada, tem teto proprio de 3 por chat por minuto (separado da

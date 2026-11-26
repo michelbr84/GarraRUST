@@ -69,7 +69,18 @@ impl IrcChannel {
     }
 
     /// Send a raw IRC line (appends \r\n).
+    ///
+    /// #2007: a linha nunca carrega `\r`, `\n` nem `\0` embutidos — o
+    /// servidor leria o resto como OUTRO comando (varios servidores separam
+    /// em `\r` ou `\n` isolados, nao so em `\r\n`). Quem monta texto vindo
+    /// do modelo passa por [`Self::enviar_privmsg`]; esta recusa e a ultima
+    /// barreira para qualquer chamador futuro.
     async fn send_raw(writer: &SharedWriter, line: &str) -> Result<()> {
+        if line.contains(['\r', '\n', '\0']) {
+            return Err(Error::Channel(
+                "irc: linha com terminador ou NUL embutido recusada".into(),
+            ));
+        }
         let mut guard = writer.lock().await;
         let w = guard
             .as_mut()
@@ -86,12 +97,22 @@ impl IrcChannel {
 
     /// Send a PRIVMSG to a target (channel or user).
     pub async fn send_privmsg(&self, target: &str, text: &str) -> Result<()> {
-        // IRC messages have a max length of ~512 bytes. Split if needed.
-        let max_len = 400; // Conservative limit after protocol overhead
-        for chunk in text.as_bytes().chunks(max_len) {
-            let chunk_str = String::from_utf8_lossy(chunk);
-            let line = format!("PRIVMSG {} :{}", target, chunk_str);
-            Self::send_raw(&self.writer, &line).await?;
+        Self::enviar_privmsg(&self.writer, target, text).await
+    }
+
+    /// O UNICO caminho de texto do modelo ate o socket (#2007): o
+    /// [`Channel::send_message`] e a resposta do turno passam por aqui.
+    ///
+    /// O texto vira linhas seguras ([`linhas_do_privmsg`]) e cada uma sai como
+    /// `PRIVMSG <alvo> :<linha>`; um texto com quebra de linha nunca vira
+    /// outro comando (`JOIN`, `QUIT`, `PRIVMSG NickServ ...`). Alvo malformado
+    /// ([`alvo_valido`]) e recusado antes de qualquer escrita.
+    async fn enviar_privmsg(writer: &SharedWriter, alvo: &str, texto: &str) -> Result<()> {
+        if !alvo_valido(alvo) {
+            return Err(Error::Channel("irc: alvo de PRIVMSG invalido".into()));
+        }
+        for linha in linhas_do_privmsg(texto, MAX_CORPO_PRIVMSG) {
+            Self::send_raw(writer, &format!("PRIVMSG {alvo} :{linha}")).await?;
         }
         Ok(())
     }
@@ -220,16 +241,11 @@ impl Channel for IrcChannel {
                                     tokio::spawn(async move {
                                         match cb(target, source_nick.clone(), source_nick, text, None).await {
                                             Ok(reply) => {
-                                                // Split reply into lines for IRC
-                                                for reply_line in reply.lines() {
-                                                    if reply_line.trim().is_empty() {
-                                                        continue;
-                                                    }
-                                                    let msg = format!("PRIVMSG {} :{}", reply_target, reply_line);
-                                                    if let Err(e) = IrcChannel::send_raw(&reply_writer, &msg).await {
-                                                        error!("irc: failed to send reply: {e}");
-                                                        break;
-                                                    }
+                                                // #2007: o mesmo saneamento do
+                                                // `send_privmsg` — `str::lines()`
+                                                // deixava passar `\r` isolado.
+                                                if let Err(e) = IrcChannel::enviar_privmsg(&reply_writer, &reply_target, &reply).await {
+                                                    error!("irc: failed to send reply: {e}");
                                                 }
                                             }
                                             Err(e) if e == "__blocked__" => {}
@@ -336,9 +352,292 @@ fn parse_privmsg(line: &str) -> Option<(String, String, String)> {
     Some((nick, target, text))
 }
 
+/// Limite do corpo de um `PRIVMSG`, em bytes: a linha inteira do protocolo
+/// cabe em 512, e o prefixo `PRIVMSG <alvo> :` e o `\r\n` ficam de fora.
+const MAX_CORPO_PRIVMSG: usize = 400;
+
+/// Controles que sao FORMATACAO de texto do IRC (negrito, cor, cor hex,
+/// reset, monoespacado, inverso, italico, riscado, sublinhado) e o tab: nao
+/// sao protocolo, e o texto continua legivel com eles.
+const FORMATACAO: [char; 10] = [
+    '\x02', '\x03', '\x04', '\x0f', '\x11', '\x16', '\x1d', '\x1e', '\x1f', '\t',
+];
+
+/// O texto (vindo do modelo) em linhas seguras para `PRIVMSG <alvo> :<linha>`
+/// (#2007).
+///
+/// - quebra em `\r\n`, `\n` **e** `\r` isolado — varios servidores tratam
+///   qualquer um dos dois como fim de mensagem, e o `str::lines()` de antes
+///   so separava em `\n`;
+/// - tira os controles que nao sao formatacao: `\0` (o protocolo nao aceita)
+///   e `\x01`, o delimitador de CTCP — um `\x01DCC SEND ...\x01` vindo do
+///   modelo seria um pedido CTCP em nome do bot;
+/// - descarta linha vazia;
+/// - corta cada linha em `max_bytes` na fronteira de CARACTERE (o corte por
+///   bytes de antes partia um caractere multibyte e o `from_utf8_lossy` o
+///   trocava por `U+FFFD`).
+fn linhas_do_privmsg(texto: &str, max_bytes: usize) -> Vec<String> {
+    // Qualquer caractere UTF-8 cabe em 4 bytes: um teto menor nao avancaria.
+    let max = max_bytes.max(4);
+    texto
+        .split(['\r', '\n'])
+        .map(|linha| {
+            linha
+                .chars()
+                .filter(|c| !c.is_control() || FORMATACAO.contains(c))
+                .collect::<String>()
+        })
+        .filter(|linha| !linha.trim().is_empty())
+        .flat_map(|linha| cortar_em_caractere(&linha, max))
+        .collect()
+}
+
+/// `linha` em pedacos de no maximo `max` bytes, sem partir caractere.
+fn cortar_em_caractere(linha: &str, max: usize) -> Vec<String> {
+    let mut pedacos = Vec::new();
+    let mut atual = String::new();
+    for c in linha.chars() {
+        if !atual.is_empty() && atual.len() + c.len_utf8() > max {
+            pedacos.push(std::mem::take(&mut atual));
+        }
+        atual.push(c);
+    }
+    if !atual.is_empty() {
+        pedacos.push(atual);
+    }
+    pedacos
+}
+
+/// Alvo aceitavel de um `PRIVMSG` (#2007): canal ou nick, um so. Espaco
+/// encerraria o parametro e o resto viraria corpo; virgula vira MULTIPLOS
+/// alvos; `:` no inicio vira o parametro final; controle (inclusive `\r`,
+/// `\n`, `\0`) quebra a linha.
+fn alvo_valido(alvo: &str) -> bool {
+    !alvo.is_empty()
+        && alvo.len() <= 200
+        && !alvo.starts_with(':')
+        && !alvo
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == ',')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- saneamento (#2007) ------------------------------------------------
+
+    fn sem_quebra_nem_nul(linhas: &[String]) -> bool {
+        linhas
+            .iter()
+            .all(|l| !l.contains(['\r', '\n', '\0']) && !l.is_empty())
+    }
+
+    #[test]
+    fn quebras_de_linha_viram_linhas_separadas() {
+        let linhas = linhas_do_privmsg("a\nJOIN #x\r\nQUIT :tchau\rPART #y", MAX_CORPO_PRIVMSG);
+        assert_eq!(linhas, ["a", "JOIN #x", "QUIT :tchau", "PART #y"]);
+        assert!(sem_quebra_nem_nul(&linhas), "{linhas:?}");
+    }
+
+    #[test]
+    fn linhas_vazias_somem_e_nul_e_ctcp_saem() {
+        let linhas = linhas_do_privmsg("\n\n  \r\nok\0fim\n\x01DCC SEND x\x01", MAX_CORPO_PRIVMSG);
+        assert_eq!(linhas, ["okfim", "DCC SEND x"]);
+    }
+
+    /// Formatacao de texto do IRC (negrito, cor, italico...) nao e protocolo:
+    /// fica.
+    #[test]
+    fn codigos_de_formatacao_ficam() {
+        let texto = "\x02negrito\x02 \x0304cor\x0f \x1ditalico\x1d";
+        assert_eq!(linhas_do_privmsg(texto, MAX_CORPO_PRIVMSG), [texto]);
+    }
+
+    #[test]
+    fn corte_por_tamanho_respeita_caractere() {
+        let texto = "ç".repeat(300); // 600 bytes
+        let linhas = linhas_do_privmsg(&texto, MAX_CORPO_PRIVMSG);
+        assert!(linhas.len() >= 2, "{}", linhas.len());
+        assert!(linhas.iter().all(|l| l.len() <= MAX_CORPO_PRIVMSG));
+        assert!(!linhas.concat().contains('\u{FFFD}'));
+        assert_eq!(linhas.concat(), texto, "nada se perde no corte");
+    }
+
+    #[test]
+    fn alvo_com_espaco_virgula_ou_controle_e_recusado() {
+        for bom in ["#garraia", "&local", "nick", "Nick_[1]"] {
+            assert!(alvo_valido(bom), "{bom}");
+        }
+        for ruim in [
+            "",
+            "#a #b",
+            "#a,#b",
+            "#a\r\nQUIT",
+            "nick\0",
+            ":nick",
+            "#a\x07",
+        ] {
+            assert!(!alvo_valido(ruim), "{ruim:?}");
+        }
+    }
+
+    // --- protocolo: o que o servidor recebe (#2007) ------------------------
+
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    /// Tudo o que chegou ao "servidor" ate `fim`, separado como varios
+    /// servidores IRC separam: em `\r` OU `\n`, nao so em `\r\n`.
+    async fn linhas_recebidas(servidor: &mut TcpStream, fim: &str) -> Vec<String> {
+        let mut recebido = Vec::new();
+        let mut buf = [0u8; 4096];
+        let prazo = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !String::from_utf8_lossy(&recebido).contains(fim) {
+            let n = tokio::time::timeout_at(prazo, servidor.read(&mut buf))
+                .await
+                .expect("o bot parou de escrever antes do fim")
+                .expect("leitura do socket");
+            assert!(n > 0, "conexao fechada antes do fim");
+            recebido.extend_from_slice(&buf[..n]);
+        }
+        String::from_utf8_lossy(&recebido)
+            .split(['\r', '\n'])
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn canal_de_teste(porta: u16, resposta: &'static str) -> IrcChannel {
+        let on_msg: IrcOnMessageFn = Arc::new(move |_ch, _nick, _user, _text, _delta_tx| {
+            Box::pin(async move { Ok(resposta.to_string()) })
+        });
+        IrcChannel::new(
+            IrcConfig {
+                server: "127.0.0.1".into(),
+                port: porta,
+                nick: "garrabot".into(),
+                channels: vec![],
+                use_tls: false,
+            },
+            on_msg,
+        )
+    }
+
+    const INJECAO: &str = "pronto\nJOIN #outro\r\nPRIVMSG NickServ :IDENTIFY x\rQUIT :tchau";
+
+    /// `send_privmsg` (o caminho do `Channel::send_message`): nenhuma linha
+    /// que chega ao servidor e outro comando.
+    #[tokio::test]
+    async fn send_privmsg_nao_injeta_comando() {
+        let ouvinte = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let porta = ouvinte.local_addr().expect("addr").port();
+        let mut canal = canal_de_teste(porta, "x");
+        let conexao = tokio::spawn(async move { ouvinte.accept().await.map(|(s, _)| s) });
+        canal.connect().await.expect("conecta");
+        let mut servidor = conexao.await.expect("join").expect("accept");
+
+        canal
+            .send_privmsg("#canal", &format!("{INJECAO}\nFIM"))
+            .await
+            .expect("envia");
+
+        let linhas = linhas_recebidas(&mut servidor, "FIM").await;
+        let corpo: Vec<_> = linhas
+            .iter()
+            .filter(|l| !l.starts_with("NICK ") && !l.starts_with("USER "))
+            .collect();
+        assert!(!corpo.is_empty());
+        for l in &corpo {
+            assert!(l.starts_with("PRIVMSG #canal :"), "comando injetado: {l:?}");
+        }
+    }
+
+    /// A ultima linha de defesa: `send_raw` nunca escreve uma linha com
+    /// terminador ou NUL embutido, venha o texto de onde vier.
+    #[tokio::test]
+    async fn send_raw_recusa_linha_com_terminador_embutido() {
+        let ouvinte = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let porta = ouvinte.local_addr().expect("addr").port();
+        let mut canal = canal_de_teste(porta, "x");
+        let conexao = tokio::spawn(async move { ouvinte.accept().await.map(|(s, _)| s) });
+        canal.connect().await.expect("conecta");
+        let mut servidor = conexao.await.expect("join").expect("accept");
+
+        for ruim in [
+            "PRIVMSG #a :x\nQUIT",
+            "PRIVMSG #a :x\rQUIT",
+            "PRIVMSG #a :x\0",
+        ] {
+            assert!(
+                IrcChannel::send_raw(&canal.writer, ruim).await.is_err(),
+                "{ruim:?}"
+            );
+        }
+        IrcChannel::send_raw(&canal.writer, "PRIVMSG #a :FIM")
+            .await
+            .expect("linha limpa");
+        let linhas = linhas_recebidas(&mut servidor, "FIM").await;
+        assert!(linhas.iter().all(|l| !l.starts_with("QUIT")), "{linhas:?}");
+    }
+
+    /// Alvo malformado nao chega ao socket — com a conexao de pe, para o erro
+    /// nao vir so de "nao conectado".
+    #[tokio::test]
+    async fn send_privmsg_recusa_alvo_malformado() {
+        let ouvinte = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let porta = ouvinte.local_addr().expect("addr").port();
+        let mut canal = canal_de_teste(porta, "x");
+        let conexao = tokio::spawn(async move { ouvinte.accept().await.map(|(s, _)| s) });
+        canal.connect().await.expect("conecta");
+        let mut servidor = conexao.await.expect("join").expect("accept");
+
+        assert!(canal.send_privmsg("#a\r\nQUIT", "oi").await.is_err());
+        assert!(canal.send_privmsg("#a,#b", "oi").await.is_err());
+        assert!(canal.send_privmsg("#a #b", "oi").await.is_err());
+        canal.send_privmsg("#ok", "FIM").await.expect("alvo valido");
+
+        let linhas = linhas_recebidas(&mut servidor, "FIM").await;
+        assert_eq!(
+            linhas
+                .iter()
+                .filter(|l| !l.starts_with("NICK ") && !l.starts_with("USER "))
+                .collect::<Vec<_>>(),
+            ["PRIVMSG #ok :FIM"],
+            "so o envio valido chegou"
+        );
+    }
+
+    /// A resposta do turno (o laco de leitura do `connect`) passa pelo mesmo
+    /// saneamento: inclusive o `\r` isolado, que o `str::lines()` deixava
+    /// passar.
+    #[tokio::test]
+    async fn resposta_do_turno_nao_injeta_comando() {
+        let ouvinte = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let porta = ouvinte.local_addr().expect("addr").port();
+        let mut canal = canal_de_teste(
+            porta,
+            "pronto\rQUIT :tchau\nJOIN #outro\r\nPRIVMSG NickServ :x\nFIM",
+        );
+        let conexao = tokio::spawn(async move { ouvinte.accept().await.map(|(s, _)| s) });
+        canal.connect().await.expect("conecta");
+        let mut servidor = conexao.await.expect("join").expect("accept");
+
+        servidor
+            .write_all(b":ana!a@h PRIVMSG #canal :oi bot\r\n")
+            .await
+            .expect("escreve");
+        let linhas = linhas_recebidas(&mut servidor, "FIM").await;
+        let corpo: Vec<_> = linhas
+            .iter()
+            .filter(|l| !l.starts_with("NICK ") && !l.starts_with("USER "))
+            .collect();
+        assert!(!corpo.is_empty());
+        for l in &corpo {
+            assert!(l.starts_with("PRIVMSG #canal :"), "comando injetado: {l:?}");
+        }
+        canal.disconnect().await.expect("desconecta");
+    }
 
     #[test]
     fn channel_type_is_irc() {
