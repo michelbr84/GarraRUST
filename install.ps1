@@ -13,26 +13,27 @@
     `garraia start`.
 
 .EXAMPLE
-    irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
+    irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 
     The standard one-liner. `irm | iex` evaluates the script with no arguments,
     so every parameter below takes its default.
 
 .EXAMPLE
-    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1))) -SkipSetup
+    & ([scriptblock]::Create((irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1))) -SkipSetup
 
     The only way to pass flags through the pipe - the PowerShell analogue of
     `curl ... | sh -s -- --skip-setup`.
 
 .EXAMPLE
-    $env:GARRAIA_SKIP_INIT=1; irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
+    $env:GARRAIA_SKIP_INIT=1; irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 
     Environment variables work in both forms and are the portable option.
 
 .NOTES
-    Mirrors (same script, auto-synced by release.yml):
-      irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
-      irm https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1 | iex
+    The one-liners above fetch the install.ps1 of the latest release - the
+    script that shipped with the binaries it installs. Mirror, for a fix that
+    is already on `main` but not released yet:
+      irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
 
     Not a source for irm: https://garraia.org/install.ps1 serves a copy of this
     script, but the site's edge answers the PowerShell HTTP client with a 403
@@ -126,8 +127,6 @@ function Write-RateLimitHint {
     Write-Host '  * retry in a few minutes, or'
     Write-Host '  * fetch the installer from the release CDN instead:'
     Write-Host "      irm https://github.com/$script:Repo/releases/latest/download/install.ps1 | iex"
-    Write-Host '  * or from the jsDelivr mirror:'
-    Write-Host "      irm https://cdn.jsdelivr.net/gh/$script:Repo@main/install.ps1 | iex"
 }
 
 function Show-Usage {
@@ -135,8 +134,8 @@ function Show-Usage {
 GarraIA installer (Windows)
 
 Usage:
-  irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
-  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1))) [options]
+  irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
+  & ([scriptblock]::Create((irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1))) [options]
 
 Options:
   -SkipSetup            Install only: skip both `garraia init` and `garraia start`.

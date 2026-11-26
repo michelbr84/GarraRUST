@@ -62,7 +62,7 @@ Detalhes, build a partir do fonte no aparelho (atenção ao LTO/OOM) e troublesh
 ## Instalação em 1 comando (Windows)
 
 ```powershell
-irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
+irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 ```
 
 Irmão Windows do `install.sh`: verifica o SHA-256, instala `garraia.exe` em
@@ -73,14 +73,15 @@ também funcionar), registra o diretório no PATH do usuário e encadeia
 Para passar flags — `irm | iex` não recebe argumentos:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1))) -SkipSetup
+& ([scriptblock]::Create((irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1))) -SkipSetup
 ```
 
-Espelhos:
+Os comandos acima baixam o `install.ps1` da última release, o mesmo script que
+saiu com os binários que ele instala. Espelho, para uma correção que já está na
+`main` mas ainda não saiu em release:
 
 ```powershell
-irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
-irm https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1 | iex
+irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
 ```
 
 O `garraia.org/install.ps1` não serve ao `irm`: a borda do site responde 403

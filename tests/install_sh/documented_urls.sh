@@ -7,10 +7,16 @@
 # endpoint fix lives in the website repo, but the canonical URL and the
 # mirror list are documented HERE, and the two must not drift apart.
 #
-# Since #2016 the Windows source is the raw `main` URL, not garraia.org: the
-# site's edge (Lovable/Cloudflare) answers PowerShell's HTTP client with a 403
+# Windows does not use garraia.org (#2016): the site's edge (Lovable/
+# Cloudflare) answers PowerShell's HTTP client with a 403
 # `cf-mitigated: challenge`, so `irm https://garraia.org/install.ps1 | iex`
-# dies before downloading. install.sh keeps garraia.org (curl gets through).
+# dies before downloading. The Windows one-liner fetches the install.ps1 of
+# the latest release, with the raw `main` URL as mirror. install.sh keeps
+# garraia.org (curl gets through).
+#
+# jsDelivr is not a mirror (#2023): it refuses GitHub repositories over
+# 50 MB, and GarraRUST sits at that limit, so `@main` alternates between
+# 403 and a stale cache.
 #
 # These assertions are deliberately about *text in the script*, not about
 # the network: CI must stay hermetic. The live-endpoint probe lives in
@@ -74,14 +80,13 @@ echo "documented_urls.sh"
 # --- canonical one-liners ---------------------------------------------------
 assert_contains "install.sh documenta a URL canônica garraia.org" \
     "${sh_body}" "https://garraia.org/install.sh"
-assert_contains "install.ps1 ensina o raw do main como fonte do irm" \
-    "${ps1_body}" "irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex"
+assert_contains "install.ps1 ensina o GitHub Releases como fonte do irm" \
+    "${ps1_body}" "irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex"
 
 # --- mirrors stay listed ----------------------------------------------------
 for mirror in \
     "https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh" \
-    "https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh" \
-    "https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh"
+    "https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh"
 do
     assert_contains "install.sh lista o espelho ${mirror##*/} (${mirror%%/install.sh})" \
         "${sh_body}" "${mirror}"
@@ -89,12 +94,17 @@ done
 
 for mirror in \
     "https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1" \
-    "https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1" \
-    "https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1"
+    "https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1"
 do
     assert_contains "install.ps1 lista o espelho ${mirror%%/install.ps1}" \
         "${ps1_body}" "${mirror}"
 done
+
+# --- jsDelivr is not a mirror (#2023) --------------------------------------
+assert_not_contains "install.sh não recomenda o jsDelivr (#2023)" \
+    "${sh_body}" "cdn.jsdelivr.net"
+assert_not_contains "install.ps1 não recomenda o jsDelivr (#2023)" \
+    "${ps1_body}" "cdn.jsdelivr.net"
 
 # --- the Windows/Unix invocation split --------------------------------------
 # `curl -fsSL` no PowerShell resolve para `Invoke-WebRequest`, que não aceita

@@ -56,7 +56,7 @@ Welcome to the GarraIA documentation. GarraIA is a secure, lightweight open-sour
 
    Windows (PowerShell 5.1+):
    ```powershell
-   irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
+   irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
    ```
 
    Mirrors, options and troubleshooting live in
