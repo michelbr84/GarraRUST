@@ -764,7 +764,7 @@ any other surface is refused (`nao_entregue:origem_mista`). Telegram is not
 affected: its address comes from the chat the channel itself recorded.
 
 IRC and iMessage stay out on purpose. On IRC each private conversation now has
-its own session (`irc-@<nick>`, #2011), but a scheduled delivery to a nick
+its own session (`irc-@<nick>@<connection>`, #2011), but a scheduled delivery to a nick
 reaches whoever holds that nick at that moment: without NickServ a nick is not
 a stable identity. (IRC used to send a reply's line breaks raw to the server,
 which would turn them into IRC commands; that was fixed in #2007.) An iMessage group

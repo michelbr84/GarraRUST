@@ -401,22 +401,29 @@ benches/
     `application/octet-stream`. **Esse tipo não é o problema:** o
     `Invoke-RestMethod` decodifica qualquer resposta como texto (tenta
     XML/JSON e cai em string), então octet-stream chega como `[string]`; não
-    "conserte" o tipo achando que conserta o `irm`. Por isso o one-liner
-    Windows é `irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex`
-    — no site (constante `WINDOWS_INSTALL_URL`), no README e na ajuda do
-    `install.ps1` — e o `public/install.ps1` do site segue servido só como
-    cópia. Linux/macOS/Termux seguem em `garraia.org/install.sh`: o `curl`
-    passa pela borda.
+    "conserte" o tipo achando que conserta o `irm`. O one-liner Windows é
+    `irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex`
+    — no site (constante `WINDOWS_INSTALL_URL`), no README, nos docs e na
+    ajuda do `install.ps1`: é o script que saiu com os binários que ele
+    instala, do mesmo `github.com` de que o instalador já depende. O raw do
+    `main` é o espelho, para correção ainda não lançada. O
+    `public/install.ps1` do site segue servido só como cópia.
+    Linux/macOS/Termux seguem em `garraia.org/install.sh`: o `curl` passa
+    pela borda.
+    **jsDelivr não é espelho (#2023):** ele recusa repositório do GitHub
+    acima de 50 MB, e o GarraRUST está no limite — o `@main` alterna entre
+    403 (`Package size exceeded`) e cópia velha do cache. As suítes
+    `documented_urls` proíbem `cdn.jsdelivr.net` nos dois instaladores.
     O workflow `install-endpoints.yml` (agendado, não é gate de
     PR) sonda todas as URLs documentadas, imprime o código HTTP de cada sonda,
     roda todas antes de falhar e verifica o contrato real do Windows com o
     próprio `Invoke-RestMethod`, sem fallback para outro cliente e sem
     asserir o `Content-Type`. Nas URLs que a documentação ensina ao Windows
-    (raw, jsDelivr, GitHub Releases), qualquer falha do `irm` — o desafio da
+    (GitHub Releases e o raw), qualquer falha do `irm` — o desafio da
     borda inclusive — reprova o run; o `garraia.org/install.ps1`, fora da
     documentação, só gera aviso, para o vermelho diário da borda da Lovable
-    não esconder uma quebra no raw (as suítes `documented_urls` impedem que
-    ele volte a ser ensinado). O Worker em
+    não esconder uma quebra no one-liner (as suítes `documented_urls`
+    impedem que ele volte a ser ensinado). O Worker em
     `deploy/installer-worker/` está descontinuado e nunca serviu o
     `garraia.org`.
 18. **NUNCA** cherry-pickar ou misturar arquivos de migration (`crates/garraia-workspace/migrations/`) entre repositórios diferentes sem verificar a numeração estrita e linear. Os esquemas e numerações de migrations são independentes e forward-only.

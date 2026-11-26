@@ -573,6 +573,21 @@ fn every_admin_key_error_says_the_console_is_disabled_and_how_to_fix_it() {
     for err in [
         AdminKeyError::StoredParamsUnusable("x".into()),
         AdminKeyError::NotUnderLegacyKey("x".into()),
+        AdminKeyError::KeyOpensNoStoredSecret {
+            key_source: MasterKeySource::Passphrase,
+            count: 1,
+        },
+        AdminKeyError::KeyOpensNoStoredSecret {
+            key_source: MasterKeySource::MasterKeyFile,
+            count: 1,
+        },
+        AdminKeyError::MasterKeyFileLost {
+            state: "missing",
+            count: 1,
+        },
+        AdminKeyError::StoredSecretsUnreadable("x".into()),
+        AdminKeyError::MasterKeyFileUnreadable("x".into()),
+        AdminKeyError::MasterKeyFileNotPersisted("x".into()),
         AdminKeyError::Entropy("x"),
     ] {
         // Mensagem acionavel e sem segredo: nomeia o que esta errado e a saida.
@@ -581,3 +596,5 @@ fn every_admin_key_error_says_the_console_is_disabled_and_how_to_fix_it() {
         assert!(msg.contains("Fix:"), "{msg}");
     }
 }
+
+mod chave_abre_o_gravado;

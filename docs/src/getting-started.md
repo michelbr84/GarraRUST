@@ -29,7 +29,7 @@ O script instala o binário `garraia` em `~/.local/bin/` e o adiciona ao PATH au
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
+irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 ```
 
 **Compilar a partir do código-fonte:**
