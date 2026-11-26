@@ -1055,6 +1055,35 @@ fn self_chat_so_nao_vira_turno_com_o_false_explicito() {
     assert!(!deve_responder(&a_terceiro, &opt_in));
 }
 
+/// #2002: a entrega de tarefa agendada, do jeito que sai pela ponte, volta
+/// pela conversa "Voce" (o eco que outro Garra da mesma conta le) e nao vira
+/// turno — o laco fecha de ponta a ponta, e nao so "a marca foi prefixada".
+/// Fora da conversa "Voce" a propria conta tambem nunca vira turno.
+#[tokio::test]
+async fn entrega_agendada_ecoada_na_conversa_voce_nao_vira_turno() {
+    let rt = WhatsAppLinkedRuntime::default();
+    let (tx, mut rx) = mpsc::channel(4);
+    rt.reter_saida(tx);
+    rt.set_bridge(BridgeView::Connected);
+    let chat = "5511888880000@s.whatsapp.net";
+    assert_eq!(rt.entregar_agendada(chat, "relatorio pronto").await, Ok(()));
+    let Ok(BridgeCommand::Send { text, .. }) = rx.try_recv() else {
+        panic!("a entrega nao saiu pela ponte");
+    };
+
+    let mut eco = msg(Some(&text));
+    eco.from_me = true;
+    eco.self_chat = true;
+    assert_eq!(por_que_sem_turno(&eco), Some(SemTurno::EcoDeOutroGarra));
+
+    let mut em_outro_chat = eco.clone();
+    em_outro_chat.self_chat = false;
+    assert_eq!(
+        por_que_sem_turno(&em_outro_chat),
+        Some(SemTurno::DaPropriaConta)
+    );
+}
+
 /// #1813 (revisao): a resposta de OUTRO Garra na mesma conta chega na
 /// conversa "Voce" com a marca invisivel e nunca vira turno; sem a marca, o
 /// dono digitando, vira.

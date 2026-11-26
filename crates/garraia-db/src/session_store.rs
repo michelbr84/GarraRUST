@@ -464,7 +464,7 @@ impl SessionStore {
     /// COLUMN` forward-only. Usa a funcao-tabela `pragma_table_info(?)`
     /// (SQLite >= 3.16) para o nome da tabela entrar como bind e nao como
     /// texto interpolado no SQL (regra 5 do CLAUDE.md).
-    fn column_exists(&self, table: &str, column: &str) -> Result<bool> {
+    pub(crate) fn column_exists(&self, table: &str, column: &str) -> Result<bool> {
         let count: i64 = self
             .conn
             .query_row(

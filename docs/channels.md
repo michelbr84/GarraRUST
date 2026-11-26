@@ -65,9 +65,12 @@ catches *identical* repeated calls — so a confused or manipulated agent could
 otherwise send dozens of distinct messages. A refused send does not consume the
 quota.
 
-Scheduled tasks (`schedule_heartbeat`, `schedule_recurring`) use the same
-delivery path. Before `v0.3.9` their Telegram delivery silently failed, because
-nothing ever wrote the chat address into the outgoing message (issue #921).
+Scheduled tasks (`schedule_heartbeat`, `schedule_recurring`) are delivered to
+the chat they were created in. Before `v0.3.9` their Telegram delivery silently
+failed, because nothing ever wrote the chat address into the outgoing message
+(issue #921). Discord, Slack, Matrix and linked WhatsApp are delivered too
+(#2002); see
+[Where a scheduled reply is delivered](configuration.md#where-a-scheduled-reply-is-delivered).
 
 A scheduled task runs with the authority of whoever created it, and its reply
 starts with a notice when a limit blocked what it needed. See

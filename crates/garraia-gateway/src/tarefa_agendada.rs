@@ -37,10 +37,8 @@
 //! E a tarefa diz quando um limite atrapalhou: se um teto barrar o que ela
 //! pediu, ou se ela rodar com acesso reduzido, a RESPOSTA dela comeca pelo
 //! aviso, com o motivo e o que fazer. A resposta vai para o historico da
-//! sessao e para o ledger de runs sempre; chegar ao canal depende de o
-//! agendador ter entrega para ele — hoje so o Telegram. No WhatsApp vinculado
-//! a saida mora no sink do canal, fora do `AppState.channels`, e a resposta de
-//! uma tarefa agendada nao e empurrada (limitacao anterior a este modulo).
+//! sessao e para o ledger de runs sempre; chegar ao canal e com
+//! [`crate::entrega_agendada`] (#2002), que registra o desfecho no ledger.
 
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};

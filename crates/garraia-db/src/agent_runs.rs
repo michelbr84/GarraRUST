@@ -62,6 +62,12 @@ pub struct AgentRunRow {
     pub finished_at: Option<String>,
     pub result_snippet: Option<String>,
     pub error_snippet: Option<String>,
+    /// #2002: o desfecho da entrega da resposta ao canal, quando o run passou
+    /// por uma (tarefa agendada): `entregue`, `sem_entrega` (o canal da sessao
+    /// nao tem entrega ativa) ou `nao_entregue:<motivo>`. `None` para run que
+    /// nao entrega nada (sub-agente) e para run anterior a coluna.
+    #[serde(default)]
+    pub delivery: Option<String>,
 }
 
 /// Le uma linha completa de `agent_runs` na ordem de colunas usada pelas
@@ -78,6 +84,7 @@ fn map_run_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRunRow> {
         finished_at: r.get(6)?,
         result_snippet: r.get(7)?,
         error_snippet: r.get(8)?,
+        delivery: r.get(9)?,
     })
 }
 
@@ -103,7 +110,8 @@ impl SessionStore {
                     started_at TEXT NOT NULL DEFAULT (datetime('now')),
                     finished_at TEXT,
                     result_snippet TEXT,
-                    error_snippet TEXT
+                    error_snippet TEXT,
+                    delivery TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_agent_runs_status
                     ON agent_runs(status);
@@ -111,6 +119,12 @@ impl SessionStore {
                     ON agent_runs(started_at);",
             )
             .map_err(|e| Error::Database(e.to_string()))?;
+        // #2002: ledger de antes da coluna de entrega. Aditiva, forward-only.
+        if !self.column_exists("agent_runs", "delivery")? {
+            self.conn
+                .execute_batch("ALTER TABLE agent_runs ADD COLUMN delivery TEXT")
+                .map_err(|e| Error::Database(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -161,6 +175,21 @@ impl SessionStore {
         Ok(())
     }
 
+    /// #2002: grava o desfecho da entrega da resposta de um run (ver
+    /// [`AgentRunRow::delivery`]). Vale para run em qualquer status — a
+    /// entrega acontece depois de a resposta existir. `false` quando nenhum
+    /// run tem esse `id`; nada e criado.
+    pub fn set_agent_run_delivery(&self, id: &str, delivery: &str) -> Result<bool> {
+        let alteradas = self
+            .conn
+            .execute(
+                "UPDATE agent_runs SET delivery = ?2 WHERE id = ?1",
+                rusqlite::params![id, truncate(delivery)],
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(alteradas > 0)
+    }
+
     /// Recuperação pós-restart: runs `running` viram `interrupted` e são
     /// devolvidos para auditoria/ação do operador.
     pub fn mark_interrupted_runs(&self) -> Result<Vec<AgentRunRow>> {
@@ -183,6 +212,7 @@ impl SessionStore {
                     finished_at: None,
                     result_snippet: None,
                     error_snippet: None,
+                    delivery: None,
                 })
             })
             .map_err(|e| Error::Database(e.to_string()))?
@@ -207,7 +237,7 @@ impl SessionStore {
             .conn
             .prepare(
                 "SELECT id, session_id, goal, mode, status, started_at, finished_at,
-                        result_snippet, error_snippet
+                        result_snippet, error_snippet, delivery
                  FROM agent_runs ORDER BY started_at DESC, id DESC LIMIT ?1",
             )
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -233,7 +263,7 @@ impl SessionStore {
             .conn
             .prepare(
                 "SELECT id, session_id, goal, mode, status, started_at, finished_at,
-                        result_snippet, error_snippet
+                        result_snippet, error_snippet, delivery
                  FROM agent_runs WHERE status = ?1
                  ORDER BY started_at DESC, id DESC LIMIT ?2",
             )
@@ -427,6 +457,63 @@ mod tests {
         let st = SessionStore::in_memory().unwrap();
         st.create_agent_runs_table().unwrap();
         st
+    }
+
+    /// #2002: o desfecho da entrega da resposta fica no run, e as duas
+    /// listagens o trazem.
+    #[test]
+    fn entrega_fica_registrada_no_run() {
+        let st = store();
+        st.start_agent_run("run-1", Some("s-1"), "relatorio", Some("heartbeat"))
+            .unwrap();
+        st.finish_agent_run("run-1", RunStatus::Done, Some("pronto"), None)
+            .unwrap();
+        assert!(
+            st.set_agent_run_delivery("run-1", "nao_entregue:teto")
+                .unwrap()
+        );
+
+        let rows = st.list_recent_agent_runs(10).unwrap();
+        assert_eq!(rows[0].delivery.as_deref(), Some("nao_entregue:teto"));
+        let rows = st
+            .list_recent_agent_runs_by_status(&RunStatus::Done, 10)
+            .unwrap();
+        assert_eq!(rows[0].delivery.as_deref(), Some("nao_entregue:teto"));
+        assert!(
+            !st.set_agent_run_delivery("nao-existe", "entregue").unwrap(),
+            "run desconhecido nao e criado"
+        );
+    }
+
+    /// Run que nao passou por entrega (sub-agente, run antigo) fica sem.
+    #[test]
+    fn run_sem_entrega_fica_sem_o_campo() {
+        let st = store();
+        st.start_agent_run("run-1", None, "x", None).unwrap();
+        st.finish_agent_run("run-1", RunStatus::Done, Some("ok"), None)
+            .unwrap();
+        assert_eq!(st.list_recent_agent_runs(10).unwrap()[0].delivery, None);
+    }
+
+    /// Banco de antes do #2002: a coluna chega por `ALTER TABLE`, aditiva.
+    #[test]
+    fn ledger_antigo_ganha_a_coluna_de_entrega() {
+        let st = store();
+        st.conn
+            .execute_batch("ALTER TABLE agent_runs DROP COLUMN delivery")
+            .unwrap();
+        st.start_agent_run("antigo", None, "x", None).unwrap();
+
+        st.create_agent_runs_table().unwrap();
+        assert!(st.set_agent_run_delivery("antigo", "sem_entrega").unwrap());
+        st.create_agent_runs_table().unwrap();
+        assert_eq!(
+            st.list_recent_agent_runs(10).unwrap()[0]
+                .delivery
+                .as_deref(),
+            Some("sem_entrega"),
+            "idempotente e sem perder dado"
+        );
     }
 
     #[test]

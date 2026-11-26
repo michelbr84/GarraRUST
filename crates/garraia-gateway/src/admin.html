@@ -763,7 +763,14 @@ var pages = {
 function navigate(page) {
   if (mcpRefreshTimer !== null) { clearInterval(mcpRefreshTimer); mcpRefreshTimer = null; }
   if (auditAutoRefresh !== null) { clearInterval(auditAutoRefresh); auditAutoRefresh = null; }
-  if (!pages[page]) page = 'dashboard';
+  // Posse propria, nao veracidade: `pages` e um objeto literal, entao
+  // `pages['__proto__']`, `pages['constructor']` e `pages['toString']` tambem
+  // sao verdadeiros. `page` vem de `location.hash`, ou seja, de qualquer link
+  // que o admin abrir (#1996, alerta CodeQL js/unvalidated-dynamic-method-call).
+  // A forma tambem importa (#2008): o CodeQL so trata o filtro como barreira
+  // com `Object.hasOwn` (a forma reflexiva `hasOwnProperty.call` nao conta) e
+  // com o ternario; `if (!...) page = 'dashboard'` mantem o alerta aberto.
+  page = Object.hasOwn(pages, page) ? page : 'dashboard';
   currentPage = page;
   location.hash = '#' + page;
   document.getElementById('page-title').textContent = pageTitle(page);
