@@ -6,6 +6,8 @@ use garraia_gateway::GatewayServer;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 
+mod config_dir_descartavel;
+
 /// Pick a random available port.
 fn random_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind to random port");
@@ -15,6 +17,9 @@ fn random_port() -> u16 {
 /// Start the gateway in the background and return the origin
 /// (`ws://127.0.0.1:{port}`), without a path.
 async fn start_test_gateway_base(config: AppConfig) -> String {
+    // #2021: sem isto o boot usa o admin.db e o master.key de quem roda os
+    // testes.
+    config_dir_descartavel::isolar();
     let port = config.gateway.port;
     tokio::spawn(async move {
         let server = GatewayServer::new(config);
