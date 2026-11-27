@@ -65,13 +65,16 @@ the `delivery` column: `entregue`, `sem_entrega` or `nao_entregue:<reason>`.
 
 - **Paired over IRC up to v0.5.2:** the allowlist entry has no `irc:` prefix
   and no longer works on IRC. The person needs a new `/pair` code, which the
-  owner generates on Telegram or Discord. The bot stays silent with anyone it
-  turns away.
-- **Owner paired over IRC:** the `owner` in `allowlist.json` is your nick,
-  without `irc:`. That owner has nowhere to generate a code, not even on an
-  IRC-only installation. With the gateway stopped, change `"<nick>"` to
-  `"irc:<nick>"` in `owner` and in `users`, then start it again. Only do this
-  for the nick that is yours.
+  owner generates on Telegram or Discord, on a channel where they are the
+  owner. The bot stays silent with anyone it turns away.
+- **Nowhere to generate a code:** this happens when the owner was paired over
+  IRC, because the other channels' `/pair` only answers that channel's owner,
+  and on an IRC-only installation. The CLI and the API do not generate codes,
+  so the way out is the file. With the gateway stopped, change `"<nick>"` to
+  `"irc:<nick>"` in `allowlist.json`, in `owner` for the owner and in `users`
+  for each affected person, then start it again. Only do this for nicks you
+  know: `irc:<nick>` admits whoever uses that nick on the server. The welcome
+  message IRC sends the new owner points to the same path.
 - **`admin.db` that does not open:** the boot is refused, naming the file. Fix
   the permission or the disk space, or restore from backup.
 - **`/admin` answering 503:** see the guide above.

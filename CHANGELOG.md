@@ -36,12 +36,13 @@ que afeta da v0.4.1 a v0.5.2. Quem tem canal IRC configurado deve atualizar.
 
 - **Pareados pelo IRC ate a v0.5.2:** a entrada na allowlist nao tem o
   prefixo `irc:` e deixa de valer no IRC. A pessoa precisa de um codigo novo
-  de `/pair`, que o dono gera no Telegram ou no Discord. O bot fica em silencio
-  com quem e barrado.
-- **Dono pareado pelo IRC:** o `owner` do `allowlist.json` e o seu nick, sem
-  `irc:`. Esse dono nao tem onde gerar o codigo. Com o gateway parado, troque
-  `"<nick>"` por `"irc:<nick>"` no `owner` e em `users` e suba de novo (ver
-  `docs/hardening-gateway.md`).
+  de `/pair`, que o dono gera no Telegram ou no Discord, num canal em que ele
+  e o dono. O bot fica em silencio com quem e barrado.
+- **Sem onde gerar o codigo** (dono pareado pelo IRC, ou deploy so de IRC): a
+  CLI e a API nao geram codigo, e a saida e o arquivo. Com o gateway parado,
+  troque `"<nick>"` por `"irc:<nick>"` no `allowlist.json`, no `owner` para o
+  dono e em `users` para cada pessoa afetada, e suba de novo. Faca isso so
+  para nicks que voce conhece (ver `docs/hardening-gateway.md`).
 - **`admin.db` que existe e nao abre** recusa o boot, nomeando o arquivo.
   Corrija a permissao ou o espaco em disco, ou restaure de backup.
 - **`/admin` em 503:** ver `docs/security.md`, "Admin console answering 503".
@@ -141,6 +142,11 @@ que afeta da v0.4.1 a v0.5.2. Quem tem canal IRC configurado deve atualizar.
   diretorio descartavel. Os quatro testes desviam o config dir para um
   temporario, e um teste novo varre os `tests/` e reprova quem subir o
   `GatewayServer` sem isso.
+- **A mensagem de boas-vindas ao dono no IRC deixa de mandar usar `/pair` (#2028).**
+  O IRC nao trata comandos, e o `/pair` dos outros canais so atende o dono
+  daquele canal, nao um nick de IRC: a instrucao nao tinha como funcionar. A
+  mensagem agora aponta o caminho que funciona, acrescentar `"irc:<nick>"` em
+  `users` do `allowlist.json` com o gateway parado.
 
 ### Security
 - **Chave mestra do admin nao recua mais para o salt constante legado
@@ -244,9 +250,13 @@ que afeta da v0.4.1 a v0.5.2. Quem tem canal IRC configurado deve atualizar.
   automatica das entradas sem prefixo para a forma `irc:`, que a #2015 tinha
   posto na `main` e que nenhuma versao lancou: ela estendia o mesmo acesso as
   outras grafias do nick. **Quem foi pareado pelo IRC antes desta versao precisa
-  de um codigo novo de `/pair`**, gerado pelo dono em outro canal. Um dono que
-  so usa o IRC troca `"<nick>"` por `"irc:<nick>"` no `owner` e em `users` do
-  `allowlist.json`, com o gateway parado. Ver `docs/hardening-gateway.md`.
+  de um codigo novo de `/pair`**, gerado pelo dono num canal que trata comandos
+  e em que ele e o dono. Quando nao ha onde gerar o codigo, a saida e o
+  arquivo: com o gateway parado, troque `"<nick>"` por `"irc:<nick>"` no
+  `allowlist.json`, no `owner` e em `users`. Isso vale quando o dono foi
+  pareado pelo IRC, ja que o `/pair` dos outros canais so atende o dono
+  daquele canal, e quando o deploy e so de IRC. Ver
+  `docs/hardening-gateway.md`.
 
 
 ## [0.5.2] - 2026-11-25

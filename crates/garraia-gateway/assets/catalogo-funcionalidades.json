@@ -432,7 +432,7 @@
       "summary": "Canal de conversa pelo IRC.",
       "prerequisites": [
         "config channels.irc habilitado",
-        "pareamento por código de /pair que o dono gera no Telegram ou no Discord: o IRC não trata comandos"
+        "pareamento por código de /pair que o dono gera no Telegram ou no Discord, num canal em que ele é o dono: o IRC não trata comandos; sem esse canal (dono pareado pelo IRC ou deploy só de IRC), a entrada irc:<nick> vai à mão em users do allowlist.json, com o gateway parado"
       ],
       "limitations": [
         "a allowlist só aceita entradas irc:<nick>, comparadas pelo CASEMAPPING do servidor; entrada sem prefixo (pareamento até a v0.5.2) não vale no IRC e pede um código novo de /pair (GHSA-g6c8-mx6x-5g92)",

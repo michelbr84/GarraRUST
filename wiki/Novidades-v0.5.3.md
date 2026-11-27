@@ -63,12 +63,16 @@ desfecho na coluna `delivery`: `entregue`, `sem_entrega` ou
 
 - **Pareados pelo IRC até a v0.5.2:** a entrada na allowlist não tem o
   prefixo `irc:` e deixa de valer no IRC. A pessoa precisa de um código novo
-  de `/pair`, que o dono gera no Telegram ou no Discord. O bot fica em
-  silêncio com quem é barrado.
-- **Dono pareado pelo IRC:** o `owner` do `allowlist.json` é o seu nick, sem
-  `irc:`. Esse dono não tem onde gerar o código, nem numa instalação que só
-  usa o IRC. Com o gateway parado, troque `"<nick>"` por `"irc:<nick>"` no
-  `owner` e em `users` e suba de novo. Faça isso só para o nick que é seu.
+  de `/pair`, que o dono gera no Telegram ou no Discord, num canal em que ele
+  é o dono. O bot fica em silêncio com quem é barrado.
+- **Sem onde gerar o código:** isso acontece quando o dono foi pareado pelo
+  IRC, porque o `/pair` dos outros canais só atende o dono daquele canal, e
+  quando a instalação só usa o IRC. A CLI e a API não geram código, e a saída
+  é o arquivo. Com o gateway parado, troque `"<nick>"` por `"irc:<nick>"` no
+  `allowlist.json`, no `owner` para o dono e em `users` para cada pessoa
+  afetada, e suba de novo. Faça isso só para nicks que você conhece:
+  `irc:<nick>` admite quem usar aquele nick no servidor. A mensagem de
+  boas-vindas que o IRC manda ao novo dono aponta o mesmo caminho.
 - **`admin.db` que não abre:** o boot é recusado com o nome do arquivo.
   Corrija a permissão ou o espaço em disco, ou restaure de backup.
 - **`/admin` em 503:** veja o guia acima.
