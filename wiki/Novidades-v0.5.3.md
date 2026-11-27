@@ -46,10 +46,10 @@ Guia: [docs/security.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/
 ## Tarefas agendadas respondem em mais canais (#2002)
 
 A resposta de uma tarefa agendada chega ao Discord, ao Slack, ao Matrix e ao
-WhatsApp vinculado, além do Telegram. IRC e iMessage ficam sem entrega, de
-propósito. O `garraia runs list`, o `--json` e o `GET /api/runs` mostram o
-desfecho na coluna `delivery`: `entregue`, `sem_entrega` ou
-`nao_entregue:<motivo>`.
+WhatsApp vinculado, além do Telegram. Os demais canais ficam sem entrega; no
+IRC e no iMessage, de propósito. O `garraia runs list`, o `--json` e o
+`GET /api/runs` mostram o desfecho na coluna `delivery`: `entregue`,
+`sem_entrega` ou `nao_entregue:<motivo>`.
 
 ## Instaladores (#2016, #2023)
 

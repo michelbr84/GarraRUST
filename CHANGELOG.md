@@ -14,13 +14,13 @@ Ela corrige o aviso
 [GHSA-g6c8-mx6x-5g92](https://github.com/michelbr84/GarraRUST/security/advisories/GHSA-g6c8-mx6x-5g92),
 que afeta da v0.4.1 a v0.5.2. Quem tem canal IRC configurado deve atualizar.
 
-- **IRC: allowlist, sessao privada e comandos** (GHSA-g6c8-mx6x-5g92, #2007,
-  #2011, #2015). Um nick igual ao id de alguem admitido por outro canal (o id
-  do Slack e um nick valido) passava pela allowlist como aquela pessoa,
-  inclusive como o dono. Agora o IRC so aceita entradas `irc:<nick>`,
-  comparadas pelo `CASEMAPPING` do servidor. Cada conversa privada tem a
-  propria sessao, quando antes todas caiam juntas na sessao do nick do bot. E
-  a resposta do modelo nao vira mais comando IRC.
+- **IRC: allowlist** (GHSA-g6c8-mx6x-5g92, #2015). Um nick igual ao id de
+  alguem admitido por outro canal (o id do Slack e um nick valido) passava
+  pela allowlist como aquela pessoa, inclusive como o dono. Agora o IRC so
+  aceita entradas `irc:<nick>`, comparadas pelo `CASEMAPPING` do servidor.
+- **IRC: sessao privada e comandos** (#2011, #2007). Cada conversa privada
+  tem a propria sessao, quando antes todas caiam juntas na sessao do nick do
+  bot. E a resposta do modelo nao vira mais comando IRC.
 - **Console do admin fail-closed** (#1992, #2000, #2013). Com a chave mestra
   num estado inseguro ou errado, o `/admin` responde 503
   `{"error":"admin_unavailable"}` com o motivo no log, em vez de derivar uma
@@ -65,10 +65,10 @@ que afeta da v0.4.1 a v0.5.2. Quem tem canal IRC configurado deve atualizar.
   quem criou a tarefa ainda admitido: contato bloqueado ou removido nao
   recebe), so sai com a ponte conectada, tem teto proprio de 3 por chat por
   minuto, separado da cadencia dos turnos, e leva a marca invisivel de
-  auto-conversa. IRC e iMessage continuam sem entrega, de proposito (ver
-  `docs/configuration.md`). O ledger de runs ganha a coluna `delivery`
-  (`entregue`, `sem_entrega` ou `nao_entregue:<motivo>`), mostrada pelo
-  `garraia runs list`, pelo `--json` e pelo `GET /api/runs`.
+  auto-conversa. Os demais canais ficam sem entrega; no IRC e no iMessage,
+  de proposito (ver `docs/configuration.md`). O ledger de runs ganha a coluna
+  `delivery` (`entregue`, `sem_entrega` ou `nao_entregue:<motivo>`), mostrada
+  pelo `garraia runs list`, pelo `--json` e pelo `GET /api/runs`.
 
 ### Changed
 - **`line` velho no ledger CodeQL reprova o CI (#1993, item 2).**

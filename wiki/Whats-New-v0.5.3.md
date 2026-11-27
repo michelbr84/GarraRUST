@@ -48,9 +48,10 @@ Guide: [docs/security.md](https://github.com/michelbr84/GarraRUST/blob/main/docs
 ## Scheduled tasks reply on more channels (#2002)
 
 A scheduled task's reply now reaches Discord, Slack, Matrix and linked
-WhatsApp, as well as Telegram. IRC and iMessage stay without delivery, on
-purpose. `garraia runs list`, `--json` and `GET /api/runs` show the outcome in
-the `delivery` column: `entregue`, `sem_entrega` or `nao_entregue:<reason>`.
+WhatsApp, as well as Telegram. The other channels stay without delivery; on
+IRC and iMessage, on purpose. `garraia runs list`, `--json` and
+`GET /api/runs` show the outcome in the `delivery` column: `entregue`,
+`sem_entrega` or `nao_entregue:<reason>`.
 
 ## Installers (#2016, #2023)
 
