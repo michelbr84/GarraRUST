@@ -70,10 +70,11 @@ the `delivery` column: `entregue`, `sem_entrega` or `nao_entregue:<reason>`.
 - **Nowhere to generate a code:** this happens when the owner was paired over
   IRC, because the other channels' `/pair` only answers that channel's owner,
   and on an IRC-only installation. The CLI and the API do not generate codes,
-  so the way out is the file. With the gateway stopped, change `"<nick>"` to
-  `"irc:<nick>"` in `allowlist.json`, in `owner` for the owner and in `users`
-  for each affected person, then start it again. Only do this for nicks you
-  know: `irc:<nick>` admits whoever uses that nick on the server. The welcome
+  so the way out is the file. With the gateway stopped, change every
+  `"<nick>"` to `"irc:<nick>"` in `allowlist.json`, then start it again. That
+  means `users`, for each affected person and for the owner too, and `owner`.
+  Changing `owner` alone is not enough: on IRC, `users` is what lets people
+  in. Only do this for nicks you know: `irc:<nick>` admits whoever uses that nick on the server. The welcome
   message IRC sends the new owner points to the same path.
 - **`admin.db` that does not open:** the boot is refused, naming the file. Fix
   the permission or the disk space, or restore from backup.

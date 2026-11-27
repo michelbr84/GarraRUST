@@ -40,9 +40,11 @@ que afeta da v0.4.1 a v0.5.2. Quem tem canal IRC configurado deve atualizar.
   e o dono. O bot fica em silencio com quem e barrado.
 - **Sem onde gerar o codigo** (dono pareado pelo IRC, ou deploy so de IRC): a
   CLI e a API nao geram codigo, e a saida e o arquivo. Com o gateway parado,
-  troque `"<nick>"` por `"irc:<nick>"` no `allowlist.json`, no `owner` para o
-  dono e em `users` para cada pessoa afetada, e suba de novo. Faca isso so
-  para nicks que voce conhece (ver `docs/hardening-gateway.md`).
+  troque cada `"<nick>"` por `"irc:<nick>"` no `allowlist.json` e suba de
+  novo. A troca vale em `users`, para cada pessoa afetada e tambem para o
+  dono, e no `owner`. Trocar so o `owner` nao basta: no IRC, quem admite e
+  `users`. Faca isso so para nicks que voce conhece (ver
+  `docs/hardening-gateway.md`).
 - **`admin.db` que existe e nao abre** recusa o boot, nomeando o arquivo.
   Corrija a permissao ou o espaco em disco, ou restaure de backup.
 - **`/admin` em 503:** ver `docs/security.md`, "Admin console answering 503".

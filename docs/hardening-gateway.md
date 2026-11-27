@@ -255,10 +255,19 @@ e nenhuma entrada sem prefixo vira `irc:` sozinha.
   - **o deploy e so de IRC.**
 
   O codigo de pareamento so sai do `/pair` dos canais que tratam comandos:
-  a CLI e a API nao geram codigo. Com o gateway parado, troque `"<nick>"` por
-  `"irc:<nick>"` no `allowlist.json`: no `owner`, para o dono, e em `users`,
-  para cada pessoa afetada. Suba o gateway de novo. Faca isso so para nicks
-  que voce conhece: `irc:<nick>` admite quem usar aquele nick no servidor. A
+  a CLI e a API nao geram codigo. Com o gateway parado, troque cada
+  `"<nick>"` por `"irc:<nick>"` no `allowlist.json` e suba o gateway de novo.
+  A troca vale em `users`, para cada pessoa afetada e tambem para o dono, e
+  no `owner`. O dono esta nas duas chaves desde o pareamento, e trocar so o
+  `owner` nao basta: no IRC, quem admite e `users`. Exemplo, com a `ana` dona
+  e a `bia` pareadas pelo IRC ate a v0.5.2:
+
+  ```json
+  {"mode": "restricted", "owner": "irc:ana", "users": ["irc:ana", "irc:bia"]}
+  ```
+
+  As entradas dos outros canais ficam como estao. Faca isso so para nicks que
+  voce conhece: `irc:<nick>` admite quem usar aquele nick no servidor. A
   mensagem de boas-vindas que o IRC manda ao novo dono aponta este mesmo
   caminho.
 

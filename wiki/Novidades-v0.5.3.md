@@ -68,9 +68,11 @@ desfecho na coluna `delivery`: `entregue`, `sem_entrega` ou
 - **Sem onde gerar o código:** isso acontece quando o dono foi pareado pelo
   IRC, porque o `/pair` dos outros canais só atende o dono daquele canal, e
   quando a instalação só usa o IRC. A CLI e a API não geram código, e a saída
-  é o arquivo. Com o gateway parado, troque `"<nick>"` por `"irc:<nick>"` no
-  `allowlist.json`, no `owner` para o dono e em `users` para cada pessoa
-  afetada, e suba de novo. Faça isso só para nicks que você conhece:
+  é o arquivo. Com o gateway parado, troque cada `"<nick>"` por
+  `"irc:<nick>"` no `allowlist.json` e suba de novo. A troca vale em `users`,
+  para cada pessoa afetada e também para o dono, e no `owner`. Trocar só o
+  `owner` não basta: no IRC, quem admite é `users`. Faça isso só para nicks
+  que você conhece:
   `irc:<nick>` admite quem usar aquele nick no servidor. A mensagem de
   boas-vindas que o IRC manda ao novo dono aponta o mesmo caminho.
 - **`admin.db` que não abre:** o boot é recusado com o nome do arquivo.
