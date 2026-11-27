@@ -94,7 +94,7 @@ pub async fn admin_create_mcp(
     axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
     Json(body): Json<CreateMcpRequest>,
 ) -> impl IntoResponse {
-    use crate::mcp::{McpPersistenceService, McpServerConfig};
+    use crate::mcp::McpServerConfig;
 
     if !check_permission(admin.role, Resource::McpServers, Action::Create) {
         return (
@@ -145,12 +145,8 @@ pub async fn admin_create_mcp(
         .await;
 
     // Persist to mcp.json (GAR-291: with vault for credential encryption).
-    let svc = McpPersistenceService::with_default_path();
-    let svc = if let Some(vp) = crate::bootstrap::default_vault_path() {
-        svc.with_vault(vp)
-    } else {
-        svc
-    };
+    // #2033: no config dir do proprio estado, nao no padrao.
+    let svc = state.app_state.mcp_persistence();
     if let Err(e) = svc.save_from_registry(&state.app_state.mcp_registry).await {
         tracing::warn!("admin_create_mcp: failed to persist mcp.json: {e}");
     }
@@ -262,7 +258,7 @@ pub async fn admin_restart_mcp(
     // (`is_tool_allowed`), so the answer to "what was the allowlist?" has to
     // be resolved here, not flattened away.
     let live_config = state.app_state.current_config();
-    let declared = declared_mcp_servers(&live_config);
+    let declared = declared_mcp_servers(&live_config, state.app_state.config_dir());
     let (allowed_tools, allowlist_origin) =
         resolve_allowlist(manager, &declared, &server_name).await;
     tracing::info!(
@@ -454,22 +450,15 @@ enum AllowlistOrigin {
 /// This reads a file from an async handler. It is a single small file that
 /// the boot path already reads the same way, on an operator-triggered
 /// endpoint, so the block is not worth a `spawn_blocking` hop.
+///
+/// #2033: o `mcp.json` lido e o do config dir do `AppState`, nao o padrao —
+/// um estado montado sobre outro diretorio reiniciava com a allowlist do
+/// `mcp.json` real do operador.
 fn declared_mcp_servers(
     config: &garraia_config::AppConfig,
+    config_dir: &std::path::Path,
 ) -> HashMap<String, garraia_config::McpServerConfig> {
-    match garraia_config::ConfigLoader::new() {
-        Ok(loader) => loader.merged_mcp_config(config),
-        Err(e) => {
-            // Fail *narrow*, not open: without the config dir we still know
-            // what `config.yml` declares.
-            tracing::warn!(
-                error = %e,
-                "admin: could not open the config dir to read mcp.json; \
-                 restarting with only the 'mcp:' section of config.yml"
-            );
-            config.mcp.clone()
-        }
-    }
+    garraia_config::ConfigLoader::with_dir(config_dir).merged_mcp_config(config)
 }
 
 /// Resolve the allowlist to reconnect `server_name` with.
@@ -623,8 +612,6 @@ pub async fn admin_delete_mcp(
     axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
     axum::extract::Path(server_name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    use crate::mcp::McpPersistenceService;
-
     if !check_permission(admin.role, Resource::McpServers, Action::Delete) {
         return (
             StatusCode::FORBIDDEN,
@@ -690,12 +677,8 @@ pub async fn admin_delete_mcp(
     }
 
     // Persist updated config (server is already gone from registry).
-    let svc = McpPersistenceService::with_default_path();
-    let svc = if let Some(vp) = crate::bootstrap::default_vault_path() {
-        svc.with_vault(vp)
-    } else {
-        svc
-    };
+    // #2033: no config dir do proprio estado, nao no padrao.
+    let svc = state.app_state.mcp_persistence();
 
     // Clean up vault credentials for this server.
     svc.delete_server_vault_entries(&server_name);

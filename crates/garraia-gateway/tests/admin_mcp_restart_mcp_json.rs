@@ -52,10 +52,23 @@ fn fixture_args() -> Vec<String> {
 #[tokio::test]
 async fn restart_honours_an_allowlist_declared_in_mcp_json() {
     let dir = tempfile::tempdir().expect("temp config dir");
+    // #2033: the default config dir is a decoy whose `mcp.json` declares the
+    // same server with NO allowlist. The state is mounted on `dir` through
+    // `with_config_dir`; a restart that read the default dir's `mcp.json`
+    // would find nothing declared and reconnect the server unrestricted.
+    let decoy = tempfile::tempdir().expect("decoy default config dir");
+    std::fs::write(
+        decoy.path().join("mcp.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "mcpServers": { SERVER: { "command": "python3", "args": fixture_args() } }
+        }))
+        .expect("serialize decoy mcp.json"),
+    )
+    .expect("write decoy mcp.json");
     // SAFETY: dedicated test binary with a single test, so no other thread is
     // reading the environment concurrently.
     unsafe {
-        std::env::set_var("GARRAIA_CONFIG_DIR", dir.path());
+        std::env::set_var("GARRAIA_CONFIG_DIR", decoy.path());
         std::env::set_var(
             garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
             "1",
@@ -92,10 +105,14 @@ async fn restart_honours_an_allowlist_declared_in_mcp_json() {
         );
 
         // `config.yml` declares nothing — `mcp.json` is the only source.
-        let mut state = AppState::new(
-            AppConfig::default(),
+        let mut state = AppState::with_config_dir(
+            AppConfig {
+                data_dir: Some(dir.path().join("data")),
+                ..AppConfig::default()
+            },
             Arc::new(AgentRuntime::new()),
             ChannelRegistry::new(),
+            dir.path(),
         );
         assert!(
             state.config.mcp.is_empty(),

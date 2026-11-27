@@ -205,6 +205,12 @@ fn historico_gravado(guard: &SessionStore, session_id: &str) -> Vec<ChatMessage>
 /// Shared application state accessible from all request handlers.
 pub struct AppState {
     pub config: AppConfig,
+    /// #2033: o config dir sobre o qual este estado foi montado
+    /// (`with_config_dir`). O `mcp.json`, o cofre e a `allowlist.json` sao
+    /// lidos daqui no boot, e os handlers admin do MCP gravam e releem daqui
+    /// — nunca do `default_config_dir()`, que num estado montado sobre outro
+    /// diretorio apontaria para o config dir real do operador.
+    config_dir: std::path::PathBuf,
     /// #1459: as raizes das file tools nativas, resolvidas **uma** vez aqui,
     /// da mesma config e pela mesma funcao que `build_agent_runtime` usa para
     /// montar o jail. O `/api/diagnostics` (rota auth-free) e o `garra_status`
@@ -505,6 +511,7 @@ impl AppState {
         let workspace_mcp_http = crate::bootstrap::workspace_de_orquestradores(&config);
         Self {
             config,
+            config_dir: config_dir.to_path_buf(),
             raizes_das_file_tools,
             workspace_mcp_http,
             channels: tokio::sync::RwLock::new(channels),
@@ -579,6 +586,20 @@ impl AppState {
             // `AppState::jwt_signing_secret`.
             auth_config: None,
         }
+    }
+
+    /// #2033: o config dir deste estado (o que o `with_config_dir` recebeu;
+    /// o padrao, no `new` de producao).
+    pub fn config_dir(&self) -> &std::path::Path {
+        &self.config_dir
+    }
+
+    /// #2033: a persistencia do `mcp.json` deste estado, com o cofre do mesmo
+    /// config dir — o mesmo par que o `with_config_dir` usa para carregar o
+    /// registry. Os handlers admin do MCP gravam por aqui.
+    pub fn mcp_persistence(&self) -> crate::mcp::McpPersistenceService {
+        crate::mcp::McpPersistenceService::new(self.config_dir.join("mcp.json"))
+            .with_vault(garraia_config::vault_path_in(&self.config_dir))
     }
 
     /// Plan 0044 (GAR-395 slice 2): attach the object-store backend
