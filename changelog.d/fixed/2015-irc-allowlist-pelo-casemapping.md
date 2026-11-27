@@ -5,5 +5,5 @@
   `rfc1459`), e precisava de outro codigo de `/pair`. Agora as entradas do IRC
   sao `irc:<nick como veio>`, comparadas pelo `CASEMAPPING` anunciado quando a
   mensagem chega (sem anuncio, `ascii`), e as dos outros canais continuam
-  exatas. Uma entrada antiga, sem prefixo, vale exata como antes e ganha a forma
-  `irc:` na primeira admissao; para tirar alguem do IRC, apague as duas.
+  exatas. Uma entrada sem prefixo nao vale no IRC (GHSA-g6c8-mx6x-5g92, em
+  Security).
