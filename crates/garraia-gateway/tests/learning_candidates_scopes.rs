@@ -11,6 +11,8 @@
 //! trocados no ambiente deste binario de teste, que nao compartilha processo
 //! com nenhuma outra suite.
 
+mod config_dir_descartavel;
+
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
@@ -73,6 +75,9 @@ async fn candidatos_do_gateway_incluem_o_escopo_global_da_cli() {
     std::env::set_current_dir(&projeto).expect("cwd do projeto");
 
     let config = AppConfig::default();
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         config,
         Arc::new(AgentRuntime::new()),

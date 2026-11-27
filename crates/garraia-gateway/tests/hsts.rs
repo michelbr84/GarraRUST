@@ -14,6 +14,8 @@
 //! `X-Forwarded-Proto: https` (header presente em resposta de sucesso **e** de
 //! erro).
 
+mod config_dir_descartavel;
+
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -36,6 +38,9 @@ const HSTS: &str = "max-age=31536000";
 /// antes de qualquer camada sem ele (mesmo motivo do `api_key_gate.rs`).
 async fn pedido(uri: &str, headers: &[(&str, &str)]) -> Response<Body> {
     let config = AppConfig::default();
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         config,
         Arc::new(AgentRuntime::new()),

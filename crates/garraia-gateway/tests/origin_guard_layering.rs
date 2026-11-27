@@ -9,6 +9,8 @@
 //! camadas, e que o `CorsLayer` deixou de anunciar `allow_origin(Any)` na
 //! configuração default.
 
+mod config_dir_descartavel;
+
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
@@ -103,6 +105,9 @@ async fn pedido(
     let mut config = AppConfig::default();
     config.gateway.api_key = chave.map(str::to_string);
     config.gateway.allowed_origins = allowed_origins.iter().map(|o| (*o).to_string()).collect();
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         config,
         Arc::new(AgentRuntime::new()),

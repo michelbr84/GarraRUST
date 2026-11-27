@@ -5,6 +5,8 @@
 //! com ?fallback=false o erro propaga como 500. Isso trava o contrato entre
 //! gateway e clientes de voz contra regressoes acidentais.
 
+mod config_dir_descartavel;
+
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -44,6 +46,9 @@ fn router_com_tts_que_falha() -> axum::Router {
 fn router_com_tts(tts: Arc<dyn garraia_voice::TtsSynthesizer>) -> axum::Router {
     let mut config = AppConfig::default();
     config.voice.language = "es".into();
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let mut st = AppState::new(
         config,
         Arc::new(AgentRuntime::new()),

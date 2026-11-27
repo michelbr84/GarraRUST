@@ -22,6 +22,8 @@
 //! rota de webhook nova que ninguém pôs em `ROTAS` não escapa dos dois testes
 //! de tamanho por esquecimento.
 
+mod config_dir_descartavel;
+
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -75,6 +77,9 @@ fn toda_rota_de_webhook_do_router_esta_na_lista() {
 /// `ConnectInfo` é obrigatório: o rate limiter lê o IP do par e devolve 500
 /// antes de qualquer camada sem ele (mesmo motivo do `hsts.rs`).
 async fn post(uri: &str, corpo: Vec<u8>) -> StatusCode {
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         AppConfig::default(),
         Arc::new(AgentRuntime::new()),

@@ -28,6 +28,8 @@
 //! | `Role::Admin`                   | 201      |
 //! | `Role::Admin` + `env` bloqueada | 400      |
 
+mod config_dir_descartavel;
+
 use std::sync::Arc;
 
 use axum::Router;
@@ -66,6 +68,9 @@ struct Sessao {
 /// provisionar `sqlite` tambem, os testes falham alto em vez de virar
 /// assertiva vazia.
 async fn montar() -> (Router, Arc<AppState>, Arc<Mutex<AdminStore>>) {
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         AppConfig::default(),
         Arc::new(AgentRuntime::new()),
@@ -312,6 +317,9 @@ async fn install_no_router_de_producao_exige_admin() {
     use garraia_gateway::push_channels::PushChannelStates;
     use garraia_gateway::router::build_router;
 
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         AppConfig::default(),
         Arc::new(AgentRuntime::new()),

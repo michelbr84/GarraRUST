@@ -4,6 +4,8 @@
 //! expor caminho; e `GET /admin/api/capabilities?session_id=` da o painel de
 //! capacidades daquela conversa.
 
+mod config_dir_descartavel;
+
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
@@ -63,6 +65,9 @@ async fn sessoes_trazem_principal_modo_efetivo_e_projeto_sem_caminho() {
             settings,
         },
     );
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let mut state = AppState::new(
         config,
         Arc::new(AgentRuntime::new()),

@@ -11,6 +11,8 @@
 //! Nenhum teste usa rede nem relogio falso: o codigo vem de
 //! `totp::current_code`, que le a mesma hora que o handler vai ler.
 
+mod config_dir_descartavel;
+
 use std::sync::Arc;
 
 use axum::Router;
@@ -48,6 +50,9 @@ fn cenario() -> (Router, Arc<Mutex<AdminStore>>) {
         .expect("usuario de teste");
 
     let config = AppConfig::default();
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         config,
         Arc::new(AgentRuntime::new()),
@@ -250,6 +255,9 @@ async fn o_travamento_sobrevive_ao_restart_do_gateway() {
     // O restart: processo novo, store nova, mesmo arquivo.
     let reaberta = AdminStore::open(&path).expect("reabrir o admin.db");
     let config = AppConfig::default();
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         config,
         Arc::new(AgentRuntime::new()),
@@ -408,6 +416,9 @@ fn cenario_arquivo(
         .expect("usuario de teste");
 
     let config = AppConfig::default();
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         config,
         Arc::new(AgentRuntime::new()),

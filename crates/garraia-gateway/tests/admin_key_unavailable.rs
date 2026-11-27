@@ -7,6 +7,8 @@
 //! ou autenticada, qualquer metodo), o motivo nao vaza na resposta, e o resto
 //! do gateway continua atendendo.
 
+mod config_dir_descartavel;
+
 use std::sync::Arc;
 
 use axum::Router;
@@ -25,6 +27,9 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 fn router(admin_key: AdminKey) -> Router {
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         AppConfig::default(),
         Arc::new(AgentRuntime::new()),

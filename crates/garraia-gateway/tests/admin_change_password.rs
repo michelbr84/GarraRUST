@@ -10,6 +10,8 @@
 //! * cada terminal escreve auditoria, com o outcome certo;
 //! * as outras sessoes do usuario sao revogadas, e a que fez o pedido nao.
 
+mod config_dir_descartavel;
+
 use std::sync::Arc;
 
 use axum::Router;
@@ -44,6 +46,9 @@ struct Sessao {
 /// enxergando depois do pedido — e assim que ele confere o efeito colateral.
 fn router_com_store() -> (Router, Arc<Mutex<AdminStore>>) {
     let config = AppConfig::default();
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         config,
         Arc::new(AgentRuntime::new()),

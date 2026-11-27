@@ -2752,6 +2752,48 @@ pub(crate) fn select_web_search_backend(
 mod tests {
     use super::*;
 
+    /// #2027: o runtime de um teste, com o `data_dir` que ele usou.
+    ///
+    /// `super::build_agent_runtime` abre o `config.memory_db_path()` (liga WAL
+    /// e roda as migrations do `MemoryStore`). Com `data_dir: None` esse e o
+    /// `<config_dir>/data/memory.db` de quem roda `cargo test`, e uma branch
+    /// com migration nova migraria a memoria real do operador. O tempdir vive
+    /// aqui dentro porque o runtime segura o banco aberto: o campo `runtime`
+    /// e declarado antes, entao cai antes do diretorio.
+    struct RuntimeIsolado {
+        runtime: AgentRuntime,
+        _data_dir: Option<tempfile::TempDir>,
+    }
+
+    impl std::ops::Deref for RuntimeIsolado {
+        type Target = AgentRuntime;
+        fn deref(&self) -> &AgentRuntime {
+            &self.runtime
+        }
+    }
+
+    /// Sombra do `super::build_agent_runtime` para todo este modulo: um
+    /// `data_dir` declarado pelo teste vence; sem ele, um tempdir proprio da
+    /// chamada (nunca compartilhado, para um teste que cria o workspace nao
+    /// mudar o resultado de outro).
+    fn build_agent_runtime(config: &AppConfig) -> RuntimeIsolado {
+        if config.data_dir.is_some() {
+            return RuntimeIsolado {
+                runtime: super::build_agent_runtime(config),
+                _data_dir: None,
+            };
+        }
+        let dir = tempfile::tempdir().expect("data_dir descartavel");
+        let isolada = AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..config.clone()
+        };
+        RuntimeIsolado {
+            runtime: super::build_agent_runtime(&isolada),
+            _data_dir: Some(dir),
+        }
+    }
+
     /// Uma recusa do jail das file tools: `DENIAL_MESSAGE` (caminho fora das
     /// raizes / nao resolveu) ou `NO_ROOTS_MESSAGE` (#1418: nenhuma raiz na
     /// sessao). As duas sao recusa; nenhuma carrega caminho.
@@ -4362,7 +4404,13 @@ Corpo do skill de teste.
     }
 
     /// O boot, na ordem de `server.rs`.
-    fn boot(config: &AppConfig) -> AgentRuntime {
+    fn boot(config: &AppConfig) -> RuntimeIsolado {
+        // #2027: sem `data_dir` proprio o workspace seria criado no config
+        // dir do operador; os chamadores usam `config_limpa`.
+        assert!(
+            config.data_dir.is_some(),
+            "boot() pede um data_dir de teste"
+        );
         garantir_workspace_padrao(config);
         build_agent_runtime(config)
     }

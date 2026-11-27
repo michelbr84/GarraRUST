@@ -7,9 +7,15 @@
 //! do operador. Com um `master.key` de tamanho errado e o `admin.db` real
 //! vazio, por exemplo, o boot troca a chave do operador por outra.
 //!
+//! #2027: o `AppState::new` tambem resolve o config dir — provisiona o
+//! `mcp.json` (e o `data/workspace/`), le o `allowlist.json` e liga o cofre do
+//! caminho padrao, que decifra as referencias `vault:` do `mcp.json` real se a
+//! passphrase estiver no ambiente. Quem chama um dos dois entra na varredura.
+//!
 //! O teste varre os `tests/` de todas as crates. Quem chama
-//! `GatewayServer::new` precisa chamar `config_dir_descartavel::isolar()` ou
-//! apontar `GARRAIA_CONFIG_DIR` para um diretorio proprio.
+//! `GatewayServer::new` ou `AppState::new` precisa chamar
+//! `config_dir_descartavel::isolar()` ou apontar `GARRAIA_CONFIG_DIR` para um
+//! diretorio proprio.
 //!
 //! A checagem e textual, por arquivo, e erra para o lado seguro: um teste que
 //! isole por outro caminho (um helper em outro modulo) e reprovado ate
@@ -59,7 +65,7 @@ fn quem_sobe_o_gateway_isola_o_config_dir() {
         }
         let fonte = std::fs::read_to_string(caminho)
             .unwrap_or_else(|e| panic!("ler {}: {e}", caminho.display()));
-        if !fonte.contains("GatewayServer::new(") {
+        if !fonte.contains("GatewayServer::new(") && !fonte.contains("AppState::new(") {
             continue;
         }
         sobem += 1;
@@ -77,8 +83,9 @@ fn quem_sobe_o_gateway_isola_o_config_dir() {
     );
     assert!(
         sem_isolamento.is_empty(),
-        "estes testes sobem o GatewayServer com o config dir de quem roda cargo test \
-         (admin.db, master.key e sessions.db reais); chame \
-         config_dir_descartavel::isolar() antes de subir o servidor: {sem_isolamento:#?}"
+        "estes testes sobem o GatewayServer ou montam o AppState com o config dir de \
+         quem roda cargo test (admin.db, master.key, sessions.db, mcp.json, \
+         allowlist.json e cofre reais); chame config_dir_descartavel::isolar() \
+         antes: {sem_isolamento:#?}"
     );
 }

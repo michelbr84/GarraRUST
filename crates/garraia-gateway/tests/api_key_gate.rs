@@ -22,6 +22,8 @@
 //! Quem for "consertar" isto de volta para um `starts_with("/api/")` único
 //! está reabrindo a #1240: o recorte agora é por conjunto explícito.
 
+mod config_dir_descartavel;
+
 use std::sync::Arc;
 
 use axum::Router;
@@ -42,6 +44,9 @@ const CHAVE: &str = "chave-de-teste-do-gateway";
 fn router_com(chave: Option<&str>) -> Router {
     let mut config = AppConfig::default();
     config.gateway.api_key = chave.map(str::to_string);
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         config,
         Arc::new(AgentRuntime::new()),

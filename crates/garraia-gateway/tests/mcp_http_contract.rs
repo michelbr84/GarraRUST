@@ -20,6 +20,8 @@
 //! mais fundo que da para escrever aqui prova que o portao **abriu**, e a
 //! recusa passou a ser "canal fora do ar" em vez de "nao autorizado".
 
+mod config_dir_descartavel;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -121,6 +123,9 @@ async fn post_mcp(l: Ligacao, bearer: Option<&str>, corpo: Value) -> Response<Bo
 /// estado **depois** de mais de um pedido. O `post_mcp` acima descarta o state
 /// porque a maioria dos casos so olha a resposta.
 fn router_e_state(l: Ligacao) -> (axum::Router, Arc<AppState>) {
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         config_de(l),
         Arc::new(AgentRuntime::new()),
@@ -831,6 +836,9 @@ async fn falha_de_entrega_nao_ecoa_o_erro_do_canal() {
 /// montam o router uma vez e o reusam entre pedidos (o teto de chamadas mora
 /// nele), e quem faz o pedido injeta o par em `pedir_ask`.
 fn router_com(config: AppConfig) -> axum::Router {
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         config,
         Arc::new(AgentRuntime::new()),
@@ -1102,6 +1110,9 @@ fn config_com_orquestradores(
 
 /// O router e o `AppState` de uma config pronta (sem passar pela `Ligacao`).
 fn router_e_estado(config: AppConfig) -> (axum::Router, Arc<AppState>) {
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         config,
         Arc::new(AgentRuntime::new()),

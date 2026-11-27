@@ -12,6 +12,8 @@
 //! do `Host` de loopback — com o console local de verdade continuando
 //! passando.
 
+mod config_dir_descartavel;
+
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
@@ -40,6 +42,9 @@ const BEARER: &str = "Bearer chave-de-teste-do-gateway";
 async fn post(chave: Option<&str>, uri: &str, headers: &[(&str, &str)]) -> (StatusCode, String) {
     let mut config = AppConfig::default();
     config.gateway.api_key = chave.map(str::to_string);
+    // #2027: mcp.json, allowlist.json, cofre e data/ num tempdir,
+    // nunca o config dir de quem roda `cargo test`.
+    config_dir_descartavel::isolar();
     let state = Arc::new(AppState::new(
         config,
         Arc::new(AgentRuntime::new()),

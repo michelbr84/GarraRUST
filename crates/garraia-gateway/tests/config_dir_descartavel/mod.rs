@@ -1,7 +1,10 @@
-//! #2021: config dir descartavel para os testes que sobem o `GatewayServer`.
+//! #2021: config dir descartavel para os testes que sobem o `GatewayServer`
+//! ou (#2027) montam o `AppState::new`.
 //!
 //! `GatewayServer::run()` abre o `admin.db`, resolve o `master.key` e grava o
-//! `sessions.db` e o `mcp.json` sob o `<config_dir>`. Sem `GARRAIA_CONFIG_DIR`
+//! `sessions.db` e o `mcp.json` sob o `<config_dir>`. O `AppState::new`
+//! provisiona o `mcp.json` e o `data/workspace/`, le o `allowlist.json` e liga
+//! o cofre de `<config_dir>/credentials/vault.json`. Sem `GARRAIA_CONFIG_DIR`
 //! esse diretorio e o de quem roda `cargo test` (`~/.config/garraia`), e uma
 //! rodada de teste trabalha sobre os dados reais do operador.
 //!
@@ -13,7 +16,8 @@
 use std::sync::OnceLock;
 
 /// Aponta `GARRAIA_CONFIG_DIR` para um diretorio temporario que vive ate o
-/// fim do processo. Chame antes de construir o `GatewayServer`.
+/// fim do processo. Chame antes de construir o `GatewayServer` ou o
+/// `AppState`.
 ///
 /// Um `static` nao roda `Drop`, entao o diretorio fica no temp do sistema
 /// depois do binario (prefixo `garraia-teste-config-`). E o preco de nao
