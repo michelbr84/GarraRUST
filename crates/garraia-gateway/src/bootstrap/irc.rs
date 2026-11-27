@@ -159,7 +159,7 @@ pub(crate) fn sessao_da_conversa(
 /// A allowlist e uma so para todos os canais (`channel_gates`, #1189), e os
 /// ids dos outros sao comparados por igualdade exata (os do Slack, por
 /// exemplo, tem maiusculas). O prefixo diz quais entradas sao nicks de IRC,
-/// as unicas comparadas pelo `CASEMAPPING` do servidor ([`admissao`]).
+/// as unicas comparadas pelo `CASEMAPPING` do servidor ([`admitido`]).
 const PREFIXO_DA_ALLOWLIST: &str = "irc:";
 
 /// A entrada da allowlist de quem mandou: `irc:<nick como veio>`.
@@ -226,9 +226,16 @@ fn callback_irc(state: &SharedState, conexao: &str) -> garraia_channels::IrcOnMe
                     if list.needs_owner() {
                         list.claim_owner(entrada_da_allowlist(&remetente));
                         info!("irc: auto-paired owner {remetente}");
+                        // Nada de "use /pair": o IRC nao trata comandos, e o
+                        // `/pair` dos outros canais so atende o dono daquele
+                        // canal (`is_owner` com o id de la), nao este nick.
+                        // Para um dono do IRC, a unica porta e o arquivo
+                        // (docs/hardening-gateway.md, GHSA-g6c8-mx6x-5g92).
                         return Ok(format!(
                             "Welcome, {user_name}! You are now the owner of this GarraIA \
-                             bot. Use /pair to generate a code for adding other users."
+                             bot. IRC has no /pair: to let someone else in, stop the \
+                             gateway and add \"irc:<their nick>\" to users in \
+                             allowlist.json."
                         ));
                     }
 
