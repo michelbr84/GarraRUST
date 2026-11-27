@@ -22,5 +22,6 @@
   testes de unidade, o `AppState::new` usa um config dir temporario por
   processo, e o `build_agent_runtime` recusa uma config sem `data_dir`. A
   guarda do #2021 passa a reprovar tambem quem chama o `AppState::new` sem
-  apontar o `GARRAIA_CONFIG_DIR` no proprio arquivo. Producao nao muda: o `AppState::new` segue no config
-  dir padrao, e o cofre resolvido e o mesmo de antes.
+  apontar o `GARRAIA_CONFIG_DIR` no proprio arquivo. Producao nao muda: o
+  `AppState::new` segue no config dir padrao, e o cofre resolvido e o mesmo
+  de antes.
