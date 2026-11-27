@@ -102,12 +102,23 @@ jobs:
         # Foi o que aconteceu em 2026-08-29 (#67-#82 dispensados, #147-#162
         # abertos nas mesmas linhas). Este passo so LE e so REPORTA — o
         # `--apply` roda local, num PR, com o diff revisado por humano.
+        #
+        # `--check-main` (#1993, item 1): um alerta dispensado nunca passa a
+        # `fixed`, entao entrada que nao suprime mais nada era invisivel — em
+        # 2026-11-25 eram 14 de 43, com tudo verde. O script consulta a
+        # instancia de cada entrada em `refs/heads/main` e sai com exit 3 se
+        # alguma nao for mais detectada. O exit e guardado e devolvido SO
+        # DEPOIS do job summary: com `| tee` direto sob `pipefail`, o step
+        # morria antes de publicar justamente a lista que explica o vermelho.
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          status=0
           python3 scripts/security/codeql-rekey-ledger.py \
-            --repo "$GITHUB_REPOSITORY" --dry-run | tee rekey-plan.txt
+            --repo "$GITHUB_REPOSITORY" --dry-run --check-main \
+            > rekey-plan.txt 2>&1 || status=$?
+          cat rekey-plan.txt
           {
             echo "## Ledger vs alertas vivos"
             echo ""
@@ -115,6 +126,7 @@ jobs:
             cat rekey-plan.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: Publicar JSON e markdown
         if: always() && hashFiles('codeql-alerts.json') != ''

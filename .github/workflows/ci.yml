@@ -202,6 +202,13 @@ jobs:
       - name: Testes do checker de ancoras
         run: python3 scripts/security/tests/test_ledger_anchors.py
 
+      # A logica pura do codeql-rekey-ledger.py (rekey, drift e, desde #1993,
+      # entrada que o main nao detecta mais). O script em si so roda no
+      # codeql-triage.yml, com token; os testes trocam a rede por dubles e
+      # rodam sem pytest, como os de cima.
+      - name: Testes do rekey do ledger
+        run: python3 scripts/security/tests/test_rekey_ledger.py
+
   # Slice D1 da #1228. O formato dos fragmentos de `changelog.d/` so era
   # validado por quem lembrasse de rodar `assemble.py --check` a mao — e a
   # auditoria achou 4 de 6 PRs abertas sem fragmento nenhum. Como as notas de

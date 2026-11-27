@@ -295,6 +295,18 @@ impediria as de baixo de serem aplicadas.
    nunca passa a `fixed`, então `state` sozinho não diz se ele ainda é
    detectado), e o fluxo fonte → sink no SARIF da análise, que é o que diz qual
    pergunta a justificativa precisa responder.
+   As duas primeiras já têm ferramenta (#1993): o estado da instância no
+   `main` sai do `codeql-triage.yml`, que roda o `codeql-rekey-ledger.py
+   --check-main` e fica vermelho (exit 3) com a lista das entradas que a
+   análise não detecta mais; e o `line` velho reprova o job `CodeQL Ledger
+   Anchors` do CI (exit 8). Uma quarta conferência é **passo manual
+   explícito**: cada citação `arquivo:linha` da justificativa tem de apontar
+   para o que o texto diz que está lá. O `check_citations` só confere que a
+   linha existe; a re-auditoria de 2026-11-25 achou dez citações erradas que
+   passavam. Decisão (#1993, item 3): não virar gate, porque exigiria um
+   formato novo no ledger (conteúdo esperado por citação, no espírito do
+   `sink_snippet`) para um erro que só aparece na leitura de mérito, que é
+   justamente o que a re-auditoria faz.
 5. **Fail-closed reaplicação.** O script verifica `rule_id`/`path`/`line` do
    alerta atual contra o ledger antes de reaplicar. Se divergir → exit 2,
    manual re-audit obrigatório (alerta pode ter sido renumerado, código pode
@@ -346,6 +358,14 @@ o re-audit de 90 dias da regra 4.
 O `codeql-triage.yml` roda esse plano em `--dry-run` a cada execução e publica
 no job summary, então a divergência aparece sozinha na próxima triagem em vez de
 esperar alguém reparar no Security tab.
+
+Desde a #1993 ele roda também com `--check-main`: para cada entrada, consulta
+`GET /code-scanning/alerts/{n}/instances?ref=refs/heads/main` e lista as que a
+análise não detecta mais — instância `fixed` em todas as categorias, nenhuma
+instância no `main`, ou alerta inexistente. É a única forma de ver isso: um
+alerta dispensado nunca passa a `fixed` (§5.2), então o `state` do alerta diz
+`dismissed` para sempre. Entrada assim sai do ledger num PR, depois de conferir
+o código. O step sai com exit 3 só depois de publicar o job summary.
 
 ## §4. Ledger
 
@@ -674,10 +694,13 @@ calada.
   de 1 resultado para 0. Issue
   [#2008](https://github.com/michelbr84/GarraRUST/issues/2008).
 
-As duas primeiras, mais a cegueira para alerta que deixou de ser detectado, são
-lacuna de ferramenta e estão na issue
-[#1993](https://github.com/michelbr84/GarraRUST/issues/1993). Enquanto ela não
-fechar, a próxima re-auditoria tem de repetir à mão as três conferências da §3
+As duas primeiras, mais a cegueira para alerta que deixou de ser detectado, eram
+lacuna de ferramenta, registradas na issue
+[#1993](https://github.com/michelbr84/GarraRUST/issues/1993). Fechamento: o
+`line` velho reprova o CI (`check-ledger-anchors.py --fail-on-stale-line`,
+PR #2019); a entrada que o `main` não detecta mais aparece no
+`codeql-triage.yml` (`codeql-rekey-ledger.py --check-main`, exit 3); e a
+conferência do conteúdo das citações ficou como passo manual explícito da §3
 regra 4.
 
 
