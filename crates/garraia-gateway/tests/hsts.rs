@@ -24,9 +24,10 @@ use garraia_config::AppConfig;
 use garraia_gateway::admin::store::AdminStore;
 use garraia_gateway::push_channels::PushChannelStates;
 use garraia_gateway::router::build_router;
-use garraia_gateway::state::AppState;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
+
+mod config_dir_descartavel;
 
 const HSTS: &str = "max-age=31536000";
 
@@ -36,7 +37,7 @@ const HSTS: &str = "max-age=31536000";
 /// antes de qualquer camada sem ele (mesmo motivo do `api_key_gate.rs`).
 async fn pedido(uri: &str, headers: &[(&str, &str)]) -> Response<Body> {
     let config = AppConfig::default();
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),
