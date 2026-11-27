@@ -9,6 +9,10 @@
   automatica das entradas sem prefixo para a forma `irc:`, que a #2015 tinha
   posto na `main` e que nenhuma versao lancou: ela estendia o mesmo acesso as
   outras grafias do nick. **Quem foi pareado pelo IRC antes desta versao precisa
-  de um codigo novo de `/pair`**, gerado pelo dono em outro canal. Um dono que
-  so usa o IRC troca `"<nick>"` por `"irc:<nick>"` no `owner` e em `users` do
-  `allowlist.json`, com o gateway parado. Ver `docs/hardening-gateway.md`.
+  de um codigo novo de `/pair`**, gerado pelo dono num canal que trata comandos
+  e em que ele e o dono. Quando nao ha onde gerar o codigo, a saida e o
+  arquivo: com o gateway parado, troque `"<nick>"` por `"irc:<nick>"` no
+  `allowlist.json`, no `owner` e em `users`. Isso vale quando o dono foi
+  pareado pelo IRC, ja que o `/pair` dos outros canais so atende o dono
+  daquele canal, e quando o deploy e so de IRC. Ver
+  `docs/hardening-gateway.md`.
