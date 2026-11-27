@@ -19,7 +19,9 @@
 //! config: um nick só identifica alguém dentro da própria rede.
 //!
 //! Na allowlist, as entradas do IRC são `irc:<nick>`, e o nick é comparado
-//! pelo `CASEMAPPING` do servidor, como na sessão ([`admissao`], #2015).
+//! pelo `CASEMAPPING` do servidor, como na sessão (#2015). São as únicas que
+//! valem aqui: uma entrada sem prefixo pode ser o id de alguém de outro canal
+//! ([`admitido`], GHSA-g6c8-mx6x-5g92).
 
 use std::sync::Arc;
 
@@ -170,37 +172,26 @@ fn entrada_da_allowlist(remetente: &garraia_channels::NickIrc) -> String {
     format!("{PREFIXO_DA_ALLOWLIST}{}", remetente.como_veio())
 }
 
-/// Por que a allowlist admite (ou nao) quem mandou (#2015).
-#[derive(Debug, PartialEq, Eq)]
-enum Admissao {
-    /// Uma entrada `irc:` e o mesmo nick para o servidor, pelo `CASEMAPPING`
-    /// anunciado quando a mensagem chegou.
-    PeloIrc,
-    /// So uma entrada antiga, sem prefixo, igual ao nick como veio. Ela pode
-    /// ser de qualquer canal, entao so vale exata, como antes da #2015.
-    Antiga,
-    Barrado,
-}
-
-/// Decide a [`Admissao`] de `remetente`. So as entradas `irc:` sao comparadas
-/// pelo `CASEMAPPING`; a equivalencia nunca e maior que a do servidor agora,
-/// entao separar demais so bloqueia e nunca admite outra pessoa.
-fn admissao(
-    lista: &garraia_security::Allowlist,
-    remetente: &garraia_channels::NickIrc,
-) -> Admissao {
-    let pelo_irc = lista.is_allowed_where(|entrada| {
+/// Se a allowlist admite `remetente` no IRC (#2015, GHSA-g6c8-mx6x-5g92).
+///
+/// So as entradas `irc:` valem aqui, e o nick delas e comparado pelo
+/// `CASEMAPPING` anunciado quando a mensagem chegou. A equivalencia nunca e
+/// maior que a do servidor agora, entao separar demais so bloqueia e nunca
+/// admite outra pessoa.
+///
+/// Uma entrada sem prefixo nunca admite ninguem no IRC, nem por igualdade
+/// exata. Os ids dos outros canais ficam sem prefixo nesta mesma allowlist, e
+/// no IRC o nick e escolhido por quem conecta: o id de um usuario do Slack
+/// (`U01ABCDEF`) e um nick valido, e quem entrasse com ele passaria como
+/// aquela pessoa. Pelo mesmo motivo nenhuma entrada sem prefixo vira `irc:`
+/// sozinha. Quem foi pareado pelo IRC antes da #2015 precisa de um codigo
+/// novo de `/pair`.
+fn admitido(lista: &garraia_security::Allowlist, remetente: &garraia_channels::NickIrc) -> bool {
+    lista.is_allowed_where(|entrada| {
         entrada
             .strip_prefix(PREFIXO_DA_ALLOWLIST)
             .is_some_and(|nick| remetente.mesmo_nick(nick))
-    });
-    if pelo_irc {
-        Admissao::PeloIrc
-    } else if lista.is_allowed(remetente.como_veio()) {
-        Admissao::Antiga
-    } else {
-        Admissao::Barrado
-    }
+    })
 }
 
 /// O callback de cada `PRIVMSG` recebido: allowlist, sessao e turno.
@@ -241,41 +232,31 @@ fn callback_irc(state: &SharedState, conexao: &str) -> garraia_channels::IrcOnMe
                         ));
                     }
 
-                    match admissao(&list, &remetente) {
-                        Admissao::PeloIrc => {}
-                        // Entrada de antes da #2015: vale exata, como antes,
-                        // e ganha a forma `irc:`, para a mesma pessoa passar
-                        // em outra grafia. A antiga fica: sem prefixo, nao da
-                        // para saber se e so do IRC.
-                        Admissao::Antiga => {
-                            list.add(entrada_da_allowlist(&remetente));
-                            info!("irc: legacy allowlist entry migrated to the irc: form");
-                        }
-                        Admissao::Barrado => {
-                            let trimmed = text.trim();
-                            if trimmed.len() == 6 && trimmed.chars().all(|c| c.is_ascii_digit()) {
-                                // Os erros de codigo contam por pessoa do
-                                // servidor (o nick normalizado), e com o
-                                // prefixo, separados dos ids dos outros canais.
-                                let quem =
-                                    format!("{PREFIXO_DA_ALLOWLIST}{}", remetente.normalizado());
-                                let claimed = pairing.lock().unwrap().claim(trimmed, &quem);
-                                if claimed.is_some() {
-                                    list.add(entrada_da_allowlist(&remetente));
-                                    info!("irc: paired user {remetente} via code");
-                                    return Ok(format!(
-                                        "Welcome, {user_name}! You now have access to this bot."
-                                    ));
-                                }
+                    // So entradas `irc:` admitem aqui ([`admitido`]); uma sem
+                    // prefixo pode ser o id de alguem de outro canal.
+                    if !admitido(&list, &remetente) {
+                        let trimmed = text.trim();
+                        if trimmed.len() == 6 && trimmed.chars().all(|c| c.is_ascii_digit()) {
+                            // Os erros de codigo contam por pessoa do
+                            // servidor (o nick normalizado), e com o
+                            // prefixo, separados dos ids dos outros canais.
+                            let quem = format!("{PREFIXO_DA_ALLOWLIST}{}", remetente.normalizado());
+                            let claimed = pairing.lock().unwrap().claim(trimmed, &quem);
+                            if claimed.is_some() {
+                                list.add(entrada_da_allowlist(&remetente));
+                                info!("irc: paired user {remetente} via code");
+                                return Ok(format!(
+                                    "Welcome, {user_name}! You now have access to this bot."
+                                ));
                             }
-
-                            let onde = match &conversa {
-                                garraia_channels::ConversaIrc::Canal(canal) => canal.as_str(),
-                                garraia_channels::ConversaIrc::Privado(_) => "privado",
-                            };
-                            warn!("irc: unauthorized nick {remetente} in {onde}");
-                            return Err("__blocked__".to_string());
                         }
+
+                        let onde = match &conversa {
+                            garraia_channels::ConversaIrc::Canal(canal) => canal.as_str(),
+                            garraia_channels::ConversaIrc::Privado(_) => "privado",
+                        };
+                        warn!("irc: unauthorized nick {remetente} in {onde}");
+                        return Err("__blocked__".to_string());
                     }
                 }
 
@@ -882,8 +863,9 @@ mod tests {
 
     /// So entradas `irc:` sao comparadas pelo `CASEMAPPING`. Uma entrada sem
     /// prefixo pode ser de qualquer canal (os ids do Slack tem maiusculas, por
-    /// exemplo) e continua exata; e uma entrada `irc:` nao admite ninguem dos
-    /// outros canais, que consultam a allowlist por igualdade exata.
+    /// exemplo) e nao vira `irc:` por outra grafia; e uma entrada `irc:` nao
+    /// admite ninguem dos outros canais, que consultam a allowlist por
+    /// igualdade exata.
     #[tokio::test]
     async fn so_entradas_do_irc_sao_comparadas_pelo_casemapping() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -957,12 +939,78 @@ mod tests {
         canal.disconnect().await.expect("desconecta");
     }
 
-    /// Entrada antiga, sem prefixo (gravada antes da #2015): vale por
-    /// igualdade exata, como antes, e na primeira admissao ganha a forma
-    /// `irc:`. Dai em diante a mesma pessoa passa em qualquer grafia. A antiga
-    /// fica: sem prefixo, nao da para saber se e so do IRC.
+    // GHSA-g6c8-mx6x-5g92: os ids dos outros canais ficam sem prefixo na
+    // mesma allowlist, e no IRC o nick e escolhido por quem conecta. Uma
+    // entrada sem prefixo nunca admite ninguem no IRC: so as `irc:` valem aqui.
+
+    /// Um nick igual ao id de alguem admitido por outro canal (o id do Slack e
+    /// um nick valido em qualquer servidor) e barrado, em qualquer grafia, e
+    /// nao ganha entrada `irc:`. O id continua valendo no canal de origem.
     #[tokio::test]
-    async fn entrada_antiga_vale_exata_e_ganha_a_forma_do_irc() {
+    async fn nick_igual_ao_id_de_outro_canal_e_barrado() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, modelo) = estado(&dir, &["irc:dono", "U01ABCDEF"]);
+        let (mut canal, mut servidor) = conecta(&state).await;
+        escreve(
+            &mut servidor,
+            ":srv 005 garrabot CASEMAPPING=rfc1459 :are supported by this server",
+        )
+        .await;
+
+        for (grafia, marca) in [("U01ABCDEF", "marca-exata"), ("u01abcdef", "marca-caixa")] {
+            barrado(
+                &mut servidor,
+                &modelo,
+                &format!(":{grafia}!x@h PRIVMSG garrabot :{marca}"),
+                marca,
+            )
+            .await;
+        }
+        assert_eq!(
+            entradas(&state),
+            ["U01ABCDEF", "irc:dono"],
+            "o id de outro canal ganhou entrada `irc:`"
+        );
+        assert!(
+            state
+                .allowlist
+                .lock()
+                .expect("lock")
+                .is_allowed("U01ABCDEF"),
+            "o id continua valendo no canal de origem"
+        );
+        canal.disconnect().await.expect("desconecta");
+    }
+
+    /// O dono pareado por outro canal tambem: o id dele, usado como nick, nao
+    /// passa no IRC, e o dono continua o mesmo.
+    #[tokio::test]
+    async fn id_do_dono_de_outro_canal_nao_passa_no_irc() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, modelo) = estado(&dir, &["U01DONO", "irc:dono"]);
+        let (mut canal, mut servidor) = conecta(&state).await;
+
+        barrado(
+            &mut servidor,
+            &modelo,
+            ":U01DONO!x@h PRIVMSG garrabot :marca-do-dono",
+            "marca-do-dono",
+        )
+        .await;
+        assert_eq!(entradas(&state), ["U01DONO", "irc:dono"]);
+        assert_eq!(
+            state.allowlist.lock().expect("lock").owner(),
+            Some("U01DONO")
+        );
+        canal.disconnect().await.expect("desconecta");
+    }
+
+    /// Entrada antiga do IRC, sem prefixo (de antes da #2015): sem prefixo nao
+    /// da para saber de que canal ela e, entao ela nao vale no IRC, nem exata.
+    /// A pessoa volta com um codigo novo de `/pair`, que grava a forma `irc:`,
+    /// e dai em diante passa em qualquer grafia.
+    #[tokio::test]
+    async fn entrada_sem_prefixo_nao_vale_no_irc_e_o_pareamento_devolve_o_acesso() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (state, modelo) = estado(&dir, &["irc:dono", "Ana"]);
         let (mut canal, mut servidor) = conecta(&state).await;
@@ -975,11 +1023,23 @@ mod tests {
         barrado(
             &mut servidor,
             &modelo,
-            ":ana!a@h PRIVMSG garrabot :marca-antes",
-            "marca-antes",
+            ":Ana!a@h PRIVMSG garrabot :marca-exata",
+            "marca-exata",
         )
         .await;
-        turno(&mut servidor, ":Ana!a@h PRIVMSG garrabot :oi", "Ana").await;
+        assert_eq!(
+            entradas(&state),
+            ["Ana", "irc:dono"],
+            "a entrada sem prefixo ganhou a forma `irc:`"
+        );
+
+        let codigo = state.pairing.lock().expect("lock").generate("irc");
+        turno(
+            &mut servidor,
+            &format!(":Ana!a@h PRIVMSG garrabot :{codigo}"),
+            "Ana",
+        )
+        .await;
         assert_eq!(entradas(&state), ["Ana", "irc:Ana", "irc:dono"]);
         turno(&mut servidor, ":ana!a@h PRIVMSG garrabot :de-novo", "ana").await;
         assert!(
