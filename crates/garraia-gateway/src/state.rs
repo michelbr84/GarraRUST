@@ -205,6 +205,11 @@ fn historico_gravado(guard: &SessionStore, session_id: &str) -> Vec<ChatMessage>
 /// Shared application state accessible from all request handlers.
 pub struct AppState {
     pub config: AppConfig,
+    /// #2033: o config dir sobre o qual o estado foi montado: o padrao no
+    /// `new`, o recebido no `with_config_dir`. O registry do MCP sai do
+    /// `mcp.json` e do cofre daqui, e os handlers admin do MCP gravam e leem
+    /// aqui tambem (ver [`Self::mcp_persistence`]).
+    config_dir: std::path::PathBuf,
     /// #1459: as raizes das file tools nativas, resolvidas **uma** vez aqui,
     /// da mesma config e pela mesma funcao que `build_agent_runtime` usa para
     /// montar o jail. O `/api/diagnostics` (rota auth-free) e o `garra_status`
@@ -505,6 +510,7 @@ impl AppState {
         let workspace_mcp_http = crate::bootstrap::workspace_de_orquestradores(&config);
         Self {
             config,
+            config_dir: config_dir.to_path_buf(),
             raizes_das_file_tools,
             workspace_mcp_http,
             channels: tokio::sync::RwLock::new(channels),
@@ -520,11 +526,11 @@ impl AppState {
                 // #2027: o cofre e o do mesmo config dir do `mcp.json`. Com o
                 // padrao (`default_vault_path`), um estado montado sobre um
                 // diretorio descartavel decifrava as referencias `vault:` pelo
-                // cofre real de quem roda o processo.
-                let svc = crate::mcp::McpPersistenceService::new(config_dir.join("mcp.json"));
+                // cofre real de quem roda o processo. #2033: o mesmo par que
+                // os handlers admin usam para gravar (`mcp_persistence`).
+                let svc = crate::mcp::McpPersistenceService::in_config_dir(config_dir);
                 svc.provision_filesystem_if_missing(&raizes_mcp);
-                svc.with_vault(garraia_config::vault_path_in(config_dir))
-                    .load_registry()
+                svc.load_registry()
             },
             session_store: None,
             chat_session_manager: None,
@@ -579,6 +585,24 @@ impl AppState {
             // `AppState::jwt_signing_secret`.
             auth_config: None,
         }
+    }
+
+    /// The config directory this state was built on (#2033): the default one
+    /// for [`Self::new`], the one passed in for [`Self::with_config_dir`].
+    pub(crate) fn config_dir(&self) -> &std::path::Path {
+        &self.config_dir
+    }
+
+    /// The `mcp.json` and the vault of [`Self::config_dir`] — the same pair
+    /// the MCP registry was loaded from.
+    ///
+    /// #2033: the admin MCP handlers persist through this, not through
+    /// `McpPersistenceService::with_default_path()` and the default vault. A
+    /// state built on another config dir used to load its registry from there
+    /// and then write the whole registry, its secrets and the vault purges of
+    /// a delete into the default config dir.
+    pub(crate) fn mcp_persistence(&self) -> crate::mcp::McpPersistenceService {
+        crate::mcp::McpPersistenceService::in_config_dir(&self.config_dir)
     }
 
     /// Plan 0044 (GAR-395 slice 2): attach the object-store backend

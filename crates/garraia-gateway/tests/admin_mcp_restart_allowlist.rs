@@ -13,6 +13,8 @@
 //! layering is already covered by `authz_http_matrix.rs`, and what is under
 //! test here is the body of the handler.
 
+mod config_dir_descartavel;
+
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
@@ -27,42 +29,22 @@ use garraia_gateway::admin::rbac::Role;
 use garraia_gateway::admin::shared::AdminState;
 use garraia_gateway::admin::store::AdminStore;
 use garraia_gateway::mcp::McpServerConfig;
-use garraia_gateway::state::AppState;
 use tokio::sync::Mutex;
 
 const SERVER: &str = "fake-allowlisted";
 
-/// Point this whole test binary at a throwaway config dir before any test
-/// builds an `AppState`.
+/// The throwaway config dir every `AppState` of this binary is built on, with
+/// an `mcp.json` that declares no server.
 ///
-/// `AppState::new` loads `ConfigLoader::default_config_dir()/allowlist.json`
-/// and calls `provision_filesystem_if_missing()`, which writes `mcp.json`
-/// into that same directory. Without this, the tests below would race each
-/// other writing the developer's real `~/.config/garraia` — a shared-state
-/// bug that has already turned `main` red once — and the restart handler
-/// would merge whatever `mcp.json` that machine happens to have into the
-/// allowlist it resolves, making the assertions depend on the host.
-///
-/// Every test calls `test_env()` as its first statement, so `set_var` runs
-/// inside the `LazyLock` initialiser while every other test thread is either
-/// blocked on the same lock or has not reached it yet.
-static TEST_ENV: LazyLock<tempfile::TempDir> = LazyLock::new(|| {
-    let dir = tempfile::tempdir().expect("temp config dir");
-    // SAFETY: see the doc comment above — the `LazyLock` is what serialises
-    // this against the other test threads in this binary.
-    unsafe {
-        std::env::set_var("GARRAIA_CONFIG_DIR", dir.path());
-        std::env::set_var(
-            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
-            "1",
-        );
-    }
-    dir
-});
-
-fn test_env() {
-    LazyLock::force(&TEST_ENV);
-}
+/// The restart handler merges the `mcp.json` of the state's config dir into
+/// the allowlist it resolves (#2033). On the default config dir, the tests
+/// below would merge whatever `mcp.json` the developer's `~/.config/garraia`
+/// happens to have, and the state would provision one there — a shared-state
+/// bug that has already turned `main` red once. The empty `mcp.json` keeps the
+/// `filesystem` server out of it, so `config.yml` is the only declaration.
+/// Nothing here touches the process environment.
+static CONFIG_DIR: LazyLock<tempfile::TempDir> =
+    LazyLock::new(config_dir_descartavel::sem_servidores);
 
 /// The stdio fixture lives in `garraia-agents`; it is the same child process
 /// the MCP lifecycle tests drive, so there is only one fake server to keep
@@ -146,7 +128,8 @@ async fn admin_state_with(
     if let Some(entry) = declared {
         app_config.mcp.insert(SERVER.to_string(), entry);
     }
-    let mut state = AppState::new(
+    let mut state = config_dir_descartavel::app_state_em(
+        CONFIG_DIR.path(),
         app_config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),
@@ -215,7 +198,6 @@ async fn restart(state: AdminState) -> (axum::http::StatusCode, serde_json::Valu
 /// callable and `tool_count` reported 2.
 #[tokio::test]
 async fn restart_preserves_the_allowlist() {
-    test_env();
     let body = async {
         let manager = Arc::new(McpManager::new());
         connect(&manager, vec!["read_file".to_string()]).await;
@@ -282,7 +264,6 @@ async fn restart_preserves_the_allowlist() {
 /// returning the live empty list and this test goes red at `tool_count`.
 #[tokio::test]
 async fn a_declared_allowlist_tightens_a_server_that_was_never_restricted() {
-    test_env();
     let body = async {
         let manager = Arc::new(McpManager::new());
         connect(&manager, vec![]).await;
@@ -333,7 +314,6 @@ async fn a_declared_allowlist_tightens_a_server_that_was_never_restricted() {
 /// test goes red — `write_file` comes back callable.
 #[tokio::test]
 async fn a_live_allowlist_is_not_widened_by_a_broader_config_entry() {
-    test_env();
     let body = async {
         let manager = Arc::new(McpManager::new());
         connect(&manager, vec!["read_file".to_string()]).await;
@@ -386,7 +366,6 @@ async fn a_live_allowlist_is_not_widened_by_a_broader_config_entry() {
 /// and both halves of this test go red.
 #[tokio::test]
 async fn a_rejected_restart_leaves_the_live_server_and_its_allowlist_alone() {
-    test_env();
     let body = async {
         let manager = Arc::new(McpManager::new());
         connect(&manager, vec!["read_file".to_string()]).await;
@@ -457,7 +436,6 @@ async fn a_rejected_restart_leaves_the_live_server_and_its_allowlist_alone() {
 /// and this test goes red at `tool_count`.
 #[tokio::test]
 async fn a_failed_restart_does_not_lose_the_allowlist_for_the_next_one() {
-    test_env();
     let body = async {
         let manager = Arc::new(McpManager::new());
         connect(&manager, vec!["read_file".to_string()]).await;
@@ -514,7 +492,6 @@ async fn a_failed_restart_does_not_lose_the_allowlist_for_the_next_one() {
 /// "allow everything".
 #[tokio::test]
 async fn restart_recovers_the_allowlist_from_config_when_the_manager_forgot() {
-    test_env();
     let body = async {
         // Never connected: `allowed_tools_for` answers `None` for SERVER.
         let manager = Arc::new(McpManager::new());
@@ -560,7 +537,6 @@ async fn restart_recovers_the_allowlist_from_config_when_the_manager_forgot() {
 /// documented "create, then restart to connect" flow would stop working.
 #[tokio::test]
 async fn a_server_that_was_never_restricted_still_starts() {
-    test_env();
     let body = async {
         let manager = Arc::new(McpManager::new());
 

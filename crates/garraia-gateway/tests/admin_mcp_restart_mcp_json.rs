@@ -15,9 +15,12 @@
 //! `AppConfig`. An `AppConfig` fixture would prove nothing about the source
 //! the boot path actually reads, which is the whole point of the defect.
 //!
-//! It lives in its own test binary because it needs a config dir with a
-//! specific `mcp.json` in it, and the sibling binary
-//! (`admin_mcp_restart_allowlist.rs`) needs one without.
+//! The state lives in a config dir of its own, with that `mcp.json` in it
+//! (`config_dir_descartavel::app_state_em`), without touching the process
+//! environment: since #2033 the restart reads the `mcp.json` of the
+//! `AppState`'s config dir.
+
+mod config_dir_descartavel;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,7 +36,6 @@ use garraia_gateway::admin::rbac::Role;
 use garraia_gateway::admin::shared::AdminState;
 use garraia_gateway::admin::store::AdminStore;
 use garraia_gateway::mcp::McpServerConfig;
-use garraia_gateway::state::AppState;
 use tokio::sync::Mutex;
 
 const SERVER: &str = "declared-in-mcp-json";
@@ -52,15 +54,6 @@ fn fixture_args() -> Vec<String> {
 #[tokio::test]
 async fn restart_honours_an_allowlist_declared_in_mcp_json() {
     let dir = tempfile::tempdir().expect("temp config dir");
-    // SAFETY: dedicated test binary with a single test, so no other thread is
-    // reading the environment concurrently.
-    unsafe {
-        std::env::set_var("GARRAIA_CONFIG_DIR", dir.path());
-        std::env::set_var(
-            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
-            "1",
-        );
-    }
 
     // The file exactly as an operator (or the wizard) writes it — Claude
     // Desktop shape, with the GAR-190 allowlist.
@@ -92,7 +85,8 @@ async fn restart_honours_an_allowlist_declared_in_mcp_json() {
         );
 
         // `config.yml` declares nothing — `mcp.json` is the only source.
-        let mut state = AppState::new(
+        let mut state = config_dir_descartavel::app_state_em(
+            dir.path(),
             AppConfig::default(),
             Arc::new(AgentRuntime::new()),
             ChannelRegistry::new(),
