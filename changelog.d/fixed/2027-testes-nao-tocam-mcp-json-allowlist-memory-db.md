@@ -5,7 +5,9 @@
   (`~/.config/garraia`):
   - 14 testes de integracao montavam o `AppState::new`. Eles liam o
     `mcp.json` e o `allowlist.json` reais e, sem `mcp.json`, provisionavam um
-    junto com o `data/workspace/`;
+    junto com o `data/workspace/`. O router de teste do `auth_test` fazia o
+    mesmo quando nenhum outro teste do binario tinha chamado o `isolar()`
+    antes dele;
   - os testes de unidade do gateway faziam o mesmo pelo `AppState::new`;
   - 27 testes de `bootstrap` chamavam o `build_agent_runtime` sem `data_dir`
     e abriam o `memory.db` real, com WAL e migrations.
@@ -20,5 +22,5 @@
   testes de unidade, o `AppState::new` usa um config dir temporario por
   processo, e o `build_agent_runtime` recusa uma config sem `data_dir`. A
   guarda do #2021 passa a reprovar tambem quem chama o `AppState::new` sem
-  isolar o config dir. Producao nao muda: o `AppState::new` segue no config
+  apontar o `GARRAIA_CONFIG_DIR` no proprio arquivo. Producao nao muda: o `AppState::new` segue no config
   dir padrao, e o cofre resolvido e o mesmo de antes.
