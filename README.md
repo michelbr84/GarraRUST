@@ -762,6 +762,21 @@ creator's authority; `garra tasks` re-authorizes older ones), and a round of
 RUSTSEC fixes (rmcp 3.9.0, wasmtime 50.0.3, SQLite 3.54).
 See [What's New in v0.5.2](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.5.2).
 
+**v0.5.3** (Nov 2026) is a fix release, almost entirely security, and fixes
+advisory [GHSA-g6c8-mx6x-5g92](https://github.com/michelbr84/GarraRUST/security/advisories/GHSA-g6c8-mx6x-5g92)
+(v0.4.1 through v0.5.2): an IRC nick equal to the id of someone admitted
+through another channel no longer gets through the shared allowlist. IRC now
+only accepts `irc:<nick>` entries, compared using the server's
+`CASEMAPPING`; each private IRC conversation gets its own session; and model
+replies can no longer become IRC commands. The admin console fails closed
+(503 `admin_unavailable`) when the master key is unsafe or wrong, and an
+`admin.db` that does not open refuses the boot. Scheduled task replies now
+reach Discord, Slack, Matrix and linked WhatsApp. On Windows, the installer
+command downloads `install.ps1` from the latest release. **Heads-up:**
+anyone paired over IRC up to v0.5.2 needs a new `/pair` code, and an owner
+paired over IRC edits `allowlist.json` once.
+See [What's New in v0.5.3](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.5.3).
+
 ## Contributing
 
 GarraIA is MIT-licensed open source. Join the
