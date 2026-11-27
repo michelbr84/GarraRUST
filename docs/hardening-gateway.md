@@ -231,13 +231,28 @@ O nick fica gravado como veio porque a forma normalizada perderia informacao:
 servidor passasse a anunciar `ascii`. Comparando na hora, a equivalencia
 nunca e maior que a do servidor naquele momento. So as entradas `irc:` sao
 comparadas assim: as dos outros canais continuam exatas, e uma entrada `irc:`
-nao admite ninguem fora do IRC. Uma entrada antiga, sem prefixo, pode ser de
-qualquer canal: ela vale exata, como antes, e na primeira admissao ganha a
-forma `irc:`, e as duas ficam. **Para tirar alguem do IRC, apague as duas.**
-Os erros de codigo de `/pair` contam por nick normalizado, entao trocar so a
-caixa nao zera a contagem. O historico e o escopo de aprovacao seguem com o
+nao admite ninguem fora do IRC. Os erros de codigo de `/pair` contam por nick
+normalizado, entao trocar so a caixa nao zera a contagem. O historico e o escopo de aprovacao seguem com o
 nick como veio: no escopo, o "sim" de `Ana` nao aprova um pedido de `ana`, e a
 pessoa e perguntada de novo.
+
+**IRC: entrada sem prefixo nao vale no IRC (GHSA-g6c8-mx6x-5g92).** A
+allowlist e uma so, e os ids dos outros canais ficam nela sem prefixo. No IRC o
+nick e escolhido por quem conecta, entao uma entrada sem prefixo nunca admite
+ninguem no IRC, nem por igualdade exata: o id de um usuario do Slack
+(`U01ABCDEF`) e um nick valido, e quem entrasse no servidor com ele passaria
+como aquela pessoa, inclusive como o dono. So as entradas `irc:` valem no IRC,
+e nenhuma entrada sem prefixo vira `irc:` sozinha.
+
+- **Quem foi pareado pelo IRC antes da #2015** tem uma entrada sem prefixo e
+  precisa de um codigo novo de `/pair`, que o dono gera em outro canal (o IRC
+  nao tem `/pair`). O codigo grava `irc:<nick>`. A entrada antiga nao vale no
+  IRC e pode ser apagada.
+- **Um dono pareado pelo IRC antes da #2015** que nao usa outro canal nao tem
+  onde gerar o codigo. Com o gateway parado, troque `"<nick>"` por
+  `"irc:<nick>"` no `owner` e em `users` do `allowlist.json` e suba de novo.
+  Faca isso so para o nick que e seu: `irc:<nick>` admite quem usar aquele
+  nick no servidor.
 
 **Nível de aprovação: `agent.approval` e `--yolo` (#1858).** O que acontece
 com o tier arriscado (a segunda linha da tabela) é um knob declarado pelo
@@ -329,7 +344,9 @@ um usuário aprovado no Telegram também está aprovado no Discord. O
 primeiro usuário a parear vira `owner`. Revise a lista periodicamente
 (`/users` no chat). As entradas do IRC são a exceção: ficam como
 `irc:<nick>`, valem só no IRC e comparam o nick pelo `CASEMAPPING` do
-servidor (#2015, ver §2).
+servidor (#2015, ver §2). No IRC, uma entrada sem prefixo não vale: quem foi
+pareado pelo IRC antes da #2015 precisa de um código novo de `/pair`
+(GHSA-g6c8-mx6x-5g92, ver §2).
 
 ## 5. Secrets: cofre para MCP e chaves de provider
 
