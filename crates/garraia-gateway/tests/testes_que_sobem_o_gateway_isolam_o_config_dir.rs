@@ -17,10 +17,11 @@
 //! - Quem chama `GatewayServer::new` precisa chamar
 //!   `config_dir_descartavel::isolar()` ou apontar `GARRAIA_CONFIG_DIR` para
 //!   um diretorio proprio.
-//! - Quem chama `AppState::new` cai na mesma regra. O caminho preferido e nao
-//!   chamar: `config_dir_descartavel::app_state(...)` monta o estado com
-//!   `AppState::with_config_dir` sobre um diretorio descartavel, sem mexer no
-//!   ambiente do processo.
+//! - Quem chama `AppState::new` precisa apontar `GARRAIA_CONFIG_DIR` no
+//!   proprio arquivo; o `isolar()` nao basta (ver o teste). O caminho
+//!   preferido e nao chamar: `config_dir_descartavel::app_state(...)` monta o
+//!   estado com `AppState::with_config_dir` sobre um diretorio descartavel,
+//!   sem mexer no ambiente do processo.
 //!
 //! A checagem e textual, por arquivo, e erra para o lado seguro: um teste que
 //! isole por outro caminho (um helper em outro modulo) e reprovado ate
@@ -44,14 +45,19 @@ fn fontes_rs(dir: &Path, saida: &mut Vec<PathBuf>) {
     }
 }
 
-fn isola_o_config_dir(fonte: &str) -> bool {
-    fonte.contains("config_dir_descartavel::isolar()")
-        || (fonte.contains("set_var") && fonte.contains("\"GARRAIA_CONFIG_DIR\""))
+/// Aponta o `GARRAIA_CONFIG_DIR` para um diretorio proprio no proprio arquivo.
+fn aponta_o_config_dir(fonte: &str) -> bool {
+    fonte.contains("set_var") && fonte.contains("\"GARRAIA_CONFIG_DIR\"")
+}
+
+/// Quem sobe o `GatewayServer`: o `isolar()` ou o `set_var` proprio.
+fn isola_o_gateway(fonte: &str) -> bool {
+    fonte.contains("config_dir_descartavel::isolar()") || aponta_o_config_dir(fonte)
 }
 
 /// Os arquivos de `crates/*/tests/` que contem `chamada`: quantos sao e quais
-/// deles nao isolam o config dir, com o caminho relativo a `crates/`.
-fn sem_isolamento(chamada: &str) -> (usize, Vec<String>) {
+/// deles nao passam em `isola`, com o caminho relativo a `crates/`.
+fn sem_isolamento(chamada: &str, isola: fn(&str) -> bool) -> (usize, Vec<String>) {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("o gateway mora em crates/");
@@ -75,7 +81,7 @@ fn sem_isolamento(chamada: &str) -> (usize, Vec<String>) {
             continue;
         }
         chamam += 1;
-        if !isola_o_config_dir(&fonte) {
+        if !isola(&fonte) {
             let relativo = caminho.strip_prefix(crates).unwrap_or(caminho);
             sem_isolamento.push(relativo.display().to_string());
         }
@@ -86,7 +92,7 @@ fn sem_isolamento(chamada: &str) -> (usize, Vec<String>) {
 
 #[test]
 fn quem_sobe_o_gateway_isola_o_config_dir() {
-    let (sobem, sem_isolamento) = sem_isolamento("GatewayServer::new(");
+    let (sobem, sem_isolamento) = sem_isolamento("GatewayServer::new(", isola_o_gateway);
 
     // Se a varredura nao achar ninguem, o teste passaria sem provar nada
     // (um rename, um caminho errado).
@@ -104,7 +110,13 @@ fn quem_sobe_o_gateway_isola_o_config_dir() {
 
 #[test]
 fn quem_monta_o_app_state_isola_o_config_dir() {
-    let (montam, sem_isolamento) = sem_isolamento("AppState::new(");
+    // O `isolar()` nao vale aqui. Ele e a isolacao de quem sobe o
+    // `GatewayServer` e roda dentro do helper de subida: um `AppState::new` no
+    // mesmo arquivo, fora desse helper, so fica isolado se outro teste do
+    // binario tiver passado pelo `isolar()` antes (o `sobe_router_de_teste`
+    // do `auth_test` caiu assim no config dir real, conforme a ordem dos
+    // testes).
+    let (montam, sem_isolamento) = sem_isolamento("AppState::new(", aponta_o_config_dir);
 
     // Mesmo piso do teste acima: a varredura tem de achar alguem. Os arquivos
     // que ainda chamam `AppState::new` sao os que desviam o GARRAIA_CONFIG_DIR.
