@@ -19,13 +19,14 @@ use garraia_gateway::admin::handlers::AdminKey;
 use garraia_gateway::admin::store::AdminStore;
 use garraia_gateway::push_channels::PushChannelStates;
 use garraia_gateway::router::build_router;
-use garraia_gateway::state::AppState;
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
 
+mod config_dir_descartavel;
+
 fn router(admin_key: AdminKey) -> Router {
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         AppConfig::default(),
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),

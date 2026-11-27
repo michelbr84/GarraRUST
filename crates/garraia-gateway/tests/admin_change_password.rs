@@ -22,10 +22,11 @@ use garraia_gateway::admin::store::{AdminStore, AuditEntry};
 use garraia_gateway::admin::users::CHANGE_PASSWORD_ACTION;
 use garraia_gateway::push_channels::PushChannelStates;
 use garraia_gateway::router::build_router;
-use garraia_gateway::state::AppState;
 use serde_json::json;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
+
+mod config_dir_descartavel;
 
 const USUARIO: &str = "root";
 const SENHA_INICIAL: &str = "senha-inicial-do-admin";
@@ -44,7 +45,7 @@ struct Sessao {
 /// enxergando depois do pedido — e assim que ele confere o efeito colateral.
 fn router_com_store() -> (Router, Arc<Mutex<AdminStore>>) {
     let config = AppConfig::default();
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),

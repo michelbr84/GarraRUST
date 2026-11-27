@@ -21,10 +21,11 @@ use garraia_config::AppConfig;
 use garraia_gateway::admin::store::AdminStore;
 use garraia_gateway::push_channels::PushChannelStates;
 use garraia_gateway::router::build_router;
-use garraia_gateway::state::AppState;
 use garraia_learning::miner::{self, MineOptions};
 use tokio::sync::Mutex;
 use tower::ServiceExt;
+
+mod config_dir_descartavel;
 
 #[tokio::test]
 async fn candidatos_do_gateway_incluem_o_escopo_global_da_cli() {
@@ -73,7 +74,7 @@ async fn candidatos_do_gateway_incluem_o_escopo_global_da_cli() {
     std::env::set_current_dir(&projeto).expect("cwd do projeto");
 
     let config = AppConfig::default();
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),

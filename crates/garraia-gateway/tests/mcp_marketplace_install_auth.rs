@@ -44,6 +44,8 @@ use http_body_util::BodyExt;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
 
+mod config_dir_descartavel;
+
 const CAMINHO: &str = "/api/mcp/marketplace/install";
 
 /// Entrada do catalogo sem `env` obrigatoria — assim um 400 no teste significa
@@ -59,14 +61,15 @@ struct Sessao {
 /// Sub-router real com um `AdminStore` em memoria que o teste continua
 /// enxergando — e assim que ele confere o efeito colateral (o registry).
 ///
-/// O fixture usa `sqlite` e nao `filesystem` porque `AppState::new` chama
+/// O fixture usa `sqlite` e nao `filesystem` porque o `AppState`
+/// (`config_dir_descartavel::app_state`) chama
 /// `provision_filesystem_if_missing()`: o servidor `filesystem` ja nasce no
 /// registry, entao "esta registrado" nunca provaria que foi ESTE pedido que o
 /// registrou. A precondicao abaixo trava isso — se um dia o boot passar a
 /// provisionar `sqlite` tambem, os testes falham alto em vez de virar
 /// assertiva vazia.
 async fn montar() -> (Router, Arc<AppState>, Arc<Mutex<AdminStore>>) {
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         AppConfig::default(),
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),
@@ -312,7 +315,7 @@ async fn install_no_router_de_producao_exige_admin() {
     use garraia_gateway::push_channels::PushChannelStates;
     use garraia_gateway::router::build_router;
 
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         AppConfig::default(),
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),

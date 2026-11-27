@@ -19,9 +19,10 @@ use garraia_config::AppConfig;
 use garraia_gateway::admin::store::AdminStore;
 use garraia_gateway::push_channels::PushChannelStates;
 use garraia_gateway::router::build_router;
-use garraia_gateway::state::AppState;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
+
+mod config_dir_descartavel;
 
 const CHAVE: &str = "chave-de-teste-do-gateway";
 /// Pares com `CHAVE`: o valor do header que o gate global aceita.
@@ -103,7 +104,7 @@ async fn pedido(
     let mut config = AppConfig::default();
     config.gateway.api_key = chave.map(str::to_string);
     config.gateway.allowed_origins = allowed_origins.iter().map(|o| (*o).to_string()).collect();
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),

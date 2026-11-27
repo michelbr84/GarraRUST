@@ -180,7 +180,9 @@ async fn sobe_router_de_teste(chave: Option<&str>) -> String {
     config.gateway.api_key = chave.map(str::to_string);
     config.memory.enabled = false;
 
-    let state = std::sync::Arc::new(garraia_gateway::state::AppState::new(
+    // #2027: o `isolar()` do `start_test_gateway` nao vale aqui; o estado sai
+    // do config dir descartavel direto, qualquer que seja a ordem dos testes.
+    let state = std::sync::Arc::new(config_dir_descartavel::app_state(
         config,
         std::sync::Arc::new(garraia_agents::AgentRuntime::new()),
         garraia_channels::ChannelRegistry::new(),

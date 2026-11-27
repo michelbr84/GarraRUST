@@ -14,7 +14,8 @@
 //!    apontar para `http://127.0.0.1:3888/mcp`.
 //! 3. `garra_send_message` sem aprovacao nao envia (e nem aparece na lista).
 //!
-//! Zero Docker, zero rede, zero Postgres: `AppState::new` + `build_router`, o
+//! Zero Docker, zero rede, zero Postgres: `AppState::with_config_dir` (pelo
+//! `config_dir_descartavel::app_state`) + `build_router`, o
 //! mesmo molde de `origin_guard_layering.rs`. O que este arquivo NAO cobre e o
 //! caminho de entrega de verdade (um bot do Telegram do outro lado) — o teste
 //! mais fundo que da para escrever aqui prova que o portao **abriu**, e a
@@ -40,6 +41,8 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, Respond, ResponseTemplate};
+
+mod config_dir_descartavel;
 
 const CHAVE: &str = "chave-de-teste-da-ponte-mcp";
 const BEARER: &str = "Bearer chave-de-teste-da-ponte-mcp";
@@ -121,7 +124,7 @@ async fn post_mcp(l: Ligacao, bearer: Option<&str>, corpo: Value) -> Response<Bo
 /// estado **depois** de mais de um pedido. O `post_mcp` acima descarta o state
 /// porque a maioria dos casos so olha a resposta.
 fn router_e_state(l: Ligacao) -> (axum::Router, Arc<AppState>) {
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         config_de(l),
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),
@@ -831,7 +834,7 @@ async fn falha_de_entrega_nao_ecoa_o_erro_do_canal() {
 /// montam o router uma vez e o reusam entre pedidos (o teto de chamadas mora
 /// nele), e quem faz o pedido injeta o par em `pedir_ask`.
 fn router_com(config: AppConfig) -> axum::Router {
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),
@@ -1102,7 +1105,7 @@ fn config_com_orquestradores(
 
 /// O router e o `AppState` de uma config pronta (sem passar pela `Ligacao`).
 fn router_e_estado(config: AppConfig) -> (axum::Router, Arc<AppState>) {
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),
