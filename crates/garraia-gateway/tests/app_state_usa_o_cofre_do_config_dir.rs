@@ -56,8 +56,10 @@ async fn as_referencias_vault_saem_do_cofre_do_config_dir_passado() {
         std::env::set_var("GARRAIA_CONFIG_DIR", padrao.path());
     }
 
-    let mut config = AppConfig::default();
-    config.data_dir = Some(passado.path().join("data"));
+    let config = AppConfig {
+        data_dir: Some(passado.path().join("data")),
+        ..AppConfig::default()
+    };
     let state = AppState::with_config_dir(
         config,
         Arc::new(AgentRuntime::new()),
