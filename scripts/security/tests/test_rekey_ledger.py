@@ -260,3 +260,157 @@ def test_orphan_report_uses_the_span_start_line():
     mod = _load_module()
     key = mod.alert_key(_alert_span(176, LOG_RULE, LOG_PATH, 1356, 1358))
     assert key[0] == LOG_RULE and key[1] == LOG_PATH and key[2] == 1356
+
+
+# ── #1993 item 1: entrada cujo alerta a analise do main nao detecta mais ──
+
+
+def _instance(state: str) -> dict:
+    return {"ref": "refs/heads/main", "state": state, "commit_sha": "abc"}
+
+
+def test_dismissed_alert_with_fixed_main_instance_is_undetected():
+    """O caso real de 2026-11-25: o alerta segue `dismissed`, mas a instancia
+    no main ficou `fixed`. Nenhum script olhava a instancia, e 14 de 43
+    entradas suprimiam um achado que a analise nao acusava mais."""
+    mod = _load_module()
+    entries = [_entry(43, "rust/hard-coded-cryptographic-value", "x.rs", 49)]
+
+    out = mod.classify_ref_instances(entries, {43: [_instance("fixed")]})
+
+    assert out == [(entries[0], mod.UNDETECTED_FIXED)]
+
+
+def test_dismissed_alert_still_detected_is_left_alone():
+    """Instancia `open` (ou `dismissed`) no main = achado ainda acusado; a
+    entrada continua tendo o que justificar."""
+    mod = _load_module()
+    entries = [_entry(176, LOG_RULE, LOG_PATH, 1400), _entry(177, LOG_RULE, LOG_PATH, 1500)]
+
+    out = mod.classify_ref_instances(
+        entries, {176: [_instance("open")], 177: [_instance("dismissed")]}
+    )
+
+    assert out == []
+
+
+def test_one_live_instance_among_several_keeps_the_alert_detected():
+    """Mais de uma instancia no mesmo ref (categorias diferentes): basta uma
+    viva. So `fixed` em todas e que tira o alerta da analise."""
+    mod = _load_module()
+    entries = [_entry(67, RULE, PATH, 84)]
+
+    alive = mod.classify_ref_instances(entries, {67: [_instance("fixed"), _instance("open")]})
+    dead = mod.classify_ref_instances(entries, {67: [_instance("fixed"), _instance("fixed")]})
+
+    assert alive == []
+    assert dead == [(entries[0], mod.UNDETECTED_FIXED)]
+
+
+def test_alert_without_main_instance_or_missing_is_reported():
+    mod = _load_module()
+    entries = [_entry(10, RULE, PATH, 1), _entry(11, RULE, PATH, 2)]
+
+    out = mod.classify_ref_instances(entries, {10: [], 11: None})
+
+    assert out == [
+        (entries[0], mod.UNDETECTED_NO_INSTANCE),
+        (entries[1], mod.UNDETECTED_MISSING),
+    ]
+
+
+def test_entry_not_queried_is_never_presumed_dead():
+    """Ausencia de consulta nao e evidencia: so reporta o que foi perguntado."""
+    mod = _load_module()
+    entries = [_entry(10, RULE, PATH, 1)]
+
+    assert mod.classify_ref_instances(entries, {}) == []
+
+
+def test_unknown_state_counts_as_detected():
+    """Fail-closed no sentido do relatorio: estado que nao e `fixed` (ou
+    ausente) nao vira "nao detectado" — so `fixed` explicito aposenta."""
+    mod = _load_module()
+    entries = [_entry(10, RULE, PATH, 1)]
+
+    assert mod.classify_ref_instances(entries, {10: [{"ref": "refs/heads/main"}]}) == []
+
+
+def _run_main(mod, tmp: Path, entries: list[dict], instances: dict, extra: list[str]) -> tuple[int, str]:
+    """`main()` com a rede trocada por dublês; devolve (exit, stdout)."""
+    import contextlib
+    import io
+    import json
+    import os
+    import sys
+
+    ledger_json = tmp / "l.json"
+    ledger_md = tmp / "l.md"
+    ledger_json.write_text(json.dumps({"entries": entries}), encoding="utf-8")
+    ledger_md.write_text("", encoding="utf-8")
+    mod.fetch_open_alerts = lambda repo, token: []
+    mod.fetch_ref_instances = lambda repo, token, n, ref: instances[n]
+    argv, env = sys.argv, os.environ.get("GITHUB_TOKEN")
+    sys.argv = ["rekey", "--ledger-json", str(ledger_json), "--ledger-md", str(ledger_md), *extra]
+    os.environ["GITHUB_TOKEN"] = "dublê"
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            code = mod.main()
+    finally:
+        sys.argv = argv
+        if env is None:
+            os.environ.pop("GITHUB_TOKEN", None)
+        else:
+            os.environ["GITHUB_TOKEN"] = env
+    return code, out.getvalue()
+
+
+def test_check_main_exits_3_and_lists_the_undetected_entry():
+    import tempfile
+
+    mod = _load_module()
+    entries = [_entry(43, "rust/hard-coded-cryptographic-value", "x.rs", 49),
+               _entry(176, LOG_RULE, LOG_PATH, 1400)]
+    instances = {43: [_instance("fixed")], 176: [_instance("open")]}
+    with tempfile.TemporaryDirectory() as d:
+        code, out = _run_main(mod, Path(d), entries, instances, ["--dry-run", "--check-main"])
+
+    assert code == 3
+    assert "NAO DETECTADAS em refs/heads/main (1)" in out
+    assert "#43  rust/hard-coded-cryptographic-value @ x.rs:49" in out
+    assert "#176" not in out.split("NAO DETECTADAS", 1)[1].split("\n\n", 1)[0]
+
+
+def test_without_check_main_instances_are_not_queried():
+    """Sem a flag, o comportamento antigo: nenhuma consulta extra, exit 0."""
+    import tempfile
+
+    mod = _load_module()
+    entries = [_entry(43, "rust/hard-coded-cryptographic-value", "x.rs", 49)]
+
+    # Mapa de instancias vazio: uma consulta levantaria KeyError.
+    with tempfile.TemporaryDirectory() as d:
+        code, out = _run_main(mod, Path(d), entries, {}, ["--dry-run"])
+    assert code == 0
+    assert "NAO DETECTADAS" not in out
+
+
+if __name__ == "__main__":
+    # Roda sem pytest (stdlib apenas), como o test_ledger_anchors.py, para o
+    # job offline `CodeQL Ledger Anchors` do ci.yml nao precisar de pip.
+    import sys
+    import traceback
+
+    falhas = 0
+    testes = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
+    for nome, fn in testes:
+        try:
+            fn()
+            print(f"ok    {nome}")
+        except Exception:  # noqa: BLE001 — relatorio de runner
+            falhas += 1
+            print(f"FALHA {nome}")
+            traceback.print_exc()
+    print(f"\n{len(testes) - falhas}/{len(testes)} ok")
+    sys.exit(1 if falhas else 0)
