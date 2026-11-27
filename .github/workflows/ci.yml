@@ -191,10 +191,13 @@ jobs:
       # arvore do runner e descartada, e dizer "reescrito" aqui seria mentira.
       # Quem consertar roda o checker sem a flag, localmente, e commita o
       # `line` atualizado junto com a mudanca que o moveu. Vermelho aqui
-      # significa uma coisa so: o statement suprimido mudou, sumiu, ou ficou
-      # ambiguo — e ai a supressao precisa de reauditoria humana.
+      # significa uma de duas coisas: o statement suprimido mudou, sumiu, ou
+      # ficou ambiguo (exit 5/6 — a supressao precisa de reauditoria humana);
+      # ou o `line` commitado ficou para tras (exit 8, `--fail-on-stale-line`,
+      # #1993) — conserto mecanico, porque `line` velho faz o
+      # `codeql-reapply-dismissals.sh` abortar na primeira entrada divergente.
       - name: Ancoras do ledger ainda apontam para seus statements
-        run: python3 scripts/security/check-ledger-anchors.py --no-rewrite
+        run: python3 scripts/security/check-ledger-anchors.py --no-rewrite --fail-on-stale-line
 
       - name: Testes do checker de ancoras
         run: python3 scripts/security/tests/test_ledger_anchors.py

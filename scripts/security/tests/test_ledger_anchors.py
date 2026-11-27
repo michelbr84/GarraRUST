@@ -330,6 +330,54 @@ class LedgerAnchorsTest(LedgerCase):
         self.assertEqual(ledger.read_text(encoding="utf-8"), before_json)
         self.assertEqual(md.read_text(encoding="utf-8"), before_md)
 
+    def test_fail_on_stale_line_turns_the_divergence_into_exit_8(self):
+        """#1993 item 2: no CI, `line` velho nao passa em silencio.
+
+        MORRE SE: a flag deixar de mudar o exit code, ou se a falha passar a
+        reescrever o ledger mesmo com `--no-rewrite`.
+        """
+        source = "// linha nova\n" + self.SOURCE
+        ledger, md = self.build([self.entry(line=3)], source=source)
+        before_json = ledger.read_text(encoding="utf-8")
+
+        code, out, err = self.run_check_capturing(
+            ledger, md, "--no-rewrite", "--fail-on-stale-line"
+        )
+
+        self.assertEqual(code, MOD.EXIT_STALE_LINE)
+        self.assertIn("linha derivada 4 (antes 3)", out)
+        self.assertIn("sem flags", err)
+        self.assertEqual(ledger.read_text(encoding="utf-8"), before_json)
+
+    def test_fail_on_stale_line_catches_a_stale_md_column_alone(self):
+        """O .json em dia nao basta: a coluna File:line do .md tambem e posicao."""
+        rows = [_md_row(162, "rust/path-injection", "src/handler.rs", 99)]
+        ledger, md = self.build([self.entry()], source=self.SOURCE, md_rows=rows)
+
+        code = self.run_check(ledger, md, "--no-rewrite", "--fail-on-stale-line")
+
+        self.assertEqual(code, MOD.EXIT_STALE_LINE)
+
+    def test_fail_on_stale_line_is_green_when_positions_match(self):
+        ledger, md = self.build([self.entry()], source=self.SOURCE)
+
+        code = self.run_check(ledger, md, "--no-rewrite", "--fail-on-stale-line")
+
+        self.assertEqual(code, MOD.EXIT_OK)
+
+    def test_drift_still_wins_over_a_stale_line(self):
+        """Reauditoria (exit 6) e mais urgente que commit mecanico (exit 8)."""
+        source = "// linha nova\n" + self.SOURCE
+        entries = [
+            self.entry(line=3),  # so andou: exit 8 sozinha
+            self.entry(number=163, snippet="statement que sumiu();"),  # drift
+        ]
+        ledger, md = self.build(entries, source=source)
+
+        code = self.run_check(ledger, md, "--no-rewrite", "--fail-on-stale-line")
+
+        self.assertEqual(code, MOD.EXIT_DRIFT)
+
     # -- desambiguacao -----------------------------------------------------
 
     def test_disambiguator_picks_the_occurrence_inside_the_named_function(self):

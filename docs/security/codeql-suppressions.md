@@ -199,6 +199,14 @@ arquivo, derivando a linha.
   Mover `line` não é fraude: é posição derivada, não afirmação de auditoria — é
   justamente por isso que o script faz isso sozinho, e é por isso que editar
   `sink_snippet` à mão continua sendo.
+
+  **Desde a #1993 (item 2), `line` velho reprova o CI.** O job roda com
+  `--no-rewrite --fail-on-stale-line`: divergência entre a linha derivada e o
+  `line` commitado (no `.json` ou na coluna `File:line` daqui) sai com
+  **exit 8**. Não é reauditoria, é commit mecânico — rodar o checker sem flags
+  e commitar o que ele reescreveu. Como aviso, o `line` ficava para trás no
+  `main` e o `codeql-reapply-dismissals.sh`, que compara esse número com o span
+  do alerta vivo, abortava na primeira entrada divergente.
 - **0 ocorrências** → **exit 6**, pedindo reauditoria. É o único caso em que o
   gate *deve* ficar vermelho: o statement suprimido mudou ou sumiu.
 - **2+ ocorrências** → **exit 5**. O snippet não identifica um statement só, e

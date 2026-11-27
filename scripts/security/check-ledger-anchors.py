@@ -78,6 +78,14 @@ Uso:
     python3 scripts/security/check-ledger-anchors.py
     python3 scripts/security/check-ledger-anchors.py --ledger caminho/ledger.json
     python3 scripts/security/check-ledger-anchors.py --no-rewrite   # so reporta
+    python3 scripts/security/check-ledger-anchors.py --no-rewrite --fail-on-stale-line  # CI
+
+`--fail-on-stale-line` (#1993, item 2): mover `line` nao e fraude, mas deixar o
+`line` commitado para tras tambem nao e inofensivo — o
+`codeql-reapply-dismissals.sh` compara esse numero com o span do alerta vivo e
+aborta (`exit 2`) na primeira entrada velha, sem conferir as seguintes. Com a
+flag, divergencia de posicao vira exit 8 em vez de aviso; o conserto continua
+mecanico: rodar o checker sem flag e commitar o `line` reescrito.
 
 Exit codes (a convencao 2/3/4/5 ja esta ocupada pelos scripts irmaos):
     0  todas as entradas casam
@@ -86,6 +94,8 @@ Exit codes (a convencao 2/3/4/5 ja esta ocupada pelos scripts irmaos):
     6  drift: alguma entrada nao aponta mais para statement algum (ou cita
        codigo que nao existe mais) e precisa de reauditoria
     7  janela de re-auditoria de 90 dias vencida
+    8  `--fail-on-stale-line`: alguma posicao derivada diverge do `line`
+       commitado (no .json ou na coluna File:line do .md)
 """
 
 from __future__ import annotations
@@ -104,6 +114,7 @@ EXIT_OK = 0
 EXIT_PRECONDITION = 5
 EXIT_DRIFT = 6
 EXIT_EXPIRED = 7
+EXIT_STALE_LINE = 8
 
 # Linha canonica do ledger markdown. Casa apenas as tres primeiras celulas, para
 # nao tropecar num `|` dentro da justificativa (que e prosa livre com codigo):
@@ -340,6 +351,14 @@ def main() -> int:
         help=(
             "nao reescreve o `line` derivado no ledger — so reporta a "
             "divergencia (util em arvore read-only)"
+        ),
+    )
+    ap.add_argument(
+        "--fail-on-stale-line",
+        action="store_true",
+        help=(
+            "posicao derivada divergente do `line` commitado vira exit 8 em vez "
+            "de aviso (uso: CI, junto com --no-rewrite; #1993)"
         ),
     )
     args = ap.parse_args()
@@ -590,6 +609,24 @@ def main() -> int:
             file=sys.stderr,
         )
         return EXIT_DRIFT
+
+    # Depois de precondicao e drift: as duas pedem reauditoria humana, e esta
+    # so pede um commit mecanico. Sem reescrita, o `line` velho fica no ledger
+    # e quebra o `codeql-reapply-dismissals.sh` mais tarde (#1993, item 2).
+    if moved and args.fail_on_stale_line:
+        print(
+            f"error: {len(moved)} posicao(oes) do ledger ficaram para tras do "
+            f"codigo (lista acima)\n",
+            file=sys.stderr,
+        )
+        print(
+            "Rode `python3 scripts/security/check-ledger-anchors.py` sem flags\n"
+            "(ele grava o `line` derivado no .json e no .md) e commite o\n"
+            "resultado junto com a mudanca que moveu o sink. So o `line` muda:\n"
+            "NUNCA edite sink_snippet para este check passar.",
+            file=sys.stderr,
+        )
+        return EXIT_STALE_LINE
 
     print(f"ok: {len(entries)} entradas do ledger conferem com o codigo e com o .md")
 
