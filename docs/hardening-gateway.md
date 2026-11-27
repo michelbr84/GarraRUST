@@ -232,9 +232,9 @@ servidor passasse a anunciar `ascii`. Comparando na hora, a equivalencia
 nunca e maior que a do servidor naquele momento. So as entradas `irc:` sao
 comparadas assim: as dos outros canais continuam exatas, e uma entrada `irc:`
 nao admite ninguem fora do IRC. Os erros de codigo de `/pair` contam por nick
-normalizado, entao trocar so a caixa nao zera a contagem. O historico e o escopo de aprovacao seguem com o
-nick como veio: no escopo, o "sim" de `Ana` nao aprova um pedido de `ana`, e a
-pessoa e perguntada de novo.
+normalizado, entao trocar so a caixa nao zera a contagem. O historico e o
+escopo de aprovacao seguem com o nick como veio: no escopo, o "sim" de `Ana`
+nao aprova um pedido de `ana`, e a pessoa e perguntada de novo.
 
 **IRC: entrada sem prefixo nao vale no IRC (GHSA-g6c8-mx6x-5g92).** A
 allowlist e uma so, e os ids dos outros canais ficam nela sem prefixo. No IRC o
@@ -245,14 +245,22 @@ como aquela pessoa, inclusive como o dono. So as entradas `irc:` valem no IRC,
 e nenhuma entrada sem prefixo vira `irc:` sozinha.
 
 - **Quem foi pareado pelo IRC antes da #2015** tem uma entrada sem prefixo e
-  precisa de um codigo novo de `/pair`, que o dono gera em outro canal (o IRC
-  nao tem `/pair`). O codigo grava `irc:<nick>`. A entrada antiga nao vale no
-  IRC e pode ser apagada.
-- **Um dono pareado pelo IRC antes da #2015** que nao usa outro canal nao tem
-  onde gerar o codigo. Com o gateway parado, troque `"<nick>"` por
-  `"irc:<nick>"` no `owner` e em `users` do `allowlist.json` e suba de novo.
-  Faca isso so para o nick que e seu: `irc:<nick>` admite quem usar aquele
-  nick no servidor.
+  precisa de um codigo novo de `/pair`. O dono gera o codigo num canal que
+  trata comandos e em que ele e o dono (o IRC nao tem `/pair`), e o codigo
+  grava `irc:<nick>`. A entrada antiga nao vale no IRC e pode ser apagada.
+- **Quando nao ha onde gerar o codigo**, a saida e o arquivo. Isso acontece
+  em dois casos:
+  - **o dono foi pareado pelo IRC:** o `/pair` dos outros canais so atende o
+    dono daquele canal, comparado pelo id de la, e nao um nick de IRC;
+  - **o deploy e so de IRC.**
+
+  O codigo de pareamento so sai do `/pair` dos canais que tratam comandos:
+  a CLI e a API nao geram codigo. Com o gateway parado, troque `"<nick>"` por
+  `"irc:<nick>"` no `allowlist.json`: no `owner`, para o dono, e em `users`,
+  para cada pessoa afetada. Suba o gateway de novo. Faca isso so para nicks
+  que voce conhece: `irc:<nick>` admite quem usar aquele nick no servidor. A
+  mensagem de boas-vindas que o IRC manda ao novo dono aponta este mesmo
+  caminho.
 
 **Nível de aprovação: `agent.approval` e `--yolo` (#1858).** O que acontece
 com o tier arriscado (a segunda linha da tabela) é um knob declarado pelo
