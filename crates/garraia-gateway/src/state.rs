@@ -589,7 +589,7 @@ impl AppState {
 
     /// The config directory this state was built on (#2033): the default one
     /// for [`Self::new`], the one passed in for [`Self::with_config_dir`].
-    pub fn config_dir(&self) -> &std::path::Path {
+    pub(crate) fn config_dir(&self) -> &std::path::Path {
         &self.config_dir
     }
 
@@ -601,7 +601,7 @@ impl AppState {
     /// state built on another config dir used to load its registry from there
     /// and then write the whole registry, its secrets and the vault purges of
     /// a delete into the default config dir.
-    pub fn mcp_persistence(&self) -> crate::mcp::McpPersistenceService {
+    pub(crate) fn mcp_persistence(&self) -> crate::mcp::McpPersistenceService {
         crate::mcp::McpPersistenceService::in_config_dir(&self.config_dir)
     }
 

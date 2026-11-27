@@ -136,7 +136,7 @@ impl McpPersistenceService {
     /// `<config_dir>/mcp.json` with `<config_dir>/credentials/vault.json`.
     ///
     /// #2033: this is the pair an `AppState` loads its registry from and the
-    /// admin MCP handlers persist through ([`crate::state::AppState::mcp_persistence`]),
+    /// admin MCP handlers persist through (`AppState::mcp_persistence`),
     /// so a state built on one config dir never reads from one place and
     /// writes to another.
     pub fn in_config_dir(config_dir: &Path) -> Self {
