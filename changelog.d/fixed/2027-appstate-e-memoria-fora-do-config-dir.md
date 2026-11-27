@@ -1,6 +1,6 @@
-- **Os testes do gateway nao usam mais o `mcp.json`, o `allowlist.json`, o
-  cofre nem o `memory.db` de quem roda `cargo test` (#2027).** Continuacao do
-  #2021:
+- **Os testes de integracao do gateway e os de unidade de `bootstrap` nao
+  usam mais o `mcp.json`, o `allowlist.json`, o cofre nem o `memory.db` de
+  quem roda `cargo test` (#2027, parcial).** Continuacao do #2021:
   - 14 testes de integracao montavam o `AppState::new` sem desviar o config
     dir. Criavam `mcp.json` e `data/workspace/` em `~/.config/garraia`, liam a
     allowlist real do operador e ligavam o cofre do caminho padrao, que
@@ -10,3 +10,6 @@
   - os testes de unidade de `bootstrap` chamavam `build_agent_runtime` com
     `data_dir: None`, que abria (e migrava) o `<config_dir>/data/memory.db`
     real. Sem `data_dir` proprio, cada chamada ganha um tempdir.
+
+  Ainda pendente no #2027: cerca de 40 `AppState::new` em testes de unidade
+  sob `crates/garraia-gateway/src/` (por exemplo `bootstrap/whatsapp_linked`).
