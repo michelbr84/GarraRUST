@@ -16,6 +16,8 @@ use std::time::Duration;
 use garraia_config::AppConfig;
 use garraia_gateway::GatewayServer;
 
+mod config_dir_descartavel;
+
 fn porta_livre() -> u16 {
     TcpListener::bind("0.0.0.0:0")
         .expect("porta efemera")
@@ -25,6 +27,9 @@ fn porta_livre() -> u16 {
 }
 
 fn config_em(host: &str, port: u16) -> AppConfig {
+    // #2021: a recusa vem antes do `admin.db`, mas um boot que passasse dela
+    // abriria o config dir de quem roda os testes.
+    config_dir_descartavel::isolar();
     let mut config = AppConfig::default();
     config.gateway.host = host.into();
     config.gateway.port = port;

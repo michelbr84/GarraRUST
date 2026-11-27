@@ -529,6 +529,14 @@ name = "rest_v1_me_export_perf"
 path = "tests/rest_v1_me_export_perf.rs"
 required-features = ["test-helpers"]
 
+# #2021: o router de teste resolve a chave do admin fora do `<config_dir>`
+# do operador. Gated porque o helper so existe sob `test-helpers`; nao usa
+# Postgres.
+[[test]]
+name = "router_de_teste_isola_o_master_key"
+path = "tests/router_de_teste_isola_o_master_key.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly

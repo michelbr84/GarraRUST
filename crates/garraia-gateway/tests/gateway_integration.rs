@@ -8,6 +8,8 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+mod config_dir_descartavel;
+
 /// Pick a random available port.
 fn random_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind to random port");
@@ -50,6 +52,9 @@ fn canned_anthropic_response(text: &str) -> Value {
 
 /// Start the gateway in the background and return the WebSocket URL.
 async fn start_test_gateway(config: AppConfig) -> String {
+    // #2021: sem isto o boot usa o admin.db e o master.key de quem roda os
+    // testes.
+    config_dir_descartavel::isolar();
     let port = config.gateway.port;
     tokio::spawn(async move {
         let server = GatewayServer::new(config);

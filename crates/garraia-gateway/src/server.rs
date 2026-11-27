@@ -454,7 +454,10 @@ impl GatewayServer {
         // fail-closed for the admin panel only: the gateway boots and `/admin`
         // answers 503, with the reason in the log (#1992, #1999). See
         // admin/shared.rs.
-        let admin_key = admin::handlers::resolve_admin_encryption_key(&mut admin_store_owned);
+        let admin_key = admin::handlers::resolve_admin_encryption_key(
+            &mut admin_store_owned,
+            &admin::handlers::default_admin_dir(),
+        );
         let admin_store = Arc::new(Mutex::new(admin_store_owned));
 
         let sessions_db = data_dir.join("sessions.db");
@@ -1396,7 +1399,7 @@ pub async fn build_router_for_test_with_storage(
     // Minimal collaborators expected by the production router.
     let mut admin_store_owned =
         admin::store::AdminStore::in_memory().expect("in-memory admin store should work");
-    let admin_key = admin::handlers::resolve_admin_encryption_key(&mut admin_store_owned);
+    let admin_key = admin_key_for_test_router(&mut admin_store_owned);
     let admin_store = Arc::new(Mutex::new(admin_store_owned));
 
     build_router(
@@ -1405,6 +1408,62 @@ pub async fn build_router_for_test_with_storage(
         admin_store,
         admin_key,
     )
+}
+
+/// The admin master key of the test router (#2021).
+///
+/// Never resolved against the operator's `<config_dir>/admin`. The test store
+/// is in-memory and always empty, and over an empty store a wrong-length
+/// `master.key` is replaced by a new one (#2013): a test run moved the
+/// operator's key to `master.key.unreadable` and wrote another in its place,
+/// and the real gateway, with secrets in its `admin.db`, answered 503. The
+/// `master.key` written here lands in a throwaway directory removed right
+/// after; the key itself stays in memory, which is all this router needs.
+#[cfg(feature = "test-helpers")]
+pub fn admin_key_for_test_router(
+    store: &mut crate::admin::store::AdminStore,
+) -> crate::admin::handlers::AdminKey {
+    let scratch =
+        new_scratch_dir().expect("the test router needs a throwaway directory for its admin key");
+    let key = crate::admin::handlers::resolve_admin_encryption_key(store, &scratch);
+    // Best-effort: what is left behind is a test key in our own directory.
+    let _ = std::fs::remove_dir_all(&scratch);
+    key
+}
+
+/// A directory this call just created in the shared temp dir, owner-only on
+/// Unix. The name is predictable (pid and a counter), so it is created with
+/// `create_dir`, never `create_dir_all`: `mkdir` fails on anything already at
+/// the path, a planted symlink included, and that name is skipped rather than
+/// followed into someone else's directory — such as the operator's
+/// `<config_dir>/admin`.
+#[cfg(feature = "test-helpers")]
+fn new_scratch_dir() -> std::io::Result<std::path::PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    for _ in 0..100 {
+        let dir = std::env::temp_dir().join(format!(
+            "garraia-test-admin-key-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match builder.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "100 names in the temp dir were already taken",
+    ))
 }
 
 /// Upper bound for cancelling MCP services at shutdown. A server that ignores

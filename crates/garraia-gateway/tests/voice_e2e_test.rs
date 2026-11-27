@@ -13,6 +13,8 @@ use garraia_gateway::GatewayServer;
 use garraia_voice::{VoiceError, VoiceMetrics};
 use tracing::info;
 
+mod config_dir_descartavel;
+
 /// Pick a random available port.
 fn random_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind to random port");
@@ -47,6 +49,9 @@ fn test_config(port: u16) -> AppConfig {
 /// Start the gateway in the background and return the base URL.
 /// Waits for the server to be fully ready.
 async fn start_test_gateway(config: AppConfig) -> String {
+    // #2021: sem isto o boot usa o admin.db e o master.key de quem roda os
+    // testes.
+    config_dir_descartavel::isolar();
     let port = config.gateway.port;
     tokio::spawn(async move {
         let server = GatewayServer::new(config);
