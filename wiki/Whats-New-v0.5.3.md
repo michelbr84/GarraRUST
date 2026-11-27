@@ -2,7 +2,7 @@
 
 > 🇧🇷 [Versão em português](Novidades-v0.5.3) · 📋 [Full CHANGELOG](https://github.com/michelbr84/GarraRUST/blob/main/CHANGELOG.md) · 📦 [Download](https://github.com/michelbr84/GarraRUST/releases/tag/v0.5.3)
 
-Stable release of November 26, 2026 — replaces v0.5.2 as the `latest` release.
+Stable release of November 27, 2026 — replaces v0.5.2 as the `latest` release.
 
 v0.5.3 is a fix release, almost entirely security. It fixes advisory
 [GHSA-g6c8-mx6x-5g92](https://github.com/michelbr84/GarraRUST/security/advisories/GHSA-g6c8-mx6x-5g92),

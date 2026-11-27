@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 
-## [0.5.3] - 2026-11-26
+## [0.5.3] - 2026-11-27
 
 A v0.5.3 e uma versao de correcoes, quase todas de seguranca, sobre a v0.5.2.
 Ela corrige o aviso
