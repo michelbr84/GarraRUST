@@ -14,8 +14,11 @@
 //! `mcp.json` real no disco e assevera que os campos declarados do OUTRO
 //! servidor continuam no arquivo — e que o loader de boot ainda os lê.
 //!
-//! Vive em binário de teste próprio porque precisa de um config dir com um
-//! `mcp.json` específico (os binários irmãos precisam dos seus).
+//! O estado mora num config dir próprio, com um `mcp.json` específico
+//! (`config_dir_descartavel::app_state_em`), sem mexer no ambiente do
+//! processo: desde o #2033 o handler grava no config dir do `AppState`.
+
+mod config_dir_descartavel;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,7 +34,6 @@ use garraia_gateway::admin::middleware::AuthenticatedAdmin;
 use garraia_gateway::admin::rbac::Role;
 use garraia_gateway::admin::shared::AdminState;
 use garraia_gateway::admin::store::AdminStore;
-use garraia_gateway::state::AppState;
 use tokio::sync::Mutex;
 
 const KEEPER: &str = "keeper";
@@ -39,15 +41,6 @@ const KEEPER: &str = "keeper";
 #[tokio::test]
 async fn create_via_admin_api_preserves_declared_fields_of_other_servers() {
     let dir = tempfile::tempdir().expect("temp config dir");
-    // SAFETY: binário de teste dedicado com um único teste, então nenhuma
-    // outra thread lê o ambiente em paralelo.
-    unsafe {
-        std::env::set_var("GARRAIA_CONFIG_DIR", dir.path());
-        std::env::set_var(
-            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
-            "1",
-        );
-    }
 
     // O arquivo exatamente como o operador (ou o wizard) o escreve — a
     // allowlist GAR-190, a válvula `inherit_env` (#1075), a chave de boot
@@ -76,10 +69,12 @@ async fn create_via_admin_api_preserves_declared_fields_of_other_servers() {
         // conectado — nasce Stopped, por contrato.
         let manager = Arc::new(McpManager::new());
 
-        // `AppState::new` carrega o registry do arquivo via
-        // `McpPersistenceService::load_registry` — o caminho que a admin
-        // API lê e escreve.
-        let mut state = AppState::new(
+        // O estado carrega o registry do arquivo via
+        // `McpPersistenceService::load_registry` — o mesmo `mcp.json` que a
+        // admin API lê e escreve. Com o `mcp.json` já gravado, o estado não
+        // provisiona o `filesystem` nele.
+        let mut state = config_dir_descartavel::app_state_em(
+            dir.path(),
             AppConfig::default(),
             Arc::new(AgentRuntime::new()),
             ChannelRegistry::new(),

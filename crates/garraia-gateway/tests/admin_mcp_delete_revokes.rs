@@ -14,6 +14,8 @@
 //! - Remove `manager.forget` from the handler → `delete_clears_pending_so_health_tick_does_not_resurrect`
 //!   goes red (the health monitor reconnects the deleted server).
 
+mod config_dir_descartavel;
+
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
@@ -27,31 +29,22 @@ use garraia_gateway::admin::middleware::AuthenticatedAdmin;
 use garraia_gateway::admin::rbac::Role;
 use garraia_gateway::admin::shared::AdminState;
 use garraia_gateway::admin::store::AdminStore;
-use garraia_gateway::mcp::{McpPersistenceService, McpServerConfig};
+use garraia_gateway::mcp::McpServerConfig;
 use garraia_gateway::state::AppState;
 use tokio::sync::Mutex;
 
 const SERVER: &str = "fake-deletable";
 
-/// Point this whole test binary at a throwaway config dir before any test
-/// builds an `AppState`. See `admin_mcp_restart_allowlist.rs` for the full
-/// rationale: `AppState::new` writes `mcp.json` into the config dir, and
-/// without this the tests would race the developer's real `~/.config/garraia`
-/// and merge whatever `mcp.json` that machine happens to have.
-static TEST_ENV: LazyLock<tempfile::TempDir> = LazyLock::new(|| {
-    let dir = tempfile::tempdir().expect("temp config dir");
-    // SAFETY: the `LazyLock` serialises this against the other test threads in
-    // this binary — every test calls `test_env()` as its first statement.
-    unsafe {
-        std::env::set_var("GARRAIA_CONFIG_DIR", dir.path());
-        std::env::set_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV, "1");
-    }
-    dir
-});
-
-fn test_env() {
-    LazyLock::force(&TEST_ENV);
-}
+/// The throwaway config dir every `AppState` of this binary is built on, with
+/// an `mcp.json` that declares no server.
+///
+/// The delete persists the registry into the `mcp.json` and purges the vault
+/// of the state's config dir (#2033). On the default config dir, the tests
+/// would write the developer's real `~/.config/garraia` and merge whatever
+/// `mcp.json` that machine happens to have. See `admin_mcp_restart_allowlist.rs`.
+/// Nothing here touches the process environment.
+static CONFIG_DIR: LazyLock<tempfile::TempDir> =
+    LazyLock::new(config_dir_descartavel::sem_servidores);
 
 /// The stdio fixture lives in `garraia-agents`; same fake server the lifecycle
 /// and restart tests drive, so there is one fixture to keep honest.
@@ -97,7 +90,8 @@ fn admin() -> AuthenticatedAdmin {
 /// wrapped in an `Arc` so several deletes can share the same registry.
 async fn app_state(manager: &Arc<McpManager>) -> Arc<AppState> {
     let app_config = AppConfig::default();
-    let mut state = AppState::new(
+    let mut state = config_dir_descartavel::app_state_em(
+        CONFIG_DIR.path(),
         app_config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),
@@ -161,7 +155,6 @@ async fn delete(state: AdminState) -> (axum::http::StatusCode, serde_json::Value
 /// handler — `is_connected` stays `true` and `call_tool` returns `Ok`.
 #[tokio::test]
 async fn delete_drops_the_live_connection() {
-    test_env();
     let body = async {
         let manager = Arc::new(McpManager::new());
         connect(&manager).await;
@@ -235,7 +228,6 @@ async fn delete_drops_the_live_connection() {
 /// `is_connected` flips to `true`, failing the last assertion.
 #[tokio::test]
 async fn delete_clears_pending_so_health_tick_does_not_resurrect() {
-    test_env();
     let body = async {
         let manager = Arc::new(McpManager::new());
 
@@ -301,7 +293,6 @@ async fn delete_clears_pending_so_health_tick_does_not_resurrect() {
 /// unlisted.
 #[tokio::test]
 async fn second_delete_after_a_stale_state_actually_clears_it() {
-    test_env();
     let body = async {
         let manager = Arc::new(McpManager::new());
         connect(&manager).await;

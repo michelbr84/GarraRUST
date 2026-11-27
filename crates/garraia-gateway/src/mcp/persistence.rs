@@ -132,6 +132,17 @@ impl McpPersistenceService {
         Self::new(garraia_config::ConfigLoader::default_config_dir().join("mcp.json"))
     }
 
+    /// The `mcp.json` and the vault of `config_dir`, together:
+    /// `<config_dir>/mcp.json` with `<config_dir>/credentials/vault.json`.
+    ///
+    /// #2033: this is the pair an `AppState` loads its registry from and the
+    /// admin MCP handlers persist through ([`crate::state::AppState::mcp_persistence`]),
+    /// so a state built on one config dir never reads from one place and
+    /// writes to another.
+    pub fn in_config_dir(config_dir: &Path) -> Self {
+        Self::new(config_dir.join("mcp.json")).with_vault(garraia_config::vault_path_in(config_dir))
+    }
+
     /// Attach an encrypted vault for sensitive env var storage (GAR-291).
     ///
     /// When set, [`load_registry`](Self::load_registry) resolves `vault:` refs
