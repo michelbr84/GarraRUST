@@ -15,9 +15,10 @@ use garraia_config::AppConfig;
 use garraia_gateway::admin::store::AdminStore;
 use garraia_gateway::push_channels::PushChannelStates;
 use garraia_gateway::router::build_router;
-use garraia_gateway::state::AppState;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
+
+mod config_dir_descartavel;
 
 /// Mock de sintetizador que SEMPRE falha: força o caminho de erro do handler.
 struct TtsQueFalha;
@@ -44,7 +45,7 @@ fn router_com_tts_que_falha() -> axum::Router {
 fn router_com_tts(tts: Arc<dyn garraia_voice::TtsSynthesizer>) -> axum::Router {
     let mut config = AppConfig::default();
     config.voice.language = "es".into();
-    let mut st = AppState::new(
+    let mut st = config_dir_descartavel::app_state(
         config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),

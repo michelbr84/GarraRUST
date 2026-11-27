@@ -106,9 +106,16 @@ pub fn provider_key_env(provider: &str) -> Option<&'static str> {
 
 /// Default credential-vault path under the resolved config directory.
 pub fn default_vault_path() -> PathBuf {
-    ConfigLoader::default_config_dir()
-        .join("credentials")
-        .join("vault.json")
+    vault_path_in(&ConfigLoader::default_config_dir())
+}
+
+/// Credential-vault path inside `config_dir`: `<config_dir>/credentials/vault.json`.
+///
+/// For code that already holds a config directory (the gateway's
+/// `AppState::with_config_dir`) and must not fall back to the default one
+/// (#2027).
+pub fn vault_path_in(config_dir: &Path) -> PathBuf {
+    config_dir.join("credentials").join("vault.json")
 }
 
 /// Whether a vault file exists on disk but no passphrase is available to open

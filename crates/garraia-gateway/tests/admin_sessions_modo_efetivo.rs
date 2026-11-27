@@ -18,8 +18,9 @@ use garraia_gateway::admin::middleware::AuthenticatedAdmin;
 use garraia_gateway::admin::rbac::Role;
 use garraia_gateway::admin::shared::AdminState;
 use garraia_gateway::admin::store::AdminStore;
-use garraia_gateway::state::AppState;
 use tokio::sync::Mutex;
+
+mod config_dir_descartavel;
 
 const DONO: &str = "5511977776666";
 const USUARIO: &str = "5511999998888";
@@ -63,7 +64,7 @@ async fn sessoes_trazem_principal_modo_efetivo_e_projeto_sem_caminho() {
             settings,
         },
     );
-    let mut state = AppState::new(
+    let mut state = config_dir_descartavel::app_state(
         config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),

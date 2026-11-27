@@ -34,9 +34,10 @@ use garraia_config::AppConfig;
 use garraia_gateway::admin::store::AdminStore;
 use garraia_gateway::push_channels::PushChannelStates;
 use garraia_gateway::router::build_router;
-use garraia_gateway::state::AppState;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
+
+mod config_dir_descartavel;
 
 const ROTAS: [&str; 4] = [
     "/webhooks/whatsapp",
@@ -75,7 +76,7 @@ fn toda_rota_de_webhook_do_router_esta_na_lista() {
 /// `ConnectInfo` é obrigatório: o rate limiter lê o IP do par e devolve 500
 /// antes de qualquer camada sem ele (mesmo motivo do `hsts.rs`).
 async fn post(uri: &str, corpo: Vec<u8>) -> StatusCode {
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         AppConfig::default(),
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),

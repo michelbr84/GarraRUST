@@ -24,10 +24,11 @@ use garraia_gateway::admin::rbac::Role;
 use garraia_gateway::admin::store::AdminStore;
 use garraia_gateway::push_channels::PushChannelStates;
 use garraia_gateway::router::build_router;
-use garraia_gateway::state::AppState;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tower::ServiceExt;
+
+mod config_dir_descartavel;
 
 const USUARIO: &str = "dono";
 /// A mesma chave mestra que `cenario`/`cenario_arquivo` passam ao router: o
@@ -48,7 +49,7 @@ fn cenario() -> (Router, Arc<Mutex<AdminStore>>) {
         .expect("usuario de teste");
 
     let config = AppConfig::default();
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),
@@ -250,7 +251,7 @@ async fn o_travamento_sobrevive_ao_restart_do_gateway() {
     // O restart: processo novo, store nova, mesmo arquivo.
     let reaberta = AdminStore::open(&path).expect("reabrir o admin.db");
     let config = AppConfig::default();
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),
@@ -408,7 +409,7 @@ fn cenario_arquivo(
         .expect("usuario de teste");
 
     let config = AppConfig::default();
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),

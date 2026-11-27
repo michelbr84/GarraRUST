@@ -559,6 +559,17 @@ pub(crate) use garraia_agents::cliente_llm::{cliente_compartilhado, cliente_do_l
 
 /// Build a fully-configured `AgentRuntime` from the application config.
 pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
+    // #2027: sem `data_dir`, o runtime abre o `memory.db` (com WAL e
+    // migrations) e as raizes do `<config_dir>/data` de quem roda `cargo
+    // test`. Nos testes de unidade isso e sempre engano; a config vem de
+    // `tests::config_de_teste()`.
+    #[cfg(test)]
+    assert!(
+        config.data_dir.is_some(),
+        "teste de unidade chamou build_agent_runtime sem data_dir: ele abriria o \
+         memory.db real do operador. Use config_de_teste() (bootstrap::tests)"
+    );
+
     let mut runtime = AgentRuntime::new();
     let mut unreachable_local_providers: Vec<String> = Vec::new();
 
@@ -2760,6 +2771,18 @@ mod tests {
             || texto.ends_with(garraia_agents::tools::file_jail::NO_ROOTS_MESSAGE)
     }
 
+    /// #2027: a config dos testes que chamam `build_agent_runtime`. E a
+    /// `AppConfig::default()` com o `data_dir` no config dir dos testes de
+    /// unidade (`crate::state::config_dir_dos_testes`). Sem ele o runtime
+    /// abriria o `memory.db` de quem roda `cargo test`, e o
+    /// `build_agent_runtime` recusa isso nos testes.
+    fn config_de_teste() -> AppConfig {
+        AppConfig {
+            data_dir: Some(crate::state::config_dir_dos_testes().join("data")),
+            ..AppConfig::default()
+        }
+    }
+
     // ─── issue #1244: o jail chega ao ponto de registro ────────────────────
     //
     // Este repositorio ja errou cinco vezes o mesmo defeito: funcao pura bem
@@ -2792,10 +2815,10 @@ mod tests {
     #[tokio::test]
     async fn nivel_de_aprovacao_do_config_chega_ao_runtime() {
         assert_eq!(
-            build_agent_runtime(&AppConfig::default()).approval_level(),
+            build_agent_runtime(&config_de_teste()).approval_level(),
             garraia_common::ApprovalLevel::Always
         );
-        let mut config = AppConfig::default();
+        let mut config = config_de_teste();
         config.agent.approval = garraia_common::ApprovalLevel::Session;
         assert_eq!(
             build_agent_runtime(&config).approval_level(),
@@ -2812,7 +2835,7 @@ mod tests {
         let segredo = fora.join("config.yml");
         std::fs::write(&segredo, b"api_key: sk-em-claro").expect("write");
 
-        let runtime = build_agent_runtime(&AppConfig::default());
+        let runtime = build_agent_runtime(&config_de_teste());
         let tool = runtime
             .find_tool("file_read")
             .expect("file_read tem de estar registrada");
@@ -2844,7 +2867,7 @@ mod tests {
         let raiz = std::fs::canonicalize(tmp.path()).expect("canonicalize");
         std::fs::write(raiz.join("notas.md"), b"conteudo do projeto").expect("write");
 
-        let runtime = build_agent_runtime(&AppConfig::default());
+        let runtime = build_agent_runtime(&config_de_teste());
         let tool = runtime
             .find_tool("file_read")
             .expect("file_read tem de estar registrada");
@@ -2868,7 +2891,7 @@ mod tests {
         let fora = std::fs::canonicalize(tmp.path()).expect("canonicalize");
         let alvo = fora.join("plantado.sh");
 
-        let runtime = build_agent_runtime(&AppConfig::default());
+        let runtime = build_agent_runtime(&config_de_teste());
         let tool = runtime
             .find_tool("file_write")
             .expect("file_write tem de estar registrada");
@@ -2893,7 +2916,7 @@ mod tests {
         let fora = std::fs::canonicalize(tmp.path()).expect("canonicalize");
         std::fs::write(fora.join("id_rsa"), b"PRIVATE KEY").expect("write");
 
-        let runtime = build_agent_runtime(&AppConfig::default());
+        let runtime = build_agent_runtime(&config_de_teste());
         let tool = runtime
             .find_tool("list_dir")
             .expect("list_dir tem de estar registrada");
@@ -2925,7 +2948,7 @@ mod tests {
         std::fs::write(fora.join("id_rsa"), b"PRIVATE KEY").expect("write");
         std::os::unix::fs::symlink(&fora, raiz.join("atalho")).expect("symlink");
 
-        let runtime = build_agent_runtime(&AppConfig::default());
+        let runtime = build_agent_runtime(&config_de_teste());
         let tool = runtime
             .find_tool("file_read")
             .expect("file_read tem de estar registrada");
@@ -2983,7 +3006,7 @@ mod tests {
     /// na lista que o modelo recebe.
     #[test]
     fn build_agent_runtime_registers_exploration_tools() {
-        let runtime = build_agent_runtime(&AppConfig::default());
+        let runtime = build_agent_runtime(&config_de_teste());
         let names = runtime.tool_names();
         for expected in [
             "file_read",
@@ -3008,7 +3031,7 @@ mod tests {
     /// shell nenhum para pedir. As outras tools seguem registradas.
     #[test]
     fn gateway_em_standard_sem_sandbox_nao_registra_bash() {
-        let runtime = build_agent_runtime(&AppConfig::default());
+        let runtime = build_agent_runtime(&config_de_teste());
         let names = runtime.tool_names();
         assert!(
             !names.iter().any(|n| n == "bash"),
@@ -3024,7 +3047,7 @@ mod tests {
     #[test]
     fn gateway_em_standard_sem_sandbox_nao_registra_run_tests() {
         for confirmacao in [false, true] {
-            let mut config = AppConfig::default();
+            let mut config = config_de_teste();
             config.agent.tool_confirmation_enabled = confirmacao;
             let names = build_agent_runtime(&config).tool_names();
             for tool in TOOLS_QUE_EXECUTAM_CODIGO_DO_REPO {
@@ -3047,7 +3070,7 @@ mod tests {
         let raiz = tempfile::tempdir().expect("tmp");
         let raiz_txt = raiz.path().to_string_lossy().into_owned();
         let marca = raiz.path().join("PWNED");
-        let mut config = AppConfig::default();
+        let mut config = config_de_teste();
         config.agent.file_roots = vec![raiz_txt.clone()];
         let runtime = build_agent_runtime(&config);
         let ctx = garraia_agents::tools::ToolContext {
@@ -3104,7 +3127,7 @@ mod tests {
     /// e o `run_tests` elevado, ele fica de fora.
     #[test]
     fn gateway_em_standard_com_sandbox_so_registra_run_tests_com_backend_real() {
-        let mut config = AppConfig::default();
+        let mut config = config_de_teste();
         config.agent.sandbox.mode = garraia_config::SandboxMode::All;
         config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Docker);
         let tem = |c: &AppConfig| {
@@ -3131,7 +3154,7 @@ mod tests {
                 Some(garraia_config::ExecutionProfile::IsolatedPod),
                 None,
             ),
-            ..AppConfig::default()
+            ..config_de_teste()
         };
         let names = build_agent_runtime(&config).tool_names();
         assert!(names.iter().any(|n| n == "run_tests"), "{names:?}");
@@ -3146,7 +3169,7 @@ mod tests {
                 Some(garraia_config::ExecutionProfile::IsolatedPod),
                 None,
             ),
-            ..AppConfig::default()
+            ..config_de_teste()
         };
         let names = build_agent_runtime(&config).tool_names();
         assert!(
@@ -3160,7 +3183,7 @@ mod tests {
     /// `ssh` nunca registra em `standard`.
     #[test]
     fn gateway_em_standard_com_sandbox_so_registra_bash_com_backend_real() {
-        let mut config = AppConfig::default();
+        let mut config = config_de_teste();
         config.agent.sandbox.mode = garraia_config::SandboxMode::All;
         config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Docker);
         let tem_bash = build_agent_runtime(&config)
@@ -3220,7 +3243,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn sandbox_do_config_chega_as_tools_de_programa_do_gateway() {
-        let mut config = AppConfig::default();
+        let mut config = config_de_teste();
         config.agent.sandbox.mode = garraia_config::SandboxMode::All;
         let runtime = build_agent_runtime(&config);
         for (nome, input) in [("repo_search", serde_json::json!({"query": "x"}))] {
@@ -3382,7 +3405,7 @@ mod tests {
 
     #[test]
     fn build_agent_runtime_empty_config_no_crash() {
-        let config = AppConfig::default();
+        let config = config_de_teste();
         let _runtime = build_agent_runtime(&config);
         // Should succeed with no providers or tools crashing.
         // We do not assert `_runtime.system_prompt().is_none()` because
@@ -3391,7 +3414,7 @@ mod tests {
 
     #[test]
     fn build_agent_runtime_unknown_provider_skips_gracefully() {
-        let mut config = AppConfig::default();
+        let mut config = config_de_teste();
         config.llm.insert(
             "bad".to_string(),
             garraia_config::LlmProviderConfig {
@@ -3435,7 +3458,7 @@ mod tests {
     /// dos locks da CLI porque `garraia-cli::defaults` era `pub(crate)`.
     #[test]
     fn openrouter_sem_model_explicito_cai_no_default_do_projeto() {
-        let mut config = AppConfig::default();
+        let mut config = config_de_teste();
         config.llm.insert(
             "openrouter".to_string(),
             llm_block("openrouter", None, None),
@@ -3462,7 +3485,7 @@ mod tests {
     #[test]
     fn default_provider_configurado_vence_a_ordem_do_hashmap() {
         for _ in 0..16 {
-            let mut config = AppConfig::default();
+            let mut config = config_de_teste();
             config.llm.insert(
                 "openrouter".to_string(),
                 llm_block("openrouter", None, None),
@@ -3487,7 +3510,7 @@ mod tests {
     #[test]
     fn default_provider_local_tambem_e_respeitado() {
         for _ in 0..16 {
-            let mut config = AppConfig::default();
+            let mut config = config_de_teste();
             config.llm.insert(
                 "openrouter".to_string(),
                 llm_block("openrouter", None, None),
@@ -3516,7 +3539,7 @@ mod tests {
         // providers registrados, uma unica rodada acerta metade das vezes
         // por sorte do hasher.
         for _ in 0..16 {
-            let mut config = AppConfig::default();
+            let mut config = config_de_teste();
             config
                 .llm
                 .insert("nuvem".to_string(), llm_block("openrouter", None, None));
@@ -3540,7 +3563,7 @@ mod tests {
     /// chave) avisa no log e mantem o que havia — nunca derruba o boot.
     #[test]
     fn default_provider_inexistente_nao_quebra_o_boot() {
-        let mut config = AppConfig::default();
+        let mut config = config_de_teste();
         config.llm.insert(
             "openrouter".to_string(),
             llm_block("openrouter", None, None),
@@ -3574,7 +3597,7 @@ mod tests {
     /// `llama-cpp` e `get_provider("meu-llama")` devolvia `None`.
     #[test]
     fn perfil_llamacpp_e_alcancavel_pela_chave() {
-        let mut config = AppConfig::default();
+        let mut config = config_de_teste();
         config.llm.insert(
             "meu-llama".to_string(),
             llm_block("llamacpp", None, Some("http://127.0.0.1:1")),
@@ -3599,7 +3622,7 @@ mod tests {
         // Mesmo laco dos testes do #1180: `config.llm` e um HashMap, entao uma
         // unica rodada acerta metade das vezes por sorte do hasher.
         for _ in 0..16 {
-            let mut config = AppConfig::default();
+            let mut config = config_de_teste();
             config.llm.insert(
                 "openrouter".to_string(),
                 llm_block("openrouter", None, None),
@@ -3634,7 +3657,7 @@ mod tests {
             ),
             ("anthropic", None, "claude-a", "claude-b"),
         ] {
-            let mut config = AppConfig::default();
+            let mut config = config_de_teste();
             config.llm.insert(
                 "perfil-a".to_string(),
                 llm_block(tipo, Some(modelo_a), base_url),
@@ -3677,7 +3700,7 @@ mod tests {
             // passaria sem resolver nada — foi exatamente como uma versao
             // anterior deste teste ficou verde com o alias arrancado.
             for _ in 0..16 {
-                let mut config = AppConfig::default();
+                let mut config = config_de_teste();
                 config
                     .llm
                     .insert("apelido".to_string(), llm_block(tipo, None, base_url));
@@ -3705,7 +3728,7 @@ mod tests {
     /// de pe com o default que havia.
     #[test]
     fn tipo_ambiguo_com_dois_perfis_nao_e_resolvido_na_sorte() {
-        let mut config = AppConfig::default();
+        let mut config = config_de_teste();
         config.llm.insert(
             "llama-a".to_string(),
             llm_block("llamacpp", Some("m-a"), Some("http://127.0.0.1:1")),

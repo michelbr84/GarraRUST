@@ -40,7 +40,7 @@ pub use model::{
 // no nivel da crate segue o mesmo caminho de antes para os consumidores.
 pub use provider_keys::{
     KeySource, default_vault_path, provider_key_env, resolve_api_key, resolve_api_key_source,
-    resolve_provider_key_source, vault_present_but_locked,
+    resolve_provider_key_source, vault_path_in, vault_present_but_locked,
 };
 pub use sandbox::{SandboxBackendKind, SandboxConfig, SandboxMode};
 pub use watcher::ConfigWatcher;

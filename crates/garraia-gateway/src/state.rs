@@ -423,18 +423,48 @@ pub struct AgentConfigOverride {
     pub max_tokens: Option<u32>,
 }
 
+/// #2027: o config dir dos testes de unidade desta crate, um temporario por
+/// processo (prefixo `garraia-teste-config-`).
+///
+/// E o que o `AppState::new` usa sob `cfg(test)`, e o `data_dir` que
+/// `bootstrap::tests::config_de_teste` entrega ao `build_agent_runtime` mora
+/// dentro dele. Um diretorio por processo, nao por teste, pelo mesmo motivo do
+/// `config_dir_descartavel` dos testes de integracao: os testes rodam em
+/// paralelo, e era isso que ja acontecia com o config dir real, compartilhado
+/// por todos eles. Um `static` nao roda `Drop`, entao o diretorio fica no temp
+/// do sistema depois do binario.
+#[cfg(test)]
+pub(crate) fn config_dir_dos_testes() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        tempfile::Builder::new()
+            .prefix("garraia-teste-config-")
+            .tempdir()
+            .expect("criar o config dir dos testes de unidade")
+    })
+    .path()
+}
+
 impl AppState {
+    /// Builds the state on the default config directory
+    /// (`ConfigLoader::default_config_dir`).
+    ///
+    /// In this crate's unit tests (`cfg(test)`) the default config directory
+    /// is a per-process temp dir instead (`config_dir_dos_testes`), so no
+    /// unit test reads or provisions the `mcp.json`, the `allowlist.json` or
+    /// the vault of whoever runs `cargo test` (#2027). Integration tests do
+    /// not see `cfg(test)`; they call [`Self::with_config_dir`].
     pub fn new(config: AppConfig, agents: Arc<AgentRuntime>, channels: ChannelRegistry) -> Self {
-        Self::with_config_dir(
-            config,
-            agents,
-            channels,
-            &garraia_config::ConfigLoader::default_config_dir(),
-        )
+        #[cfg(not(test))]
+        let config_dir = garraia_config::ConfigLoader::default_config_dir();
+        #[cfg(test)]
+        let config_dir = config_dir_dos_testes().to_path_buf();
+        Self::with_config_dir(config, agents, channels, &config_dir)
     }
 
     /// Like [`Self::new`], with the config directory (where `mcp.json` is
-    /// provisioned and `allowlist.json` lives) passed in instead of resolved
+    /// provisioned, `allowlist.json` lives and the vault that resolves the
+    /// `vault:` references of `mcp.json` sits) passed in instead of resolved
     /// from `GARRAIA_CONFIG_DIR`/`$HOME`.
     ///
     /// Tests use it so they never touch the process environment: a test that
@@ -442,12 +472,27 @@ impl AppState {
     /// building an `AppState` in parallel — any of them could provision its own
     /// `mcp.json` into that tempdir first (the flaky
     /// `o_relatorio_de_verdade_inclui_perfil_e_raiz_do_mcp`).
-    pub(crate) fn with_config_dir(
+    ///
+    /// The MCP `filesystem` roots and the file-tool roots still come from
+    /// `config.resolved_data_dir()`. A test that passes a throwaway config
+    /// directory sets `config.data_dir` inside it too, or the
+    /// `<default config dir>/data/workspace/` gets created. In this crate's
+    /// unit tests that happens on its own: without `data_dir`, it becomes
+    /// `<config_dir>/data`.
+    pub fn with_config_dir(
         config: AppConfig,
         agents: Arc<AgentRuntime>,
         channels: ChannelRegistry,
         config_dir: &std::path::Path,
     ) -> Self {
+        #[cfg(test)]
+        let config = {
+            let mut config = config;
+            if config.data_dir.is_none() {
+                config.data_dir = Some(config_dir.join("data"));
+            }
+            config
+        };
         // ADR 0024 (#1329): raizes do MCP `filesystem` por perfil de execucao,
         // resolvidas antes de `config` ser movida para o estado.
         let raizes_mcp = crate::bootstrap::raizes_do_mcp_filesystem(&config);
@@ -472,14 +517,14 @@ impl AppState {
                 // GAR-291: attach vault so sensitive env vars are resolved on load.
                 // Provision filesystem MCP on first boot when mcp.json is absent.
                 // ADR 0024 (#1329): raizes por perfil de execucao, nunca `$HOME`.
+                // #2027: o cofre e o do mesmo config dir do `mcp.json`. Com o
+                // padrao (`default_vault_path`), um estado montado sobre um
+                // diretorio descartavel decifrava as referencias `vault:` pelo
+                // cofre real de quem roda o processo.
                 let svc = crate::mcp::McpPersistenceService::new(config_dir.join("mcp.json"));
                 svc.provision_filesystem_if_missing(&raizes_mcp);
-                let svc = if let Some(vp) = crate::bootstrap::default_vault_path() {
-                    svc.with_vault(vp)
-                } else {
-                    svc
-                };
-                svc.load_registry()
+                svc.with_vault(garraia_config::vault_path_in(config_dir))
+                    .load_registry()
             },
             session_store: None,
             chat_session_manager: None,
@@ -1812,6 +1857,36 @@ mod tests {
         let mut ilegivel = superficies("api", &["api"]);
         ilegivel.unreadable_session_metadata = true;
         assert!(!sessao_alcancavel_por_id_do_cliente(&ilegivel));
+    }
+
+    /// #2027: nos testes de unidade o `AppState::new` nao monta o estado sobre
+    /// o config dir de quem roda `cargo test`. O config dir e um temporario do
+    /// processo e o `data_dir`, de onde saem as raizes do MCP e o
+    /// `data/workspace/`, fica dentro dele.
+    #[tokio::test]
+    async fn app_state_new_dos_testes_de_unidade_nao_usa_o_config_dir_padrao() {
+        let st = AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        );
+        let data_dir = st
+            .config
+            .data_dir
+            .clone()
+            .expect("o AppState::new dos testes de unidade define o data_dir");
+        let padrao = garraia_config::ConfigLoader::default_config_dir();
+        assert!(
+            !data_dir.starts_with(&padrao),
+            "o data_dir {} esta no config dir padrao {}",
+            data_dir.display(),
+            padrao.display()
+        );
+        assert!(
+            data_dir.starts_with(std::env::temp_dir()),
+            "o data_dir {} devia estar no temp do sistema",
+            data_dir.display()
+        );
     }
 
     /// Em memoria a regra le `channel_id` e `canais_dos_turnos`; sem sessao

@@ -25,13 +25,14 @@ use garraia_channels::ChannelRegistry;
 use garraia_config::AppConfig;
 use garraia_gateway::admin::store::AdminStore;
 use garraia_gateway::plugins_handler::build_plugin_routes;
-use garraia_gateway::state::AppState;
 use http_body_util::BodyExt;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
 
+mod config_dir_descartavel;
+
 fn build_test_router() -> Router {
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(config_dir_descartavel::app_state(
         AppConfig::default(),
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),
