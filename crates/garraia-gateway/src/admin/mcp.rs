@@ -709,8 +709,9 @@ mod tests {
     /// required), so `declared_mcp_servers` never saw the name, the restart
     /// resolution fell through to `NeverRestricted`, and the server came back
     /// with every tool exposed. This exercises the real composition the
-    /// handler uses — a file on disk through `merged_mcp_config` (the `Ok`
-    /// branch of `declared_mcp_servers`), into `resolve_allowlist` with a
+    /// handler uses — a file on disk through `merged_mcp_config` (what
+    /// `declared_mcp_servers` reads from the state's config dir), into
+    /// `resolve_allowlist` with a
     /// manager that knows nothing — not a hand-built declaration map.
     #[tokio::test]
     async fn restart_resolves_the_allowlist_of_an_http_entry_declared_in_mcp_json() {
