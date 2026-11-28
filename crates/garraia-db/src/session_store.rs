@@ -1532,7 +1532,7 @@ impl SessionStore {
         authority: Option<&str>,
     ) -> Result<(String, chrono::DateTime<chrono::Utc>)> {
         let tz = crate::recurrence::parse_timezone(timezone)?;
-        let first = crate::recurrence::next_occurrence(cron_expr, tz, chrono::Utc::now())?;
+        let first = crate::recurrence::next_occurrence(cron_expr, &tz, chrono::Utc::now())?;
         let task_id = uuid::Uuid::new_v4().to_string();
         self.conn
             .execute(
@@ -1558,8 +1558,10 @@ impl SessionStore {
 
     /// Record a successful run of a recurring task and arm the next occurrence.
     ///
-    /// Returns the next run time, or `None` when the task is finished (its
-    /// `max_runs` cap was reached) — in which case it is marked completed.
+    /// Returns the next run time, or `None` when the task is finished: its
+    /// `max_runs` cap was reached (marked completed), or its stored schedule
+    /// no longer computes (marked failed, see
+    /// [`Self::next_or_fail_unschedulable`]).
     pub fn complete_recurring_run(
         &self,
         task: &ScheduledTask,
@@ -1586,8 +1588,9 @@ impl SessionStore {
             return Ok(None);
         }
 
-        let tz = crate::recurrence::parse_timezone(task.timezone.as_deref())?;
-        let next = crate::recurrence::next_after_run(expr, tz, now, task.execute_at)?;
+        let Some(next) = self.next_or_fail_unschedulable(task, expr, now, runs)? else {
+            return Ok(None);
+        };
         self.conn
             .execute(
                 "UPDATE scheduled_tasks
@@ -1600,11 +1603,58 @@ impl SessionStore {
         Ok(Some(next))
     }
 
+    /// The next occurrence of a recurring task, or `None` after marking the
+    /// task failed when its stored schedule no longer computes.
+    ///
+    /// A schedule stored under an older parser can stop computing: croner 5
+    /// refuses `0 0 * * jan`, which croner 4 accepted (#1938); a time zone
+    /// can stop resolving too. That is permanent, so a retry is pointless,
+    /// and propagating the error left the row `running`: once the lease
+    /// expired, [`Self::recover_expired_leases`] put it back to `pending`
+    /// with a past `execute_at`, and the scheduler ran (and delivered) it
+    /// again every lease, forever. `run_count` is the value to record: the
+    /// run that just happened still counts.
+    fn next_or_fail_unschedulable(
+        &self,
+        task: &ScheduledTask,
+        expr: &str,
+        now: chrono::DateTime<chrono::Utc>,
+        run_count: i64,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let next = crate::recurrence::parse_timezone(task.timezone.as_deref())
+            .and_then(|tz| crate::recurrence::next_after_run(expr, &tz, now, task.execute_at));
+        let erro = match next {
+            Ok(next) => return Ok(Some(next)),
+            Err(erro) => erro,
+        };
+        // Debug formatting escapes control characters: the expression and
+        // the time zone come from the user (or a model) and end up in a log.
+        tracing::error!(
+            task = %task.id,
+            cron = ?expr,
+            timezone = ?task.timezone,
+            error = ?erro.to_string(),
+            "recurring task: stored schedule no longer computes; marked failed"
+        );
+        self.conn
+            .execute(
+                "UPDATE scheduled_tasks
+                 SET status = 'failed', run_count = ?2, last_run_at = ?3, attempts = 0,
+                     lease_until = NULL, leased_by = NULL
+                 WHERE id = ?1",
+                params![task.id, run_count, now.to_rfc3339()],
+            )
+            .map_err(|e| Error::Database(format!("failed to fail unschedulable task: {e}")))?;
+        Ok(None)
+    }
+
     /// Record a failed attempt.
     ///
     /// Retries with quadratic backoff up to `max_attempts`; past that the task
     /// is marked failed (for a recurring task, the *occurrence* is skipped and
-    /// the next one is armed, so one bad run does not kill the schedule).
+    /// the next one is armed, so one bad run does not kill the schedule —
+    /// unless the schedule itself no longer computes, in which case the task
+    /// is failed for good, see [`Self::next_or_fail_unschedulable`]).
     pub fn retry_or_fail_task(
         &self,
         task: &ScheduledTask,
@@ -1633,8 +1683,10 @@ impl SessionStore {
         if task.is_recurring() {
             // Skip this occurrence, keep the schedule alive.
             let expr = task.cron_expr.as_deref().unwrap_or_default();
-            let tz = crate::recurrence::parse_timezone(task.timezone.as_deref())?;
-            let next = crate::recurrence::next_after_run(expr, tz, now, task.execute_at)?;
+            let Some(next) = self.next_or_fail_unschedulable(task, expr, now, task.run_count)?
+            else {
+                return Ok(None);
+            };
             self.conn
                 .execute(
                     "UPDATE scheduled_tasks
@@ -3324,6 +3376,94 @@ mod tests {
             lease_row(&store, &task_id),
             ("pending".to_string(), None, None)
         );
+    }
+
+    /// Recorrente ja gravada cujo agendamento nao calcula mais: `cron_expr`
+    /// que o croner 4 aceitava e o 5 recusa (#1938), ou fuso que deixou de
+    /// resolver. Devolve a tarefa ja reivindicada (`running`, com lease).
+    fn recorrente_legada(
+        store: &SessionStore,
+        cron_expr: &str,
+        timezone: &str,
+    ) -> super::ScheduledTask {
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+        let (task_id, _) = store
+            .schedule_recurring_task("s1", "u1", "*/5 * * * *", Some("UTC"), "ping", None)
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE scheduled_tasks SET cron_expr = ?2, timezone = ?3, execute_at = ?4
+                 WHERE id = ?1",
+                params![
+                    task_id,
+                    cron_expr,
+                    timezone,
+                    (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339()
+                ],
+            )
+            .unwrap();
+        store.claim_due_tasks(10, 600, "o").unwrap().remove(0)
+    }
+
+    /// Sem a saida fail-closed, o erro do recalculo deixava a linha em
+    /// `running`; vencida a lease, `recover_expired_leases` a devolvia a
+    /// `pending` com `execute_at` no passado e o scheduler a reexecutava (e
+    /// reentregava) a cada lease, para sempre.
+    #[test]
+    fn recorrente_que_nao_calcula_mais_termina_failed_ao_concluir() {
+        for (cron_expr, timezone) in [("0 0 * * jan", "UTC"), ("*/5 * * * *", "Mars/Olympus")] {
+            let store = SessionStore::in_memory().unwrap();
+            let task = recorrente_legada(&store, cron_expr, timezone);
+
+            let next = store
+                .complete_recurring_run(&task, chrono::Utc::now())
+                .expect("schedule that cannot continue ends the task, not the run");
+            assert!(next.is_none(), "{cron_expr} / {timezone}");
+            assert_eq!(
+                lease_row(&store, &task.id),
+                ("failed".to_string(), None, None),
+                "{cron_expr} / {timezone}"
+            );
+            let run_count: i64 = store
+                .conn
+                .query_row(
+                    "SELECT run_count FROM scheduled_tasks WHERE id = ?1",
+                    params![task.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(run_count, 1, "the run that happened still counts");
+
+            expire_lease(&store, &task.id);
+            assert!(store.recover_expired_leases().unwrap().is_empty());
+            assert!(store.claim_due_tasks(10, 600, "o").unwrap().is_empty());
+            assert_eq!(store.count_recurring_tasks_for_session("s1").unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn recorrente_que_nao_calcula_mais_termina_failed_ao_esgotar_tentativas() {
+        for (cron_expr, timezone) in [("0 0 * * jan", "UTC"), ("*/5 * * * *", "Mars/Olympus")] {
+            let store = SessionStore::in_memory().unwrap();
+            let task = recorrente_legada(&store, cron_expr, timezone);
+
+            let next = store
+                .retry_or_fail_task(&task, 1, chrono::Utc::now())
+                .expect("schedule that cannot continue is failed, not left running");
+            assert!(next.is_none(), "{cron_expr} / {timezone}");
+            assert_eq!(
+                lease_row(&store, &task.id),
+                ("failed".to_string(), None, None),
+                "{cron_expr} / {timezone}"
+            );
+
+            expire_lease(&store, &task.id);
+            assert!(store.recover_expired_leases().unwrap().is_empty());
+            assert!(store.claim_due_tasks(10, 600, "o").unwrap().is_empty());
+        }
     }
 
     #[test]
