@@ -80,8 +80,8 @@ IRC e no iMessage, de propósito. O `garraia runs list`, o `--json` e o
 - **`/admin` em 503:** veja o guia acima.
 - **Conversas privadas antigas do IRC:** ficam na sessão antiga, que não
   recebe turno novo. Cada pessoa começa uma conversa nova.
-- **Navegador do Web Console:** passa a exigir Chrome 93, Firefox 92 ou
-  Safari 15.4.
+- **Navegador do painel do admin (`/admin`):** passa a exigir Chrome 93,
+  Firefox 92 ou Safari 15.4. O chat em `/` não muda.
 
 ## Instalar ou atualizar
 

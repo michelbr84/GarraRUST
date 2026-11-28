@@ -50,8 +50,8 @@ que afeta da v0.4.1 a v0.5.2. Quem tem canal IRC configurado deve atualizar.
 - **`/admin` em 503:** ver `docs/security.md`, "Admin console answering 503".
 - **Conversas privadas antigas do IRC** ficam na sessao antiga, que nao recebe
   turno novo. Cada pessoa comeca uma conversa nova.
-- **Navegador do Web Console:** passa a exigir Chrome 93, Firefox 92 ou
-  Safari 15.4.
+- **Navegador do painel do admin (`/admin`):** passa a exigir Chrome 93,
+  Firefox 92 ou Safari 15.4. O chat em `/` nao muda.
 
 ### Added
 - **Resposta de tarefa agendada chega ao Discord, Slack, Matrix e WhatsApp

@@ -75,14 +75,16 @@ IRC and iMessage, on purpose. `garraia runs list`, `--json` and
   `"<nick>"` to `"irc:<nick>"` in `allowlist.json`, then start it again. That
   means `users`, for each affected person and for the owner too, and `owner`.
   Changing `owner` alone is not enough: on IRC, `users` is what lets people
-  in. Only do this for nicks you know: `irc:<nick>` admits whoever uses that nick on the server. The welcome
-  message IRC sends the new owner points to the same path.
+  in. Only do this for nicks you know: `irc:<nick>` admits whoever uses that
+  nick on the server. The welcome message IRC sends the new owner points to
+  the same path.
 - **`admin.db` that does not open:** the boot is refused, naming the file. Fix
   the permission or the disk space, or restore from backup.
 - **`/admin` answering 503:** see the guide above.
 - **Old IRC private conversations:** they stay in the old session, which gets
   no new turns. Each person starts a new conversation.
-- **Web Console browser:** now requires Chrome 93, Firefox 92 or Safari 15.4.
+- **Admin panel (`/admin`) browser:** now requires Chrome 93, Firefox 92 or
+  Safari 15.4. The chat at `/` does not change.
 
 ## Install or update
 
