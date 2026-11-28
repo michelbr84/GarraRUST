@@ -14,4 +14,8 @@
   fora do campo de mes e `L` sozinho no dia da semana passam a ser erro na
   criacao da tarefa ou da automacao (antes `0 0 * * jan` rodava toda
   segunda-feira), e `SUN-SUN` passa a valer so domingo (antes rodava todo
-  dia).
+  dia). Uma recorrente ja gravada com uma expressao que o parser novo recusa
+  (ou com um fuso que nao resolve mais) termina `failed` na primeira vez que
+  o agendamento precisa ser recalculado, com log de erro nomeando a
+  expressao; antes, esse erro deixava a linha em `running`, e a recuperacao
+  de lease a reexecutava e reentregava a cada lease, sem fim.

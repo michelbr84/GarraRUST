@@ -2000,7 +2000,9 @@ async fn execute_scheduled_task_inner(
                     next_run = %next.to_rfc3339(),
                     "recurring task rescheduled"
                 ),
-                None => info!(task = %task.id, "recurring task reached max_runs — completed"),
+                // `None`: max_runs reached (completed) or the stored schedule
+                // no longer computes (failed; the store logs why, #1938).
+                None => info!(task = %task.id, "recurring task finished — no next run armed"),
             }
         } else {
             store.complete_task(&task.id)?;
