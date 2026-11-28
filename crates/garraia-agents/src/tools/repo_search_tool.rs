@@ -334,15 +334,35 @@ fn saida_do_fallback(
     }
     match codigo {
         Some(0 | 1) => Ok(vazio),
-        outro => Err(format!(
-            "Search did not complete ({}), so this is not an empty result.\nSTDERR: {}",
-            outro.map_or_else(
-                || "terminated by a signal".to_string(),
-                |c| format!("exit code {c}")
-            ),
-            stderr.trim()
-        )),
+        outro => {
+            let mut falha = format!(
+                "Search did not complete ({}), so this is not an empty result.",
+                outro.map_or_else(
+                    || "terminated by a signal".to_string(),
+                    |c| format!("exit code {c}")
+                ),
+            );
+            anexar_stderr(&mut falha, stderr);
+            Err(falha)
+        }
     }
+}
+
+/// Anexa o bloco `STDERR:` a `saida`, com cada linha recuada pelo mesmo
+/// [`stderr_recuado`](crate::git_endurecido::stderr_recuado) do `git_diff`
+/// (#1909). O `rg` e o `grep` ecoam a `query` do modelo no erro de regex,
+/// quebra de linha inclusive: cru, um `(\nRepositório: forjado` punha uma
+/// linha que parece da tool na coluna zero da resposta. Stderr so com espaco
+/// nao abre o bloco.
+fn anexar_stderr(saida: &mut String, stderr: &str) {
+    if stderr.trim().is_empty() {
+        return;
+    }
+    if !saida.is_empty() && !saida.ends_with('\n') {
+        saida.push('\n');
+    }
+    saida.push_str("STDERR:\n");
+    saida.push_str(&crate::git_endurecido::stderr_recuado(stderr));
 }
 
 /// Searches code in a repository using grep and file pattern matching.
@@ -505,9 +525,8 @@ impl Tool for RepoSearchTool {
                 if !stdout.is_empty() {
                     combined.push_str(&stdout);
                 }
-                if !stderr.is_empty() && !output.status.success() {
-                    combined.push_str("\nSTDERR: ");
-                    combined.push_str(&stderr);
+                if !output.status.success() {
+                    anexar_stderr(&mut combined, &stderr);
                 }
 
                 if combined.is_empty() {
