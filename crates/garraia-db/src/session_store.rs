@@ -1532,7 +1532,7 @@ impl SessionStore {
         authority: Option<&str>,
     ) -> Result<(String, chrono::DateTime<chrono::Utc>)> {
         let tz = crate::recurrence::parse_timezone(timezone)?;
-        let first = crate::recurrence::next_occurrence(cron_expr, tz, chrono::Utc::now())?;
+        let first = crate::recurrence::next_occurrence(cron_expr, &tz, chrono::Utc::now())?;
         let task_id = uuid::Uuid::new_v4().to_string();
         self.conn
             .execute(
@@ -1587,7 +1587,7 @@ impl SessionStore {
         }
 
         let tz = crate::recurrence::parse_timezone(task.timezone.as_deref())?;
-        let next = crate::recurrence::next_after_run(expr, tz, now, task.execute_at)?;
+        let next = crate::recurrence::next_after_run(expr, &tz, now, task.execute_at)?;
         self.conn
             .execute(
                 "UPDATE scheduled_tasks
@@ -1634,7 +1634,7 @@ impl SessionStore {
             // Skip this occurrence, keep the schedule alive.
             let expr = task.cron_expr.as_deref().unwrap_or_default();
             let tz = crate::recurrence::parse_timezone(task.timezone.as_deref())?;
-            let next = crate::recurrence::next_after_run(expr, tz, now, task.execute_at)?;
+            let next = crate::recurrence::next_after_run(expr, &tz, now, task.execute_at)?;
             self.conn
                 .execute(
                     "UPDATE scheduled_tasks

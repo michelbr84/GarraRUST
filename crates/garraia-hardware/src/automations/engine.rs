@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Local};
+use jiff::ZonedDateTime;
 use tokio::sync::{Mutex, broadcast};
 use tokio::time;
 
@@ -132,7 +132,7 @@ struct EstadoRuntime {
     ultima_execucao: Option<Instant>,
     janela_rate: Vec<Instant>,
     /// Próxima ocorrência de cada gatilho cron (alinhado a `Regra::crons`).
-    proximos_cron: Vec<Option<DateTime<Local>>>,
+    proximos_cron: Vec<Option<ZonedDateTime>>,
 }
 
 /// O que o motor compartilha com as tasks de execução.
@@ -572,7 +572,7 @@ fn id_nativo(device_id: &str) -> &str {
 /// próxima ocorrência; vencida, dispara o pipeline com contexto de cron e
 /// recomputa.
 async fn disparar_crons(sh: &Arc<Compartilhado>) {
-    let agora = Local::now();
+    let agora = ZonedDateTime::now();
     let mut disparos: Vec<(String, String)> = Vec::new(); // (regra, expr)
     {
         let mut estados = sh.estados.lock().await;
@@ -586,7 +586,7 @@ async fn disparar_crons(sh: &Arc<Compartilhado>) {
             }
             for (i, expr) in regra.crons.iter().enumerate() {
                 if estado.proximos_cron[i].is_none() {
-                    estado.proximos_cron[i] = match cron::proxima_ocorrencia(expr, agora) {
+                    estado.proximos_cron[i] = match cron::proxima_ocorrencia(expr, &agora) {
                         Ok(proximo) => Some(proximo),
                         Err(erro) => {
                             tracing::warn!(
@@ -598,11 +598,14 @@ async fn disparar_crons(sh: &Arc<Compartilhado>) {
                         }
                     };
                 }
+                // `ZonedDateTime` compara pelo instante, não pelo relógio de
+                // parede: a hora repetida do fim do horário de verão não
+                // confunde a ordem.
                 let devida = estado.proximos_cron[i]
-                    .map(|proximo| proximo <= agora)
-                    .unwrap_or(false);
+                    .as_ref()
+                    .is_some_and(|proximo| *proximo <= agora);
                 if devida {
-                    estado.proximos_cron[i] = cron::proxima_ocorrencia(expr, agora).ok();
+                    estado.proximos_cron[i] = cron::proxima_ocorrencia(expr, &agora).ok();
                     disparos.push((regra.spec.name.clone(), expr.clone()));
                 }
             }

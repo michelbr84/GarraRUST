@@ -15,8 +15,8 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true }
-chrono-tz = { workspace = true }
 croner = { workspace = true }
+jiff = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
 sqlite-vec = { workspace = true }

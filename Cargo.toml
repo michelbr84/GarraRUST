@@ -236,7 +236,13 @@ libc = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 # Recurring schedules: cron expression parsing + next-occurrence search.
-croner = "4"
+# Backend `jiff`, without croner's default `chrono` (#1938, ADR 0028 item 3).
+croner = { version = "5", default-features = false, features = ["std", "jiff"] }
+# Time zones and instants for croner. `tzdb-bundle-always` embeds the IANA
+# database: `garraia-db` resolves task time zones against that copy, the
+# guarantee `chrono-tz` gave, so a host without `tzdata` (slim image, Termux)
+# or without `tzdata-legacy` (`US/Eastern`) still resolves every name.
+jiff = { version = "1", features = ["tzdb-bundle-always"] }
 # RFC 5545 RRULE expansion for workspace task recurrence.
 rrule = "0.14"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "postgres", "chrono"] }

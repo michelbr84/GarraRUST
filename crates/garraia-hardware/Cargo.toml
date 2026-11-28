@@ -27,8 +27,8 @@ mqtt = ["dep:rumqttc"]
 home-assistant = ["dep:reqwest", "dep:tokio-tungstenite", "dep:futures", "dep:url", "dep:garraia-common"]
 # Motor de automações (#1128): specs TOML/JSON + avaliador de expressões +
 # engine sobre o barramento de eventos. OFF por default — quem não usa
-# automação não paga croner/chrono/toml.
-automations = ["dep:croner", "dep:chrono", "dep:toml"]
+# automação não paga croner/jiff/toml.
+automations = ["dep:croner", "dep:jiff", "dep:toml"]
 # Adapter Serial/USB (#1130, tokio-serial sobre serialport): OFF por default,
 # mesmo padrão dos adapters acima. O nome vem com o prefixo `hardware-`
 # porque é assim que a issue #1130 o batizou — as features anteriores
@@ -82,10 +82,11 @@ futures = { workspace = true, optional = true }
 # em vez de remontar paths na mão (`Url::join` evita `//api/states`).
 url = { workspace = true, optional = true }
 # Feature `automations` (#1128): croner para os gatilhos cron (mesmo parser
-# do `garraia-db`/recorrência), chrono para o fuso local do host e toml para
-# as specs declarativas versionáveis do usuário.
+# do `garraia-db`/recorrência), jiff para o fuso local do host (o backend
+# do croner; o `chrono` saiu daqui no #1938) e toml para as specs
+# declarativas versionáveis do usuário.
 croner = { workspace = true, optional = true }
-chrono = { workspace = true, optional = true }
+jiff = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 # Feature `hardware-serial` (#1130): `tokio-serial` dá o `SerialStream`
 # (AsyncRead + AsyncWrite sobre a porta) e o `SerialStream::pair()` que os
