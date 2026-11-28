@@ -81,6 +81,11 @@ pub fn next_occurrence(
 }
 
 /// `at` seen in `tz`.
+///
+/// Both conversions assume what the scheduler feeds them: instants after
+/// 1970, with no leap second. A leap-second `chrono` value (sub-second part
+/// of 1e9 or more) or a pre-epoch `jiff` one (negative sub-second part) is
+/// refused with an error instead of being shifted silently.
 fn zoned(tz: &TaskTimezone, at: DateTime<Utc>) -> Result<ZonedDateTime> {
     let out_of_range = || Error::Database(format!("instant out of range: {at}"));
     let nanos = i32::try_from(at.timestamp_subsec_nanos()).map_err(|_| out_of_range())?;
