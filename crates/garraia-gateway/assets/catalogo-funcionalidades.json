@@ -1,6 +1,6 @@
 {
   "schema": "garra.funcionalidades/v1",
-  "catalog_version": "0.5.2",
+  "catalog_version": "0.5.3",
   "language": "pt-BR",
   "notes": "Catálogo versionado de funcionalidades (#1670). Chaves estáveis em inglês (machine-readable), valores em pt-BR. availability: 'disponivel' = funciona numa instalação limpa; 'configuravel' = existe nesta versão mas exige configuração (prerequisites); 'opcional' = só existe atrás de feature de compilação ou interruptor de config (campo gate). Nada aqui descreve funcionalidade futura: só o que ESTA versão entrega. O estado da instalação (ativo/offline/agora) vem do runtime — garra_status — nunca deste arquivo.",
   "categories": [
@@ -431,9 +431,13 @@
       "category": "channels",
       "summary": "Canal de conversa pelo IRC.",
       "prerequisites": [
-        "config channels.irc habilitado"
+        "config channels.irc habilitado",
+        "pareamento por código de /pair que o dono gera no Telegram ou no Discord, num canal em que ele é o dono: o IRC não trata comandos; sem esse canal (dono pareado pelo IRC ou deploy só de IRC), a entrada irc:<nick> vai à mão em users do allowlist.json, com o gateway parado"
       ],
       "limitations": [
+        "a allowlist só aceita entradas irc:<nick>, comparadas pelo CASEMAPPING do servidor; entrada sem prefixo (pareamento até a v0.5.2) não vale no IRC e pede um código novo de /pair (GHSA-g6c8-mx6x-5g92)",
+        "o nick é a única identidade: num servidor sem NickServ, quem usar o nick passa como aquela pessoa",
+        "cada conversa privada é uma sessão por pessoa em cada conexão IRC da config; no canal, todos dividem a mesma conversa",
         "estado ao vivo em garra_status → channels"
       ],
       "availability": "configuravel",
@@ -617,7 +621,8 @@
       "prerequisites": [],
       "limitations": [
         "não há API HTTP de scheduling: o tile automations do mobile não aparece, de propósito",
-        "a tarefa roda com a autoridade de quem a criou; tarefa de sessão remota criada antes desse registro roda só com leitura até o operador reautorizar (garra tasks list|authorize|revoke)"
+        "a tarefa roda com a autoridade de quem a criou; tarefa de sessão remota criada antes desse registro roda só com leitura até o operador reautorizar (garra tasks list|authorize|revoke)",
+        "a resposta agendada fica no histórico da sessão e chega ao canal no Telegram, Discord, Slack, Matrix e WhatsApp vinculado; IRC e iMessage ficam sem entrega de propósito, e Signal, Teams, Google Chat e LINE também não recebem; o desfecho aparece na coluna delivery do garraia runs list e do GET /api/runs"
       ],
       "availability": "disponivel",
       "tool": "schedule_heartbeat"
@@ -630,7 +635,8 @@
       "prerequisites": [],
       "limitations": [
         "não há API HTTP de scheduling: o tile automations do mobile não aparece, de propósito",
-        "a tarefa roda com a autoridade de quem a criou; tarefa de sessão remota criada antes desse registro roda só com leitura até o operador reautorizar (garra tasks list|authorize|revoke)"
+        "a tarefa roda com a autoridade de quem a criou; tarefa de sessão remota criada antes desse registro roda só com leitura até o operador reautorizar (garra tasks list|authorize|revoke)",
+        "a resposta agendada fica no histórico da sessão e chega ao canal no Telegram, Discord, Slack, Matrix e WhatsApp vinculado; IRC e iMessage ficam sem entrega de propósito, e Signal, Teams, Google Chat e LINE também não recebem; o desfecho aparece na coluna delivery do garraia runs list e do GET /api/runs"
       ],
       "availability": "disponivel",
       "tool": "schedule_recurring"

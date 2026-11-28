@@ -7,6 +7,287 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 
+## [0.5.3] - 2026-11-27
+
+A v0.5.3 e uma versao de correcoes, quase todas de seguranca, sobre a v0.5.2.
+Ela corrige o aviso
+[GHSA-g6c8-mx6x-5g92](https://github.com/michelbr84/GarraRUST/security/advisories/GHSA-g6c8-mx6x-5g92),
+que afeta da v0.4.1 a v0.5.2. Quem tem canal IRC configurado deve atualizar.
+
+- **IRC: allowlist** (GHSA-g6c8-mx6x-5g92, #2015). Um nick igual ao id de
+  alguem admitido por outro canal (o id do Slack e um nick valido) passava
+  pela allowlist como aquela pessoa, inclusive como o dono. Agora o IRC so
+  aceita entradas `irc:<nick>`, comparadas pelo `CASEMAPPING` do servidor.
+- **IRC: sessao privada e comandos** (#2011, #2007). Cada conversa privada
+  tem a propria sessao, quando antes todas caiam juntas na sessao do nick do
+  bot. E a resposta do modelo nao vira mais comando IRC.
+- **Console do admin fail-closed** (#1992, #2000, #2013). Com a chave mestra
+  num estado inseguro ou errado, o `/admin` responde 503
+  `{"error":"admin_unavailable"}` com o motivo no log, em vez de derivar uma
+  chave do salt legado ou cifrar segredos sob a chave errada. Chat, canais e
+  `/api/*` seguem no ar.
+- **Resposta de tarefa agendada no Discord, Slack, Matrix e WhatsApp
+  vinculado** (#2002). Antes, so o Telegram recebia. O ledger de runs ganha a
+  coluna `delivery`.
+- **Instaladores** (#2016, #2023). O comando do Windows baixa o
+  `install.ps1` da ultima release, e o jsDelivr deixa de ser espelho.
+
+**Ao atualizar:**
+
+- **Pareados pelo IRC ate a v0.5.2:** a entrada na allowlist nao tem o
+  prefixo `irc:` e deixa de valer no IRC. A pessoa precisa de um codigo novo
+  de `/pair`, que o dono gera no Telegram ou no Discord, num canal em que ele
+  e o dono. O bot fica em silencio com quem e barrado.
+- **Sem onde gerar o codigo** (dono pareado pelo IRC, ou deploy so de IRC): a
+  CLI e a API nao geram codigo, e a saida e o arquivo. Com o gateway parado,
+  troque cada `"<nick>"` por `"irc:<nick>"` no `allowlist.json` e suba de
+  novo. A troca vale em `users`, para cada pessoa afetada e tambem para o
+  dono, e no `owner`. Trocar so o `owner` nao basta: no IRC, quem admite e
+  `users`. Faca isso so para nicks que voce conhece (ver
+  `docs/hardening-gateway.md`).
+- **`admin.db` que existe e nao abre** recusa o boot, nomeando o arquivo.
+  Corrija a permissao ou o espaco em disco, ou restaure de backup.
+- **`/admin` em 503:** ver `docs/security.md`, "Admin console answering 503".
+- **Conversas privadas antigas do IRC** ficam na sessao antiga, que nao recebe
+  turno novo. Cada pessoa comeca uma conversa nova.
+- **Navegador do painel do admin (`/admin`):** passa a exigir Chrome 93,
+  Firefox 92 ou Safari 15.4. O chat em `/` nao muda.
+
+### Added
+- **Resposta de tarefa agendada chega ao Discord, Slack, Matrix e WhatsApp
+  vinculado (#2002).** Antes so o Telegram recebia; nos outros canais a
+  resposta (e o aviso de teto do #1985) ficava so no historico. O endereco do
+  Discord, do Slack e do Matrix sai do id da sessao, e so quando o canal
+  gravado na sessao concorda com o prefixo do id e nenhuma outra superficie
+  escreveu nela (sessao criada antes por um cliente HTTP com `X-Session-Id`
+  nao recebe: `nao_entregue:origem_mista`). No WhatsApp vinculado a
+  entrega reconsulta a config viva (canal ligado, grupo com resposta ligada,
+  quem criou a tarefa ainda admitido: contato bloqueado ou removido nao
+  recebe), so sai com a ponte conectada, tem teto proprio de 3 por chat por
+  minuto, separado da cadencia dos turnos, e leva a marca invisivel de
+  auto-conversa. Os demais canais ficam sem entrega; no IRC e no iMessage,
+  de proposito (ver `docs/configuration.md`). O ledger de runs ganha a coluna
+  `delivery` (`entregue`, `sem_entrega` ou `nao_entregue:<motivo>`), mostrada
+  pelo `garraia runs list`, pelo `--json` e pelo `GET /api/runs`.
+
+### Changed
+- **`line` velho no ledger CodeQL reprova o CI (#1993, item 2).**
+  `check-ledger-anchors.py` ganhou `--fail-on-stale-line`: quando a posicao
+  derivada do `sink_snippet` diverge do `line` commitado (no `.json` ou na
+  coluna `File:line` do `.md`), o checker sai com exit 8 em vez de so avisar.
+  O job `CodeQL Ledger Anchors` passa a usar a flag. Antes, o `line` ficava
+  para tras no `main` em silencio e o `codeql-reapply-dismissals.sh` abortava
+  (`exit 2`) na primeira entrada divergente, sem conferir as seguintes. O
+  conserto continua mecanico: rodar o checker sem flags e commitar o `line`
+  reescrito. Drift de statement (exit 6) e precondicao (exit 5) seguem
+  vencendo, porque pedem reauditoria humana.
+- **O one-liner do Windows baixa o `install.ps1` da ultima release (#2016).**
+  `irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex`
+  passa a ser o comando principal nas docs, na wiki e na ajuda do
+  `install.ps1`: e o script que saiu com os binarios que ele instala, do
+  mesmo `github.com` de que o instalador ja depende, sem passar pelo
+  `raw.githubusercontent.com`, que a GitHub limita para trafego anonimo. O raw
+  do `main` fica como espelho, para correcao que ainda nao saiu em release.
+
+### Removed
+- **O jsDelivr deixa de ser espelho dos instaladores (#2023).** O jsDelivr
+  recusa repositorio do GitHub acima de 50 MB, e o GarraRUST esta no limite:
+  o `@main` alternava entre HTTP 403 (`Package size exceeded the configured
+  limit of 50 MB`) e uma copia velha do cache. Sai da ajuda do `install.sh` e
+  do `install.ps1`, das docs e das sondas do `install-endpoints.yml`; as
+  suites `documented_urls` impedem que volte.
+
+### Fixed
+- **Comentarios de seguranca do gateway voltam a descrever o codigo (#1990).**
+  O doc de `migrate_admin_secrets_kdf` ainda dizia que o `kdf.json` e gravado
+  por ultimo (os parametros entram na mesma transacao do re-key), e o guard de
+  voz se dizia "mesma regra" do guard do Signal, sendo mais estrito. So
+  comentarios; nenhum comportamento muda.
+- **A allowlist do IRC reconhece a mesma pessoa que a sessao (#2015).** A
+  sessao privada usa o nick normalizado pelo `CASEMAPPING` do servidor desde a
+  #2011, mas a allowlist comparava o nick com a caixa exata: `Ana` admitida era
+  barrada em silencio ao voltar como `ana` (e `[bia]` como `{bia}` sob
+  `rfc1459`), e precisava de outro codigo de `/pair`. Agora as entradas do IRC
+  sao `irc:<nick como veio>`, comparadas pelo `CASEMAPPING` anunciado quando a
+  mensagem chega (sem anuncio, `ascii`), e as dos outros canais continuam
+  exatas. Uma entrada sem prefixo nao vale no IRC (GHSA-g6c8-mx6x-5g92, em
+  Security).
+- **As docs e a ajuda do `install.ps1` deixam de ensinar o `garraia.org` (#2016).**
+  `irm https://garraia.org/install.ps1 | iex` morria antes de baixar o script:
+  a borda do hosting do site responde 403 com `cf-mitigated: challenge` ao
+  cliente HTTP do PowerShell. O `README.pt-BR.md`, o `docs/index.md`, o
+  `website/content/en/instalacao.md`, a pagina de instalacao da wiki, a
+  mensagem do launcher do Ollama (`contrib/ollama-launch`) e os exemplos e o
+  `-Help` do `install.ps1` passam a ensinar o comando da ultima release (ver
+  Changed), com o raw do `main` como espelho. O `Content-Type`
+  `application/octet-stream` nao era a causa: o `Invoke-RestMethod` decodifica
+  qualquer resposta como texto, e as notas do `README.md` e do
+  `docs/installation.md` deixam de dizer o contrario. A sonda
+  `install-endpoints.yml` deixa de asserir o `Content-Type` e usa o proprio
+  `irm`: falha em qualquer URL que a documentacao ensina ao Windows, e so
+  avisa no `garraia.org/install.ps1`, que saiu da documentacao.
+- **Os testes do gateway nao tocam mais o `master.key` nem o `admin.db` de quem
+  roda `cargo test` (#2021).** Dois caminhos usavam o `<config_dir>` real
+  (`~/.config/garraia`):
+  - o router de teste (`test-helpers`) resolvia a chave do admin contra o
+    `<config_dir>/admin/master.key` real com um store vazio. Um `master.key`
+    de tamanho errado era movido para `master.key.unreadable` e trocado por
+    outro, e o gateway de verdade, com segredos no `admin.db`, caia em 503;
+  - `auth_test`, `gateway_integration`, `voice_e2e_test` e `bind_fail_closed`
+    subiam o `GatewayServer` sem `GARRAIA_CONFIG_DIR`. So os dois testes de
+    chave de API do `auth_test`, que rodam em todo `cargo test`, ja abriam o
+    `admin.db` real e criavam `master.key`, `sessions.db` e `mcp.json` no
+    config dir do operador.
+
+  `resolve_admin_encryption_key` passa a receber o diretorio do admin: o
+  boot de producao passa `default_admin_dir()`, e o router de teste um
+  diretorio descartavel. Os quatro testes desviam o config dir para um
+  temporario, e um teste novo varre os `tests/` e reprova quem subir o
+  `GatewayServer` sem isso.
+- **Os testes do gateway nao leem nem gravam mais o `mcp.json`, o
+  `allowlist.json`, o cofre e o `data/memory.db` de quem roda `cargo test`
+  (#2027).** Uma auditoria com `HOME` falso e `strace` sobre os 187 binarios
+  de teste achou tres caminhos que usavam o `<config_dir>` real
+  (`~/.config/garraia`):
+  - 14 testes de integracao montavam o `AppState::new`. Eles liam o
+    `mcp.json` e o `allowlist.json` reais e, sem `mcp.json`, provisionavam um
+    junto com o `data/workspace/`. O router de teste do `auth_test` fazia o
+    mesmo quando nenhum outro teste do binario tinha chamado o `isolar()`
+    antes dele;
+  - os testes de unidade do gateway faziam o mesmo pelo `AppState::new`;
+  - 27 testes de `bootstrap` chamavam o `build_agent_runtime` sem `data_dir`
+    e abriam o `memory.db` real, com WAL e migrations.
+
+  O `AppState::with_config_dir` passa a resolver as referencias `vault:` do
+  `mcp.json` pelo cofre do config dir que recebe. Antes vinha sempre do cofre
+  padrao, que decifrava os segredos reais quando a passphrase estava no
+  ambiente. Ele tambem fica publico.
+
+  Os testes de integracao montam o estado pelo
+  `config_dir_descartavel::app_state`, sobre um diretorio descartavel. Nos
+  testes de unidade, o `AppState::new` usa um config dir temporario por
+  processo, e o `build_agent_runtime` recusa uma config sem `data_dir`. A
+  guarda do #2021 passa a reprovar tambem quem chama o `AppState::new` sem
+  apontar o `GARRAIA_CONFIG_DIR` no proprio arquivo. Producao nao muda: o
+  `AppState::new` segue no config dir padrao, e o cofre resolvido e o mesmo
+  de antes.
+- **A mensagem de boas-vindas ao dono no IRC deixa de mandar usar `/pair` (#2028).**
+  O IRC nao trata comandos, e o `/pair` dos outros canais so atende o dono
+  daquele canal, nao um nick de IRC: a instrucao nao tinha como funcionar. A
+  mensagem agora aponta o caminho que funciona, acrescentar `"irc:<nick>"` em
+  `users` do `allowlist.json` com o gateway parado.
+
+### Security
+- **Chave mestra do admin nao recua mais para o salt constante legado
+  (#1992, #1999).** Com `GARRAIA_ADMIN_KEY` ou `GARRAIA_VAULT_PASSPHRASE`
+  definida, tres estados faziam o boot derivar do salt compartilhado de antes
+  de 2026-08-29 (100k iteracoes) a chave que CIFRA, com um `warn!` como unico
+  sinal: linha de `kdf_params` ilegivel, falha ao gerar o salt por instalacao
+  e linha APAGADA depois do re-key. No primeiro e no terceiro, a chave legada
+  nem abria os segredos existentes, que ja estavam sob a chave nova, e tudo o
+  que o painel gravasse dali em diante se perdia quando a linha voltasse a ser
+  lida. Agora nenhum deles entrega chave: o gateway sobe normalmente (chat,
+  canais e `/api/*` seguem no ar), so o `/admin` (pagina e API) responde 503
+  `{"error":"admin_unavailable"}`, e o motivo e a saida vao para o log numa
+  linha `ERROR` que comeca com `admin panel disabled`. A linha gravada passa a
+  ser aceita so no formato que o gateway grava (versao conhecida, salt de 32
+  bytes, de 600k a 10M iteracoes), o que fecha o downgrade de KDF por EDICAO
+  da linha; o leitor `AdminStore::kdf_params` deixa de responder "sem linha"
+  para linha ilegivel; e o re-key so fica na chave legada quando todo segredo
+  gravado abriu com ela e apenas a gravacao falhou (disco cheio, banco
+  travado), caso em que o proximo boot tenta de novo. Uma frase-senha trocada
+  numa instalacao ainda nao re-chaveada cai no mesmo 503. Instalacao sem
+  passphrase (`master.key`) nao muda, exceto pela falta de entropia ao criar o
+  arquivo, que deixa de derrubar o processo. Ver `docs/security.md`, "Admin
+  console answering 503".
+- **`admin.db` que existe e nao abre recusa o boot em vez de virar um console
+  vazio em memoria (#2000).** O store em memoria nasce sem usuarios, e o
+  `POST /admin/api/setup` cria o primeiro admin sem autenticacao enquanto nao
+  ha usuario: um `admin.db` corrompido, sem permissao ou com o disco cheio
+  entregava o console de uma instalacao ja configurada a quem chegasse primeiro
+  em `/admin`, e o que o operador gravasse nesse boot sumia no restart. Agora o
+  gateway recusa o boot, nomeando o arquivo e a saida (corrigir
+  permissao/espaco ou restaurar de backup). Arquivo ausente (primeira
+  instalacao) segue como antes. O `setup` tambem passa a recusar (503) quando
+  nao consegue contar os usuarios, em vez de ler o erro como "zero".
+- **IRC: resposta do modelo nao vira mais comando IRC (#2007).** A resposta
+  do turno separava as linhas so em `\n`, e um `\r` isolado no texto do
+  modelo (influenciavel por injecao de prompt) chegava cru ao socket: num
+  servidor que trata `\r` como fim de mensagem, o resto virava comando
+  (`QUIT`, `JOIN`, `PRIVMSG NickServ ...`). O `send_privmsg` nem quebrava
+  linha. Agora os dois caminhos passam por um ponto so: o texto e quebrado em
+  `\r\n`, `\n` e `\r` isolado, perde `\0` e o delimitador de CTCP `\x01`,
+  cada linha sai como `PRIVMSG <alvo> :<linha>` cortada sem partir
+  caractere (antes um caractere multibyte cortado virava `U+FFFD`) e dentro
+  dos 512 bytes do protocolo mesmo com alvo longo, e alvo com espaco,
+  virgula, `:` inicial ou controle e recusado. O `send_raw` recusa qualquer
+  linha com terminador ou NUL embutido, e o `PONG` ecoa o token do servidor
+  sem caractere de controle (um PING hostil nao derruba a conexao).
+- **Alerta CodeQL #17 reaberto e fechado pelo codigo (#2008).** O #1998
+  corrigiu o roteador do Web Console, mas o CodeQL seguia acusando
+  `pages[page]()` em `admin.html`: a forma reflexiva
+  `Object.prototype.hasOwnProperty.call` nao e barreira para
+  `js/unvalidated-dynamic-method-call`, e o padrao
+  `if (!guard) page = 'dashboard'` nao sanitiza o uso depois do `if`. A
+  dispensa como falso-positivo, de 2026-05-12, descrevia como safelist o
+  filtro que o #1996 provou furado; o alerta foi reaberto em vez de ganhar
+  justificativa nova. O filtro virou
+  `page = Object.hasOwn(pages, page) ? page : 'dashboard';`, com o mesmo
+  comportamento e reconhecido pelo CodeQL 2.27.6. O painel passa a exigir
+  Chrome 93, Firefox 92 ou Safari 15.4 (2021-2022).
+- **IRC: cada conversa privada tem a propria sessao (#2011).** No privado o
+  alvo do `PRIVMSG` recebido e o nick do bot, e a sessao era montada dele:
+  as conversas privadas de todas as pessoas caiam juntas em
+  `irc-<nick do bot>`, e o modelo recebia as mensagens de uma pessoa no turno
+  de outra (com a allowlist em modo `open`, de qualquer nick da rede). Agora o
+  canal decide canal ou privado num ponto so, pelo `CHANTYPES` que o servidor
+  anuncia, e a resposta e a sessao seguem a mesma decisao: no canal a sessao
+  continua `irc-<canal>`; no privado e `irc-@<nick>@<conexao>`, uma por
+  pessoa em cada conexao IRC da config (o nick so identifica alguem dentro da
+  propria rede), com o nick normalizado pelo `CASEMAPPING` anunciado (sem
+  anuncio, `ascii`). A sessao antiga `irc-<nick do bot>` fica como esta e nao
+  recebe turno novo. De quebra, uma mensagem num canal `&local` passa a ser
+  respondida no canal, e nao no privado de quem falou.
+- **A chave mestra do admin tem que abrir o que esta gravado (#2013).** Com
+  segredos do admin gravados (chaves de provider, versoes arquivadas, segredos
+  do 2FA), o boot passa a exigir que a chave resolvida abra **ao menos um**
+  deles. Antes, uma frase-senha (`GARRAIA_ADMIN_KEY` /
+  `GARRAIA_VAULT_PASSPHRASE`) trocada depois do re-key, ou um `master.key`
+  trocado por outro, derivava uma chave que nao abria nada: 500 em toda
+  leitura, 500 no login de quem tem 2FA, e os segredos novos cifrados sob a
+  chave errada. Agora o painel fica em 503 `{"error":"admin_unavailable"}`,
+  como nos outros casos do #1992, com uma linha `ERROR` que aponta a causa
+  provavel e a saida. A regra e "nenhum abre", e nao "algum nao abre": uma
+  linha corrompida sozinha nao derruba o painel. Sem frase-senha, um
+  `master.key` ausente ou de tamanho errado deixa de ser trocado por
+  uma chave aleatoria nova quando ha segredos gravados (o arquivo fica
+  intocado e o painel em 503); sem nenhum segredo gravado a regeneracao
+  continua, porque nao ha o que perder. Instalacao sem ciphertext sobe como
+  antes. Ver `docs/security.md`, "Admin console answering 503".
+  Um `master.key` que existe mas nao se le nunca e trocado; a chave nova e
+  criada com `create_new` e modo 0600 desde o primeiro byte (antes ficava
+  0644 ate o `chmod`), e falhar ao grava-la deixa o painel em 503 em vez de
+  rodar com uma chave que so existe em memoria.
+- **IRC: um nick igual ao id de outro canal nao passa mais pela allowlist
+  (GHSA-g6c8-mx6x-5g92).** A allowlist e uma so para todos os canais, e os ids
+  dos outros canais ficam nela sem prefixo. O IRC aceitava uma entrada sem
+  prefixo igual ao nick de quem mandou, e no IRC o nick e escolhido por quem
+  conecta: quem entrasse no servidor com um nick igual ao id de alguem admitido
+  pelo Slack (`U01ABCDEF` e um nick valido), inclusive o dono, falava com o
+  agente como aquela pessoa, sem codigo de pareamento. Afetava da v0.4.1 a
+  v0.5.2. Agora o IRC so aceita entradas `irc:<nick>`. Tambem saiu a migracao
+  automatica das entradas sem prefixo para a forma `irc:`, que a #2015 tinha
+  posto na `main` e que nenhuma versao lancou: ela estendia o mesmo acesso as
+  outras grafias do nick. **Quem foi pareado pelo IRC antes desta versao precisa
+  de um codigo novo de `/pair`**, gerado pelo dono num canal que trata comandos
+  e em que ele e o dono. Quando nao ha onde gerar o codigo, a saida e o
+  arquivo: com o gateway parado, troque `"<nick>"` por `"irc:<nick>"` no
+  `allowlist.json`, no `owner` e em `users`. Isso vale quando o dono foi
+  pareado pelo IRC, ja que o `/pair` dos outros canais so atende o dono
+  daquele canal, e quando o deploy e so de IRC. Ver
+  `docs/hardening-gateway.md`.
+
+
 ## [0.5.2] - 2026-11-25
 
 A v0.5.2 e a versao estavel da serie que passou por sete candidatos (rc1 a

@@ -23,6 +23,14 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
 
 ## Novidades
 
+- **[v0.5.3 — Novidades](Novidades-v0.5.3)** · **[What's New in v0.5.3 (English)](Whats-New-v0.5.3)**
+  — corrige o aviso **GHSA-g6c8-mx6x-5g92**: no IRC, um nick igual ao id de
+  alguém de outro canal não passa mais pela allowlist, que agora só aceita
+  `irc:<nick>` (#2015); uma conversa privada do IRC por pessoa (#2011);
+  resposta do modelo não vira comando IRC (#2007); console do admin em 503
+  com chave insegura ou errada (#1992, #2013) e `admin.db` ilegível recusa o
+  boot (#2000); tarefa agendada responde no Discord, Slack, Matrix e WhatsApp
+  vinculado (#2002). **Quem foi pareado pelo IRC precisa de um `/pair` novo.**
 - **[v0.5.2 — Novidades](Novidades-v0.5.2)** · **[What's New in v0.5.2 (English)](Whats-New-v0.5.2)**
   — **Voice Chat contínuo** no Web Console (`#/voice`, #1754); o **Desktop
   configura quem responde** sem terminal e não grava na configuração de
