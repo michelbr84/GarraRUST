@@ -334,15 +334,67 @@ fn saida_do_fallback(
     }
     match codigo {
         Some(0 | 1) => Ok(vazio),
-        outro => Err(format!(
-            "Search did not complete ({}), so this is not an empty result.\nSTDERR: {}",
-            outro.map_or_else(
-                || "terminated by a signal".to_string(),
-                |c| format!("exit code {c}")
-            ),
-            stderr.trim()
-        )),
+        outro => {
+            let mut falha = nao_terminou(outro);
+            anexar_stderr(&mut falha, stderr);
+            Err(falha)
+        }
     }
+}
+
+/// Primeira linha do erro de uma busca que nao terminou.
+fn nao_terminou(codigo: Option<i32>) -> String {
+    format!(
+        "Search did not complete ({}), so this is not an empty result.",
+        codigo.map_or_else(
+            || "terminated by a signal".to_string(),
+            |c| format!("exit code {c}")
+        ),
+    )
+}
+
+/// A resposta do ramo do `rg`. Codigo 1 sem linhas e o "nao achou" dele; com
+/// falha, o stderr vai junto pelo bloco recuado de [`anexar_stderr`]. Falha
+/// sem stdout e sem stderr que se leia e erro, nao "No matches found": o
+/// bloco nao abre mais para stderr so de espacos (#1909), e sem esta regra
+/// esse caso viraria busca vazia.
+fn saida_do_rg(
+    stdout: &str,
+    codigo: Option<i32>,
+    stderr: &str,
+    vazio: &str,
+) -> std::result::Result<String, String> {
+    if stdout.is_empty() && codigo == Some(1) {
+        return Ok(vazio_do_rg(vazio));
+    }
+    let mut combinada = stdout.to_string();
+    if codigo != Some(0) {
+        anexar_stderr(&mut combinada, stderr);
+        if combinada.is_empty() {
+            return Err(nao_terminou(codigo));
+        }
+    }
+    if combinada.is_empty() {
+        combinada = vazio_do_rg(vazio);
+    }
+    Ok(combinada)
+}
+
+/// Anexa o bloco `STDERR:` a `saida`, com cada linha recuada pelo mesmo
+/// [`stderr_recuado`](crate::git_endurecido::stderr_recuado) do `git_diff`
+/// (#1909). O `rg` e o `grep` ecoam a `query` do modelo no erro de regex,
+/// quebra de linha inclusive: cru, um `(\nRepositório: forjado` punha uma
+/// linha que parece da tool na coluna zero da resposta. Stderr so com espaco
+/// nao abre o bloco.
+fn anexar_stderr(saida: &mut String, stderr: &str) {
+    if stderr.trim().is_empty() {
+        return;
+    }
+    if !saida.is_empty() && !saida.ends_with('\n') {
+        saida.push('\n');
+    }
+    saida.push_str("STDERR:\n");
+    saida.push_str(&crate::git_endurecido::stderr_recuado(stderr));
 }
 
 /// Searches code in a repository using grep and file pattern matching.
@@ -496,25 +548,12 @@ impl Tool for RepoSearchTool {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
 
-                if stdout.is_empty() && output.status.code() == Some(1) {
-                    // rg returns exit code 1 when no matches found
-                    return Ok(ToolOutput::success(vazio_do_rg(&vazio)));
-                }
-
-                let mut combined = String::new();
-                if !stdout.is_empty() {
-                    combined.push_str(&stdout);
-                }
-                if !stderr.is_empty() && !output.status.success() {
-                    combined.push_str("\nSTDERR: ");
-                    combined.push_str(&stderr);
-                }
-
-                if combined.is_empty() {
-                    combined = vazio_do_rg(&vazio);
-                }
-
-                Ok(ToolOutput::success(self.truncate_output(&combined)))
+                Ok(
+                    match saida_do_rg(&stdout, output.status.code(), &stderr, &vazio) {
+                        Ok(texto) => ToolOutput::success(self.truncate_output(&texto)),
+                        Err(falha) => ToolOutput::error(falha),
+                    },
+                )
             }
             Desfecho::NaoExecutou(e) => {
                 // rg nao existe (no host, ou na imagem do sandbox): grep no
@@ -570,3 +609,5 @@ impl Tool for RepoSearchTool {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_do_stderr;

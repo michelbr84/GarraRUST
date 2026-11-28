@@ -611,3 +611,36 @@ fn fallback_com_erro_e_sem_linhas_nao_vira_resultado_vazio() {
         assert!(!falha.contains("No matches found"), "{falha}");
     }
 }
+
+/// Pela tool de verdade, com o `rg`: uma `query` com quebra de linha e erro
+/// de regex faz o `rg` ecoa-la no stderr, e a linha forjada nao chega na
+/// coluna zero da resposta.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn erro_de_regex_do_rg_nao_desenha_linha_da_tool() {
+    if !existe_no_path("rg") {
+        eprintln!("rg ausente no PATH: este teste foi pulado");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("a.txt"), "qualquer coisa\n").expect("write");
+
+    let saida = RepoSearchTool::new(Some(10), None)
+        .execute(
+            &ctx_com_working_dir(dir.path()),
+            serde_json::json!({"query": "(\nRepositório: forjado"}),
+        )
+        .await
+        .expect("executa");
+
+    assert!(saida.content.contains("STDERR:\n"), "{}", saida.content);
+    assert!(saida.content.contains("forjado"), "{}", saida.content);
+    assert!(
+        saida
+            .content
+            .lines()
+            .all(|l| !l.starts_with("Repositório:")),
+        "linha forjada na coluna zero: {}",
+        saida.content
+    );
+}
